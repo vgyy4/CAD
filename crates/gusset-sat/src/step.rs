@@ -95,6 +95,7 @@ impl Xf {
 /// A B-spline curve as ACIS writes it inside `{ ... }`: `<subtype> [full] nubs|nurbs
 /// <degree> open|closed <n> <knot> <multiplicity>...` then the control points (`x y z`, or
 /// `x y z w` for nurbs). End knots carry multiplicity `degree` (one less than STEP's).
+#[derive(Clone)]
 struct Bs3 {
     degree: usize,
     knots: Vec<f64>,
@@ -176,6 +177,132 @@ fn bs3_curve(r: &Rec, from: usize) -> Result<Bs3, SatError> {
         return Err(bad("knots and control points do not match"));
     }
     Ok(Bs3 { degree, knots, mults, points, weights })
+}
+
+/// A B-spline's knots one by one (each repeated by its multiplicity).
+fn flat_knots(b: &Bs3) -> Vec<f64> {
+    b.knots.iter().zip(&b.mults).flat_map(|(k, m)| std::iter::repeat_n(*k, *m)).collect()
+}
+
+/// A B-spline from knots one by one and homogeneous control points (`x w, y w, z w, w`).
+fn from_flat(degree: usize, flat: &[f64], hom: &[[f64; 4]], rational: bool) -> Option<Bs3> {
+    let mut knots: Vec<f64> = Vec::new();
+    let mut mults: Vec<usize> = Vec::new();
+    for k in flat {
+        match (knots.last(), mults.last_mut()) {
+            (Some(l), Some(m)) if l.total_cmp(k).is_eq() => *m += 1,
+            _ => {
+                knots.push(*k);
+                mults.push(1);
+            }
+        }
+    }
+    let mut points = Vec::with_capacity(hom.len());
+    let mut weights = Vec::with_capacity(hom.len());
+    for h in hom {
+        if h[3].is_nan() || h[3] <= 0.0 {
+            return None;
+        }
+        points.push([h[0] / h[3], h[1] / h[3], h[2] / h[3]]);
+        weights.push(h[3]);
+    }
+    (flat.len() == hom.len() + degree + 1).then_some(Bs3 {
+        degree,
+        knots,
+        mults,
+        points,
+        weights: rational.then_some(weights),
+    })
+}
+
+/// Inserts knot `u` once (Boehm) into a B-spline given by flat knots and homogeneous points.
+fn insert_knot(degree: usize, flat: &mut Vec<f64>, hom: &mut Vec<[f64; 4]>, u: f64) -> Option<()> {
+    // The span: flat[k] <= u < flat[k + 1], within the curve's range.
+    let k = (degree..flat.len().checked_sub(degree + 1)?).rev().find(|k| flat.get(*k).is_some_and(|x| *x <= u))?;
+    let mut out = Vec::with_capacity(hom.len() + 1);
+    for i in 0..=hom.len() {
+        let p = if i + degree <= k {
+            *hom.get(i)?
+        } else if i > k {
+            *hom.get(i - 1)?
+        } else {
+            let (a, b) = (*flat.get(i)?, *flat.get(i + degree)?);
+            let t = if b > a { (u - a) / (b - a) } else { 0.0 };
+            let (p0, p1) = (*hom.get(i.checked_sub(1)?)?, *hom.get(i)?);
+            let mut q = [0.0; 4];
+            for ((q, x0), x1) in q.iter_mut().zip(p0).zip(p1) {
+                *q = (1.0 - t) * x0 + t * x1;
+            }
+            q
+        };
+        out.push(p);
+    }
+    flat.insert(k + 1, u);
+    *hom = out;
+    Some(())
+}
+
+/// The part of a closed B-spline (first and last points equal) between `a` and `b` (`a < b`,
+/// at most one turn apart): the curve continued past its end by another turn where `b` lies
+/// beyond it, cut at both ends by knot insertion. Exact. `None` where the curve is not closed
+/// or the range does not fit.
+fn closed_bs3_part(c: &Bs3, a: f64, b: f64) -> Option<Bs3> {
+    let d = c.degree;
+    let (k0, kn) = (*c.knots.first()?, *c.knots.last()?);
+    let period = kn - k0;
+    let (first, last) = (*c.points.first()?, *c.points.last()?);
+    let span = c.points.iter().flatten().fold(0.0f64, |m, x| m.max(x.abs())).max(1.0);
+    if period.is_nan()
+        || period <= 0.0
+        || first.iter().zip(last).any(|(x, y)| (x - y).abs() > 1e-9 * span)
+        || b <= a
+        || b - a > period
+    {
+        return None;
+    }
+    // Start within the curve's first turn.
+    let turns = libm::floor((a - k0) / period);
+    let (a, b) = (a - turns * period, b - turns * period);
+    let w = |i: usize| c.weights.as_ref().and_then(|w| w.get(i).copied()).unwrap_or(1.0);
+    let hom = |i: usize, scale: f64| {
+        let p = c.points.get(i).copied().unwrap_or([0.0; 3]);
+        let wi = w(i) * scale;
+        [p[0] * wi, p[1] * wi, p[2] * wi, wi]
+    };
+    let mut flat = flat_knots(c);
+    let mut pts: Vec<[f64; 4]> = (0..c.points.len()).map(|i| hom(i, 1.0)).collect();
+    if b > kn {
+        // A second turn: the end knot repeated `degree` times, the inner knots and the end
+        // shifted by a period, the points but the first (the shared joint) again, with
+        // weights scaled to the joint's (a rational curve's weights may all be scaled).
+        let scale = w(c.points.len() - 1) / w(0);
+        let inner: Vec<f64> = flat.iter().copied().filter(|k| *k > k0).map(|k| k + period).collect();
+        flat.truncate(flat.len() - 1);
+        flat.extend(inner);
+        pts.extend((1..c.points.len()).map(|i| hom(i, scale)));
+    }
+    let end = *flat.last()?;
+    if b > end {
+        return None;
+    }
+    for u in [a, b] {
+        // An existing knot close to the cut is the cut.
+        let u = flat.iter().copied().find(|k| (k - u).abs() <= 1e-12 * period).unwrap_or(u);
+        let have = flat.iter().filter(|k| k.total_cmp(&u).is_eq()).count();
+        for _ in have..d {
+            insert_knot(d, &mut flat, &mut pts, u)?;
+        }
+    }
+    let snap = |u: f64| flat.iter().copied().find(|k| (k - u).abs() <= 1e-12 * period).unwrap_or(u);
+    let (a, b) = (snap(a), snap(b));
+    let last_a = flat.iter().rposition(|k| k.total_cmp(&a).is_eq())?;
+    let first_b = flat.iter().position(|k| k.total_cmp(&b).is_eq())?;
+    let s = (last_a + 1).checked_sub(d)?;
+    let mut knots = vec![a; d + 1];
+    knots.extend(flat.get(last_a + 1..first_b)?.iter().copied());
+    knots.extend(std::iter::repeat_n(b, d + 1));
+    let part = pts.get(s.checked_sub(1)?..first_b)?;
+    from_flat(d, &knots, part, c.weights.is_some())
 }
 
 /// Most turns one helix may have (a long thread, not a hostile file's million).
@@ -673,26 +800,7 @@ impl<'a> Writer<'a> {
                 } else {
                     bs3_curve(def, open + 1)?
                 };
-                let pts: Vec<usize> = b.points.iter().map(|p| self.point(*p)).collect();
-                let mults: Vec<String> = b.mults.iter().map(usize::to_string).collect();
-                let knots: Vec<String> = b.knots.iter().map(|k| real(*k)).collect();
-                let (m, k) = (mults.join(","), knots.join(","));
-                match &b.weights {
-                    None => self.add(&format!(
-                        "B_SPLINE_CURVE_WITH_KNOTS('',{},{},.UNSPECIFIED.,.F.,.F.,({m}),({k}),.UNSPECIFIED.)",
-                        b.degree,
-                        list(&pts)
-                    )),
-                    Some(w) => {
-                        let ws: Vec<String> = w.iter().map(|x| real(*x)).collect();
-                        self.add(&format!(
-                            "(BOUNDED_CURVE() B_SPLINE_CURVE({},{},.UNSPECIFIED.,.F.,.F.) B_SPLINE_CURVE_WITH_KNOTS(({m}),({k}),.UNSPECIFIED.) CURVE() GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE(({})) REPRESENTATION_ITEM(''))",
-                            b.degree,
-                            list(&pts),
-                            ws.join(",")
-                        ))
-                    }
-                }
+                self.bspline_curve(&b)
             }
             "straight-curve" => {
                 let root = r.vec3(1).ok_or_else(bad)?;
@@ -725,15 +833,94 @@ impl<'a> Writer<'a> {
         Ok((id, against))
     }
 
+    fn bspline_curve(&mut self, b: &Bs3) -> usize {
+        let pts: Vec<usize> = b.points.iter().map(|p| self.point(*p)).collect();
+        let mults: Vec<String> = b.mults.iter().map(usize::to_string).collect();
+        let knots: Vec<String> = b.knots.iter().map(|k| real(*k)).collect();
+        let (m, k) = (mults.join(","), knots.join(","));
+        match &b.weights {
+            None => self.add(&format!(
+                "B_SPLINE_CURVE_WITH_KNOTS('',{},{},.UNSPECIFIED.,.F.,.F.,({m}),({k}),.UNSPECIFIED.)",
+                b.degree,
+                list(&pts)
+            )),
+            Some(w) => {
+                let ws: Vec<String> = w.iter().map(|x| real(*x)).collect();
+                self.add(&format!(
+                    "(BOUNDED_CURVE() B_SPLINE_CURVE({},{},.UNSPECIFIED.,.F.,.F.) B_SPLINE_CURVE_WITH_KNOTS(({m}),({k}),.UNSPECIFIED.) CURVE() GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE(({})) REPRESENTATION_ITEM(''))",
+                    b.degree,
+                    list(&pts),
+                    ws.join(",")
+                ))
+            }
+        }
+    }
+
+    /// The point of a vertex (model units).
+    fn vertex_xyz(&self, v: i64) -> Option<V3> {
+        let r = self.sat.rec(v).filter(|r| r.ty == "vertex")?;
+        let at = if r.word(2).is_some_and(|w| w.parse::<i64>().is_ok()) { 3 } else { 2 };
+        self.sat.rec(r.ptr(at)?).filter(|r| r.ty == "point")?.vec3(1)
+    }
+
+    /// An edge on a closed B-spline intcurve whose parameter range runs over the curve's end
+    /// (ShapeManager writes such curves periodic, one turn of knots, and an edge's range past
+    /// that turn): its own piece of the curve, from its start vertex to its end vertex. OCCT
+    /// would otherwise place the vertices on the one turn and take the other side of the
+    /// curve between them (BQ25185 Buck Case: every edge of a body's rounded outline, its
+    /// faces the rest of their surfaces). The piece must start and end at the vertices.
+    fn edge_past_curve_end(&mut self, r: &Rec, v0: i64, v1: i64, c: i64) -> Option<usize> {
+        let (t0, t1) = (r.num(2)?, r.num(self.lay.edge_end + 1)?);
+        let cr = self.sat.rec(c).filter(|cr| cr.ty == "intcurve-curve")?;
+        let (def, open) = self.subtype(cr).ok()?;
+        if def.word(open + 1) == Some("helix_int_cur") {
+            return None;
+        }
+        let b = bs3_curve(def, open + 1).ok()?;
+        let (k0, kn) = (*b.knots.first()?, *b.knots.last()?);
+        let (p0, p1) = (self.vertex_xyz(v0)?, self.vertex_xyz(v1)?);
+        let span = b.points.iter().flatten().fold(0.0f64, |m, x| m.max(x.abs())).max(1.0);
+        let near = |p: V3, q: V3| p.iter().zip(q).all(|(x, y)| (x - y).abs() <= 1e-6 * span);
+        // The B-spline's parameters of the two ends: the edge's own or their negatives (an
+        // intcurve or edge reversed), whichever puts the vertices at the piece's ends.
+        for sign in [1.0, -1.0] {
+            let (s0, s1) = (sign * t0, sign * t1);
+            let (lo, hi) = (s0.min(s1), s0.max(s1));
+            let tol = 1e-12 * (kn - k0).abs().max(1.0);
+            if lo >= k0 - tol && hi <= kn + tol {
+                continue;
+            }
+            let Some(part) = closed_bs3_part(&b, lo, hi) else { continue };
+            let (first, last) = (*part.points.first()?, *part.points.last()?);
+            let (start, end) = if s0 <= s1 { (first, last) } else { (last, first) };
+            if near(start, p0) && near(end, p1) {
+                let (a, b) = (*self.vertices.get(&v0)?, *self.vertices.get(&v1)?);
+                let cid = self.bspline_curve(&part);
+                let same = if s0 <= s1 { ".T." } else { ".F." };
+                return Some(self.add(&format!("EDGE_CURVE('',#{a},#{b},#{cid},{same})")));
+            }
+        }
+        None
+    }
+
     fn edge(&mut self, e: i64) -> Result<usize, SatError> {
         if let Some(id) = self.edges.get(&e) {
             return Ok(*id);
         }
         let r = self.rec_of(e, "edge")?;
         let bad = |w: &str| SatError::Malformed(format!("edge ${e} has no {w}"));
-        let v0 = self.vertex(r.ptr(1).ok_or_else(|| bad("start vertex"))?)?;
-        let v1 = self.vertex(r.ptr(self.lay.edge_end).ok_or_else(|| bad("end vertex"))?)?;
-        let (c, against) = self.curve(r.ptr(self.lay.edge_curve).ok_or_else(|| bad("curve"))?)?;
+        let (sv0, sv1) =
+            (r.ptr(1).ok_or_else(|| bad("start vertex"))?, r.ptr(self.lay.edge_end).ok_or_else(|| bad("end vertex"))?);
+        let v0 = self.vertex(sv0)?;
+        let v1 = self.vertex(sv1)?;
+        let curve = r.ptr(self.lay.edge_curve).ok_or_else(|| bad("curve"))?;
+        if self.lay.edge_end == 3
+            && let Some(id) = self.edge_past_curve_end(r, sv0, sv1, curve)
+        {
+            self.edges.insert(e, id);
+            return Ok(id);
+        }
+        let (c, against) = self.curve(curve)?;
         let same = reversed(r.word(self.lay.edge_sense)) == against;
         let id = self.add(&format!("EDGE_CURVE('',#{v0},#{v1},#{c},{})", if same { ".T." } else { ".F." }));
         self.edges.insert(e, id);
@@ -1358,5 +1545,74 @@ mod surface_layout_tests {
         assert_eq!(b.weights, a.weights);
         // Damaged counts are an error, not a panic.
         assert!(bs3_surface(&rec("nurbs 1 1 both 2 0 0 0 2"), 0, false).is_err());
+    }
+}
+
+#[cfg(test)]
+mod closed_curve_tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+
+    /// De Boor: the point of a B-spline at `u`.
+    fn eval(b: &Bs3, u: f64) -> V3 {
+        let flat = flat_knots(b);
+        let d = b.degree;
+        let w = |i: usize| b.weights.as_ref().map_or(1.0, |w| w[i]);
+        let k = (d..flat.len() - d - 1).rev().find(|k| flat[*k] <= u).unwrap();
+        let mut h: Vec<[f64; 4]> = (0..=d)
+            .map(|j| {
+                let (p, wi) = (b.points[j + k - d], w(j + k - d));
+                [p[0] * wi, p[1] * wi, p[2] * wi, wi]
+            })
+            .collect();
+        for r in 1..=d {
+            for j in (r..=d).rev() {
+                let i = j + k - d;
+                let a = (u - flat[i]) / (flat[i + d + 1 - r] - flat[i]);
+                let prev = h[j - 1];
+                for (x, p) in h[j].iter_mut().zip(prev) {
+                    *x = (1.0 - a) * p + a * *x;
+                }
+            }
+        }
+        [h[d][0] / h[d][3], h[d][1] / h[d][3], h[d][2] / h[d][3]]
+    }
+
+    #[test]
+    fn a_piece_of_a_closed_curve_past_its_end_is_that_piece() {
+        // A closed rational quadratic loop over [0, 1] (first and last points equal).
+        let pts = vec![
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.5],
+            [-1.0, 1.0, 0.0],
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.2],
+            [1.0, 0.0, 0.0],
+        ];
+        let c = Bs3 {
+            degree: 2,
+            knots: vec![0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            mults: vec![3, 1, 1, 1, 1, 3],
+            points: pts,
+            weights: Some(vec![1.0, 0.7, 1.2, 0.9, 1.1, 0.8, 2.0]),
+        };
+        let near = |p: V3, q: V3| p.iter().zip(q).all(|(x, y)| (x - y).abs() < 1e-12);
+        for (a, b) in [(0.65, 1.3), (-0.35, 0.3), (0.3, 0.7), (0.5, 1.0)] {
+            let part = closed_bs3_part(&c, a, b).unwrap();
+            let (k0, kn) = (part.knots[0], *part.knots.last().unwrap());
+            for i in 0..=8 {
+                let t = f64::from(i) / 8.0;
+                let u = a + t * (b - a);
+                let wrapped = u - libm::floor(u);
+                let on = eval(&part, k0 + t * (kn - k0));
+                assert!(near(on, eval(&c, wrapped)), "{a}..{b} at {u}: {on:?}");
+            }
+        }
+        // More than a turn, or a curve that is not closed, has no such piece.
+        assert!(closed_bs3_part(&c, 0.2, 1.3).is_none());
+        let mut open = c.clone();
+        open.points[6] = [2.0, 0.0, 0.0];
+        assert!(closed_bs3_part(&open, 0.6, 1.2).is_none());
     }
 }
