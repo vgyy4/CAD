@@ -255,3 +255,19 @@ extrude 2 (592, 6299); ElectronicsPackageGenerator 2 (5905, 5967); rebuild failu
 3632, shell 3422); one each: Thread 3350, Split 3651, MirrorComponent 4343, Derived Base Feature 3502, Base
 Feature 4431, pattern of inserted-design occurrences 5128, sweep path 3101, shell face 4632, extrude body 610,
 extrude between two faces 2190, draft 355 and 258, chamfer edges 5981 and 3093, unknown feature class 5358.
+
+## Combined re-run after round 17 (2026-11-11)
+
+Same command on both sets with round 17 A (profile regions, tapered extrudes, whole-turn revolves) and B (dropped
+Base Feature inputs, the many-loop cut rule, in-plane extrude directions, body selections) together: adafruit-more
+112 of 150 as history (was 103: 592, 2219, 2441, 3211, 4242, 4313, 4745, 4800, 5021 added; none lost), adafruit
+12 of 18. Whole adafruit-more run 2,344 s.
+
+Remaining first blockers: no feature history 7 (1221, 1321, 1400, 2629, 5412, 6049, 6114); rebuild failures 7
+(sweep 4863, shell 2756 and 3422, chamfer 1463 and 3632, fillet 2232, the PCB board extrude 2348); edge and face
+picks 9 (chamfer edges 3093, 5981, 6299; draft faces 258, 324, 355; shell faces 3722, 4632; offset face 3027);
+unsupported features 9 (Thread 1145 and 3350, Split 3651, MirrorComponent 4343, Derived Base Feature 3502,
+ElectronicsPackageGenerator 5905 and 5967, class #BC# 5358 and 5360); profiles that are faces or PCB data 6124,
+6126; one each: sweep path 3101, pattern of inserted-design occurrences 5128, a pattern of components 512, the body
+an extrude changes 610, a loop that does not close 858, an extrude between two faces 2190, a Base Feature body
+4431.
