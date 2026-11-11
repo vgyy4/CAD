@@ -63,10 +63,34 @@ fn sketch_json(cx: &mut Ctx, fid: u64, name: &str) -> Option<(Value, u64)> {
             j.insert("plane".into(), Value::Null);
         }
     }
-    let points: Vec<Value> =
+    let mut points: Vec<Value> =
         s.points.iter().map(|(q, p)| json!({"id": format!("p{q}"), "x": mm(p[0]), "y": mm(p[1])})).collect();
-    j.insert("points".into(), points.into());
     let mut curves = Vec::new();
+    // A spline is its stored B-spline: the end control points are the curve's sketch points, the
+    // inner ones points of their own; knots and weights as stored.
+    for (q, sp) in &s.splines {
+        let last = sp.poles.len().saturating_sub(1);
+        let mut poles = Vec::with_capacity(sp.poles.len());
+        for (k, p) in sp.poles.iter().enumerate() {
+            if k == 0 {
+                poles.push(format!("p{}", sp.start_ref));
+            } else if k == last {
+                poles.push(format!("p{}", sp.end_ref));
+            } else {
+                let id = format!("c{q}k{k}");
+                points.push(json!({"id": id, "x": mm(p[0]), "y": mm(p[1])}));
+                poles.push(id);
+            }
+        }
+        let mut c = json!({"id": format!("c{q}"), "type": "bspline", "degree": sp.degree, "knots": sp.knots,
+            "poles": poles, "periodic": false});
+        if !sp.weights.is_empty()
+            && let Some(o) = c.as_object_mut()
+        {
+            o.insert("weights".into(), json!(sp.weights));
+        }
+        curves.push(c);
+    }
     for (q, l) in &s.lines {
         if let (Some(a), Some(b)) = (l.start_ref, l.end_ref)
             && s.points.contains_key(&a)
@@ -88,6 +112,7 @@ fn sketch_json(cx: &mut Ctx, fid: u64, name: &str) -> Option<(Value, u64)> {
             curves.push(json!({"id": format!("c{q}"), "type": "arc", "center": format!("p{c}"), "start": format!("p{st}"), "end": format!("p{en}")}));
         }
     }
+    j.insert("points".into(), points.into());
     j.insert("curves".into(), curves.into());
     if !s.other.is_empty() {
         let mut kinds: HashMap<String, u64> = HashMap::new();

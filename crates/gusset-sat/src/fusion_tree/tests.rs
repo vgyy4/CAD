@@ -1460,3 +1460,63 @@ fn a_feature_belongs_to_the_component_whose_first_timeline_is_its_own() {
     assert_eq!(g.component(&d, 7), Some(1));
     assert_eq!(g.component(&d, 8), Some(2));
 }
+
+#[test]
+fn a_stored_spline_is_evaluated_as_the_b_spline_it_is() {
+    // A cubic Bezier: its midpoint is (p0 + 3 p1 + 3 p2 + p3) / 8.
+    let cubic = sketch::Spline {
+        degree: 3,
+        knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        weights: Vec::new(),
+        poles: vec![[0.0, 0.0, 0.0], [0.0, 2.0, 0.0], [4.0, 2.0, 0.0], [4.0, 0.0, 0.0]],
+        start_ref: 1,
+        end_ref: 2,
+    };
+    let m = cubic.at(0.5).unwrap();
+    assert!((m[0] - 2.0).abs() < 1e-12 && (m[1] - 1.5).abs() < 1e-12);
+    let pl = cubic.polyline().unwrap();
+    assert_eq!((pl.first(), pl.last()), (Some(&[0.0, 0.0]), Some(&[4.0, 0.0])));
+    // A rational quadratic quarter circle stays on the circle; two spans of a clamped quadratic
+    // meet at the inner knot.
+    let w = std::f64::consts::FRAC_1_SQRT_2;
+    let arc = sketch::Spline {
+        degree: 2,
+        knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        weights: vec![1.0, w, 1.0],
+        poles: vec![[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+        start_ref: 1,
+        end_ref: 2,
+    };
+    for p in arc.polyline().unwrap() {
+        assert!((libm::hypot(p[0], p[1]) - 1.0).abs() < 1e-12);
+    }
+    let two = sketch::Spline {
+        degree: 2,
+        knots: vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+        weights: Vec::new(),
+        poles: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 2.0, 0.0], [3.0, 2.0, 0.0]],
+        start_ref: 1,
+        end_ref: 2,
+    };
+    let j = two.at(0.5).unwrap();
+    assert!((j[0] - 1.5).abs() < 1e-12 && (j[1] - 1.0).abs() < 1e-12);
+    assert_eq!(two.polyline().unwrap().len(), 49);
+}
+
+#[test]
+fn a_spline_array_is_count_capacity_size_and_doubles() {
+    let mut rec = [le32(2), le32(4), le32(8)].concat();
+    rec.extend(1.5f64.to_le_bytes());
+    rec.extend(2.5f64.to_le_bytes());
+    assert_eq!(sketch::spline_array(&rec, 0, 1), Some((vec![1.5, 2.5], 28)));
+    // A capacity below the count, another element size or a cut-off array is not one.
+    let mut short = rec.clone();
+    short.truncate(27);
+    assert_eq!(sketch::spline_array(&short, 0, 1), None);
+    let mut size = rec.clone();
+    size[8] = 4;
+    assert_eq!(sketch::spline_array(&size, 0, 1), None);
+    let mut cap = rec;
+    cap[4] = 1;
+    assert_eq!(sketch::spline_array(&cap, 0, 1), None);
+}

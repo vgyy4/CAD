@@ -15,6 +15,7 @@ const SK_XFORM: &str = "F47A46FB";
 const POINT: &str = "C2CEDAE7";
 const LINE: &str = "DCA267ED";
 const ARC: &str = "F0130424";
+const SPLINE: &str = "D82E012F";
 
 #[derive(Debug, Clone)]
 pub(super) struct Line {
@@ -35,6 +36,167 @@ pub(super) struct Arc {
     pub refs: Vec<u64>,
 }
 
+/// A sketch spline: the stored B-spline curve (control points in cm, sketch space).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Spline {
+    pub degree: usize,
+    pub knots: Vec<f64>,
+    /// One per control point, or empty (all 1).
+    pub weights: Vec<f64>,
+    pub poles: Vec<V3>,
+    /// The sketch points at the first and at the last control point.
+    pub start_ref: u64,
+    pub end_ref: u64,
+}
+
+impl Spline {
+    /// The point at parameter `t` (de Boor; rational when the curve has weights).
+    pub(super) fn at(&self, t: f64) -> Option<P2> {
+        let (p, n) = (self.degree, self.poles.len());
+        let lo = *self.knots.get(p)?;
+        let hi = *self.knots.get(n)?;
+        let t = t.clamp(lo, hi);
+        // The span k with knots[k] <= t < knots[k + 1], p <= k < n.
+        let mut k = p;
+        while k + 1 < n && self.knots.get(k + 1).is_some_and(|u| *u <= t) {
+            k += 1;
+        }
+        let mut dpts: Vec<[f64; 3]> = Vec::with_capacity(p + 1);
+        for j in 0..=p {
+            let i = k + j - p;
+            let q = self.poles.get(i)?;
+            let w = self.weights.get(i).copied().unwrap_or(1.0);
+            dpts.push([q[0] * w, q[1] * w, w]);
+        }
+        for r in 1..=p {
+            for j in (r..=p).rev() {
+                let (a, b) = (*self.knots.get(k + j - p)?, *self.knots.get(k + 1 + j - r)?);
+                let alpha = if b > a { (t - a) / (b - a) } else { 0.0 };
+                let (prev, cur) = (*dpts.get(j - 1)?, *dpts.get(j)?);
+                *dpts.get_mut(j)? = [
+                    (1.0 - alpha) * prev[0] + alpha * cur[0],
+                    (1.0 - alpha) * prev[1] + alpha * cur[1],
+                    (1.0 - alpha) * prev[2] + alpha * cur[2],
+                ];
+            }
+        }
+        let v = dpts.get(p)?;
+        Some([v[0] / v[2], v[1] / v[2]])
+    }
+
+    /// The curve as a polyline from its first to its last control point: 24 chords per knot span.
+    pub(super) fn polyline(&self) -> Option<Vec<P2>> {
+        const PER_SPAN: usize = 24;
+        let (first, last) = (self.poles.first()?, self.poles.last()?);
+        let mut out = vec![[first[0], first[1]]];
+        for k in self.degree..self.poles.len() {
+            let (a, b) = (*self.knots.get(k)?, *self.knots.get(k + 1)?);
+            if b <= a {
+                continue;
+            }
+            for i in 1..=PER_SPAN {
+                out.push(self.at(a + (b - a) * i as f64 / PER_SPAN as f64)?);
+            }
+        }
+        // The curve is clamped: it ends at its last control point exactly.
+        *out.last_mut()? = [last[0], last[1]];
+        Some(out)
+    }
+}
+
+/// One array of a spline record: its count, a capacity not below it, the element size 8, then
+/// `count * width` doubles.
+pub(super) fn spline_array(rec: &[u8], o: usize, width: usize) -> Option<(Vec<f64>, usize)> {
+    let n = stream::u32_at(rec, o)? as usize;
+    let cap = stream::u32_at(rec, o + 4)? as usize;
+    if stream::u32_at(rec, o + 8)? != 8 || cap < n || n > 4096 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(n * width);
+    for k in 0..n * width {
+        let b: [u8; 8] = rec.get(o + 12 + 8 * k..o + 20 + 8 * k)?.try_into().ok()?;
+        let v = f64::from_le_bytes(b);
+        if !v.is_finite() {
+            return None;
+        }
+        out.push(v);
+    }
+    Some((out, o + 12 + 8 * n * width))
+}
+
+/// The B-spline of a sketch spline record. After the references to the curve's two end points:
+/// one or two zero bytes (by class version), `01`, a byte that is 1 for a closed curve, `u32`
+/// degree, a tolerance double, then the knots, the weights (none, or one per control point) and
+/// the control points (x, y, z; z is 0). Read only when everything agrees: knots = control points +
+/// degree + 1, non-decreasing and clamped at both ends, positive weights, and the first and last
+/// control points at the two referenced sketch points (which is what ties the stored curve to the
+/// sketch: a curve stored in another space or trimmed to a part of its range would not end there).
+fn spline(d: &Design, i: u64, points: &BTreeMap<u64, V3>) -> Option<Spline> {
+    let rec = d.rec(i);
+    let ends: Vec<(usize, u64)> =
+        refs_at(d, rec, 0).into_iter().filter(|p| has_section(d, p.1, POINT)).take(2).collect();
+    let [(_, r0), (at1, r1)] = ends.as_slice() else { return None };
+    let (_, after) = ref_end(d, rec, *at1)?;
+    for gap in [1usize, 2] {
+        if rec.get(after..after + gap).is_none_or(|z| z.iter().any(|x| *x != 0)) || rec.get(after + gap) != Some(&1) {
+            continue;
+        }
+        let o = after + gap;
+        let closed = match rec.get(o + 1) {
+            Some(0) => false,
+            Some(1) => true,
+            _ => continue,
+        };
+        let Some(degree) = stream::u32_at(rec, o + 2).map(|v| v as usize).filter(|v| (1..=11).contains(v)) else {
+            continue;
+        };
+        let Some([tol]) = dbl::<1>(rec, o + 6) else { continue };
+        if !(tol > 0.0 && tol < 1e-3) {
+            continue;
+        }
+        let Some((knots, o)) = spline_array(rec, o + 14, 1) else { continue };
+        let Some((weights, o)) = spline_array(rec, o, 1) else { continue };
+        let Some((flat, _)) = spline_array(rec, o, 3) else { continue };
+        let poles: Vec<V3> = flat.chunks_exact(3).filter_map(|c| <[f64; 3]>::try_from(c).ok()).collect();
+        let n = poles.len();
+        let clamped =
+            |part: Option<&[f64]>| part.is_some_and(|p| p.windows(2).all(|w| matches!(w, [a, b] if same(*a, *b))));
+        if n <= degree
+            || knots.len() != n + degree + 1
+            || !(weights.is_empty() || weights.len() == n)
+            || weights.iter().any(|w| *w <= 0.0)
+            || knots.windows(2).any(|w| matches!(w, [a, b] if b < a))
+            || !clamped(knots.get(..=degree))
+            || !clamped(knots.get(n..))
+            || knots.first() >= knots.last()
+            || poles.iter().any(|p| p[2].abs() > 1e-9)
+        {
+            continue;
+        }
+        let weights = if weights.iter().all(|w| same(*w, 1.0)) { Vec::new() } else { weights };
+        let (first, last) = (*poles.first()?, *poles.last()?);
+        let at = |r: &u64, p: V3| points.get(r).is_some_and(|q| geom::dist([q[0], q[1]], [p[0], p[1]]) < 1e-7);
+        // The record names the end point first, as a line does; a closed curve names one point twice.
+        let (start_ref, end_ref) = if at(r1, first) && at(r0, last) {
+            (*r1, *r0)
+        } else if at(r0, first) && at(r1, last) {
+            (*r0, *r1)
+        } else {
+            continue;
+        };
+        if closed != (start_ref == end_ref) {
+            continue;
+        }
+        return Some(Spline { degree, knots, weights, poles, start_ref, end_ref });
+    }
+    None
+}
+
+#[allow(clippy::float_cmp)]
+fn same(a: f64, b: f64) -> bool {
+    a == b
+}
+
 #[derive(Debug, Default)]
 pub(super) struct Sketch {
     pub id: u64,
@@ -44,6 +206,7 @@ pub(super) struct Sketch {
     pub points: BTreeMap<u64, V3>,
     pub lines: BTreeMap<u64, Line>,
     pub arcs: BTreeMap<u64, Arc>,
+    pub splines: BTreeMap<u64, Spline>,
     pub other: BTreeMap<u64, String>,
 }
 
@@ -192,11 +355,19 @@ pub(super) fn read_sketch(d: &Design, sid: u64) -> Sketch {
             ents.extend(ids);
         }
     }
+    for &q in &ents {
+        if has_section(d, q, POINT)
+            && let Some(p) = point(d, q)
+        {
+            out.points.insert(q, p);
+        }
+    }
     for q in ents {
         if has_section(d, q, POINT) {
-            if let Some(p) = point(d, q) {
-                out.points.insert(q, p);
-            }
+        } else if d.is(q, SPLINE)
+            && let Some(sp) = spline(d, q, &out.points)
+        {
+            out.splines.insert(q, sp);
         } else if has_section(d, q, LINE) {
             if let Some(l) = line(d, q)
                 && let Some((b, _)) = find_section(d, q, LINE)
@@ -391,7 +562,11 @@ fn curve_polyline(d: &Design, s: &Sketch, q: u64) -> Option<Vec<P2>> {
         }
         return Some(out);
     }
-    // Other curve classes (splines): a chord through the point references, in record order.
+    if let Some(sp) = s.splines.get(&q) {
+        return sp.polyline();
+    }
+    // Other curve classes (splines of an unread layout): a chord through the point references, in
+    // record order.
     let mut uniq: Vec<P2> = Vec::new();
     for (_, r) in refs_at(d, d.rec(q), 0) {
         if let Some(p) = s.points.get(&r) {
@@ -467,7 +642,7 @@ impl RegionCache {
         // same key replaces an earlier one in place.
         let mut keymap: HashMap<(u64, u64), u64> = HashMap::new();
         let mut key_order: Vec<(u64, u64)> = Vec::new();
-        for q in s.lines.keys().chain(s.arcs.keys()).chain(s.other.keys()) {
+        for q in s.lines.keys().chain(s.arcs.keys()).chain(s.splines.keys()).chain(s.other.keys()) {
             if let Some(k) = crv_key(d, *q)
                 && keymap.insert(k, *q).is_none()
             {
