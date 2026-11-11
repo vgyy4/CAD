@@ -749,10 +749,13 @@ fn an_insert_at_the_origin_keeps_the_features_in_place() {
 
 #[test]
 fn features_that_cannot_be_moved_are_refused_for_a_moved_insert() {
+    // A revolve's axis is not moved; a sweep (profile and path are sketches) moves as they do.
+    let revolve = vec![json!({"type": "revolve", "name": "Revolve1"})];
+    let e = super::insert::bring(revolve.clone(), "Component Insert1", &quarter_turn()).unwrap_err();
+    assert!(e.contains("Revolve1"), "{e}");
+    assert!(super::insert::bring(revolve, "Component Insert1", &crate::fusion::Placement::IDENTITY).is_ok());
     let sweep = vec![json!({"type": "sweep", "name": "Sweep1"})];
-    let e = super::insert::bring(sweep.clone(), "Component Insert1", &quarter_turn()).unwrap_err();
-    assert!(e.contains("Sweep1"), "{e}");
-    assert!(super::insert::bring(sweep, "Component Insert1", &crate::fusion::Placement::IDENTITY).is_ok());
+    assert!(super::insert::bring(sweep, "Component Insert1", &quarter_turn()).is_ok());
 }
 
 #[test]

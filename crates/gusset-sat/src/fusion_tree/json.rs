@@ -1391,7 +1391,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             for (k, (v, es, bad)) in cx.blend_sets(fid, role).into_iter().enumerate() {
                 let mut j = Map::new();
                 if let [one] = on.as_slice() {
-                    j.insert("body".into(), one.as_str().into());
+                    j.insert("on_body".into(), one.as_str().into());
                 }
                 match &two {
                     Some(Ok((d2, face))) => {

@@ -17,7 +17,7 @@ const MAX_INSERT_FEATURES: usize = 50_000;
 
 /// Feature kinds whose points and directions `move_feature` moves; a design with another kind
 /// is not moved to a placement that is not the identity.
-const MOVABLE: [&str; 13] = [
+const MOVABLE: [&str; 15] = [
     "sketch",
     "extrude",
     "fillet",
@@ -31,6 +31,10 @@ const MOVABLE: [&str; 13] = [
     "scale_body",
     "remove_body",
     "draft",
+    // A sweep holds no point or direction of its own: its profile and path are sketches.
+    "sweep",
+    // Nor does a combine: it names its bodies.
+    "combine",
 ];
 
 /// Replaces each `component_insert` feature of `tree` by the features of the design it inserts.

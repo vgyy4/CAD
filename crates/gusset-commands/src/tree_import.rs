@@ -269,7 +269,7 @@ struct EdgeF {
     /// Fillet, chamfer: the body the edges are on (the tree name of the feature that made it),
     /// for edges that lie on edges of another body.
     #[serde(default)]
-    body: Option<String>,
+    on_body: Option<String>,
 }
 
 /// Tier note for feature-tree imports.
@@ -1672,7 +1672,7 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
     // Edges of several bodies that lie on one another (a magnet in its pocket): the body the
     // source names decides.
     if by_body.len() > 1
-        && let Some(t) = &d.body
+        && let Some(t) = &d.on_body
     {
         let tb = g.body_named(t, "body")?;
         by_body = collect(Some(&tb))?;

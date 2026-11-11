@@ -1595,10 +1595,20 @@ Reader: `timeline` in `fusion_tree/mod.rs`, `carry_moved_bodies` in `fusion_tree
   value, no edge. It changes no body and is skipped.
 * **Edges of two bodies on one another.** `Fillet - Magnets` rounds a magnet's top circle, which lies on the rim of
   the magnet's pocket in the housing: the edge's points match an edge of both bodies. A fillet or chamfer now names
-  the body its edge selections' body links lead to (`body`, ADR 0042 amendment), which decides there.
+  the body its edge selections' body links lead to (`on_body`, ADR 0042 amendment), which decides there.
 * 5358 and 5360 then stop at `Fillet - Pin`, which does not build: the sweep runs along `Sketch3` of the root
   component (plane origin x = -1.27 mm on `WorkPlane1`) taken at its own coordinates in the Pins component (the rule
   of 4863, `in_own_component`), while the stored blend edge at the sweep's end lies at x = -3.81 mm, the first pin:
   2.54 mm (one pitch) apart. Which frame the path is in at the sweep (before the joints `Assemble2`/`Assemble3` move
   the occurrences) is not established.
+
+### Inserted designs with sweeps (4862)
+* The sweep path fix above makes the inserted header of 4862 (adafruit set) readable: its tree used to fail on the
+  sweep path, so the insert came in as the bodies its `.smb` blobs store. A sweep and a combine hold no point or
+  direction of their own (profile and path are sketches, a combine names bodies), so an insert placed off the origin
+  may now move them. 4862 then fails the step check, where it came in as history before: the features give
+  9168.1416 mm3, the stored shapes 9454.3366 mm3, and the board's `Extrude2` (84 holes, whose stored tools hold
+  92.0987 mm3) changes the volume by 260.8520 mm3. 5967 shows the same with its rebuilt headers (148.2807 mm3 more
+  than the 537 holes); both boards' holes are where the header pins stand. Where the extra volume comes from is not
+  found; the cut itself acts on the board body alone.
 
