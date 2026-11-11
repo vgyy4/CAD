@@ -34,10 +34,16 @@ pub(super) fn op_map(d: &Design) -> HashMap<u64, u64> {
             if j + 4 + 16 * n <= r.len() {
                 let pairs: Vec<(u64, u64)> =
                     (0..n).filter_map(|k| Some((u64_at(r, j + 4 + 16 * k)?, u64_at(r, j + 12 + 16 * k)?))).collect();
-                if pairs.len() == n && pairs.iter().all(|(o, f)| d.has(*f) && *o < 1 << 32) {
-                    for (o, f) in pairs {
-                        out.insert(o, f);
-                    }
+                // The table keeps the operations of features the design no longer has (2232:
+                // 1 of 45, 4400: 38 of 408): the ids rise strictly, and most features exist.
+                let rising = pairs.windows(2).all(|w| matches!(w, [a, b] if a.0 < b.0));
+                let known = pairs.iter().filter(|(_, f)| d.has(*f)).count();
+                if pairs.len() == n
+                    && rising
+                    && known * 2 >= n
+                    && pairs.iter().all(|(o, f)| *o < 1 << 32 && *f < 1 << 40)
+                {
+                    out.extend(pairs.into_iter().filter(|(_, f)| d.has(*f)));
                     break;
                 }
             }
