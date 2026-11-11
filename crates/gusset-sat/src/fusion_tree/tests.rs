@@ -200,6 +200,43 @@ fn a_closed_curve_cut_at_its_start_has_two_pieces_not_three() {
 }
 
 #[test]
+fn a_circle_drawn_twice_is_cut_by_the_other_copys_seam_not_everywhere() {
+    // A chord's two ends on a circle and the same circle drawn again: the copy touches the
+    // circle everywhere, so only its ends (the shared seam) cut it, giving 3 pieces.
+    let circle: Vec<P2> = (0..=64)
+        .map(|k| {
+            let t = f64::from(k) / 64.0 * std::f64::consts::TAU;
+            [libm::cos(t), libm::sin(t)]
+        })
+        .collect();
+    let y = 0.8;
+    let x = libm::sqrt(1.0 - y * y);
+    let chord: Vec<P2> = vec![[x, y], [-x, y]];
+    let copy = circle.clone();
+    let others: Vec<&[P2]> = vec![&chord, &copy];
+    assert!(geom::piece(&circle, true, &others, 1, 2).is_none());
+    // Piece 2 of 3 is the cap above the chord.
+    let cap = geom::piece(&circle, true, &others, 2, 3).unwrap();
+    assert!(cap.iter().all(|p| p[1] >= y - 1e-9), "{cap:?}");
+    // (Where the chord meets the circle's chords, a little inside the true circle.)
+    assert!(geom::dist(*cap.first().unwrap(), [x, y]) < 1e-2);
+    assert!(geom::dist(*cap.last().unwrap(), [-x, y]) < 1e-2);
+}
+
+#[test]
+fn a_loop_walked_out_and_back_revisits_its_points() {
+    let sq: Vec<P2> = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]];
+    assert!(!geom::revisits(&sq));
+    // Round twice (a circle drawn twice, chained at its seam).
+    let mut twice = sq.clone();
+    twice.extend(sq.iter().skip(1));
+    assert!(geom::revisits(&twice));
+    // Out along an edge and back on its copy.
+    let spike: Vec<P2> = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+    assert!(geom::revisits(&spike));
+}
+
+#[test]
 fn open_ends_of_a_loop_are_joined_by_the_one_curve_that_fits() {
     let sq: Vec<Vec<P2>> =
         vec![vec![[0.0, 0.0], [1.0, 0.0]], vec![[1.0, 1.0], [0.0, 1.0]], vec![[0.0, 1.0], [0.0, 0.0]]];

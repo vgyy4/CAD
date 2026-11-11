@@ -635,6 +635,15 @@ pub(super) struct RegionCache {
     pub done: HashMap<u64, Result<Rc<Vec<RegionEnt>>, String>>,
 }
 
+/// A profile loop made only of curves the sketch no longer holds. The profile records are not
+/// always rewritten when a sketch is edited: 5360's connector, cut down from four pins to three,
+/// still lists the fourth pin's circles (no record of the design carries their ids), and 2756's
+/// still lists a deleted circle as a hole and as the island inside it. Such a hole is gone, and
+/// so is a region whose outline it was.
+fn gone_loop(l: &Loop, keymap: &HashMap<(u64, u64), u64>) -> bool {
+    !l.curves.is_empty() && l.curves.iter().all(|c| !keymap.contains_key(&(c.primary, c.secondary)))
+}
+
 fn sketch_of_profile(d: &Design, q: u64) -> Option<u64> {
     for w in wstrings_all(d.rec(q)) {
         if let Ok(n) = w.2.parse::<u64>()
@@ -709,6 +718,7 @@ impl RegionCache {
                 continue;
             }
             let regs = parse_profiles(d, i).ok_or("0D57BD2F layout")?;
+            let gone = |l: &Loop| gone_loop(l, &keymap);
             for g in &regs {
                 let mut naming = None;
                 let parts: Vec<&Region> = if g.children.is_empty() {
@@ -721,7 +731,13 @@ impl RegionCache {
                     });
                     g.children.iter().collect()
                 };
-                for (k, part) in parts.into_iter().enumerate() {
+                let mut first = true;
+                for part in parts {
+                    // A region whose outline is made only of curves the sketch no longer holds
+                    // is gone (see `process`).
+                    if part.loops.iter().any(|l| l.flag == 1 && gone(l)) {
+                        continue;
+                    }
                     let (rings, segments) = self.process(d, s, part, &keymap, &curve_ids, &mut allpolys, &mut used)?;
                     let outer: Vec<&Vec<P2>> = rings.iter().filter(|(f, _)| *f == 1).map(|(_, r)| r).collect();
                     let holes: Vec<&[P2]> = rings.iter().filter(|(f, _)| *f != 1).map(|(_, r)| r.as_slice()).collect();
@@ -737,7 +753,8 @@ impl RegionCache {
                         .collect();
                     let mut points = geom::face_points(outer, &holes, &others).ok_or("no interior point")?.into_iter();
                     let point = points.next().ok_or("no interior point")?;
-                    let naming_segments = naming.as_ref().map(|n| if k == 0 { n.clone() } else { Vec::new() });
+                    let naming_segments = naming.as_ref().map(|n| if first { n.clone() } else { Vec::new() });
+                    first = false;
                     pts.push(RegionEnt { point, more_points: points.collect(), segments, naming_segments });
                 }
             }
@@ -763,6 +780,9 @@ impl RegionCache {
         let mut rings = Vec::new();
         let mut segs = Vec::new();
         for l in &g.loops {
+            if gone_loop(l, keymap) {
+                continue;
+            }
             self.next_id += 1;
             let loopkey = self.next_id;
             let mut full: Vec<(u64, &Entry, Vec<P2>)> = Vec::new();
@@ -773,6 +793,7 @@ impl RegionCache {
             }
             let n = full.len();
             let mut polys: Vec<Vec<P2>> = Vec::new();
+            let mut missing: Option<String> = None;
             for (k, (q, c, pl)) in full.iter().enumerate() {
                 let mut pl = pl.clone();
                 if c.b > 1 {
@@ -810,13 +831,32 @@ impl RegionCache {
                         let next = if n > 1 { full.get((k + 1) % n).map(|f| f.2.as_slice()) } else { None };
                         pc = geom::trim_by_neighbours(&pl, prev, next, c.a, c.b);
                     }
-                    pl = pc.ok_or_else(|| format!("curve piece {}/{} not reproduced", c.a, c.b))?;
+                    match pc {
+                        Some(p) => pl = p,
+                        None => {
+                            // Left out for now: the loop may close without it (see below).
+                            missing.get_or_insert_with(|| format!("curve piece {}/{} not reproduced", c.a, c.b));
+                            continue;
+                        }
+                    }
                 }
                 polys.push(pl.clone());
                 self.next_id += 1;
                 segs.push(Rc::new(Seg { id: self.next_id, curve: *q, poly: pl, flag: l.flag, loopkey }));
             }
             let mut ring = geom::chain(&polys);
+            if ring.as_deref().is_some_and(geom::revisits)
+                && let Some(fewer) = geom::drop_covered(&polys)
+                && let Some(r2) = geom::chain(&fewer)
+                && !geom::revisits(&r2)
+            {
+                // A loop that lists every edge twice can chain by walking each edge out and back
+                // (3027's slot: two arcs and two lines, each drawn twice) or round twice (its
+                // circle drawn twice), passing its points twice: once each, the edges make a
+                // simple ring.
+                ring = Some(r2);
+                polys = fewer;
+            }
             if ring.is_none()
                 && let Some(fewer) = geom::drop_covered(&polys)
             {
@@ -847,6 +887,15 @@ impl RegionCache {
                     segs.push(Rc::new(Seg { id: self.next_id, curve: q, poly: pl, flag: l.flag, loopkey }));
                 }
                 ring = geom::chain(&polys);
+            }
+            // A piece that could not be cut out of its curve is only left out when the loop's
+            // other curves close without it. (512's switch pocket lists the outline's bottom edge,
+            // piece 2 of 3, beside the four sides of a rectangle that closes on its own; nothing
+            // in the sketch cuts that edge.)
+            if ring.is_none()
+                && let Some(why) = missing
+            {
+                return Err(why);
             }
             rings.push((l.flag, ring.ok_or("loop does not close")?));
             rings.extend(islands.into_iter().map(|r| (0, r)));

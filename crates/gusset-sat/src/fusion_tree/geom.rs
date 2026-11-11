@@ -123,7 +123,19 @@ pub(super) fn split_params_ex(poly: &[P2], others: &[&[P2]], collinear: bool) ->
         _ => 1.0,
     };
     let mut out = Vec::new();
+    // A curve lying wholly on a curved `poly` (a duplicate circle) touches it everywhere: its
+    // ends cut it instead (324's shaft flat: a circle drawn twice, each cut by the chord's two
+    // ends and the other's seam, gives 3 pieces).
+    let scale = poly.iter().fold(0.0f64, |m, p| m.max(p[0].abs()).max(p[1].abs())).max(1e-6);
     for o in others {
+        if poly.len() > 2 && o.len() > 2 && covered_by(o, poly, scale) {
+            for e in [o.first(), o.last()].into_iter().flatten() {
+                if let Some(f) = point_param(poly, &l, tot, *e) {
+                    out.push(f);
+                }
+            }
+            continue;
+        }
         for (k, w) in poly.windows(2).enumerate() {
             let [a, b] = w else { continue };
             for w2 in o.windows(2) {
@@ -147,6 +159,27 @@ pub(super) fn split_params_ex(poly: &[P2], others: &[&[P2]], collinear: bool) ->
         }
     }
     res
+}
+
+/// The arc-length fraction of the point of `poly` nearest `p`, when `p` lies on it (within its
+/// chords' sag).
+fn point_param(poly: &[P2], l: &[f64], tot: f64, p: P2) -> Option<f64> {
+    let mut best: Option<(f64, f64)> = None;
+    let mut sag: f64 = 0.0;
+    for (k, w) in poly.windows(2).enumerate() {
+        let [a, b] = w else { continue };
+        sag = sag.max(dist(*a, *b) * 0.05);
+        let (rx, ry) = (b[0] - a[0], b[1] - a[1]);
+        let l2 = rx * rx + ry * ry;
+        let t = if l2 > 0.0 { (((p[0] - a[0]) * rx + (p[1] - a[1]) * ry) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        let dd = dist(p, [a[0] + t * rx, a[1] + t * ry]);
+        let (l0, l1) = (l.get(k).copied().unwrap_or(0.0), l.get(k + 1).copied().unwrap_or(0.0));
+        if best.is_none_or(|(bd, _)| dd < bd) {
+            best = Some((dd, (l0 + t * (l1 - l0)) / tot));
+        }
+    }
+    let (dd, f) = best?;
+    (dd <= sag + 1e-9).then_some(f)
 }
 
 /// The part of `poly` between arc-length fractions `f0` and `f1`.
@@ -667,6 +700,19 @@ pub(super) fn face_points(outer: &[P2], holes: &[&[P2]], others: &[&[P2]]) -> Op
         return interior_point(outer, holes).map(|p| vec![p]);
     }
     Some(best.into_iter().map(|b| b.2).collect())
+}
+
+/// A closed ring passes one of its points twice (within 1e-9; its closing point aside).
+pub(super) fn revisits(ring: &[P2]) -> bool {
+    let n = match (ring.first(), ring.last()) {
+        (Some(a), Some(b)) if ring.len() > 1 && dist(*a, *b) < 1e-9 => ring.len() - 1,
+        _ => ring.len(),
+    };
+    let mut seen = std::collections::HashSet::with_capacity(n);
+    ring.iter().take(n).any(|p| {
+        let key = (libm::round(p[0] * 1e9) as i64, libm::round(p[1] * 1e9) as i64);
+        !seen.insert(key)
+    })
 }
 
 /// A point inside `outer` and outside every hole, as far from all edges as a grid search finds.
