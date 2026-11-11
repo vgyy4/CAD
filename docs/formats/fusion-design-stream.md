@@ -1091,6 +1091,7 @@ error: `gusset-eval` now unites the regions a feature takes when they share whol
   not approximated.
 
 ### State-check refusals looked at and left (causes, as far as found)
+(Round 17 found the causes of all of these but 5420: section 26.)
 * 4313: Extrude2 (43 loops) is explained exactly by 43 stored tools (53.0222 mm3); one more stored solid of
   182.1189 mm3 belongs to no feature of the tree. 5021: the same with 22 tools (46.0391 mm3) and three solids of
   0.0280 mm3 left over. Whose bodies these are is not found.
@@ -1223,3 +1224,50 @@ two Adafruit sets (38 distinct joints; four records are repeats); all lengths in
   in another sketch or not a line, and any parameter besides `AlongAngle` are refused. Both designs' revolves
   build; neither design reaches the state check yet (1145 stops at a Thread, 3722 at a shell whose removed face
   is not a cap or planar side of an extrude), so their shape is not confirmed.
+
+## 26. Round 17 B: stored solids the step check could not place (2026-11-11)
+Eight designs whose features read but whose step check refused a stored solid or the box (all eight now come in
+as history: adafruit-more 103 to 111 of 150, no design lost): the causes, and what
+changed.
+
+### Base Feature inputs that it drops (2219, 3211, 4242, 4745, 5021)
+* A Base Feature's record names its PM bodies, then its DM bodies, then **again the PM bodies that become DM
+  bodies**, in DM order (section 13). Where the PM block is longer than the DM block, the PM bodies named once are
+  inputs the Base Feature drops: they are in the component's `.smb` (the PM bodies' state list `CD57BC48` names it
+  through `40DCC3F4`) and in no later body. 5021's slide potentiometer: 15 PM bodies, 6 DM; the 9 dropped are three
+  0.4 x 0.2 x 0.35 mm blocks (0.0280 mm3), three pins turned upright and a housing 0.05 mm off its final place.
+  2219: 31 PM, 21 DM (10 pins of 0.0791 mm3); 4745: 41 and 21, two occurrences; 3211: 3 and 1; 4242: four Base
+  Features with 4, 1, 1 and 1 dropped.
+* The PM list's bodies are, in list order, a run of the PM blob's solid bodies: in 5021 blob bodies 3..17 of 20
+  (body 0 is the component's extrude, the others sheets), and the kept ones (list places 9..14) have exactly the
+  volumes and boxes of the `.smbh` DM bodies.
+* Reader: the `stored_body` features of such a Base Feature carry `dropped_inputs` (`brep`: the PM blob, `count`:
+  PM bodies, `kept`: the list place of each DM body's PM body). Importer (`fusion_dropped_inputs`): reads the PM
+  blob's solid bodies with the occurrence's placement and takes the one run whose kept bodies are the DM bodies
+  (volume and box); each dropped body then accounts for the one stored solid of its volume and box. No run, or
+  more than one: nothing is accounted for. The note says how many stored solids were such inputs.
+
+### One tool times the loops, by coincidence (4313)
+* Extrude2 cuts 43 loops: 11 header holes (1.2331 mm3), 4 mounting holes (7.7067) and 28 vias (0.3083), 53.0222
+  mm3 together. 43 x 1.2331 = 53.0233 is within the volume tolerance of that, so the rule "one stored tool times the
+  copies" took the 11 header holes as the whole cut and left the mounting holes over. A cut of several loops
+  stores a tool per loop: that rule now needs as many stored tools of the volume as the copies; the sum rule then
+  explains the 43.
+
+### An extrude direction given in the assembly (4800)
+* The extrude record's direction is a unit vector in the sketch's frame (4524 of 4530 extrudes of the two Adafruit
+  sets). In 4800's standoffs (Extrude1, Extrude2) and screen (Extrude1 (2)) it lies **in** the sketch plane
+  (normal z, direction y): it is given in the assembly, where the occurrence turns the sketch normal onto it (both
+  components were drawn in place). The side was taken from the sign of a dot product of about 1e-48, the wrong way:
+  the standoffs stood through the board and the screen 0.1 mm off. Now such a direction is compared with the
+  sketch normal as the occurrence places it (it must be parallel to it, else the design is refused); an extrude of
+  that kind that starts off its sketch or goes both ways is refused.
+
+### A join's bodies are its body selections (2441)
+* Extrude11 joins standoffs (to object) to Extrude9's body. Its record reaches two body links: one through its body
+  selection (`9716F783`, Extrude9's), one through the face selection of its extent (`5662F619`, a face of
+  Extrude1's plate). The second was taken as a target and a `combine` merged the plate into Extrude9's body; the
+  file's end bodies keep three bodies (15394.8521, 19207.7568, 3614.7904 mm3). Where a feature has body
+  selections, they are now its targets; a body reached only through a face selection is not. In the two sets this
+  changes 2441, 2232 (Extrude7, the same pattern) and the pad extrudes of 5358 and 5360 (both stop earlier, at
+  features the reader cannot read).
