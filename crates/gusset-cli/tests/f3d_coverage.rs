@@ -123,6 +123,14 @@ fn framing(name: &str) -> bool {
         || matches!(name, "ref" | "wstr" | "own-id" | "list.count" | "list.pad")
 }
 
+/// A parameter's role name without a sketch dimension's number (`Linear Dimension-3`).
+fn role(name: &str) -> String {
+    match name.rsplit_once('-') {
+        Some((head, n)) if !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()) => head.to_string(),
+        _ => name.to_string(),
+    }
+}
+
 fn pct(a: usize, b: usize) -> f64 {
     100.0 * a as f64 / b.max(1) as f64
 }
@@ -130,6 +138,18 @@ fn pct(a: usize, b: usize) -> f64 {
 /// A record's header length (where its own body starts).
 fn body0(r: &RecordCover) -> usize {
     r.sections.first().map_or(0, |s| s.0)
+}
+
+/// Bytes that read as text (ASCII or UTF-16LE), which the report leaves out.
+fn text_like(b: &[u8]) -> bool {
+    let printable = |c: &u8| (0x20..0x7f).contains(c);
+    let ascii = b.len() >= 4 && b.iter().filter(|c| printable(c)).count() * 4 >= b.len() * 3;
+    let wide = b.len() >= 6
+        && (b.chunks_exact(2).filter(|p| p.get(1) == Some(&0) && p.first().is_some_and(printable)).count() * 8
+            >= b.len() / 2 * 5
+            || b[1..].chunks_exact(2).filter(|p| p.get(1) == Some(&0) && p.first().is_some_and(printable)).count() * 8
+                >= b.len() / 2 * 5);
+    ascii || wide
 }
 
 fn hex(b: &[u8], max: usize) -> String {
@@ -167,59 +187,81 @@ fn layout(class: &str, recs: &[(&str, &RecordCover)], out: &mut String) {
     );
     let n = group.len();
     // Per position: majority kind and name, and whether the byte is the same in every record.
-    let mut runs: Vec<(usize, usize, String)> = Vec::new();
-    let mut p = 0;
     let at = |r: &RecordCover, p: usize| body0(r) + p;
-    let kind_at = |r: &RecordCover, p: usize| {
-        let a = at(r, p);
-        r.spans
-            .iter()
-            .find(|s| s.start <= a && a < s.start + s.len)
-            .map_or((SpanKind::Unknown, ""), |s| (s.kind, s.name))
-    };
-    while p < bl {
-        let mut kinds: HashMap<(SpanKind, &str), usize> = HashMap::new();
-        for r in group {
-            *kinds.entry(kind_at(r.1, p)).or_default() += 1;
-        }
-        let (k, _) = kinds.into_iter().max_by_key(|x| (x.1, x.0)).unwrap();
-        let same =
-            |p: usize| group.iter().all(|r| r.1.bytes.get(at(r.1, p)) == group[0].1.bytes.get(at(group[0].1, p)));
-        let class_of = |p: usize| {
-            if k.0 != SpanKind::Unknown {
-                format!("{:?} {}", k.0, k.1)
-            } else if same(p) {
-                "const".to_string()
-            } else {
-                "varies".to_string()
-            }
-        };
-        let c = class_of(p);
-        let mut q = p + 1;
-        while q < bl
-            && {
-                let mut kk: HashMap<(SpanKind, &str), usize> = HashMap::new();
-                for r in group {
-                    *kk.entry(kind_at(r.1, q)).or_default() += 1;
+    let per_byte: Vec<Vec<(SpanKind, &str)>> = group
+        .iter()
+        .map(|r| {
+            let mut v = vec![(SpanKind::Unknown, ""); r.1.bytes.len()];
+            for sp in &r.1.spans {
+                for slot in v.iter_mut().skip(sp.start).take(sp.len) {
+                    *slot = (sp.kind, sp.name);
                 }
-                kk.into_iter().max_by_key(|x| (x.1, x.0)).unwrap().0 == k
             }
-            && class_of(q) == c
-        {
-            q += 1;
+            v
+        })
+        .collect();
+    // Per record and byte: the kind of value a guess found there (reference, string, double).
+    let guess_at: Vec<Vec<&str>> = group
+        .iter()
+        .map(|r| {
+            let mut v = vec![""; r.1.bytes.len()];
+            for (g0, len, g) in &r.1.guesses {
+                let t = match g {
+                    Guess::Ref { .. } => "ref",
+                    Guess::WStr(_) => "wstr",
+                    Guess::Str(_) => "str",
+                    Guess::F64(_) => "f64",
+                };
+                for slot in v.iter_mut().skip(*g0).take(*len) {
+                    *slot = t;
+                }
+            }
+            v
+        })
+        .collect();
+    let class_at: Vec<String> = (0..bl)
+        .map(|p| {
+            let mut kinds: HashMap<(SpanKind, &str), usize> = HashMap::new();
+            let mut guessed: HashMap<&str, usize> = HashMap::new();
+            for ((r, v), g) in group.iter().zip(&per_byte).zip(&guess_at) {
+                *kinds.entry(v.get(at(r.1, p)).copied().unwrap_or((SpanKind::Unknown, ""))).or_default() += 1;
+                *guessed.entry(g.get(at(r.1, p)).copied().unwrap_or("")).or_default() += 1;
+            }
+            let (k, _) = kinds.into_iter().max_by_key(|x| (x.1, x.0)).unwrap();
+            if k.0 != SpanKind::Unknown {
+                return format!("{:?} {}", k.0, k.1);
+            }
+            let first = group[0].1.bytes.get(at(group[0].1, p));
+            let same = group.iter().all(|r| r.1.bytes.get(at(r.1, p)) == first);
+            let g = guessed.into_iter().filter(|x| !x.0.is_empty() && x.1 * 2 >= n).max_by_key(|x| x.1).map(|x| x.0);
+            match (g, same) {
+                (Some(g), true) => format!("{g}, const"),
+                (Some(g), false) => format!("{g}, varies"),
+                (None, true) => "const".to_string(),
+                (None, false) => "varies".to_string(),
+            }
+        })
+        .collect();
+    let mut runs: Vec<(usize, usize, String)> = Vec::new();
+    for (p, c) in class_at.into_iter().enumerate() {
+        match runs.last_mut() {
+            Some(last) if last.2 == c => last.1 = p + 1,
+            _ => runs.push((p, p + 1, c)),
         }
-        runs.push((p, q, c));
-        p = q;
     }
     let _ = writeln!(out, "| offset | len | what | values / evidence |\n|---|---|---|---|");
     for (a, b, c) in runs.iter().take(60) {
         let len = b - a;
         let first = group[0].1;
-        let ev = if c == "const" {
-            format!("`{}`", hex(first.bytes.get(at(first, *a)..at(first, *b)).unwrap_or(&[]), 16))
-        } else if c == "varies" {
+        let text = c.starts_with("wstr") || c.starts_with("str");
+        let ev = if c.starts_with("Decoded") || c.starts_with("Skipped") {
+            String::new()
+        } else if c == "const" {
+            let v = first.bytes.get(at(first, *a)..at(first, *b)).unwrap_or(&[]);
+            if text_like(v) { "text".to_string() } else { format!("`{}`", hex(v, 16)) }
+        } else {
             let mut ev = Vec::new();
-            // Guessed references and strings that start in the run, by majority.
+            // Guessed references that start in the run, by majority.
             let mut refs: HashMap<String, usize> = HashMap::new();
             let mut hits: HashMap<(usize, &str, &str), usize> = HashMap::new();
             let mut distinct: BTreeSet<&[u8]> = BTreeSet::new();
@@ -227,13 +269,11 @@ fn layout(class: &str, recs: &[(&str, &RecordCover)], out: &mut String) {
                 let (ra, rb) = (at(r, *a), at(r, *b));
                 distinct.insert(r.bytes.get(ra..rb).unwrap_or(&[]));
                 for (g0, _, g) in r.guesses.iter().filter(|g| ra <= g.0 && g.0 < rb) {
-                    let what = match g {
-                        Guess::Ref { class, .. } => format!("ref to {}", class.get(..8).unwrap_or(class)),
-                        Guess::WStr(_) => "wstr".into(),
-                        Guess::Str(_) => "str".into(),
-                        Guess::F64(_) => continue,
-                    };
-                    *refs.entry(format!("+{} {what}", g0 - ra)).or_default() += 1;
+                    if let Guess::Ref { class, .. } = g {
+                        *refs
+                            .entry(format!("+{} ref to `{}`", g0 - ra, class.get(..8).unwrap_or(class)))
+                            .or_default() += 1;
+                    }
                 }
                 for h in r.param_hits.iter().filter(|h| ra <= h.at && h.at < rb) {
                     *hits.entry((h.at - ra, h.width, h.param.as_str())).or_default() += 1;
@@ -241,7 +281,7 @@ fn layout(class: &str, recs: &[(&str, &RecordCover)], out: &mut String) {
             }
             let mut refs: Vec<_> = refs.into_iter().filter(|x| x.1 * 2 >= n).collect();
             refs.sort();
-            for (w, k) in refs.iter().take(4) {
+            for (w, k) in refs.iter().take(3) {
                 ev.push(format!("{w} ({k}/{n})"));
             }
             let mut hits: Vec<_> = hits.into_iter().filter(|x| x.1 * 4 >= n || x.1 >= 3).collect();
@@ -249,11 +289,34 @@ fn layout(class: &str, recs: &[(&str, &RecordCover)], out: &mut String) {
             for ((o, w, pn), k) in hits.iter().take(4) {
                 ev.push(format!("+{o} {w} = parameter `{pn}` ({k}/{n})"));
             }
-            let samples: Vec<String> = distinct.iter().take(3).map(|v| format!("`{}`", hex(v, 12))).collect();
-            ev.push(format!("{} distinct, e.g. {}", distinct.len(), samples.join(" ")));
+            let samples: Vec<String> = if text || distinct.iter().any(|v| text_like(v)) {
+                Vec::new()
+            } else if c.starts_with("f64") && len % 8 == 0 {
+                distinct
+                    .iter()
+                    .take(3)
+                    .map(|v| {
+                        let d: Vec<String> = v
+                            .chunks_exact(8)
+                            .take(3)
+                            .map(|c| format!("{}", f64::from_le_bytes(c.try_into().unwrap())))
+                            .collect();
+                        format!("`{}`", d.join(", "))
+                    })
+                    .collect()
+            } else {
+                distinct.iter().take(3).map(|v| format!("`{}`", hex(v, 12))).collect()
+            };
+            if c.ends_with("varies") || c == "varies" {
+                if samples.is_empty() {
+                    ev.push(format!("{} distinct", distinct.len()));
+                } else {
+                    ev.push(format!("{} distinct, e.g. {}", distinct.len(), samples.join(" ")));
+                }
+            } else if let Some(s) = samples.first() {
+                ev.push(s.clone());
+            }
             ev.join("; ")
-        } else {
-            String::new()
         };
         let _ = writeln!(out, "| +{a} | {len} | {c} | {ev} |");
     }
@@ -430,6 +493,7 @@ fn fusion_design_streams_are_covered_on_request() {
     }
 
     // Untouched classes over-represented among the blocked designs.
+    let mut lift_classes: Vec<String> = Vec::new();
     if !failing.is_empty() {
         let (nd, nf) = (design_outcome.len() as f64, failing.len() as f64);
         let mut lift: Vec<(f64, &String, usize, usize)> = untouched
@@ -440,14 +504,17 @@ fn fusion_design_streams_are_covered_on_request() {
                 (blocked >= 2).then(|| ((blocked as f64 / nf) / (held as f64 / nd), *k, held, blocked))
             })
             .collect();
-        lift.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.3.cmp(&a.3)));
+        lift.retain(|x| x.0 >= 1.5);
+        lift.sort_by(|a, b| b.3.cmp(&a.3).then(b.0.total_cmp(&a.0)).then(a.1.cmp(b.1)));
+        lift_classes = lift.iter().take(5).map(|x| x.1.clone()).collect();
         let _ = writeln!(
             s,
             "\n## Untouched classes held mostly by blocked designs\n\n`lift` = share of blocked designs holding the \
-             class / share of all designs (with an outcome) holding it; 1 = no relation. At least two blocked designs.\n\n\
+             class / share of all designs (with an outcome) holding it; 1 = no relation. Lift at least 1.5 and at \
+             least two blocked designs, most blocked designs first.\n\n\
              | class | designs | blocked | lift | top blockers of those designs |\n|---|---|---|---|---|"
         );
-        for (l, k, held, blocked) in lift.iter().filter(|x| x.0 > 1.2).take(25) {
+        for (l, k, held, blocked) in lift.iter().take(25) {
             let (_, top) = blockers_of(&classes[*k]);
             let _ = writeln!(s, "| `{k}` | {held} | {blocked} | {l:.2} | {top} |");
         }
@@ -476,28 +543,45 @@ fn fusion_design_streams_are_covered_on_request() {
     // Blockers and the untouched classes their designs hold that most other designs do not.
     let _ = writeln!(
         s,
-        "\n## Blocked designs\n\n| design | blocker | untouched classes held (most designs first) |\n|---|---|---|"
+        "\n## Blocked designs\n\nAn `.f3z` lists each design it holds under the archive's outcome. The untouched classes \
+         listed are the rarest the design holds (held by at most a quarter of the designs).\n\n\
+         | design | blocker | rare untouched classes held (designs holding them) |\n|---|---|---|"
     );
     for (l, w) in &failing {
-        let mut held: Vec<(&String, usize)> =
-            untouched.iter().filter(|(_, c)| c.designs.contains(*l)).map(|(k, c)| (*k, c.designs.len())).collect();
-        held.sort_by_key(|x| std::cmp::Reverse(x.1));
-        let held: Vec<String> = held.iter().take(6).map(|(k, _)| format!("`{}`", k.get(..8).unwrap_or(k))).collect();
+        let mut held: Vec<(&String, usize)> = untouched
+            .iter()
+            .filter(|(_, c)| c.designs.contains(*l) && c.designs.len() * 4 <= covs.len())
+            .map(|(k, c)| (*k, c.designs.len()))
+            .collect();
+        held.sort_by_key(|x| (x.1, x.0.clone()));
+        let held: Vec<String> =
+            held.iter().take(6).map(|(k, n)| format!("`{}` ({n})", k.get(..8).unwrap_or(k))).collect();
         let _ = writeln!(s, "| {l} | {} | {} |", blocker_kind(w), held.join(" "));
     }
 
-    // The layouts of the most common untouched classes, compared across samples.
-    let _ = writeln!(s, "\n## Layouts of the ten most common untouched classes\n");
-    for (k, _) in untouched.iter().filter(|(k, _)| !k.is_empty()).take(10) {
+    // The layouts of the most common untouched classes and of those most tied to blocked designs,
+    // compared across samples.
+    let _ = writeln!(
+        s,
+        "\n## Layouts of the ten most common untouched classes and the five most tied to blocked designs\n"
+    );
+    let mut shown: Vec<String> =
+        untouched.iter().filter(|(k, _)| !k.is_empty()).take(10).map(|x| x.0.clone()).collect();
+    for k in lift_classes {
+        if !shown.contains(&k) {
+            shown.push(k);
+        }
+    }
+    for k in &shown {
         let recs: Vec<(&str, &RecordCover)> = covs
             .iter()
-            .flat_map(|(l, c)| c.records.iter().filter(|r| &r.class == *k).map(move |r| (l.as_str(), r)))
+            .flat_map(|(l, c)| c.records.iter().filter(|r| &r.class == k).map(move |r| (l.as_str(), r)))
             .collect();
         layout(k, &recs, &mut s);
     }
 
     // Fields anywhere that equal a known parameter in most records of their class and shape.
-    let mut fields: BTreeMap<FieldKey, BTreeSet<(String, u64)>> = BTreeMap::new();
+    let mut fields: BTreeMap<FieldKey, BTreeSet<(String, u64, bool)>> = BTreeMap::new();
     let mut per_class: HashMap<&str, usize> = HashMap::new();
     for (l, c) in &covs {
         for r in &c.records {
@@ -505,9 +589,9 @@ fn fusion_design_streams_are_covered_on_request() {
             for h in &r.param_hits {
                 let (sec, rel) = r.section_of(h.at);
                 fields
-                    .entry((r.class.clone(), sec.chars().take(8).collect(), rel, h.width, h.param.clone()))
+                    .entry((r.class.clone(), sec.chars().take(8).collect(), rel, h.width, role(&h.param)))
                     .or_default()
-                    .insert((l.clone(), r.id));
+                    .insert((l.clone(), r.id, h.own));
             }
         }
     }
@@ -518,20 +602,24 @@ fn fusion_design_streams_are_covered_on_request() {
             recs.len() >= 3 && (recs.len() * 3 >= n || *w == "f64" && recs.len() >= 5)
         })
         .collect();
-    strong.sort_by_key(|x| std::cmp::Reverse(x.1.len()));
+    let own = |recs: &BTreeSet<(String, u64, bool)>| recs.iter().filter(|r| r.2).count();
+    strong.sort_by_key(|x| (std::cmp::Reverse(own(&x.1)), std::cmp::Reverse(x.1.len())));
     let _ = writeln!(
         s,
         "\n## Unknown fields that equal a known parameter\n\nA double (`f64`) or integer (`u32`) in an unknown span \
-         that equals a model parameter of a record within two references (role name given), at the same offset \
-         of the same section in at least three records.\n\n| class | section | offset | width | parameter | records (of the class) | designs |\n|---|---|---|---|---|---|---|"
+         that equals a model parameter of a record within two references (role name given; sketch dimension \
+         numbers dropped), at the same offset of the same section in at least three records. `own`: records \
+         where it is the record's own parameter (referenced by it or by its holder). Most `own` first.\n\n\
+         | class | section | offset | width | parameter | records (own) | of the class | designs |\n|---|---|---|---|---|---|---|---|"
     );
     for ((cl, sec, rel, w, pn), recs) in strong.iter().take(40) {
         let designs: BTreeSet<&String> = recs.iter().map(|r| &r.0).collect();
         let _ = writeln!(
             s,
-            "| `{}` | `{sec}` | +{rel} | {w} | `{pn}` | {} ({}) | {} |",
+            "| `{}` | `{sec}` | +{rel} | {w} | `{pn}` | {} ({}) | {} | {} |",
             cl.get(..8).unwrap_or(cl),
             recs.len(),
+            own(recs),
             per_class.get(cl.as_str()).copied().unwrap_or(0),
             designs.len()
         );

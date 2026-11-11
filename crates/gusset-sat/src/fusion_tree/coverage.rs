@@ -54,6 +54,8 @@ pub struct ParamHit {
     /// The parameter's role name (`AlongDistance`, `CountU`, ...).
     pub param: String,
     pub value: f64,
+    /// The parameter is the record's own: it references it, or its holder (`D91D429C`).
+    pub own: bool,
 }
 
 /// One record of the BulkStream.
@@ -191,8 +193,12 @@ impl Coverage {
                         for h in r.param_hits.iter().filter(|h| h.at >= sp.start && h.at < sp.start + sp.len) {
                             let _ = writeln!(
                                 out,
-                                "         +{:04x} {} = parameter {} ({})",
-                                h.at, h.width, h.param, h.value
+                                "         +{:04x} {} = {} parameter {} ({})",
+                                h.at,
+                                h.width,
+                                if h.own { "own" } else { "nearby" },
+                                h.param,
+                                h.value
                             );
                         }
                     }
@@ -310,18 +316,18 @@ fn record(d: &Design, near: &Neighbours, id: u64, o: usize, e: usize, claims: &[
             if unknown(a, 8)
                 && let Some(v) = f64_at(bytes, a).filter(|v| v.is_finite() && v.abs() > 1e-9)
             {
-                for (pn, pv) in &params {
+                for (pn, pv, own) in &params {
                     if (v - pv).abs() <= 1e-12 * pv.abs().max(1.0) && (pv.abs() - 1.0).abs() > 1e-12 {
-                        param_hits.push(ParamHit { at: a, width: "f64", param: pn.clone(), value: *pv });
+                        param_hits.push(ParamHit { at: a, width: "f64", param: pn.clone(), value: *pv, own: *own });
                     }
                 }
             }
             if unknown(a, 4)
                 && let Some(v) = u32_at(bytes, a).filter(|v| *v >= 2)
             {
-                for (pn, pv) in &params {
+                for (pn, pv, own) in &params {
                     if *pv == f64::from(v) {
-                        param_hits.push(ParamHit { at: a, width: "u32", param: pn.clone(), value: *pv });
+                        param_hits.push(ParamHit { at: a, width: "u32", param: pn.clone(), value: *pv, own: *own });
                     }
                 }
             }
@@ -421,7 +427,7 @@ impl Neighbours {
 
     /// Parameters (role name, value) of the records within two references up or down of `id`,
     /// lists left out; at most 64.
-    fn params(&self, d: &Design, id: u64) -> Vec<(String, f64)> {
+    fn params(&self, d: &Design, id: u64) -> Vec<(String, f64, bool)> {
         let mut nodes: HashSet<u64> = HashSet::from([id]);
         let mut ups = vec![id];
         for _ in 0..2 {
@@ -460,10 +466,20 @@ impl Neighbours {
         }
         pids.sort_unstable();
         pids.dedup();
+        // The record's own parameters: referenced by it, or by a holder it references (or, for a
+        // holder, its parameters).
+        let mut own: HashSet<u64> = HashSet::new();
+        for &q in self.kids(id) {
+            if d.is(q, PARAM) {
+                own.insert(q);
+            } else if d.is(q, PARAM_HOLDER) {
+                own.extend(self.kids(q).iter().copied().filter(|x| d.is(*x, PARAM)));
+            }
+        }
         pids.into_iter()
             .filter_map(|p| {
                 let pr = super::stream::param(d, p)?;
-                Some((pr.name?, pr.value?))
+                Some((pr.name?, pr.value?, own.contains(&p)))
             })
             .take(64)
             .collect()
