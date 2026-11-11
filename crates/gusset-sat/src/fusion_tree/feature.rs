@@ -319,12 +319,15 @@ impl Ctx<'_> {
         None
     }
 
-    pub(super) fn blend_sets(&mut self, fid: u64, names: &[&str]) -> Vec<(Option<f64>, Vec<V3>, usize)> {
+    /// Per set of a fillet or chamfer: its value (cm), its edges (the middle, and for a curved
+    /// edge points along it) and the count of edges not resolved.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn blend_sets(&mut self, fid: u64, names: &[&str]) -> Vec<(Option<f64>, Vec<(V3, Vec<V3>)>, usize)> {
         let d = self.d;
         let groups = self.blend_groups(fid, names);
         let mut out = Vec::new();
         for (v, recs) in groups {
-            let mut es: Vec<V3> = Vec::new();
+            let mut es: Vec<(V3, Vec<V3>)> = Vec::new();
             let mut seen: Vec<[i64; 3]> = Vec::new();
             let mut bad = 0;
             let mut done = std::collections::HashSet::new();
@@ -334,7 +337,7 @@ impl Ctx<'_> {
                 }
                 let (kind, faces) = naming::recipe(d, rid);
                 let (Some(RecipeKind::Edge), Some(faces)) = (kind, faces) else { continue };
-                let Some((mid, _)) = self.edge_midpoint(&faces) else {
+                let Some((mid, _, path)) = self.edge_midpoint(&faces) else {
                     bad += 1;
                     continue;
                 };
@@ -343,7 +346,7 @@ impl Ctx<'_> {
                     continue;
                 }
                 seen.push(key);
-                es.push(mid);
+                es.push((mid, path));
             }
             out.push((v, es, bad));
         }

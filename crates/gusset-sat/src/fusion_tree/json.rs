@@ -800,7 +800,16 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 j.insert("name".into(), if k == 0 { nm.clone() } else { format!("{nm} set {}", k + 1) }.into());
                 j.insert("source_id".into(), fid.into());
                 j.insert(key.into(), v.map_or(Value::Null, |v| mm(v).into()));
-                j.insert("edges".into(), es.iter().map(|m| json!({"midpoint": v3mm(*m)})).collect::<Vec<_>>().into());
+                // A curved edge carries its points (`path`): the model's edge that holds them
+                // stands for it where its own middle lies elsewhere (a whole circle).
+                let edge = |(m, path): &(V3, Vec<V3>)| {
+                    if path.is_empty() {
+                        json!({"midpoint": v3mm(*m)})
+                    } else {
+                        json!({"midpoint": v3mm(*m), "path": path.iter().map(|q| v3mm(*q)).collect::<Vec<_>>()})
+                    }
+                };
+                j.insert("edges".into(), es.iter().map(edge).collect::<Vec<_>>().into());
                 if bad > 0 {
                     j.insert("edges_unresolved".into(), bad.into());
                 }

@@ -317,6 +317,8 @@ pub(super) struct NamedEdge {
     pub a: V3,
     pub b: V3,
     pub mid: V3,
+    /// Points along the edge from `a` to `b` (both included).
+    pub path: Vec<V3>,
 }
 
 /// A named face of a stored body that lies on a plane: the plane's point and normal (cm).
@@ -444,11 +446,16 @@ pub(super) fn named_edges(b: &[u8]) -> Option<Vec<NamedEdge>> {
         };
         // The edge runs along its curve or against it (the parameters are then negated).
         let near = |p: V3, q: V3| (p[0] - q[0]).abs() + (p[1] - q[1]).abs() + (p[2] - q[2]).abs() < 1e-6;
-        let mid = [1.0, -1.0].into_iter().find_map(|s| {
+        const STEPS: u32 = 16;
+        let path = [1.0, -1.0].into_iter().find_map(|s| {
             let (p0, p1) = (curve_point(curve, s * t0)?, curve_point(curve, s * t1)?);
-            (near(p0, a) && near(p1, b)).then(|| curve_point(curve, s * (t0 + t1) / 2.0)).flatten()
+            if !(near(p0, a) && near(p1, b)) {
+                return None;
+            }
+            (0..=STEPS).map(|k| curve_point(curve, s * (t0 + (t1 - t0) * f64::from(k) / f64::from(STEPS)))).collect()
         });
-        let Some(mid) = mid else { continue };
+        let Some(path): Option<Vec<V3>> = path else { continue };
+        let Some(mid) = path.get(path.len() / 2).copied() else { continue };
         let mut around = Vec::new();
         for v in [va, vb] {
             for f in vertex_faces.get(v).map(Vec::as_slice).unwrap_or(&[]) {
@@ -461,7 +468,7 @@ pub(super) fn named_edges(b: &[u8]) -> Option<Vec<NamedEdge>> {
                 }
             }
         }
-        out.push(NamedEdge { faces: [n0.clone(), n1.clone()], around, a, b, mid });
+        out.push(NamedEdge { faces: [n0.clone(), n1.clone()], around, a, b, mid, path });
     }
     Some(out)
 }

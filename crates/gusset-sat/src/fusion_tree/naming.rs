@@ -82,6 +82,10 @@ fn newer_ops(d: &Design, r: &[u8], j: usize, n: usize) -> Option<(HashMap<u64, u
     Some((res, known))
 }
 
+/// An edge of the model: its middle, whether it is curved, and for a curved edge points along
+/// it from end to end (cm).
+pub(super) type EdgeAt = (V3, bool, Vec<V3>);
+
 /// A face named by its generators: each entry is the generator text and the operation ids (the
 /// creating one first).
 pub(super) type FaceName = Vec<(String, Vec<i32>)>;
@@ -502,10 +506,10 @@ impl Ctx<'_> {
     /// exactly the names of the recipe's first two faces. Several such edges (the two faces
     /// meet more than once, or several stored states hold the edge) must agree on the middle,
     /// or exactly one of them must have the recipe's other faces at its ends.
-    fn stored_edge(&mut self, faces: &[FaceName]) -> Option<(V3, bool)> {
+    fn stored_edge(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
         let (f0, f1) = (faces.first()?, faces.get(1)?);
         let ends: Vec<&FaceName> = faces.iter().skip(2).collect();
-        let mut mids: Vec<(V3, bool, bool)> = Vec::new();
+        let mut mids: Vec<(EdgeAt, bool)> = Vec::new();
         for e in self.named_edges() {
             let [a, b] = &e.faces;
             if !((a == f0 && b == f1) || (a == f1 && b == f0)) {
@@ -514,16 +518,18 @@ impl Ctx<'_> {
             let bounded = ends.iter().all(|n| e.around.contains(n));
             let chord = mul(add(e.a, e.b), 0.5);
             let arc = norm(sub(chord, e.mid)) > 1e-7;
-            match mids.iter_mut().find(|m| norm(sub(m.0, e.mid)) < 1e-6) {
-                Some(m) => m.2 |= bounded,
-                None => mids.push((e.mid, arc, bounded)),
+            match mids.iter_mut().find(|m| norm(sub(m.0.0, e.mid)) < 1e-6) {
+                Some(m) => m.1 |= bounded,
+                // A curved edge keeps its points: where the model cuts a circle is not where
+                // the file does, so its middle alone may name no edge of the model.
+                None => mids.push(((e.mid, arc, if arc { e.path.clone() } else { Vec::new() }), bounded)),
             }
         }
         if let [one] = mids.as_slice() {
-            return Some((one.0, one.1));
+            return Some(one.0.clone());
         }
-        let fit: Vec<&(V3, bool, bool)> = mids.iter().filter(|m| m.2).collect();
-        if let [one] = fit.as_slice() { Some((one.0, one.1)) } else { None }
+        let fit: Vec<&(EdgeAt, bool)> = mids.iter().filter(|m| m.1).collect();
+        if let [one] = fit.as_slice() { Some(one.0.clone()) } else { None }
     }
 
     pub(super) fn edge_sets(&mut self) -> &[Vec<acis::Edge>] {
@@ -724,14 +730,14 @@ impl Ctx<'_> {
 
     /// The midpoint of the edge between `faces[0]` and `faces[1]`, bounded by the others: and
     /// whether it is an arc.
-    pub(super) fn edge_midpoint(&mut self, faces: &[FaceName]) -> Option<(V3, bool)> {
+    pub(super) fn edge_midpoint(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
         self.modelled_edge(faces).or_else(|| self.stored_edge(faces))
     }
 
-    fn modelled_edge(&mut self, faces: &[FaceName]) -> Option<(V3, bool)> {
+    fn modelled_edge(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
         let fs: Vec<Option<FaceG>> = faces.iter().map(|f| f.first().and_then(|(g, ops)| self.face(g, ops))).collect();
         if fs.iter().flatten().any(|f| matches!(f, FaceG::Fillet { .. })) {
-            return fillet_edge(&fs);
+            return fillet_edge(&fs).map(|(m, arc)| (m, arc, Vec::new()));
         }
         let (a, b) = (fs.first()?.clone()?, fs.get(1)?.clone()?);
         if let (FaceG::Plane { n: n0, p: p0, .. }, FaceG::Plane { n: n1, p: p1, .. }) = (&a, &b) {
@@ -748,7 +754,7 @@ impl Ctx<'_> {
                 let lo = ts.iter().copied().fold(f64::INFINITY, f64::min);
                 let hi = ts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
                 if hi - lo > 1e-7 {
-                    return Some((add(pp, mul(u, (lo + hi) / 2.0)), false));
+                    return Some((add(pp, mul(u, (lo + hi) / 2.0)), false, Vec::new()));
                 }
             }
             // A side of an extrude standing on a perpendicular plane, bounded by that same
@@ -767,7 +773,7 @@ impl Ctx<'_> {
                     .all(|f| f.first().is_some_and(|(g, ops)| ops == side_ops && g != "1" && g != "2"));
                 if bounded_by_own && faces.len() > 2 && dot(wn, sn).abs() < 1e-6 {
                     let t = dot(wn, sub(wp, sm));
-                    return Some((add(sm, mul(wn, t)), false));
+                    return Some((add(sm, mul(wn, t)), false, Vec::new()));
                 }
             }
             return None;
@@ -808,7 +814,8 @@ impl Ctx<'_> {
                 m2 = [c[0] + v[0] / l * r, c[1] + v[1] / l * r];
             }
             let tcap = dot(*n, sub(*p, pl.origin)) / dot(*n, pl.z);
-            return Some((world(pl, m2, tcap), true));
+            let path = poly.iter().map(|q| world(pl, *q, tcap)).collect();
+            return Some((world(pl, m2, tcap), true, path));
         }
         None
     }
