@@ -315,7 +315,7 @@ const MAX_OUTPUT: usize = 256 << 20;
 const MAX_WARNINGS: usize = 100;
 
 /// Segments per turn of a helix fitted as a B-spline.
-const HELIX_SEGMENTS_PER_TURN: f64 = 16.0;
+const HELIX_SEGMENTS_PER_TURN: f64 = 64.0;
 
 /// A helix (`helix_int_cur [version] F t0 F t1 centre major minor pitch taper ...`): the
 /// point at `t` is `centre + major cos t + minor sin t + pitch t / 2π` (checked against the
@@ -345,7 +345,11 @@ fn helix(r: &Rec, from: usize) -> Result<Bs3, SatError> {
     helix_fit(c, m, n, p, ends)
 }
 
-/// The helix `c + m cos t + n sin t + p t / 2π` over `ends` as a cubic B-spline.
+/// The helix `c + m cos t + n sin t + p t / 2π` over `ends` as a cubic B-spline: Hermite pieces
+/// between the points where the helix crosses the half-planes `k / HELIX_SEGMENTS_PER_TURN` of a
+/// turn about its axis, the angles counted from a direction fixed by the axis alone. Two curves
+/// on one helix (a thread's edge and the row of its flank) then share every inner piece exactly,
+/// so the edge lies on its face.
 fn helix_fit(c: V3, m: V3, n: V3, p: V3, ends: [f64; 2]) -> Result<Bs3, SatError> {
     let bad = |m: &str| SatError::Malformed(format!("helix: {m}"));
     let [t0, t1] = ends;
@@ -353,9 +357,46 @@ fn helix_fit(c: V3, m: V3, n: V3, p: V3, ends: [f64; 2]) -> Result<Bs3, SatError
     if t1 <= t0 || t1.is_nan() || t0.is_nan() || turns > MAX_HELIX_TURNS {
         return Err(bad("range"));
     }
-    let segs = ((turns * HELIX_SEGMENTS_PER_TURN).ceil() as usize).max(1);
-    let h = (t1 - t0) / segs as f64;
     let tau = std::f64::consts::TAU;
+    let h = tau / HELIX_SEGMENTS_PER_TURN;
+    // The turning axis m x n, put in a fixed half-space, and a reference direction across it
+    // taken from the world axis least along it: the angle of `m` there anchors the pieces.
+    let cross = |a: V3, b: V3| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let dot = |a: V3, b: V3| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let w = cross(m, n);
+    let wl = dot(w, w).sqrt();
+    if !(wl.is_finite() && wl > 0.0) {
+        return Err(bad("radius vectors"));
+    }
+    let w = [w[0] / wl, w[1] / wl, w[2] / wl];
+    let first = w.iter().copied().find(|v| v.abs() > 1e-9).unwrap_or(1.0);
+    let sense = if first < 0.0 { -1.0 } else { 1.0 };
+    let w = [w[0] * sense, w[1] * sense, w[2] * sense];
+    let k = (0..3).min_by(|a, b| w[*a].abs().total_cmp(&w[*b].abs())).unwrap_or(0);
+    let mut e = [0.0; 3];
+    if let Some(v) = e.get_mut(k) {
+        *v = 1.0;
+    }
+    let ew = dot(e, w);
+    let x = [e[0] - ew * w[0], e[1] - ew * w[1], e[2] - ew * w[2]];
+    let xl = dot(x, x).sqrt();
+    let x = [x[0] / xl, x[1] / xl, x[2] / xl];
+    let y = cross(w, x);
+    // The angle about w at parameter t is phi + sense t.
+    let phi = libm::atan2(dot(m, y), dot(m, x));
+    let grid = |t: f64| (phi + sense * t) / h;
+    let (g0, g1) = (grid(t0), grid(t1));
+    let (lo, hi) = (g0.min(g1), g0.max(g1));
+    let mut breaks: Vec<f64> = Vec::new();
+    let mut i = (lo + 1e-9).ceil();
+    while i < hi - 1e-9 {
+        breaks.push((i * h - phi) * sense);
+        i += 1.0;
+    }
+    if sense < 0.0 {
+        breaks.reverse();
+    }
+    breaks.push(t1);
     let comb = |a: V3, b: V3, cc: V3, d: V3, (x, y, z, w): (f64, f64, f64, f64)| {
         [
             a[0] * x + b[0] * y + cc[0] * z + d[0] * w,
@@ -369,14 +410,16 @@ fn helix_fit(c: V3, m: V3, n: V3, p: V3, ends: [f64; 2]) -> Result<Bs3, SatError
     let mut points = vec![at(t0)];
     let mut knots = vec![t0];
     let mut mults = vec![4];
-    for i in 0..segs {
-        let (a, b) = (t0 + h * i as f64, if i + 1 == segs { t1 } else { t0 + h * (i + 1) as f64 });
+    let mut a = t0;
+    let last = breaks.len();
+    for (j, b) in breaks.into_iter().enumerate() {
         let (pa, pb, da, db) = (at(a), at(b), tangent(a), tangent(b));
         points.push(step(pa, da, (b - a) / 3.0));
         points.push(step(pb, db, -(b - a) / 3.0));
         points.push(pb);
         knots.push(b);
-        mults.push(if i + 1 == segs { 4 } else { 3 });
+        mults.push(if j + 1 == last { 4 } else { 3 });
+        a = b;
     }
     Ok(Bs3 { degree: 3, knots, mults, points, weights: None })
 }
