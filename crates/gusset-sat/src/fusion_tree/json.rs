@@ -1249,6 +1249,28 @@ fn unmerged(pattern: &mut Value) {
     }
 }
 
+/// The instances a pattern leaves out (1 is the original): its instance list `7493A99D` ends
+/// with `u32 n` and `n` x `u32` instance numbers, ascending (512 C-Pattern1: 4 instances, `2, 3,
+/// 4` = copies 3 and 4 left out, one body made; the Crickit's 12 leave out 4 and 10, 9 bodies).
+/// `None` where the list is not found.
+fn suppressed_instances(d: &Design, fid: u64, copies: usize) -> Option<Vec<u32>> {
+    let list = ref_ids(d, d.rec(fid)).into_iter().find(|q| d.is(*q, "7493A99D"))?;
+    let r = d.rec(list);
+    let u = |o: usize| r.get(o..o + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
+    for n in 0..copies.min(500) {
+        let at = r.len().checked_sub(4 * (n + 1))?;
+        if u(at) != Some(n as u32) {
+            continue;
+        }
+        let ks: Vec<u32> = (0..n).filter_map(|i| u(at + 4 + 4 * i)).collect();
+        if ks.len() == n && ks.iter().all(|k| (2..=copies as u32).contains(k)) && ks.windows(2).all(|w| w[0] < w[1]) {
+            cover::field(r, at, 4 * (n + 1), "pattern.suppressed");
+            return Some(ks);
+        }
+    }
+    None
+}
+
 /// `<name>[i]`, the tree's name of copy `i` of the unmerged body pattern `name`.
 pub(super) fn copy_name(name: &str, i: u64) -> String {
     format!("{name}[{i}]")
@@ -1718,8 +1740,12 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                     }
                 }
             }
+            // The instances the pattern leaves out (only a circular pattern of a body is
+            // converted with some: one pattern per kept copy).
+            let skipped_copies = suppressed_instances(d, fid, copies);
+            let skips = if !linear && ins.is_empty() { skipped_copies.as_deref().unwrap_or(&[]) } else { &[] };
             let target: Option<&str> = match body_in.as_slice() {
-                [one] if made + 1 == copies => Some(one.as_str()),
+                [one] if made + 1 + skips.len() == copies => Some(one.as_str()),
                 _ => None,
             };
             let inputs_ok = if ins.is_empty() { target.is_some() } else { ins.iter().all(|q| names.contains_key(q)) };
@@ -1763,6 +1789,24 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 && let Some(angle) = val("TotalAngle").map(f64::to_degrees)
                 && (angle - 360.0).abs() < 1e-6
             {
+                if !skips.is_empty() {
+                    // Copy `k` (the original is 1) turned by (k - 1) / count of the circle: a
+                    // pattern of two over that angle makes it alone.
+                    let n = count.round() as u32;
+                    for k in (2..=n).filter(|k| !skips.contains(k)) {
+                        let turn = round9(360.0 * f64::from(k - 1) / f64::from(n));
+                        let name = if k == 2 { nm.clone() } else { format!("{nm} copy {k}") };
+                        let mut j = json!({"type": "pattern_circular", "name": name, "source_id": fid,
+                            "features": in_names, "target": target,
+                            "axis": {"origin": v3mm(*pt), "direction": [round9(dir[0]), round9(dir[1]), round9(dir[2])]},
+                            "angle": turn, "count": 2,
+                            "note": format!("copy {k} of {n}; the pattern leaves out copies {skips:?}")});
+                        unmerged(&mut j);
+                        feats.push(j);
+                    }
+                    tag_feats(&mut feats, nbefore, comp.map(|c| (c, comp_name.as_deref())), extra.contains(&fid));
+                    continue;
+                }
                 let mut j = json!({"type": "pattern_circular", "name": nm, "source_id": fid,
                     "features": in_names, "target": target,
                     "axis": {"origin": v3mm(*pt), "direction": [round9(dir[0]), round9(dir[1]), round9(dir[2])]},
