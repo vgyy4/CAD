@@ -123,7 +123,10 @@ pub(super) fn recipe(d: &Design, i: u64) -> (Option<RecipeKind>, Option<Vec<Face
         }
         k
     });
-    for start in 15..40 {
+    // A `71D91267` record wraps a recipe: the recipe's class name (as text) comes first, its
+    // faces after it (324's draft selection).
+    let wrapped = r.windows(9).position(|w| w == b"7ACC2A03-").map_or(40, |at| (at + 36).max(40));
+    for start in (15..40).chain(wrapped..r.len().min(wrapped + 160)) {
         if let Some((faces, end)) = recipe_faces(r, start) {
             cover::field(r, start, end - start, "recipe.faces");
             return (kind, Some(faces));
@@ -473,7 +476,12 @@ impl Surface {
         let v = |k: usize| f.vecs.get(k).copied();
         let n = |k: usize| f.nums.get(k).copied();
         Some(match f.kind.as_str() {
-            "plane" => Surface::Plane { origin: v(0)?, normal: unit(v(1)?)? },
+            // The face's sense (its first logical: `true` reversed) turns the normal outward;
+            // the samples' faces are all forward.
+            "plane" => {
+                let n = unit(v(1)?)?;
+                Surface::Plane { origin: v(0)?, normal: if f.flags.first() == Some(&true) { mul(n, -1.0) } else { n } }
+            }
             "cone" => {
                 // centre, axis, major axis; ratio, sine, cosine. An elliptic section is "other".
                 let (c, a, m, ratio, s, co) = (v(0)?, unit(v(1)?)?, v(2)?, n(0)?, n(1)?, n(2)?);

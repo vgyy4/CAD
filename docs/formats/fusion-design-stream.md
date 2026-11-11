@@ -1313,3 +1313,32 @@ sides) does not give.
   `3 [336]` between its sides `4` and `6`).
 * A straight edge between two planes that runs into an arc side of the profile ends where it touches the arc's
   cylinder (5981: wall `5 [310]` and slot side `6 [336]`, ended by the cap `2 [310]` and the arc `3 [336]`).
+
+### Draft: angle sign, pull direction, older layouts
+* **Face sense.** The first logical token of an ACIS `face` record (`0x0a` true, `0x0b` false) is its sense:
+  `true` is reversed, the outward normal is then the plane's normal negated. 258's pin caps `1 [309]` and
+  `1 [311]` (outward -y, plane normal +y) are the only reversed faces seen; every other face read is forward,
+  and Fusion orients a hole's cylinder by a cosine of -1 instead (3027).
+* **Sign.** The pull is the neutral face's outward normal; a positive `Angle1` narrows the part along it, a
+  negative one widens it, as Gusset's draft does. 355 checks both: Draft1 (10 deg) and Draft2 (-10 deg) share the
+  neutral face `2 [307]` (y = 1 mm, outward +y). Its `.smbh` holds the drafted faces `3 [309, -311]` (normal
+  (0, 0.1736, 0.9848)) and `3 [307, -313]` (the same plane, normal negated): z = 1.1736 mm - 0.1763 (y - 0.015
+  mm), so Extrude3's top (outward +z) falls along +y (narrows) and Extrude2's bottom (outward -z) rises against
+  it (widens on the pull side). The rebuild gives exactly those volume changes (-9.92 and -0.88 mm3) once the
+  importer pulls along the tree's normal on an offset datum plane (it pulled along the XZ frame normal, -y).
+* **Older files (324).** Both angles are parameters with the role `Draft`, in holder order (the second 0: one
+  angle, -75 deg in 324). The faces are a list of **plain** face recipes, wrapped in a `71D91267` record: its
+  bytes hold the recipe class name `7ACC2A03-...` as text twice (u32 length, text, `00 00 01`), then the usual
+  face list (`u32 1, u32 3, u32 1, ...`, `3 [307]`) and `face_recipe_data`. Of the two plain-face lists the
+  faces' has the lower record id, as the bounded-face list does in newer files (355: 604 faces, 611 plane;
+  258: 869 and 876).
+* **Caps.** A drafted extrude cap is picked by its stored points (the modelled cap point is the sketch origin's
+  projection: 258's two pin caps on y = 29 mm were one pick).
+* **Refused.** A drafted face that does not stand along the pull (258: the pin caps, outward -y, drafted 45 deg
+  about a chamfer face with normal (0, 0.707, 0.707)): Gusset's draft is for side walls, and OCCT's draft
+  crashed the process on it (`Extrema_ExtCS::Points` in `Draft_Modification::Perform`).
+
+### Shell of a whole body (4632)
+* 4632's Shell1 selects a body (`9716F783`, a body recipe), not faces: a closed shell, a body with a void. The
+  kernel's thick solid with no removed faces gives the inner offset solid (a 30 x 20 x 10 box with a 2 mm wall:
+  2496 mm3, the void, not 3504), so the reader still refuses it ("no removed face was found").

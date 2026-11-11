@@ -22,6 +22,8 @@ struct ARec {
     /// Double (`0x06`) tokens and position/vector (`0x13`, `0x14`) tokens.
     nums: Vec<f64>,
     vecs: Vec<V3>,
+    /// Logical tokens: `0x0a` true, `0x0b` false, in order.
+    flags: Vec<bool>,
 }
 
 fn find(b: &[u8], pat: &[u8]) -> Option<usize> {
@@ -109,6 +111,8 @@ fn records(b: &[u8]) -> Option<Vec<ARec>> {
                         }
                         cur.vecs.push(p);
                     }
+                    0x0a => cur.flags.push(true),
+                    0x0b => cur.flags.push(false),
                     _ => {}
                 }
                 if t == 0x11 {
@@ -596,6 +600,7 @@ pub(super) struct NamedFace {
     pub nums: Vec<f64>,
     pub verts: Vec<V3>,
     pub edge_pts: Vec<V3>,
+    pub flags: Vec<bool>,
 }
 
 pub(super) fn named_faces(b: &[u8]) -> Option<Vec<NamedFace>> {
@@ -680,6 +685,7 @@ pub(super) fn named_faces(b: &[u8]) -> Option<Vec<NamedFace>> {
             nums: sr.nums.clone(),
             verts,
             edge_pts,
+            flags: fr.flags.clone(),
         });
     }
     Some(out)

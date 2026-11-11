@@ -5,7 +5,7 @@
 //! name of the feature that made it.
 
 use super::feature::{param_values, point3};
-use super::geom::{V3, dot, mm, round9};
+use super::geom::{V3, dot, mm, norm, round9};
 use super::naming::{self, RecipeKind};
 use super::stream::{Design, finite_doubles, ref_ids};
 use super::{Ctx, Graph, PARAM, PARAM_HOLDER};
@@ -200,39 +200,53 @@ pub(super) fn matrix(rec: &[u8]) -> Option<Mat> {
 }
 
 /// Draft `F4163A07`: `Angle1` (`Angle2` must be 0), the faces to taper (a `2CA5A1CD` list of
-/// bounded-face recipes) and the neutral plane (a list with one plain face recipe). The sign of
-/// the pull direction (the outward normal of the plane face) and `flip` are NOT verified against
-/// a sample: no design that reaches a Draft has a stored state after it. The importer's state
-/// check refuses a draft that rebuilds to anything but the stored bodies.
+/// bounded-face recipes) and the neutral plane (a list with one plain face recipe). The pull is
+/// the plane face's outward normal and a positive angle narrows the part along it, a negative
+/// one widens it: 355's Draft1 (10 degrees) and Draft2 (-10) give the drafted faces its `.smbh`
+/// holds (section 28). The importer's state check refuses a draft that rebuilds to anything but
+/// the stored bodies.
 pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, class: &str) -> Value {
     let d = cx.d;
     let bad = |why: &str| fail(name, fusion_type, class, fid, why);
     let angles = param_values(d, fid, &["Angle1"]);
-    let [angle] = angles.as_slice() else { return bad("the draft has no single angle") };
-    let angle = *angle;
-    if param_values(d, fid, &["Angle2"]).iter().any(|a| a.abs() > 1e-12) {
-        return bad("the draft has two angles");
-    }
-    if !angle.is_finite() || angle <= 0.0 {
-        return bad("the draft angle is not positive");
+    let angle = match (angles.as_slice(), draft_role_angles(d, fid).as_slice()) {
+        ([a], _) => {
+            if param_values(d, fid, &["Angle2"]).iter().any(|a| a.abs() > 1e-12) {
+                return bad("the draft has two angles");
+            }
+            *a
+        }
+        // Older files name both angles `Draft`, in holder order: the second must be 0.
+        ([], [a, b]) if b.abs() <= 1e-12 => *a,
+        ([], [_, _]) => return bad("the draft has two angles"),
+        _ => return bad("the draft has no single angle"),
+    };
+    // Negative tapers the faces outward along the pull direction (as Gusset's draft does).
+    if !angle.is_finite() || angle.abs() <= 1e-12 || angle.abs() >= std::f64::consts::FRAC_PI_2 {
+        return bad("the draft angle is zero or not below 90 degrees");
     }
     let mut faces: Vec<Value> = Vec::new();
+    // The drafted faces' normals (planes) or axes (cylinders), where known.
+    let mut dirs: Vec<(V3, bool)> = Vec::new();
     let mut plane: Option<(V3, V3)> = None;
     let mut seen: Vec<u64> = Vec::new();
+    type Pick = (Value, Option<(V3, bool)>, Option<(V3, V3)>);
+    let mut lists: Vec<(u64, Vec<Option<RecipeKind>>, Vec<Pick>)> = Vec::new();
     for l in ref_ids(d, d.rec(fid)) {
         if !d.is(l, "2CA5A1CD") || seen.contains(&l) {
             continue;
         }
         seen.push(l);
-        // A modelled face (point, normal, the extrude's own) or a face by its stored surface.
-        let mut picks: Vec<Result<(V3, V3, bool), naming::StoredPick>> = Vec::new();
+        // Per face: its pick, its normal or axis (`true`: a normal) and, for a plane, a point
+        // and the outward normal (a neutral plane candidate).
+        let mut picks: Vec<Pick> = Vec::new();
         let mut kinds: Vec<Option<RecipeKind>> = Vec::new();
         for s in ref_ids(d, d.rec(l)) {
             if !d.is(s, "5662F619") {
                 continue;
             }
             for r in ref_ids(d, d.rec(s)) {
-                if !d.is(r, "7ACC2A03") {
+                if !d.is(r, "7ACC2A03") && !d.is(r, "71D91267") {
                     continue;
                 }
                 let (kind, names) = naming::recipe(d, r);
@@ -240,29 +254,62 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
                 let Some((g, ops)) = names.as_ref().and_then(|n| n.first()).and_then(|f| f.first()) else {
                     return bad("a face of the draft has no name");
                 };
+                let own = ops.len() == 1;
                 match cx.face_pick(g, ops) {
-                    Some((p, n)) => picks.push(Ok((p, n, ops.len() == 1))),
+                    // A cap's modelled point is its plane's (the sketch origin's projection): two
+                    // caps on one plane would be one pick. The stored cap's points tell them apart.
+                    Some((p, n)) if (g == "1" || g == "2") && own => {
+                        let pick = cx.stored_face(g, ops).map_or_else(|| json!({"point": v3(p)}), |sp| sp.json());
+                        picks.push((pick, Some((n, true)), Some((p, n))));
+                    }
+                    Some((p, n)) => {
+                        // The normal only where the face is the extrude's own (a shelled wall's
+                        // sign is open).
+                        let pick =
+                            if own { json!({"point": v3(p), "normal": unit9(n)}) } else { json!({"point": v3(p)}) };
+                        picks.push((pick, Some((n, true)), Some((p, n))));
+                    }
                     None => match cx.general_face(g, ops) {
-                        Some(pick) => picks.push(Err(pick)),
+                        Some(sp) => {
+                            let (dir, pl) = match sp.surface {
+                                // A stored plane's normal is the face's outward one (section 28).
+                                naming::Surface::Plane { origin, normal } => {
+                                    (Some((normal, true)), Some((origin, normal)))
+                                }
+                                naming::Surface::Cylinder { axis, .. } => (Some((axis, false)), None),
+                                _ => (None, None),
+                            };
+                            picks.push((sp.json(), dir, pl));
+                        }
                         None => return bad("a face of the draft is neither modelled nor on one stored surface"),
                     },
                 }
             }
         }
-        if kinds.is_empty() {
-            continue;
+        if !kinds.is_empty() {
+            lists.push((l, kinds, picks));
         }
-        if kinds.iter().all(|k| *k == Some(RecipeKind::BoundedFace)) {
-            // The normal only where the face is the extrude's own (a shelled wall's sign is open).
-            for pick in picks {
-                faces.push(match pick {
-                    Ok((p, n, true)) => json!({"point": v3(p), "normal": unit9(n)}),
-                    Ok((p, _, false)) => json!({"point": v3(p)}),
-                    Err(general) => general.json(),
-                });
+    }
+    // The faces are bounded-face recipes and the neutral plane one plain face. An older file
+    // (324) names the faces by plain face recipes too: of two such lists the faces' has the
+    // lower record id (as in the files with bounded faces: 355's 604 and 611, 258's 869 and 876).
+    let bounded = |k: &[Option<RecipeKind>]| k.iter().all(|k| *k == Some(RecipeKind::BoundedFace));
+    let plain = |k: &[Option<RecipeKind>]| k.iter().all(|k| *k == Some(RecipeKind::Face));
+    if let [a, b] = lists.as_mut_slice()
+        && plain(&a.1)
+        && plain(&b.1)
+    {
+        let faces_list = if a.0 < b.0 { a } else { b };
+        faces_list.1.iter_mut().for_each(|k| *k = Some(RecipeKind::BoundedFace));
+    }
+    for (_, kinds, picks) in lists {
+        if bounded(&kinds) {
+            for (pick, dir, _) in picks {
+                faces.push(pick);
+                dirs.extend(dir);
             }
-        } else if let ([Some(RecipeKind::Face)], [Ok((p, n, _))]) = (kinds.as_slice(), picks.as_slice()) {
-            plane = Some((*p, *n));
+        } else if let ([Some(RecipeKind::Face)], [(_, _, Some(pl))]) = (kinds.as_slice(), picks.as_slice()) {
+            plane = Some(*pl);
         } else {
             return bad("the draft's selections are neither bounded faces nor one plain face");
         }
@@ -271,9 +318,42 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
     if faces.is_empty() {
         return bad("the draft names no faces");
     }
+    // A face that does not stand along the pull (258: a pin's end cap drafted about a chamfer
+    // face at 45 degrees) is not a draft Gusset makes: the kernel's draft is for side walls.
+    let along = |(v, normal): &(V3, bool)| {
+        let c = dot(*v, n).abs() / (norm(*v) * norm(n)).max(1e-300);
+        if *normal { c < 1e-6 } else { (c - 1.0).abs() < 1e-6 }
+    };
+    if !dirs.iter().all(along) {
+        return bad("a face of the draft does not stand along the pull direction");
+    }
+    // Pull direction: the neutral face's outward normal. 355's two drafts (10 and -10 degrees)
+    // rebuild to the stored drafted faces this way (section 28).
     json!({"type": "draft", "name": name, "source_id": fid, "faces": faces,
-        "plane": {"origin": v3(o), "normal": unit9(n)}, "angle": round9(angle.to_degrees()), "flip": false,
-        "note": "pull direction = the plane face's outward normal; sign and flip not verified against a sample"})
+        "plane": {"origin": v3(o), "normal": unit9(n)}, "angle": round9(angle.to_degrees()), "flip": false})
+}
+
+/// The values of a draft's parameters with the role `Draft` (older files), in the order of
+/// their holders (not deduplicated).
+fn draft_role_angles(d: &Design, fid: u64) -> Vec<f64> {
+    let mut out = Vec::new();
+    let mut seen = Vec::new();
+    for q in ref_ids(d, d.rec(fid)) {
+        if !d.is(q, PARAM_HOLDER) || seen.contains(&q) {
+            continue;
+        }
+        seen.push(q);
+        for q2 in ref_ids(d, d.rec(q)) {
+            if d.is(q2, PARAM)
+                && let Some(p) = super::stream::param(d, q2)
+                && p.name.as_deref() == Some("Draft")
+                && let Some(v) = p.value
+            {
+                out.push(v);
+            }
+        }
+    }
+    out
 }
 
 fn v3(p: V3) -> Value {

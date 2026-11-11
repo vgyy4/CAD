@@ -365,6 +365,37 @@ fn a_recipe_names_its_faces_by_generator_and_operation() {
 }
 
 #[test]
+fn a_wrapped_recipe_names_its_face_after_the_recipe_class_text() {
+    // A `71D91267` record (324's draft): its header, the recipe class twice as text, then the
+    // usual face list.
+    let class = "7ACC2A03-0261-4879-A14A-A93D661A5BDC";
+    let mut body = vec![0u8; 10];
+    for _ in 0..2 {
+        body.extend(le32(class.len() as u32));
+        body.extend(class.as_bytes());
+        body.extend([0, 0, 1]);
+    }
+    body.extend(le32(1));
+    body.extend(le32(3));
+    body.extend(le32(1)); // one face
+    body.extend(le32(1)); // one entry
+    body.extend(s("3"));
+    body.extend(le32(0));
+    body.extend(le32(1));
+    body.extend(307i32.to_le_bytes());
+    body.extend(le32(0));
+    body.extend(s("face_recipe_data"));
+    let mut rec = record(256, 5, &[]);
+    rec.truncate(15);
+    rec.extend(&body);
+    let m = meta(&[(5, 0)], &|_| 0);
+    let d = Design::new(&m, &rec).unwrap();
+    let (kind, faces) = naming::recipe(&d, 5);
+    assert_eq!(kind, Some(naming::RecipeKind::Face));
+    assert_eq!(faces.unwrap(), vec![vec![("3".to_string(), vec![307])]]);
+}
+
+#[test]
 fn the_planes_of_two_faces_meet_in_a_line() {
     let (p, u) = naming::plane_plane([1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 3.0, 0.0]).unwrap();
     assert!((p[0] - 2.0).abs() < 1e-12 && (p[1] - 3.0).abs() < 1e-12);
