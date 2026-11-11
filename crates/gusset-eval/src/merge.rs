@@ -230,9 +230,8 @@ pub(crate) fn merge_touching(regions: Vec<Region2>, ids: Vec<String>) -> (Vec<Re
     (out_regions, out_ids)
 }
 
-/// One region from the edges of several: every edge two of them have drops out.
-/// The one segment two consecutive pieces of an entity make: a line on through a cut, or an
-/// arc on around the same centre. `None` when they bend there.
+/// The one line two consecutive pieces of an entity make where they run straight on. `None`
+/// for other curves (joined arcs broke a later boolean in 3464) and where they bend.
 fn joined(x: &ProfileEdge, y: &ProfileEdge) -> Option<ProfileEdge> {
     if x.tag != y.tag {
         return None;
@@ -245,19 +244,14 @@ fn joined(x: &ProfileEdge, y: &ProfileEdge) -> Option<ProfileEdge> {
             let dot = u[0] * v[0] + u[1] * v[1];
             (lu > EPS && lv > EPS && cross.abs() <= EPS && dot > 0.0).then_some(Seg2::Line { a, b: d })?
         }
-        (Seg2::Arc { center, start, end, ccw }, Seg2::Arc { center: c, start: s, end: e, ccw: w })
-            if near(center, c) && near(end, s) && ccw == w && !near(start, e) =>
-        {
-            Seg2::Arc { center, start, end: e, ccw }
-        }
         _ => return None,
     };
     Some(ProfileEdge { seg, tag: x.tag })
 }
 
-/// Joins the pieces of one entity that follow each other in a united outline: the curve that
-/// cut them there was a shared edge and dropped out, so they are one edge again (one wall when
-/// swept, as in the source; two walls left the edge between them split).
+/// Joins the straight pieces of one line that follow each other in a united outline: the curve
+/// that cut them there was a shared edge and dropped out, so they are one edge again (one wall
+/// when swept, as in the source; two walls left the edge between them split).
 fn join_pieces(l: &mut Loop2) {
     let mut k = 0;
     while l.edges.len() > 1 && k < l.edges.len() {
@@ -286,6 +280,7 @@ fn join_pieces(l: &mut Loop2) {
     }
 }
 
+/// One region from the edges of several: every edge two of them have drops out.
 fn unite(members: &[usize], edges: &[Vec<ProfileEdge>]) -> Option<Region2> {
     let mut left: Vec<ProfileEdge> = Vec::new();
     let mut total = 0.0;
