@@ -1753,6 +1753,24 @@ fn a_join_of_several_bodies_is_a_join_and_a_combine() {
 }
 
 #[test]
+fn bodies_a_join_makes_live_in_its_target() {
+    // 610: Extrude5 joins to Extrude1 and makes two bodies; later lists naming Extrude1 and
+    // those bodies name Extrude1's body alone.
+    let join = |name: &str, target: serde_json::Value, made: u64| json!({"type": "extrude", "name": name, "operation": "join", "creates_bodies": made, "target": target});
+    let mut feats = vec![
+        join("Extrude5", json!("Extrude1"), 2),
+        join("Extrude6", json!(["Extrude1", "Extrude5"]), 1),
+        join("Extrude7", json!(["Extrude1", "Extrude5", "Extrude6"]), 0),
+        // A list without the target's own body is left as it is.
+        join("Extrude9", json!(["Extrude5", "Extrude6"]), 0),
+    ];
+    super::json::joins_that_make_bodies(&mut feats);
+    assert_eq!(feats[1]["target"], "Extrude1");
+    assert_eq!(feats[2]["target"], "Extrude1");
+    assert_eq!(feats[3]["target"], json!(["Extrude5", "Extrude6"]));
+}
+
+#[test]
 fn a_frame_narrower_than_the_grid_has_an_interior_point() {
     // 2232 Extrude8: a 121.5 x 76.6 mm rectangle with a hole 0.4 mm inside it.
     let outer: Vec<geom::P2> = vec![[6.075, -3.83], [6.075, 3.83], [-6.075, 3.83], [-6.075, -3.83]];
