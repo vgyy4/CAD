@@ -328,6 +328,11 @@ Phase 3 has started (see Next).
      (the Assembly's keyplate component), revolve axes and counterbore/countersink holes (need samples),
      profile pieces and loops that do not close (Crickit, BQ25185), pattern of bodies/components,
      base features (PCB bodies), a component used several times (bottom plate), Draft/Shell/Sweep.
+     Round 16 (2026-11-11): 100 of the 150 corpus designs as history (99 before; extrude starts,
+     OffsetFaces), blobs placed several times imported once (Crickit CPX Assembly 180 s to 88 s),
+     edges past a closed curve's end (the Buck Case body); tally in `docs/formats/fusion-corpus-tally.md`.
+     Open: an extrude whose start and to-object end are both faces (2190, 5358, 5360), the stored bodies
+     of a timeline still converted one per worker (`fusion_stored_bodies`).
    - SolidWorks `.sldprt` import done (ADR 0043, `gusset-sldprt`: OLE2 and chunk containers read clean-room
      from samples; the Parasolid partition goes through `gusset-xt`, whose V13-base BODY gained
      the extra byte found in these files; 12 blussyya pairs match SolidWorks' STEP to 1e-15; fuzz

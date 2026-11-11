@@ -218,3 +218,27 @@ The 18-design set: 12 as history (3957 added). The four designs of the larger se
 history before (4062, 4367, 4465, 5302) still do. No design's first blocker is a joint: the designs whose joints
 stay unverified (occurrences of inserted designs, the other origin layout, section 24) stop at other features or
 come in as history already (4862).
+
+## Re-run after round 16 (2026-11-11)
+
+Run on a tree without the joints above; a combined re-run is pending.
+
+Same set and command. "Before" is the tree at the start of round 16 (with the other session's commits
+since round 15: 99, not 90); "after" adds extrude starts (`ProfileOffset`), OffsetFaces, the end bodies'
+box in the step check, copies of a placed blob moved by the kernel and edges past a closed curve's end
+(ADR 0039 round 16 amendment).
+
+| outcome | before | after |
+|---|---|---|
+| as history | 99 (66 %) | 100 (67 %) |
+| as bodies only | 51 | 50 |
+| failed | 0 | 0 |
+
+Gained: 3464 Joy Bonnet (Extrude2-8 start on the board's top or an earlier cap, OffsetFaces3, the end
+body confirms 6406.567 mm3 and the box after Move1). None lost. First blocker moved: 6299 Mini Sparkle
+Motion Case (OffsetFaces read; next: a tapered extrude), 2190 Verter 5V USB (now refused earlier: an
+extrude whose start and to-object end are both face recipes, which is which not known; it failed the
+rebuild before). Whole run 2,297 s instead of 2,834 s. The 18-design set stays at 11.
+
+Still open, by first blocker (50 designs as bodies): reader refusals 26, state check 11 (stored solids
+no feature makes, bodies a joint moved), no history stored 7, rebuild failures 6.

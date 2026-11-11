@@ -746,3 +746,27 @@ surfaces right they buy nothing, and they cannot keep the bodies within 1e-9.
   placement baked in and healed anew), Terminal Block FeatherWing 752 for 21, PC Joystick
   Adapter 226 for 33. Reading each blob once and placing the shapes it gives is the
   remaining speed-up; the record layouts above are kept for a later need of pcurves.
+
+## Amendment (2026-11-11, round 16): edges past a closed curve's end, copies placed by transform, extrude starts
+
+- **The Buck Case body** (left open above) was its edges, not its surfaces: each of its ten
+  outline edges lies on a closed `exact_int_cur` (`nurbs 5 2`, knots over one turn [0, 1]) with a
+  parameter range past that turn (0.661 to 1.339). The STEP curve was the one turn, so OCCT put
+  the vertices on it and took the other side of the curve between them: the caps came out with
+  negative areas and the sides with the parts of their surfaces beyond the edges. Such an edge is
+  now written on its own piece of the curve (the curve continued by a second turn, cut at both
+  ends by knot insertion; exact, rational curves included), and only when that piece starts and
+  ends at the edge's vertices. The side surfaces' own approximations run the same way round as
+  the pieces. The body now reads 116,989 mm3 in 114 x 109 x 20 mm, cap area (5,849 mm2) times
+  height, all faces positive; it was 74,172 mm3 in a box of 38,109 mm3.
+- **Copies by transform**: a body blob placed more than once is converted and imported once,
+  unplaced, and the kernel moves each copy (rotation about the origin, then translation; a
+  placement that is not a rotation is converted with its placement as before). A blob placed
+  once keeps the old path: in PC Joystick Adapter, whose blobs are each placed once, moving the
+  copies cost more than it saved (62 s against 49 s, measured side by side before that limit).
+  Crickit CPX Assembly 180 s to 88 s (`f3d_history.rs`, debug), the same 443 bodies, names,
+  volumes, areas and boxes. The stored bodies of a timeline (`fusion_stored_bodies`) are still
+  converted one per stored feature.
+- **Extrude starts** (`ProfileOffset`) and **OffsetFaces**: `docs/formats/fusion-design-stream.md`.
+  The step check takes the box of the file's end bodies where those confirm the finished bodies,
+  for a body moved after the last stored state (3464 Joy Bonnet's Move1).
