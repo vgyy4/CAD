@@ -1674,3 +1674,19 @@ Reader: `timeline` in `fusion_tree/mod.rs`, `carry_moved_bodies` in `fusion_tree
 ### Result
 * adafruit-more: 120 of 150 as history (355, 1463, 3422 and 4863 gained; none lost; 116 before). adafruit: 13 of 18
   (its copy of 4863 gained). 1145 and 3350 still stop at their modeled threads.
+
+
+## 32. Round 20 H: the board cuts under inserted headers (2026-11-11)
+Reader: `apply_with` in `gusset-commands/src/tree_import.rs`; check: `fusion_states_check` in `import.rs`.
+
+* **Not the cut, the measure.** The excess of section 30 was no geometry: the board's `Extrude2` of 4862 removes
+  92.0987 mm3 and that of 5967 687.7067 mm3, exactly their stored tools. The step check takes the model's volume
+  after a feature built on its own from the tree import's `volume_mm3.imported`, which summed only the bodies named
+  after an imported feature, and the volume after a run of body-making features (sketches, new-body extrudes and
+  sweeps) from the sum of all bodies. A pattern with `merge: false` (the header's pin rows `R-Pattern1`/`R-Pattern2`)
+  makes bodies named `<pattern>_copy<i>`: they were in the run sums and missing from the single-feature volumes, so
+  the first single feature after a run (the board cut) seemed to remove them. 4862: 19 copies of 4.7301 mm3 and 19 of
+  4.1517 mm3 = 168.75 mm3, the whole excess.
+* The imported volume now counts the copies of the import's own patterns (`gusset_doc::pattern_copy_of`; the same
+  fix round 20 G made for 4863, 977d0fe, which this round takes). 4862 and 5967 come in as history:
+  4862 with 64 states and 88 cut tools, 5967 with 114 states and 543 tools.
