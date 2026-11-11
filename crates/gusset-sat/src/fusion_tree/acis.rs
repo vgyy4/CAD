@@ -352,15 +352,36 @@ fn face_names(recs: &[ARec]) -> HashMap<usize, Name> {
     name
 }
 
-/// The planar named faces of the blob's bodies.
+/// The faces some coedge runs around (through a loop of the face).
+fn faces_with_coedges(recs: &[ARec]) -> HashSet<usize> {
+    let at = |p: &i64| usize::try_from(*p).ok().filter(|p| *p < recs.len());
+    let kind = |p: usize, end: &str| recs.get(p).is_some_and(|x| x.ty.ends_with(end));
+    let mut out = HashSet::new();
+    for r in recs.iter().filter(|r| r.ty.ends_with("coedge")) {
+        for l in r.ptrs.iter().filter_map(at).filter(|p| kind(*p, "loop")) {
+            if let Some(f) = recs.get(l).and_then(|lr| lr.ptrs.iter().filter_map(at).find(|p| kind(*p, "face"))) {
+                out.insert(f);
+            }
+        }
+    }
+    out
+}
+
+/// The planar named faces of the blob's bodies (faces with edges only).
 pub(super) fn named_planes(b: &[u8]) -> Option<Vec<NamedPlane>> {
     let recs = records(b)?;
     let names = face_names(&recs);
+    let bounded = faces_with_coedges(&recs);
     let mut keys: Vec<&usize> = names.keys().collect();
     keys.sort_unstable();
     let mut out = Vec::new();
     for f in keys {
         let (Some(fr), Some(name)) = (recs.get(*f), names.get(f)) else { continue };
+        // A planar face bounds a region: one with no edges (blobs of some states hold such
+        // records, on planes the body's face of that name is not on) names no face.
+        if !bounded.contains(f) {
+            continue;
+        }
         let surface = fr
             .ptrs
             .iter()
@@ -560,6 +581,106 @@ pub(super) fn body_shapes(b: &[u8]) -> Option<Vec<BodyShape>> {
             }
         }
         out.push(shape);
+    }
+    Some(out)
+}
+
+/// A named face of a stored body, whatever its surface: the surface record's type (the word
+/// before `-surface`), the surface's vectors and numbers as stored, the face's vertices and
+/// points along its edges (lines and ellipses only), in cm.
+#[derive(Debug, Clone)]
+pub(super) struct NamedFace {
+    pub name: Name,
+    pub kind: String,
+    pub vecs: Vec<V3>,
+    pub nums: Vec<f64>,
+    pub verts: Vec<V3>,
+    pub edge_pts: Vec<V3>,
+}
+
+pub(super) fn named_faces(b: &[u8]) -> Option<Vec<NamedFace>> {
+    let recs = records(b)?;
+    let vpt = vertex_points(&recs);
+    let at = |p: &i64| usize::try_from(*p).ok().filter(|p| *p < recs.len());
+    let kind = |p: usize, end: &str| recs.get(p).is_some_and(|x| x.ty.ends_with(end));
+    let names = face_names(&recs);
+    let mut loop_face: HashMap<usize, usize> = HashMap::new();
+    for (k, r) in recs.iter().enumerate() {
+        if r.ty.ends_with("loop")
+            && let Some(f) = r.ptrs.iter().filter_map(at).find(|p| kind(*p, "face"))
+        {
+            loop_face.insert(k, f);
+        }
+    }
+    let is_edge = |p: usize| kind(p, "edge") && !kind(p, "coedge");
+    let mut face_edges: HashMap<usize, Vec<usize>> = HashMap::new();
+    for r in recs.iter().filter(|r| r.ty.ends_with("coedge")) {
+        let e = r.ptrs.iter().filter_map(at).find(|p| is_edge(*p));
+        let f = r.ptrs.iter().filter_map(at).find(|p| kind(*p, "loop")).and_then(|l| loop_face.get(&l));
+        if let (Some(e), Some(f)) = (e, f) {
+            let v = face_edges.entry(*f).or_default();
+            if !v.contains(&e) {
+                v.push(e);
+            }
+        }
+    }
+    let mut keys: Vec<&usize> = names.keys().collect();
+    keys.sort_unstable();
+    let mut out = Vec::new();
+    for f in keys {
+        let (Some(fr), Some(name)) = (recs.get(*f), names.get(f)) else { continue };
+        // A face with no edges (see `named_planes`) is left out.
+        if !face_edges.contains_key(f) {
+            continue;
+        }
+        let Some(sr) = fr.ptrs.iter().filter_map(at).filter_map(|p| recs.get(p)).find(|x| x.ty.ends_with("surface"))
+        else {
+            continue;
+        };
+        let k = sr.ty.strip_suffix("-surface").unwrap_or(&sr.ty);
+        let k = k.rsplit('-').next().unwrap_or(k).to_string();
+        let mut verts: Vec<V3> = Vec::new();
+        let mut edge_pts: Vec<V3> = Vec::new();
+        for e in face_edges.get(f).map(Vec::as_slice).unwrap_or(&[]) {
+            let Some(er) = recs.get(*e) else { continue };
+            let vs: Vec<V3> = er.ptrs.iter().filter_map(at).filter_map(|p| vpt.get(&p).copied()).collect();
+            for v in &vs {
+                if !verts.contains(v) {
+                    verts.push(*v);
+                }
+            }
+            let curve = er.ptrs.iter().filter_map(at).find(|p| kind(*p, "curve")).and_then(|c| recs.get(c));
+            // An edge on another curve (a spline) gives its vertices only.
+            let (Some(t0), Some(t1), Some(curve)) = (er.nums.first().copied(), er.nums.get(1).copied(), curve) else {
+                continue;
+            };
+            let near = |p: V3, q: V3| (p[0] - q[0]).abs() + (p[1] - q[1]).abs() + (p[2] - q[2]).abs() < 1e-6;
+            let path = [1.0, -1.0].into_iter().find_map(|s| {
+                let (p0, p1) = (curve_point(curve, s * t0)?, curve_point(curve, s * t1)?);
+                let ok = match vs.as_slice() {
+                    [a, b] => near(p0, *a) && near(p1, *b),
+                    [a] => near(p0, *a) && near(p1, *a),
+                    _ => false,
+                };
+                if !ok {
+                    return None;
+                }
+                (0..=8)
+                    .map(|k| curve_point(curve, s * (t0 + (t1 - t0) * f64::from(k) / 8.0)))
+                    .collect::<Option<Vec<V3>>>()
+            });
+            if let Some(p) = path {
+                edge_pts.extend(p);
+            }
+        }
+        out.push(NamedFace {
+            name: name.clone(),
+            kind: k,
+            vecs: sr.vecs.clone(),
+            nums: sr.nums.clone(),
+            verts,
+            edge_pts,
+        });
     }
     Some(out)
 }

@@ -224,7 +224,8 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
             continue;
         }
         seen.push(l);
-        let mut picks: Vec<(V3, V3, bool)> = Vec::new();
+        // A modelled face (point, normal, the extrude's own) or a face by its stored surface.
+        let mut picks: Vec<Result<(V3, V3, bool), naming::StoredPick>> = Vec::new();
         let mut kinds: Vec<Option<RecipeKind>> = Vec::new();
         for s in ref_ids(d, d.rec(l)) {
             if !d.is(s, "5662F619") {
@@ -239,10 +240,13 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
                 let Some((g, ops)) = names.as_ref().and_then(|n| n.first()).and_then(|f| f.first()) else {
                     return bad("a face of the draft has no name");
                 };
-                let Some((p, n)) = cx.face_pick(g, ops) else {
-                    return bad("a face of the draft is not a cap or planar side of an extrude");
-                };
-                picks.push((p, n, ops.len() == 1));
+                match cx.face_pick(g, ops) {
+                    Some((p, n)) => picks.push(Ok((p, n, ops.len() == 1))),
+                    None => match cx.general_face(g, ops) {
+                        Some(pick) => picks.push(Err(pick)),
+                        None => return bad("a face of the draft is neither modelled nor on one stored surface"),
+                    },
+                }
             }
         }
         if kinds.is_empty() {
@@ -250,10 +254,14 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
         }
         if kinds.iter().all(|k| *k == Some(RecipeKind::BoundedFace)) {
             // The normal only where the face is the extrude's own (a shelled wall's sign is open).
-            for (p, n, own) in picks {
-                faces.push(if own { json!({"point": v3(p), "normal": unit9(n)}) } else { json!({"point": v3(p)}) });
+            for pick in picks {
+                faces.push(match pick {
+                    Ok((p, n, true)) => json!({"point": v3(p), "normal": unit9(n)}),
+                    Ok((p, _, false)) => json!({"point": v3(p)}),
+                    Err(general) => general.json(),
+                });
             }
-        } else if let ([Some(RecipeKind::Face)], [(p, n, _)]) = (kinds.as_slice(), picks.as_slice()) {
+        } else if let ([Some(RecipeKind::Face)], [Ok((p, n, _))]) = (kinds.as_slice(), picks.as_slice()) {
             plane = Some((*p, *n));
         } else {
             return bad("the draft's selections are neither bounded faces nor one plain face");

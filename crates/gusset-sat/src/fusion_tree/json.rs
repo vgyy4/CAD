@@ -1380,7 +1380,12 @@ fn offset_faces_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, clas
             // A side's middle; a cap's point is its plane's (the importer takes the nearest face
             // of that plane).
             Some(naming::FaceG::Plane { mid, .. }) => faces.push(json!({"point": v3mm(mid)})),
-            _ => return fail("an offset face is not a cap or planar side of an extrude"),
+            // Any other face: by its surface and points (an arc side, a revolve's or a
+            // blend's face; section 28 of the layout notes).
+            _ => match cx.general_face(g, ops) {
+                Some(pick) => faces.push(pick.json()),
+                None => return fail("an offset face is neither modelled nor on one stored surface"),
+            },
         }
     }
     if faces.is_empty() {
@@ -1418,7 +1423,10 @@ fn shell_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, class: &str
         match cx.face_with_middle(g, ops) {
             // No normal: the cap and side normals the names give are not oriented outward.
             Some(naming::FaceG::Plane { p, .. }) => faces.push(json!({"point": v3mm(p)})),
-            _ => return fail("a removed face is not a cap or planar side of an extrude"),
+            _ => match cx.general_face(g, ops) {
+                Some(pick) => faces.push(pick.json()),
+                None => return fail("a removed face is neither modelled nor on one stored surface"),
+            },
         }
     }
     if faces.is_empty() {

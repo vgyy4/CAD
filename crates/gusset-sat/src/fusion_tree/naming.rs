@@ -443,6 +443,127 @@ pub(super) fn fillet_edge(fs: &[Option<FaceG>]) -> Option<(V3, bool)> {
     None
 }
 
+/// The surface of a stored face (cm), as far as a pick names it.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Surface {
+    Plane {
+        origin: V3,
+        normal: V3,
+    },
+    Cylinder {
+        origin: V3,
+        axis: V3,
+        radius: f64,
+    },
+    /// ACIS `cone-surface`: base centre, axis, base radius and the sine and cosine of the half
+    /// angle (the radius at height `h` along the axis is `radius + h * sin / cos`).
+    Cone {
+        origin: V3,
+        axis: V3,
+        radius: f64,
+        sin: f64,
+        cos: f64,
+    },
+    /// Any other surface: the pick goes by the face's points alone.
+    Other,
+}
+
+impl Surface {
+    fn of(f: &acis::NamedFace) -> Option<Surface> {
+        let v = |k: usize| f.vecs.get(k).copied();
+        let n = |k: usize| f.nums.get(k).copied();
+        Some(match f.kind.as_str() {
+            "plane" => Surface::Plane { origin: v(0)?, normal: unit(v(1)?)? },
+            "cone" => {
+                // centre, axis, major axis; ratio, sine, cosine. An elliptic section is "other".
+                let (c, a, m, ratio, s, co) = (v(0)?, unit(v(1)?)?, v(2)?, n(0)?, n(1)?, n(2)?);
+                if (ratio - 1.0).abs() > 1e-9 {
+                    return Some(Surface::Other);
+                }
+                if s.abs() < 1e-12 {
+                    Surface::Cylinder { origin: c, axis: a, radius: norm(m) }
+                } else {
+                    Surface::Cone { origin: c, axis: a, radius: norm(m), sin: s, cos: co }
+                }
+            }
+            _ => Surface::Other,
+        })
+    }
+
+    fn same(&self, o: &Surface) -> bool {
+        let close = |a: V3, b: V3| norm(sub(a, b)) < 1e-7;
+        let on_axis = |o1: V3, a1: V3, o2: V3, a2: V3| {
+            (dot(a1, a2).abs() - 1.0).abs() < 1e-9 && norm(cross(sub(o2, o1), a1)) < 1e-7
+        };
+        match (self, o) {
+            (Surface::Plane { origin: o1, normal: n1 }, Surface::Plane { origin: o2, normal: n2 }) => {
+                (dot(*n1, *n2).abs() - 1.0).abs() < 1e-9 && dot(*n1, sub(*o2, *o1)).abs() < 1e-7
+            }
+            (
+                Surface::Cylinder { origin: o1, axis: a1, radius: r1 },
+                Surface::Cylinder { origin: o2, axis: a2, radius: r2 },
+            ) => on_axis(*o1, *a1, *o2, *a2) && (r1 - r2).abs() < 1e-7,
+            (Surface::Cone { .. }, Surface::Cone { .. }) => {
+                let (
+                    Surface::Cone { origin: o1, axis: a1, radius: r1, sin: s1, cos: c1 },
+                    Surface::Cone { origin: o2, axis: a2, radius: r2, sin: s2, cos: c2 },
+                ) = (self, o)
+                else {
+                    return false;
+                };
+                close(*o1, *o2)
+                    && close(*a1, *a2)
+                    && (r1 - r2).abs() < 1e-7
+                    && (s1 - s2).abs() < 1e-9
+                    && (c1 - c2).abs() < 1e-9
+            }
+            (Surface::Other, Surface::Other) => true,
+            _ => false,
+        }
+    }
+
+    /// The tree's `surface` object (mm).
+    pub(super) fn json(&self) -> serde_json::Value {
+        use serde_json::json;
+        let m = |p: V3| json!([geom::mm(p[0]), geom::mm(p[1]), geom::mm(p[2])]);
+        let u = |p: V3| json!([geom::round9(p[0]), geom::round9(p[1]), geom::round9(p[2])]);
+        match self {
+            Surface::Plane { origin, normal } => json!({"type": "plane", "origin": m(*origin), "normal": u(*normal)}),
+            Surface::Cylinder { origin, axis, radius } => {
+                json!({"type": "cylinder", "origin": m(*origin), "axis": u(*axis), "radius": geom::mm(*radius)})
+            }
+            Surface::Cone { origin, axis, radius, sin, cos } => json!({"type": "cone", "origin": m(*origin),
+                "axis": u(*axis), "radius": geom::mm(*radius), "sin": geom::round9(*sin), "cos": geom::round9(*cos)}),
+            Surface::Other => json!({"type": "other"}),
+        }
+    }
+}
+
+/// At most 64 points, evenly spread over the list.
+fn thin(points: Vec<V3>) -> Vec<V3> {
+    let k = points.len();
+    if k <= 64 {
+        return points;
+    }
+    (0..64).filter_map(|i| points.get(i * k / 64).copied()).collect()
+}
+
+/// A face picked by the stored bodies: its surface and points of its edges (cm).
+#[derive(Debug, Clone)]
+pub(super) struct StoredPick {
+    pub surface: Surface,
+    pub points: Vec<V3>,
+}
+
+impl StoredPick {
+    /// The tree's face pick: `point` (the first point), `points` and `surface` (mm).
+    pub(super) fn json(&self) -> serde_json::Value {
+        let m = |p: &V3| serde_json::json!([geom::mm(p[0]), geom::mm(p[1]), geom::mm(p[2])]);
+        let pts: Vec<serde_json::Value> = self.points.iter().map(m).collect();
+        serde_json::json!({"point": pts.first().cloned().unwrap_or_default(), "points": pts, "surface": self.surface.json()})
+    }
+}
+
 impl Ctx<'_> {
     pub(super) fn tagged(&mut self) -> &[acis::TaggedFace] {
         let files = self.acis;
@@ -751,6 +872,99 @@ impl Ctx<'_> {
         Some((mid, mul(n, side.signum())))
     }
 
+    fn named_faces(&mut self) -> &[acis::NamedFace] {
+        let files = self.acis;
+        self.named_faces.get_or_insert_with(|| {
+            let mut out = Vec::new();
+            for (n, b) in files {
+                if (n.ends_with(".smb") || n.ends_with(".smbh"))
+                    && let Some(s) = acis::named_faces(b)
+                {
+                    out.extend(s);
+                }
+            }
+            out
+        })
+    }
+
+    /// A face the modelled caps and planar sides do not give: an extrude's arc side (its
+    /// cylinder, with the profile arc's points at mid height), else [`Ctx::stored_face`].
+    pub(super) fn general_face(&mut self, g: &str, ops: &[i32]) -> Option<StoredPick> {
+        if let Some(FaceG::Cyl { axis, feature, seg, pl }) = self.face_modelled(g, ops, 0) {
+            let eg = self.ext_geom(feature)?;
+            let arc = eg.sketch.arcs.get(&seg.curve)?;
+            let origin = world(&pl, [arc.center[0], arc.center[1]], 0.0);
+            let surface = Surface::Cylinder { origin, axis, radius: arc.radius };
+            let points = match (eg.t0, eg.t1) {
+                (Some(t0), Some(t1)) => seg.poly.iter().map(|q| world(&pl, *q, (t0 + t1) / 2.0)).collect(),
+                // An extent that is not a distance: the points of the stored faces of that name
+                // on this cylinder (a later offset may have moved others without renaming them).
+                _ => self.stored_points(g, ops, &surface),
+            };
+            if points.is_empty() {
+                return None;
+            }
+            return Some(StoredPick { surface, points });
+        }
+        self.stored_face(g, ops)
+    }
+
+    /// The edge points of the stored faces whose name starts with (g, ops) that lie on `surface`.
+    fn stored_points(&mut self, g: &str, ops: &[i32], surface: &Surface) -> Vec<V3> {
+        let want = (g.to_string(), ops.to_vec());
+        let mut points: Vec<V3> = Vec::new();
+        for f in self.named_faces().iter().filter(|f| f.name.first() == Some(&want)) {
+            if *surface != Surface::Other && Surface::of(f).is_none_or(|s| !s.same(surface)) {
+                continue;
+            }
+            for p in f.verts.iter().chain(&f.edge_pts) {
+                if !points.iter().any(|q| norm(sub(*p, *q)) < 1e-7) {
+                    points.push(*p);
+                }
+            }
+        }
+        thin(points)
+    }
+
+    /// A face named (generator, operation ids), of any surface, as the stored bodies hold it:
+    /// every stored face whose name starts with exactly that entry must lie on one surface, and
+    /// the pick is that surface with the points of those faces' edges (cm). A later feature
+    /// that moves a face without renaming it (an offset) leaves two surfaces: no pick then.
+    pub(super) fn stored_face(&mut self, g: &str, ops: &[i32]) -> Option<StoredPick> {
+        let want = (g.to_string(), ops.to_vec());
+        let hits: Vec<acis::NamedFace> =
+            self.named_faces().iter().filter(|f| f.name.first() == Some(&want)).cloned().collect();
+        let mut surface = Surface::of(hits.first()?)?;
+        if hits.iter().any(|f| Surface::of(f).is_none_or(|s| !s.same(&surface))) {
+            // States on different surfaces (a later offset moved the face and kept its name):
+            // the points of all of them, the model's face at this feature holds its own.
+            surface = Surface::Other;
+        }
+        let points = self.stored_points(g, ops, &surface);
+        if points.is_empty() {
+            return None;
+        }
+        Some(StoredPick { surface, points })
+    }
+
+    /// Where the line `p + t u` touches the cylinder an extrude sweeps from the arc piece `seg`
+    /// (`None` when it crosses it, misses it or runs along its axis).
+    fn tangent_at(&mut self, feature: u64, seg: &Seg, pl: &Plane, p: V3, u: V3) -> Option<f64> {
+        let eg = self.ext_geom(feature)?;
+        let arc = eg.sketch.arcs.get(&seg.curve)?;
+        let (c, r, a) = (world(pl, [arc.center[0], arc.center[1]], 0.0), arc.radius, pl.z);
+        let w = sub(p, c);
+        let wp = sub(w, mul(a, dot(w, a)));
+        let up = sub(u, mul(a, dot(u, a)));
+        let aa = dot(up, up);
+        if aa < 1e-12 {
+            return None;
+        }
+        let t = -dot(wp, up) / aa;
+        let closest = norm(add(wp, mul(up, t)));
+        ((closest - r).abs() < 1e-6).then_some(t)
+    }
+
     /// Geometry of a face named (generator, operation ids), when it is an extrude's cap or side.
     fn face_of_extrude(&mut self, g: &str, ops: &[i32]) -> Option<FaceG> {
         let op = u64::try_from(*ops.first()?).ok()?;
@@ -824,6 +1038,13 @@ impl Ctx<'_> {
                 {
                     ts.push(dot(*n, sub(*p, pp)) / dot(*n, u));
                 }
+                // An arc side the line touches (a straight side running into an arc of its
+                // profile): the point of tangency.
+                if let FaceG::Cyl { feature, seg, pl, .. } = f
+                    && let Some(t) = self.tangent_at(*feature, seg, pl, pp, u)
+                {
+                    ts.push(t);
+                }
             }
             if ts.len() >= 2 {
                 let lo = ts.iter().copied().fold(f64::INFINITY, f64::min);
@@ -853,11 +1074,24 @@ impl Ctx<'_> {
             }
             return None;
         }
-        // A cap meeting an arc side: the middle of the arc piece at the cap.
-        for (cap, cyl) in [(&a, &b), (&b, &a)] {
-            let (FaceG::Plane { n, p, cap: true, .. }, FaceG::Cyl { axis, feature, seg, pl, .. }) = (cap, cyl) else {
+        // A cap meeting an arc side: the middle of the arc piece at the cap. A side of another
+        // extrude across the arc side's axis cuts the whole piece the same way, when the edge
+        // ends on the arc's own neighbouring sides (5981: a slot cut into a wall).
+        for (k, (cap, cyl)) in [(&a, &b), (&b, &a)].into_iter().enumerate() {
+            let (FaceG::Plane { n, p, cap: is_cap, .. }, FaceG::Cyl { axis, feature, seg, pl, .. }) = (cap, cyl) else {
                 continue;
             };
+            if !is_cap {
+                let cyl_ops = &faces.get(1 - k)?.first()?.1;
+                let own_ends = faces.len() > 2
+                    && faces
+                        .iter()
+                        .skip(2)
+                        .all(|f| f.first().is_some_and(|(g, ops)| ops == cyl_ops && g != "1" && g != "2"));
+                if !own_ends {
+                    continue;
+                }
+            }
             if (dot(*n, *axis).abs() - 1.0).abs() > 1e-9 {
                 continue;
             }

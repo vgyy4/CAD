@@ -60,6 +60,7 @@ struct Ctx<'a> {
     edge_sets: Option<Vec<Vec<acis::Edge>>>,
     named_edges: Option<Vec<acis::NamedEdge>>,
     named_planes: Option<Vec<acis::NamedPlane>>,
+    named_faces: Option<Vec<acis::NamedFace>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -76,6 +77,7 @@ impl<'a> Ctx<'a> {
             edge_sets: None,
             named_edges: None,
             named_planes: None,
+            named_faces: None,
         }
     }
 }

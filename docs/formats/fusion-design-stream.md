@@ -1271,3 +1271,45 @@ changed.
   selections, they are now its targets; a body reached only through a face selection is not. In the two sets this
   changes 2441, 2232 (Extrude7, the same pattern) and the pad extrudes of 5358 and 5360 (both stop earlier, at
   features the reader cannot read).
+
+## 28. Round 18 D: faces and edges picked by the stored bodies (2026-11-11)
+Faces a shell removes, a draft tapers or an offset moves, and blend edges, that the extrude model (caps and
+sides) does not give.
+
+### Named faces of every surface type
+* Every face of a stored body (`.smb`, `.smbh`) that carries a `generic_tag_attrib_def` name (section 12) is read
+  with its surface record: the type is the word before `-surface` in the record type (`plane`, `cone`, `sphere`,
+  `torus`, `spline`, ...), then its positions/vectors and doubles as stored, and the face's vertices and points
+  along its line and ellipse edges (`acis::named_faces`).
+* `plane-surface`: point, normal (section 12). `cone-surface`: base centre, axis (unit), major axis (its length is
+  the base radius), then the doubles ratio, sine and cosine of the half angle and a scale. A cylinder is a cone
+  with sine 0: 3722's revolve face `5 [307]` is `centre (0, 0, 0.95), axis z, major (3.35, 0, 0)`, doubles
+  `1, 0, 1, 3.35`; 3027's hole side `25 [302]` has cosine -1 (the axis points against the material side). The
+  radius at height `h` along the axis is `radius + h * sin / cos`; no sample with a true cone checks that sign.
+* **Faces with no edges.** Blobs of some states hold face records no coedge runs around (no loop with edges),
+  under a name the body's real face also has, on another plane (3093 `.smbh`: `17 [317]` at y = 0.665 cm and a
+  second one at y = -0.097 cm; 5981 and 6299 have such records too). They name no face: the stored planes and
+  named faces leave them out. (3093's chamfer edges between the cap `2 [314]` and the slot sides of Extrude
+  `317` resolve then.)
+* **Negative operation ids.** A face an OffsetFaces or Draft changed gets the feature's op **negated** in its
+  name: 6299's `5 [326, -425]` is `5 [326]` moved 1 mm by OffsetFaces (op 425), and the drafts after it name
+  `[326, -425]` and `[326, -425, -430]` faces. A face an offset moves keeps its name otherwise: 3027's
+  `25 [302]` is a 0.635 mm hole in the `.smbh` and a 0.838 mm hole in the `.smb`, both named `25 [302]`.
+
+### Picks by boundary points and surface (tree format: ADR 0042 amendment of this date)
+* A face recipe the model does not give (`face_with_middle` / `face_pick` fail) is picked by the stored faces
+  whose name **starts with exactly** its entry: their surfaces must agree (then the pick carries the surface) or
+  else the pick goes by points alone (`surface: other`, the offset case above: the model's face at the feature
+  holds its own state's points). The points are the faces' vertices and edge points over all stored states
+  (at most 64). An extrude's arc side is picked by its cylinder (sketch arc centre and radius, sketch normal) with
+  the profile arc's points at mid height, or, for an extent that is not a distance, the stored points on that
+  cylinder.
+* The importer takes the face on the surface (all tessellation nodes within 0.001 mm) holding the most points;
+  a tie is refused. 3027 (an offset of a hole side) now comes in as history.
+
+### Blend edges between an extrude's slot and another extrude's wall (5981)
+* A side plane of one extrude across the axis of another extrude's arc side cuts the whole arc piece, like a cap
+  does, when the edge's other faces are that extrude's own sides (5981's Chamfer4: wall `5 [310]`, slot arc
+  `3 [336]` between its sides `4` and `6`).
+* A straight edge between two planes that runs into an arc side of the profile ends where it touches the arc's
+  cylinder (5981: wall `5 [310]` and slot side `6 [336]`, ended by the cap `2 [310]` and the arc `3 [336]`).
