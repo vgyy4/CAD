@@ -1612,3 +1612,65 @@ Reader: `timeline` in `fusion_tree/mod.rs`, `carry_moved_bodies` in `fusion_tree
   than the 537 holes); both boards' holes are where the header pins stand. Where the extra volume comes from is not
   found; the cut itself acts on the board body alone.
 
+## 31. Round 20 G: end bodies by solid, symmetric measures, body-pattern copies, origin axes (2026-11-11)
+
+### End bodies compared solid by solid (1463, 3422)
+* A new-body extrude of regions that do not touch is one body of several solids here and one body per solid in the
+  file: 1463 Extrude2 (16 pads of 42.5 mm3, one body of 680 mm3 here), 3422 Extrude2 (six keys). The step check
+  already took each solid as a state; the end-body confirmation compared whole bodies, so the 16 end bodies of
+  42.5 mm3 met no finished body. The finished bodies are now listed as the file stores them (each body that is
+  several solids apart as its solids, the same split the states use). Both designs then confirm their last
+  features (1463 Chamfer1, 3422 Shell1 and its cuts) by the end bodies, volume for volume, and come in as history.
+
+### Symmetric extrudes: whole length or each side (355)
+* After the extrude's direction, a `u32` says how a symmetric (extent 3) distance is measured: **1 the whole
+  length, 2 each side's**. It is followed by zeros (11 in the records with plain references, none in those with
+  typed ones; with the `u32`'s three high bytes, 14 and 3) and the feature's selection list (`01 00 00 00`, a
+  reference). Read in every symmetric extrude of the corpus (18 records, versions 266 to 447). Each side's:
+  6299 Extrude2 (2) (11 mm; its stored tool is 22 mm long, its profile 6.4855 mm2 x 22 = 142.6806 mm3 stored),
+  324 Extrude1 and Extrude11 (16.5 and 6 mm; bodies 33 and 12 mm long), 355 Extrude4 (9.3 mm; its tool spans
+  x -9.3..9.3). Whole: 4632 Extrude1 (12.4 mm; body 35 x 38 x 12.4 mm = 16492 mm3) and the L-Bracket (110 mm).
+  The 6114/6124/6126 joins carry 2 as well (not otherwise checked: those designs stop earlier).
+* The tree's symmetric distance is the whole length: each side's is doubled (`symmetric_measure` in the JSON).
+  A symmetric extrude whose measure is not found is refused. 355's Extrude4 now cuts its whole tool through the
+  body (387.1469 mm3, the end body) and 355 comes in as history.
+
+### Copies of a body pattern were not counted (4863)
+* A body pattern with `merge: false` gives each copy a body whose feature is the copy's name (`P_copy1` ..); the
+  tree import's "bodies the import made" filter matched feature names only, so the copies were left out of the
+  imported volume. The step check measures each step by that volume: from R-Pattern1 on, a single-step build
+  lacked 19 x 4.7301 + 19 x 4.1566 = 168.85 mm3 while a run of new bodies built as one counted them, so 4863's
+  steps jumped by that amount and its board cut (Extrude2 (3), 86 drill tools, 92.7152 mm3) read as 261.5620 mm3.
+  The copies are now counted. 4863 comes in as history.
+
+### Blends of edges on several bodies (1145)
+* 1145 Fillet1 rounds an edge of the base (Extrude1, r 8.2 at z 0) and one of the cap (Revolve2, r 6.5 at z 18.2)
+  in one feature. The tree import now writes one blend per body, same size (`Fillet1`, `Fillet1_2`).
+
+### Revolve about an origin axis (3350)
+* The axis selection (`5A1BF548`) names a `90055C05` record whose body is the `u64` id of the axis record; for an
+  origin axis that is a `19031004` record named `X`, `Y` or `Z` holding a point and a unit direction (cm, the
+  component's frame) at its body, then two display doubles (0.175, 2.25). The `50AEE8B4` sibling under the
+  selection repeats the display segment (point (0, 0, 0.175), vector (0, 0, 2.075)). 3350's three revolves turn
+  about Z; they now read as revolves about the origin and the Z direction.
+* The same `90055C05` reference names sketch planes (`8D424E29` `XY`/`XZ`/`YZ`) and features elsewhere: only the
+  `19031004` axis records are taken as axes.
+
+### The end bodies now refuse a history that differs from them
+* Where the file stores end bodies, they confirmed the features after the last stored state but refused nothing:
+  a feature between two stored states whose result no stored solid shows was never compared. With 1145's modeled
+  thread left out (a scratch experiment), every state and tool was explained and the design came in as history
+  although its end bodies are 2435.8962 and 436.9949 mm3 where the model has 2742.2136 and 476.7911. End bodies
+  that are not the finished bodies now refuse the history. No design that came in as history before has such
+  end bodies (checked on the whole corpus run).
+
+### Not reached
+* 1145 and 3350 stop at their modeled threads (section 29). With the threads left out 1145 is refused by its end
+  bodies (above: the base differs by 306.32 mm3 and the cap by 39.80 mm3, so not only the base's thread is
+  missing) and 3350 stops at Fillet2 (two edges
+  not resolved, then Thread2, an internal M16x1 of the whole face). Modelling Fusion's thread form and its ends to
+  the check's 2e-5 is not attempted: how the thread runs out at its offset and at the face's end is not known.
+
+### Result
+* adafruit-more: 120 of 150 as history (355, 1463, 3422 and 4863 gained; none lost; 116 before). adafruit: 13 of 18
+  (its copy of 4863 gained). 1145 and 3350 still stop at their modeled threads.

@@ -297,3 +297,11 @@ and came in as stored bodies; now it is rebuilt and the step check refuses the b
 removed against 92.10 mm³ of stored tools), the same excess that stops 5967. Round 19 F's findings moved the other
 blockers on (section 30 of `fusion-design-stream.md`): 5905 MirrorComponent, 5358/5360 a pin fillet one pitch off,
 3502 Bend, 5981 a thin-wall extrude of an open chain, 6124/6126 sketch text in a font the file does not hold.
+
+## Combined re-run after round 20 G (2026-11-11)
+
+Same command on both sets with round 20 G (end bodies compared solid by solid, symmetric extrudes measured each
+side, body-pattern copies counted, blends split per body, revolves about an origin axis, end bodies that refuse):
+adafruit-more 120 of 150 as history (was 116: 355, 1463, 3422, 4863 added; none lost), adafruit 13 of 18 (4863
+added). 1145 and 3350 stop at their modeled threads; with the threads left out 1145 is refused by its end bodies
+and 3350 stops at Fillet2 (edges not resolved).
