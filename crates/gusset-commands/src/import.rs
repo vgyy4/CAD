@@ -442,7 +442,7 @@ impl ImportJob {
             Kind::F3d => {
                 let importer =
                     self.importer.ok_or_else(|| CommandError::new("not_allowed", "Fusion import is not available"))?;
-                let (out, tier, mut warnings) = f3d(&bytes, importer.as_ref(), cancel)?;
+                let (out, tier, mut warnings) = f3d(&bytes, importer.as_ref(), &self.kernel, cancel)?;
                 // The design timeline as editable features, when it rebuilds to the bodies the
                 // file stores (ADR 0039 amendment); else the bodies themselves.
                 match fusion_history(&bytes, &out, &self.kernel, &self.file_name, importer.as_ref(), cancel) {
@@ -2771,9 +2771,111 @@ fn charge_placements(kept: &mut usize, add: usize) -> Result<(), CommandError> {
 /// from the design stream (`Design1/BulkStream.dat`, gusset_sat::fusion); a component used
 /// several times gives the body several times; bodies of the root component stay put. An
 /// `.f3z` holds several designs: the others are placed where the root design references them.
+/// One blob of a Fusion file converted to STEP and imported by the worker: its bodies (named
+/// after [`F3D_COPY_STEM`] where they are placed later), the sheets left out and the warnings;
+/// `Err` holds the reason the blob could not be converted.
+#[derive(Clone)]
+struct ConvertedBlob {
+    bodies: Vec<(String, Vec<u8>)>,
+    skipped: usize,
+    warnings: Vec<String>,
+}
+type Converted = Result<ConvertedBlob, String>;
+
+/// The name an unplaced conversion gives its bodies; each copy takes its occurrence's.
+const F3D_COPY_STEM: &str = "Fusion";
+
+/// A rigid placement as kernel transforms (a rotation about the origin, then a translation);
+/// `None` where the matrix is not a rotation (a mirrored occurrence), which is then converted
+/// with its placement.
+fn placement_transforms(p: &gusset_sat::fusion::Placement) -> Option<Vec<gusset_kernel::Transform>> {
+    let r = p.r;
+    let at = |i: usize, j: usize| r.get(i).and_then(|row| row.get(j)).copied().unwrap_or(f64::NAN);
+    let trace = at(0, 0) + at(1, 1) + at(2, 2);
+    let angle = libm::acos(((trace - 1.0) / 2.0).clamp(-1.0, 1.0));
+    let mut axis = [at(2, 1) - at(1, 2), at(0, 2) - at(2, 0), at(1, 0) - at(0, 1)];
+    if libm::sin(angle).abs() < 1e-6 && angle > 1.0 {
+        // Half a turn: the axis is the largest column of (R + I) / 2.
+        let col = |j: usize| [at(0, j), at(1, j), at(2, j)];
+        let mut best = [0.0; 3];
+        for j in 0..3 {
+            let mut c = col(j);
+            if let Some(x) = c.get_mut(j) {
+                *x += 1.0;
+            }
+            if gusset_kernel::norm(c) > gusset_kernel::norm(best) {
+                best = c;
+            }
+        }
+        axis = best;
+    }
+    let n = gusset_kernel::norm(axis);
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-9;
+    let mut out = Vec::new();
+    if angle > 1e-12 {
+        if n.is_nan() || n <= 1e-12 {
+            return None;
+        }
+        let k = [axis[0] / n, axis[1] / n, axis[2] / n];
+        // The rotation must give the matrix back (Rodrigues), else it is no rotation.
+        let (c, s) = (libm::cos(angle), libm::sin(angle));
+        let kk = |i: usize| k.get(i).copied().unwrap_or(0.0);
+        let cross = [[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]];
+        for (i, row) in cross.iter().enumerate() {
+            for (j, kx) in row.iter().enumerate() {
+                let id = if i == j { 1.0 } else { 0.0 };
+                let want = id * c + s * kx + (1.0 - c) * kk(i) * kk(j);
+                if !close(want, at(i, j)) {
+                    return None;
+                }
+            }
+        }
+        out.push(gusset_kernel::Transform::Rotate { origin: [0.0; 3], axis: k, angle });
+    } else if (0..3).any(|i| (0..3).any(|j| !close(at(i, j), if i == j { 1.0 } else { 0.0 }))) {
+        return None;
+    }
+    if p.t.iter().any(|x| !x.is_finite()) {
+        return None;
+    }
+    if p.t.iter().any(|x| *x != 0.0) {
+        out.push(gusset_kernel::Transform::Translate(p.t));
+    }
+    Some(out)
+}
+
+/// The bodies of an unplaced conversion moved to one occurrence and named after it.
+fn place_copy(
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    bodies: &[(String, Vec<u8>)],
+    stem: &str,
+    xfs: &[gusset_kernel::Transform],
+) -> Result<Vec<(String, Vec<u8>)>, CommandError> {
+    let fail = |e: gusset_kernel::KernelError| {
+        CommandError::new("io", format!("a Fusion body cannot be placed: {}", e.message))
+    };
+    let mut out = Vec::with_capacity(bodies.len());
+    for (name, blob) in bodies {
+        let name = match name.strip_prefix(F3D_COPY_STEM) {
+            Some(rest) => format!("{stem}{rest}"),
+            None => name.clone(),
+        };
+        if xfs.is_empty() {
+            out.push((name, blob.clone()));
+            continue;
+        }
+        let mut shape = kernel.read_native(blob).map_err(fail)?;
+        for t in xfs {
+            shape = kernel.transform(&shape, t).map_err(fail)?.shape;
+        }
+        out.push((name, kernel.write_native(&shape).map_err(fail)?));
+    }
+    Ok(out)
+}
+
 fn f3d(
     bytes: &[u8],
     importer: &dyn Importer,
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
     cancel: &CancelFlag,
 ) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
     use gusset_sat::fusion::Placement;
@@ -2999,6 +3101,11 @@ fn f3d(
                     Some(c) => Some(history.unwrap_or_default().with_body_colours(c.clone())),
                     None => history,
                 };
+                // A blob placed more than once is converted and imported once, unplaced, and
+                // the kernel places each copy by transform (Crickit's assembly places 14 blobs
+                // about 600 times); a blob placed once is converted with its placement.
+                let copies = own.len() * insts.len();
+                let mut converted: Option<Converted> = None;
                 for p in own {
                     for (origin, moved, parts) in insts {
                         let (origin, moved) = (*origin, *moved);
@@ -3033,30 +3140,59 @@ fn f3d(
                             (None, true) => Some(inst),
                             (None, false) => None,
                         };
-                        let c = match gusset_sat::to_step_coloured_history(
-                            data,
-                            &stem,
-                            &gusset_sat::Limits::default(),
-                            place.as_ref(),
-                            keep_sheets,
-                            &colours,
-                            history.as_ref(),
-                        ) {
+                        let convert = |stem: &str, place: Option<&Placement>| -> Result<Converted, CommandError> {
+                            let c = match gusset_sat::to_step_coloured_history(
+                                data,
+                                stem,
+                                &gusset_sat::Limits::default(),
+                                place,
+                                keep_sheets,
+                                &colours,
+                                history.as_ref(),
+                            ) {
+                                Ok(c) => c,
+                                Err(e) => return Ok(Err(format!("B-rep part {i}: {e}"))),
+                            };
+                            let bodies = if c.bodies == 0 {
+                                Vec::new()
+                            } else {
+                                importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
+                                    if cancel.load(Ordering::Relaxed) {
+                                        cancelled()
+                                    } else {
+                                        CommandError::new("io", e)
+                                    }
+                                })?
+                            };
+                            Ok(Ok(ConvertedBlob { bodies, skipped: c.skipped_sheets, warnings: c.warnings }))
+                        };
+                        let xfs = place.as_ref().filter(|_| copies > 1).and_then(placement_transforms);
+                        let c = match (&xfs, &converted) {
+                            (Some(_), Some(c)) => c.clone(),
+                            (Some(_), None) => {
+                                let c = convert(F3D_COPY_STEM, None)?;
+                                converted = Some(c.clone());
+                                c
+                            }
+                            (None, _) => convert(&stem, place.as_ref())?,
+                        };
+                        let c = match c {
                             Ok(c) => c,
-                            Err(e) => {
-                                part_warnings.push(format!("B-rep part {i}: {e}"));
+                            Err(why) => {
+                                part_warnings.push(why);
                                 break;
                             }
                         };
                         placed += usize::from(place.is_some());
-                        skipped += c.skipped_sheets;
+                        skipped += c.skipped;
                         part_warnings.extend(c.warnings);
-                        if c.bodies == 0 {
+                        if c.bodies.is_empty() {
                             break;
                         }
-                        let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
-                            if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
-                        })?;
+                        let bodies = match &xfs {
+                            Some(xfs) => place_copy(kernel, &c.bodies, &stem, xfs)?,
+                            None => c.bodies,
+                        };
                         kept_bytes += bodies.iter().map(|(_, blob)| blob.len()).sum::<usize>();
                         if kept_bytes > MAX_F3D_OUTPUT_BYTES {
                             return Err(CommandError::new(
@@ -3434,13 +3570,55 @@ mod f3d_tests {
     }
 
     #[test]
+    fn a_placement_is_a_rotation_then_a_translation_or_converted_on_its_own() {
+        use gusset_kernel::Transform;
+        use gusset_sat::fusion::Placement;
+        // Applies the transforms to a point (right-hand rotations about the origin).
+        let apply = |xfs: &[Transform], mut q: [f64; 3]| {
+            for t in xfs {
+                q = match *t {
+                    Transform::Rotate { axis: k, angle, .. } => {
+                        let (c, s) = (libm::cos(angle), libm::sin(angle));
+                        let d = k[0] * q[0] + k[1] * q[1] + k[2] * q[2];
+                        let x = [k[1] * q[2] - k[2] * q[1], k[2] * q[0] - k[0] * q[2], k[0] * q[1] - k[1] * q[0]];
+                        [0, 1, 2].map(|i| q[i] * c + x[i] * s + k[i] * d * (1.0 - c))
+                    }
+                    Transform::Translate(v) => [q[0] + v[0], q[1] + v[1], q[2] + v[2]],
+                    _ => panic!("{t:?}"),
+                };
+            }
+            q
+        };
+        let place = |p: &Placement, q: [f64; 3]| {
+            [0, 1, 2].map(|i| p.r[i][0] * q[0] + p.r[i][1] * q[1] + p.r[i][2] * q[2] + p.t[i])
+        };
+        let quarter_z = Placement { r: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], t: [5.0, 0.0, -2.0] };
+        let half_x = Placement { r: [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]], t: [0.0; 3] };
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let tilted = Placement { r: [[s, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, s]], t: [1.0, 2.0, 3.0] };
+        for p in [quarter_z, half_x, tilted, Placement::IDENTITY] {
+            let xfs = placement_transforms(&p).unwrap();
+            for q in [[1.0, 2.0, 3.0], [-4.0, 0.5, 7.0]] {
+                let (a, b) = (apply(&xfs, q), place(&p, q));
+                assert!((0..3).all(|i| (a[i] - b[i]).abs() < 1e-9), "{p:?}: {a:?} {b:?}");
+            }
+        }
+        assert!(placement_transforms(&Placement::IDENTITY).unwrap().is_empty());
+        let mirrored = Placement { r: [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: [0.0; 3] };
+        assert!(placement_transforms(&mirrored).is_none());
+        let scaled = Placement { r: [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]], t: [0.0; 3] };
+        assert!(placement_transforms(&scaled).is_none());
+    }
+
+    #[test]
     fn a_file_with_too_many_design_streams_is_refused() {
         let mut names: Vec<String> = (0..=MAX_F3D_STREAMS).map(|n| format!("D{n}/BulkStream.dat")).collect();
         names.push("Breps.BlobParts/BREP.aa.smb".into());
         let entries: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"noise"[..])).collect();
         let zip = gusset_meshio::archive::write(&entries).unwrap();
         let cancel: CancelFlag = Arc::new(AtomicBool::new(false));
-        let e = f3d(&zip, &Never, &cancel).unwrap_err();
+        let kernel: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel::mock::MockKernel);
+        let e = f3d(&zip, &Never, &kernel, &cancel).unwrap_err();
         assert!(e.message.contains("design streams"), "{e:?}");
     }
 }
