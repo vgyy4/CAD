@@ -382,6 +382,22 @@ fn op_target(j: &mut Map<String, Value>, g: &Graph, d: &Design, fid: u64, names:
         .collect();
     acted.sort();
     acted.dedup();
+    // The bodies it takes part in are the ones its body selections name, where it has any: a body
+    // reached only through a face selection is where it goes to, not a body it acts on (2441:
+    // Extrude11 joins standoffs to Extrude9's body up to a face of Extrude1's, which stays a body
+    // of its own in the file's end bodies).
+    let mut selected: Vec<String> = g
+        .selected_bodies(d, fid)
+        .iter()
+        .filter_map(|l| g.creator.get(l).copied())
+        .filter(|c| *c != fid)
+        .map(|c| names.get(&c).cloned().unwrap_or_else(|| c.to_string()))
+        .collect();
+    selected.sort();
+    selected.dedup();
+    if !selected.is_empty() {
+        acted.retain(|a| selected.contains(a));
+    }
     if matches!(j.get("operation").and_then(Value::as_str), Some("join" | "cut" | "intersect")) {
         let t = match acted.as_slice() {
             [] => Value::Null,
@@ -1250,8 +1266,8 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
 
 /// An extrude or sweep that joins its tool to several bodies and makes none leaves one body:
 /// the tree's feature joins the tool to one of them and a `combine` after it joins the others
-/// to that one. The body that lives on is the one a later feature names (2441: Extrude11 joins
-/// the bodies of Extrude1 and Extrude9, Extrude12 then joins Extrude9's), the first where none
+/// to that one. The body that lives on is the one a later feature names (a join of the bodies of
+/// Extrude1 and Extrude9 followed by a join to Extrude9's keeps Extrude9's), the first where none
 /// does; where later features name two of them the feature stays as it is (refused).
 pub(super) fn joins_of_several_bodies(feats: &mut Vec<Value>) {
     let mut i = 0;
