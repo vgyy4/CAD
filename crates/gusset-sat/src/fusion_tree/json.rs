@@ -1094,6 +1094,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         }
         tag_feats(&mut feats, nbefore, comp.map(|c| (c, comp_name.as_deref())), extra.contains(&fid));
     }
+    joins_of_several_bodies(&mut feats);
     let comp_json: Vec<Value> = comps.iter().map(|(c, n, b)| json!({"name": n, "source_id": c, "bodies": b})).collect();
     let with_bodies = comps.iter().filter(|c| !c.2.is_empty()).count();
     let distinct: HashSet<Option<&str>> = feats.iter().map(|f| f.get("component").and_then(Value::as_str)).collect();
@@ -1103,6 +1104,75 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         "single_component": distinct.len() <= 1 && with_bodies <= 1,
         "component_records": d.ids.iter().filter(|i| d.is(**i, "E03784ED")).count(),
     })
+}
+
+/// An extrude or sweep that joins its tool to several bodies and makes none leaves one body:
+/// the tree's feature joins the tool to one of them and a `combine` after it joins the others
+/// to that one. The body that lives on is the one a later feature names (2441: Extrude11 joins
+/// the bodies of Extrude1 and Extrude9, Extrude12 then joins Extrude9's), the first where none
+/// does; where later features name two of them the feature stays as it is (refused).
+pub(super) fn joins_of_several_bodies(feats: &mut Vec<Value>) {
+    let mut i = 0;
+    while i < feats.len() {
+        let Some(f) = feats.get(i) else { break };
+        let targets: Vec<String> = f
+            .get("target")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        let joins = matches!(f.get("type").and_then(Value::as_str), Some("extrude" | "sweep"))
+            && f.get("operation").and_then(Value::as_str) == Some("join")
+            && f.get("creates_bodies").and_then(Value::as_u64) == Some(0)
+            && targets.len() >= 2
+            && f.get("target").and_then(Value::as_array).is_some_and(|a| a.len() == targets.len());
+        if !joins {
+            i += 1;
+            continue;
+        }
+        // The bodies later features name, as a target or a tool.
+        let mut later: Vec<&String> = Vec::new();
+        for g in feats.iter().skip(i + 1) {
+            for key in ["target", "tools"] {
+                let named: Vec<&str> = match g.get(key) {
+                    Some(Value::String(t)) => vec![t.as_str()],
+                    Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).collect(),
+                    _ => Vec::new(),
+                };
+                for t in &targets {
+                    if named.contains(&t.as_str()) && !later.contains(&t) {
+                        later.push(t);
+                    }
+                }
+            }
+        }
+        let keep = match later.as_slice() {
+            [] => targets.first().cloned(),
+            [one] => Some((*one).clone()),
+            _ => None,
+        };
+        let Some(keep) = keep else {
+            i += 1;
+            continue;
+        };
+        let tools: Vec<String> = targets.iter().filter(|t| **t != keep).cloned().collect();
+        let Some(Value::Object(o)) = feats.get_mut(i) else { break };
+        o.insert("target".into(), keep.as_str().into());
+        let name = o.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+        let mut c = Map::new();
+        c.insert("type".into(), "combine".into());
+        c.insert("name".into(), format!("{name} bodies").into());
+        c.insert("target".into(), keep.into());
+        c.insert("tools".into(), tools.into());
+        c.insert("operation".into(), "join".into());
+        c.insert("note".into(), format!("{name} joins its tool to several bodies: they are one body after it").into());
+        for key in ["source_id", "component", "_component", "in_timeline"] {
+            if let Some(v) = o.get(key) {
+                c.insert(key.into(), v.clone());
+            }
+        }
+        feats.insert(i + 1, Value::Object(c));
+        i += 2;
+    }
 }
 
 /// Shell `E8063467`: the faces it removes are `7ACC2A03` face recipes under its selection records

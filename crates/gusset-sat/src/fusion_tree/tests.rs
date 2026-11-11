@@ -1601,3 +1601,31 @@ fn a_region_cut_by_other_curves_gets_a_point_in_every_face() {
     let across: Vec<geom::P2> = vec![[-1.0, 2.0], [5.0, 2.0]];
     assert_eq!(geom::face_points(&square, &[&hole], &[&across]).unwrap().len(), 2);
 }
+
+#[test]
+fn a_join_of_several_bodies_is_a_join_and_a_combine() {
+    let join = |name: &str, target: serde_json::Value| json!({"type": "extrude", "name": name, "operation": "join", "creates_bodies": 0, "target": target, "component": "Top"});
+    // The body a later feature names lives on.
+    let mut feats = vec![join("Extrude11", json!(["Extrude1", "Extrude9"])), join("Extrude12", json!("Extrude9"))];
+    super::json::joins_of_several_bodies(&mut feats);
+    assert_eq!(feats.len(), 3);
+    assert_eq!(feats[0]["target"], "Extrude9");
+    assert_eq!(feats[1]["type"], "combine");
+    assert_eq!(feats[1]["name"], "Extrude11 bodies");
+    assert_eq!((&feats[1]["target"], &feats[1]["tools"]), (&json!("Extrude9"), &json!(["Extrude1"])));
+    assert_eq!(feats[1]["component"], "Top");
+    // No later feature names one: the first.
+    let mut feats = vec![join("Extrude7", json!(["Extrude1", "Extrude6"]))];
+    super::json::joins_of_several_bodies(&mut feats);
+    assert_eq!((&feats[0]["target"], &feats[1]["tools"]), (&json!("Extrude1"), &json!(["Extrude6"])));
+    // Later features name both, or the join also makes a body: left as it is.
+    let mut feats =
+        vec![join("E3", json!(["A", "B"])), json!({"type": "combine", "name": "C", "target": "A", "tools": ["B"]})];
+    super::json::joins_of_several_bodies(&mut feats);
+    assert_eq!((feats.len(), &feats[0]["target"]), (2, &json!(["A", "B"])));
+    let mut makes = join("E4", json!(["A", "B"]));
+    makes["creates_bodies"] = 1.into();
+    let mut feats = vec![makes];
+    super::json::joins_of_several_bodies(&mut feats);
+    assert_eq!(feats.len(), 1);
+}
