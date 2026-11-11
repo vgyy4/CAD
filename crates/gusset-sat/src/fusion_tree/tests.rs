@@ -1915,3 +1915,50 @@ fn a_joint_that_disagrees_with_the_stored_placement_places_nothing() {
         let _ = super::joint_placements(&m, &bulk[..cut]);
     }
 }
+
+/// A Base Feature (10) with the PM bodies `pm`, the one DM body 31 (its body link 41) and the PM
+/// bodies named again `again`; the PM bodies' state list (50) names the blob `BREP.pm.smb`.
+fn base_feature(pm: &[u64], again: &[u64]) -> (Vec<u8>, Vec<u8>) {
+    const CLASSES: [&str; 5] = [
+        "D7015B81-0000-0000-0000-000000000000",
+        "D3937028-0000-0000-0000-000000000000",
+        "CD57BC48-0000-0000-0000-000000000000",
+        "40DCC3F4-0000-0000-0000-000000000000",
+        "D26351F0-0000-0000-0000-000000000000",
+    ];
+    let refs = |ids: &[u64]| ids.iter().flat_map(|i| r#ref(*i)).collect::<Vec<u8>>();
+    let mut bf: Vec<u64> = pm.to_vec();
+    bf.push(31);
+    bf.extend(again);
+    bf.push(41);
+    let mut list: Vec<u64> = pm.to_vec();
+    list.push(60);
+    list.extend(pm);
+    let mut recs: Vec<(u64, usize, Vec<u8>)> = vec![(10, 0, refs(&bf)), (31, 1, refs(&[51]))];
+    recs.extend(pm.iter().map(|b| (*b, 1, refs(&[50]))));
+    recs.extend([(50, 2, refs(&list)), (51, 2, refs(&[31])), (60, 3, ws("BREP.pm.smb")), (41, 4, refs(&[31, 10]))]);
+    let mut bulk = Vec::new();
+    let mut objs = Vec::new();
+    for (id, class, body) in recs {
+        objs.push((id, bulk.len() as u64, class));
+        bulk.extend(record(256 + class as u32, id, &body));
+    }
+    (meta_classes(&CLASSES, &objs), bulk)
+}
+
+#[test]
+fn the_inputs_a_base_feature_drops_are_the_pm_bodies_it_names_once() {
+    // Three PM bodies; the third becomes the DM body: the first two are dropped.
+    let (m, bulk) = base_feature(&[21, 22, 23], &[23]);
+    let d = Design::new(&m, &bulk).unwrap();
+    let g = super::Graph::new(&d);
+    assert_eq!(json::base_feature_inputs(&d, &g, 10), Some(json!({"brep": "BREP.pm.smb", "count": 3, "kept": [2]})));
+    // One PM body that becomes the DM body: nothing is dropped.
+    let (m, bulk) = base_feature(&[21], &[21]);
+    let d = Design::new(&m, &bulk).unwrap();
+    assert_eq!(json::base_feature_inputs(&d, &super::Graph::new(&d), 10), None);
+    // The kept body is not one of the PM bodies: the records do not say it plainly.
+    let (m, bulk) = base_feature(&[21, 22, 23], &[24]);
+    let d = Design::new(&m, &bulk).unwrap();
+    assert_eq!(json::base_feature_inputs(&d, &super::Graph::new(&d), 10), None);
+}

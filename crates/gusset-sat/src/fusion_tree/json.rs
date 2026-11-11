@@ -1546,7 +1546,7 @@ fn base_feature_bodies(d: &Design, g: &Graph, fid: u64) -> Result<Vec<(String, u
 /// bodies that become the DM bodies, in DM order (section 13): 5021's slide potentiometer has 15
 /// PM bodies and 6 DM bodies, and the 9 PM bodies named once (three 0.028 mm3 blocks, pins and a
 /// housing at other places) are in the component's `.smb` but in no later body.
-fn base_feature_inputs(d: &Design, g: &Graph, fid: u64) -> Option<Value> {
+pub(super) fn base_feature_inputs(d: &Design, g: &Graph, fid: u64) -> Option<Value> {
     let refs: Vec<u64> = ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "D3937028")).collect();
     let mut dm: Vec<u64> = Vec::new();
     for link in ref_ids(d, d.rec(fid)) {
