@@ -1651,10 +1651,16 @@ fn fusion_history(
                 .collect();
             Ok((t, note))
         }
-        Err(why) if bodies.len() > 1 && why.contains("mm3") => {
+        Err(why) if why.contains("mm3") => {
+            // One stored solid cannot be told into states and tools; with the file's end bodies
+            // it is the state the end bodies follow.
+            let ends = fusion_end_bodies(&tree, &entries, kernel, importer, cancel);
+            if bodies.len() <= 1 && ends.is_empty() {
+                return Err(why);
+            }
             let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
             t.stored_bodies = stored;
-            let note = fusion_states_check(&mut t, bodies, kernel, file_name)
+            let note = fusion_states_check(&mut t, bodies, &ends, kernel, file_name)
                 .map_err(|states| format!("{why}; checked step by step: {states}"))?;
             Ok((t, Some(note)))
         }
@@ -1791,6 +1797,60 @@ fn fusion_stored_bodies(
     Ok(out)
 }
 
+/// The volumes of the design's end bodies as the file stores them apart from the `.smb` solids: the
+/// bodies of its history blobs (`BREP.<id>.smbh`), each the sum of its solids. In a design without
+/// Base Features these are the component's bodies as the timeline leaves them (1501: the five
+/// bodies after the last chamfer, where the `.smb` holds the states before the blends and the cut
+/// tools; 2011 and 931: the one filleted body). Empty, so that nothing is concluded from them,
+/// where the tree has a stored body (a Base Feature's blob holds its own bodies), where a blob or
+/// one of its solid bodies cannot be read, or where there are too many.
+fn fusion_end_bodies(
+    tree: &Value,
+    entries: &[(String, Vec<u8>)],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
+) -> Vec<f64> {
+    let feats = tree.get("features").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+    if feats.iter().any(|f| f.get("type").and_then(Value::as_str) == Some("stored_body")) {
+        return Vec::new();
+    }
+    let limits = gusset_sat::Limits::default();
+    let mut out = Vec::new();
+    for (_, blob) in
+        entries.iter().filter(|(n, _)| n.contains("Breps.BlobParts/") && n.to_ascii_lowercase().ends_with(".smbh"))
+    {
+        let Ok(count) = gusset_sat::body_count(blob, &limits) else { return Vec::new() };
+        if out.len() + count > MAX_F3D_BODIES {
+            return Vec::new();
+        }
+        for nth in 0..count {
+            if cancel.load(Ordering::Relaxed) {
+                return Vec::new();
+            }
+            let step = match gusset_sat::to_step_nth(blob, "end body", &limits, None, nth, count) {
+                Ok(c) => c.step,
+                // A sheet body is no body of the rebuilt model either.
+                Err(gusset_sat::SatError::Unsupported(why)) if why.ends_with("is not a solid") => continue,
+                Err(_) => return Vec::new(),
+            };
+            let Ok(solids) = importer.import("step", step.as_bytes(), cancel) else { return Vec::new() };
+            let mut volume = 0.0;
+            for (_, solid) in &solids {
+                let Some(v) = kernel.read_native(solid).ok().and_then(|s| kernel.mass_properties(&s).ok()) else {
+                    return Vec::new();
+                };
+                volume += v.volume;
+            }
+            if solids.is_empty() {
+                return Vec::new();
+            }
+            out.push(volume);
+        }
+    }
+    out
+}
+
 /// How many copies of its cut tool (or added body) each feature makes, from the tree: a cut or
 /// join extrude one, a hole its positions, a linear pattern its count less one times the copies
 /// of the features it repeats, a mirror the copies of the features it mirrors. `None` where it
@@ -1877,9 +1937,22 @@ fn fusion_explain_steps(
     names: &[String],
     inside: &mut ToolsInside<'_>,
 ) -> Result<(usize, usize), String> {
-    let steps = FusionSteps { vols, per_body, per_solid: &[], stored, insts, loose, names };
+    let steps = FusionSteps { vols, per_body, per_solid: &[], stored, insts, loose, names, ends: &[] };
     fusion_explain_placed(&steps, inside, &mut |_, tools| Ok(tools.to_vec()))
         .map(|(states, tools)| (states, tools.len()))
+}
+
+/// Whether the finished bodies of the rebuilt model (`built`, volumes) are the end bodies the file
+/// stores (`ends`): every finished body has an end body of its volume and every end body a
+/// finished body of its volume (within [`FREECAD_VOLUME_TOLERANCE`]). Not counted one for one: a
+/// component that stands in several places is stored once, and a blob can list a body twice.
+/// Never so where the file stores no end bodies or the model has none.
+fn fusion_ends_agree(built: &[f64], ends: &[f64]) -> bool {
+    let same = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
+    !ends.is_empty()
+        && !built.is_empty()
+        && built.iter().all(|b| ends.iter().any(|e| same(*e, *b)))
+        && ends.iter().all(|e| built.iter().any(|b| same(*e, *b)))
 }
 
 /// What [`fusion_explain_placed`] compares: see [`fusion_explain_steps`].
@@ -1893,6 +1966,9 @@ struct FusionSteps<'a> {
     insts: &'a [Option<u64>],
     loose: &'a [bool],
     names: &'a [String],
+    /// The bodies the file stores as the design's end result ([`fusion_end_bodies`]); empty
+    /// where it stores none.
+    ends: &'a [f64],
 }
 
 /// Of some stored tools (indices into the stored solids), the ones that are not, for feature `k`,
@@ -1911,7 +1987,7 @@ fn fusion_explain_placed(
     inside: &mut ToolsInside<'_>,
     firsts: &mut ToolsFirst<'_>,
 ) -> Result<(usize, Vec<(usize, bool)>), String> {
-    let FusionSteps { vols, per_body, per_solid, stored, insts, loose, names } = *steps;
+    let FusionSteps { vols, per_body, per_solid, stored, insts, loose, names, ends } = *steps;
     let same = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
     let delta = |k: usize| -> f64 {
         match (vols.get(k), k.checked_sub(1).and_then(|p| vols.get(p))) {
@@ -2102,6 +2178,11 @@ fn fusion_explain_placed(
     };
     let last =
         (1..vols.len()).rev().find(|k| changed(*k).iter().any(|b| stored.iter().any(|s| same(*s, *b)))).unwrap_or(0);
+    // The file's own end bodies confirm the features after the last stored state together: the
+    // finished bodies are those bodies.
+    if fusion_ends_agree(per_body.last().map_or(&[][..], Vec::as_slice), ends) {
+        return Ok((states, tool_at.into_iter().enumerate().map(|(i, at)| (at, joined.contains(&i))).collect()));
+    }
     for k in last + 1..vols.len() {
         if delta(k) <= 1e-9 {
             continue;
@@ -2127,12 +2208,16 @@ fn fusion_explain_placed(
 /// removes or adds being exactly the tool times the number of copies the tree makes
 /// ([`fusion_instances`]: a hole's positions, the counts of the patterns that repeat it). Every
 /// feature after the last stored state must be explained that way, so a wrong pattern count is
-/// refused; one whose copies cannot be derived is refused too. The finished model must also lie
+/// refused; one whose copies cannot be derived is refused too, unless the file stores the design's
+/// end bodies (`ends`, [`fusion_end_bodies`]) and the finished bodies are those, volume for volume
+/// ([`fusion_ends_agree`]): then the end result itself is what confirms the last features, as it
+/// does for a file whose `.smb` holds the end result. The finished model must also lie
 /// in the box of the stored solids that are states or tools of joins (a cut's tool may reach out
 /// of the body it cuts).
 fn fusion_states_check(
     tree: &mut crate::tree_import::Tree,
     bodies: &[PreparedBody],
+    ends: &[f64],
     kernel: &Arc<dyn gusset_kernel::Kernel>,
     file_name: &str,
 ) -> Result<String, String> {
@@ -2403,8 +2488,10 @@ fn fusion_states_check(
         insts: &insts,
         loose: &loose,
         names: &names,
+        ends,
     };
     let (states, tool_at) = fusion_explain_placed(&steps, &mut inside, &mut firsts)?;
+    let by_ends = fusion_ends_agree(per_body.last().map_or(&[][..], Vec::as_slice), ends);
     // The tools of cuts: a tool that only ever adds material is part of the model.
     let cut_tools: Vec<usize> = tool_at.iter().filter(|(_, joined)| !joined).map(|(at, _)| *at).collect();
     let tools = tool_at.len();
@@ -2428,8 +2515,13 @@ fn fusion_states_check(
         }
     }
     tree.bodies = vec![crate::tree_import::TreeBody { name: "all".into(), volume_mm3: Some(final_vol) }];
+    let after = if by_ends {
+        "the finished bodies are the end bodies of the file's history blob, volume for volume"
+    } else {
+        "every feature after the last state removes exactly its tool times the copies the tree makes"
+    };
     Ok(format!(
-        "the file stores the steps of the design, not its end result: {states} stored solids are states of the rebuilt model and {tools} are its cut tools; every feature after the last state removes exactly its tool times the copies the tree makes"
+        "the file stores the steps of the design, not its end result: {states} stored solids are states of the rebuilt model and {tools} are its cut tools; {after}"
     ))
 }
 
@@ -3664,6 +3756,7 @@ mod fusion_steps_tests {
             insts: &insts,
             loose: &loose,
             names: &names_,
+            ends: &[],
         };
         assert_eq!(
             fusion_explain_placed(&all, &mut inside, &mut firsts),
@@ -3683,8 +3776,60 @@ mod fusion_steps_tests {
             insts: &insts,
             loose: &loose,
             names: &names_,
+            ends: &[],
         };
         assert!(fusion_explain_placed(&bad, &mut inside, &mut firsts).is_err());
+    }
+
+    #[test]
+    fn blends_after_the_last_stored_state_need_the_files_end_bodies() {
+        // A plate (stored), a part (stored), then a fillet of the part that no stored solid shows.
+        let t = vec![
+            json!({"type": "extrude", "name": "Plate", "operation": "new"}),
+            json!({"type": "extrude", "name": "Part", "operation": "new"}),
+            json!({"type": "fillet", "name": "Fillet1"}),
+        ];
+        let per_body = vec![vec![], vec![100.0], vec![100.0, 7.0], vec![100.0, 6.5]];
+        let vols = [0.0, 100.0, 107.0, 106.5];
+        let stored = [100.0, 7.0];
+        let (insts, loose, names_) = (fusion_instances(&t), fusion_loose(&t), names(&t));
+        let mut inside = |_: usize, _: &[usize]| -> Result<Option<Vec<[f64; 2]>>, String> { Ok(None) };
+        let mut check = |ends: &[f64]| {
+            let steps = FusionSteps {
+                vols: &vols,
+                per_body: &per_body,
+                per_solid: &[],
+                stored: &stored,
+                insts: &insts,
+                loose: &loose,
+                names: &names_,
+                ends,
+            };
+            fusion_explain_placed(&steps, &mut inside, &mut |_, tools| Ok(tools.to_vec())).map(|(states, _)| states)
+        };
+        // No end bodies in the file: the fillet is unconfirmed.
+        assert!(check(&[]).unwrap_err().contains("Fillet1"));
+        // The end bodies are the finished bodies (a body may be listed twice): confirmed.
+        assert_eq!(check(&[100.0, 6.5]), Ok(2));
+        assert_eq!(check(&[6.5, 100.0, 100.0]), Ok(2));
+        // Another volume, a body the model lacks, or a body the file lacks: not confirmed.
+        assert!(check(&[100.0, 6.4]).is_err());
+        assert!(check(&[100.0, 6.5, 3.0]).is_err());
+        assert!(check(&[100.0]).is_err());
+        // The end bodies stand in for no stored solid: an unexplained one is still refused.
+        let odd = [100.0, 7.0, 55.0];
+        let steps = FusionSteps {
+            vols: &vols,
+            per_body: &per_body,
+            per_solid: &[],
+            stored: &odd,
+            insts: &insts,
+            loose: &loose,
+            names: &names_,
+            ends: &[100.0, 6.5],
+        };
+        let why = fusion_explain_placed(&steps, &mut inside, &mut |_, tools| Ok(tools.to_vec())).unwrap_err();
+        assert!(why.contains("neither a state"), "{why}");
     }
 
     #[test]
