@@ -663,7 +663,8 @@ pub(super) fn face_points(outer: &[P2], holes: &[&[P2]], others: &[&[P2]]) -> Op
         }
     }
     if best.is_empty() {
-        return None;
+        // Narrower than a grid step: the one point the finer search finds, as before.
+        return interior_point(outer, holes).map(|p| vec![p]);
     }
     Some(best.into_iter().map(|b| b.2).collect())
 }
