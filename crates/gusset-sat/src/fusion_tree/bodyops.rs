@@ -55,6 +55,12 @@ impl Edit<'_> {
         let single = entry.is_some_and(|f| {
             matches!(f.get("type").and_then(Value::as_str), Some("extrude" | "sweep" | "stored_body"))
                 && f.get("creates_bodies").and_then(Value::as_u64).is_none_or(|n| n == 1)
+        }) || entry.is_some_and(|f| {
+            // A mirror of one body into a new body (no merge): the copy is the mirror's body.
+            f.get("type").and_then(Value::as_str) == Some("mirror")
+                && f.get("merge").and_then(Value::as_bool) == Some(false)
+                && f.get("creates_bodies").and_then(Value::as_u64) == Some(1)
+                && f.get("features").and_then(Value::as_array).is_some_and(Vec::is_empty)
         });
         if single {
             return Ok(name.clone());

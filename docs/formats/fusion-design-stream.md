@@ -1533,3 +1533,33 @@ Reader: `timeline` in `fusion_tree/mod.rs`, `carry_moved_bodies` in `fusion_tree
   `Extrude - Housing`). A move whose halves are not one Base Feature making one body and one RemoveBody of one body
   is refused.
 * 5358 and 5360 now stop at a later feature (below).
+
+### The header package (5905, 5967): what its features needed
+* **Two-sided extrude with a taper per side.** `PinSocket` has `AlongDistance` 0.322 mm with `TaperAngle` 45 deg and
+  `AgainstDistance` 2.558 mm with `Side2TaperAngle` 0: a lead-in widening to the top face, then a straight hole. The
+  stored cut tool is 0.7493 mm3 = 0.46^2 x 2.558 (straight) + the frustum 0.322/3 (0.46^2 + 1.104^2 + 0.46 x 1.104).
+  The reader made it one extrude of 2.88 mm from a moved sketch tapered over its whole length; now the extrude keeps
+  both reaches and both tapers (`distance2`, `taper2_deg`; ADR 0042 amendment) and the importer builds and drafts
+  each side from the sketch plane and cuts both in one combine.
+* **Pattern of a tapered cut.** The importer wrote a tapered cut as a new body, a draft and a combine, and named the
+  feature by the target body: a feature pattern of it then repeated the body. The feature is now the combine.
+* **A symmetric direction of two.** `PinPattern2` (20 x 2) has the V direction marked symmetric (the third double after
+  the `ff ff ff ff` of its `EA0E146E`) with a count of 2 and `vSpaceDistance` -2.54 mm (`-param_e`). The header body
+  spans y -3.81..1.27 mm and Move1 moves the mirrored pin row by -2.54 mm, so the two instances are the original and
+  one copy at the signed spacing. Only a count of 2 is read that way; other even counts stay refused. The 39
+  `AD719C1A` records (one per copy) and the `EA0E146E`'s 39 index pairs number the copies; not decoded.
+* **A body mirror's copy as a body.** MirrorPin1 mirrors the Pin body into a new body (no merge); Move1 selects that
+  body and R-Pattern3 patterns the mirror feature. A move or remove may now target a one-body mirror of a body, and a
+  pattern of such a mirror is a pattern of its body (`merge: false`, one new body per copy as the file has).
+* **Chamfer of two distances.** Holder `0D383DB2` (also the holder of newer equal chamfers) with `Distance 1` and
+  `Distance 2` (5905: `param_b / 4` = 0.115 mm and `param_b / 1.5` = 0.3067 mm; 5358: 0.3/0.5 and 0.2/0.5 mm). The
+  chamfer record names its edges as `01`, `u32 n`, then n `u64`s (0, 0x200, 0x300, ...: edge numbers, not
+  references); the holder's bytes are the same in every sample, so no flag says which face `Distance 1` runs along.
+  The stored bodies say it: of an edge's two planar faces A and B, A is the reference when a stored point of A lies
+  `Distance 1` (times the sine of the faces' angle) from plane B and a stored point of B lies `Distance 2` from plane
+  A, and not the other way round; all edges must agree on one face, which becomes the chamfer's `face` (a stored-face
+  pick, moved with the component's placement). 5905's pin tip: the end face takes 0.115 mm, the sides 0.3067 mm
+  (the other way round, 2 x 0.3067 mm would not fit the 0.46 mm pin).
+* 5967 then builds every header (the stored pin states 0.6504 and 0.6774 mm3 and the socket tool 0.7493 mm3 are
+  explained) and stops at the board: `Extrude2` (the board's PCB cut) changes the volume by 835.9874 mm3 while the
+  537 stored tools no other feature explains hold 687.7067 mm3.

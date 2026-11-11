@@ -368,6 +368,65 @@ impl Ctx<'_> {
         None
     }
 
+    /// A chamfer of two distances (`Distance 1`, `Distance 2`, cm, in a `0D383DB2` holder): the
+    /// face `Distance 1` runs along, as the tree's face pick. The record holds no side flag that
+    /// differs between the samples, so the stored bodies decide (section 30): per edge, of its
+    /// two planar faces A and B, A is the reference when a stored point of A lies `Distance 1`
+    /// from the edge (`d1 sin` of the faces' angle from plane B) and a stored point of B lies
+    /// `Distance 2` from it, and the other way round not; every edge must name the same face.
+    pub(super) fn chamfer_reference(&mut self, fid: u64, d1: f64, d2: f64) -> Result<serde_json::Value, String> {
+        const TOL: f64 = 1e-6;
+        if (d1 - d2).abs() < 1e-9 {
+            return Err("the two distances are equal".into());
+        }
+        let d = self.d;
+        let mut chosen: Option<(String, Vec<i32>)> = None;
+        let mut edges = 0;
+        for (_, recs) in self.blend_groups(fid, &["Distance 1"]) {
+            for rid in recs {
+                let (kind, faces) = naming::recipe(d, rid);
+                let (Some(RecipeKind::Edge), Some(faces)) = (kind, faces) else { continue };
+                let (Some(a), Some(b)) =
+                    (faces.first().and_then(|f| f.first()).cloned(), faces.get(1).and_then(|f| f.first()).cloned())
+                else {
+                    return Err("an edge does not name two faces".into());
+                };
+                let (Some(pa), Some(pb)) = (self.stored_face(&a.0, &a.1), self.stored_face(&b.0, &b.1)) else {
+                    return Err("a face of an edge is not on the stored bodies".into());
+                };
+                let (
+                    naming::Surface::Plane { origin: oa, normal: na },
+                    naming::Surface::Plane { origin: ob, normal: nb },
+                ) = (&pa.surface, &pb.surface)
+                else {
+                    return Err("a face of an edge is not planar".into());
+                };
+                let sin = super::geom::norm(cross(*na, *nb));
+                if sin < 1e-6 {
+                    return Err("the two faces of an edge are parallel".into());
+                }
+                // Points of one face at `dist` from the other face's plane.
+                let has = |pts: &[V3], o: V3, n: V3, dist: f64| {
+                    pts.iter().any(|p| (dot(n, super::geom::sub(*p, o)).abs() - dist * sin).abs() < TOL)
+                };
+                let a_ref = has(&pa.points, *ob, *nb, d1) && has(&pb.points, *oa, *na, d2);
+                let b_ref = has(&pb.points, *oa, *na, d1) && has(&pa.points, *ob, *nb, d2);
+                let face = match (a_ref, b_ref) {
+                    (true, false) => a,
+                    (false, true) => b,
+                    _ => return Err("the stored bodies do not tell which face the first distance runs along".into()),
+                };
+                if chosen.as_ref().is_some_and(|c| *c != face) {
+                    return Err("its edges run the first distance along different faces".into());
+                }
+                chosen = Some(face);
+                edges += 1;
+            }
+        }
+        let face = chosen.filter(|_| edges > 0).ok_or("it has no edges")?;
+        self.stored_face(&face.0, &face.1).map(|p| p.json()).ok_or_else(|| "the reference face is not stored".into())
+    }
+
     /// Per set of a fillet or chamfer: its value (cm), its edges (the middle, and for a curved
     /// edge points along it) and the count of edges not resolved.
     #[allow(clippy::type_complexity)]

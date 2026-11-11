@@ -382,6 +382,11 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
     if let Some(t) = pget(ps, "TaperAngle").and_then(|p| p.value).filter(|t| *t != 0.0) {
         j.insert("taper_deg".into(), round6(t.to_degrees()).into());
     }
+    // The second side of a two-sided extrude has its own taper (section 30); read by
+    // `two_sided_from_a_moved_sketch` and not written to the tree.
+    if let Some(t) = pget(ps, "Side2TaperAngle").and_then(|p| p.value) {
+        j.insert("_taper2_deg".into(), round6(t.to_degrees()).into());
+    }
     if e.sketch.is_none() {
         j.insert("profile_note".into(), "profile is not a sketch profile (face or PCB data)".into());
     }
@@ -438,11 +443,30 @@ fn op_target(j: &mut Map<String, Value>, g: &Graph, d: &Design, fid: u64, names:
 fn two_sided_from_a_moved_sketch(cx: &mut Ctx, j: &mut Map<String, Value>, name: &str, feats: &mut Vec<Value>) {
     let start = j.get("start").and_then(Value::as_f64).unwrap_or(0.0);
     let two_sided = j.get("two_sided").and_then(Value::as_bool) == Some(true);
+    let taper2 = j.remove("_taper2_deg").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let (Some(d1), Some(sid)) =
         (j.get("distance").and_then(Value::as_f64), j.get("sketch_source_id").and_then(Value::as_u64))
     else {
         return;
     };
+    // A taper leans each side from the sketch plane, by its own angle (5905's PinSocket: a 45
+    // degree lead-in 0.322 mm up, a straight hole 2.558 mm down): one extrude from a moved sketch
+    // would lean the whole length. The extrude keeps both reaches and both tapers (section 30).
+    let taper1 = j.get("taper_deg").and_then(Value::as_f64).unwrap_or(0.0);
+    if two_sided
+        && start == 0.0
+        && (taper1 != 0.0 || taper2 != 0.0)
+        && let Some(d2) = j.get("distance2").and_then(Value::as_f64)
+        && d1 * d2 < 0.0
+    {
+        if taper2 != 0.0 {
+            j.insert("taper2_deg".into(), taper2.into());
+        }
+        j.insert("two_sided".into(), false.into());
+        j.insert("extent_from".into(), "both sides, each with its own taper".into());
+        j.remove("distance2_expr");
+        return;
+    }
     // The solid lies between the two reaches (a negative second distance starts it off the
     // sketch plane, on the first side); both move with the start.
     let (d1, d2) = match j.get("distance2").and_then(Value::as_f64) {
@@ -797,7 +821,12 @@ pub(super) fn linear_pattern_chain(p: &PatternInputs) -> Option<Vec<Value>> {
     let mut out: Vec<Value> = Vec::new();
     let mut made: Vec<String> = Vec::new();
     for (tag, (_, dir), sp, n, sy) in jobs {
-        let parts: Vec<(f64, i64)> = if sy {
+        let parts: Vec<(f64, i64)> = if sy && n == 2 {
+            // Two instances, symmetric: the original and one copy at the stored (signed)
+            // spacing (5905's PinPattern2: the second row of a 2 x 20 header at -2.54 mm, where
+            // the header body is; section 30). Other even counts are not established.
+            vec![(sp, 2)]
+        } else if sy {
             if n % 2 == 0 {
                 return None;
             }
@@ -1190,9 +1219,35 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         } else if d.is(fid, "A07D5F17") || d.is(fid, "F757D611") {
             let fil = d.is(fid, "A07D5F17");
             let key = if fil { "radius" } else { "distance" };
-            let role: &[&str] = if fil { &["Radius"] } else { &["Distance", "leftDistance"] };
+            // A chamfer of two distances (section 30): the first along a reference face.
+            let two = if fil {
+                None
+            } else {
+                match (
+                    feature::param_values(d, fid, &["Distance 1"]).first().copied(),
+                    feature::param_values(d, fid, &["Distance 2"]).first().copied(),
+                ) {
+                    (Some(d1), Some(d2)) => Some(cx.chamfer_reference(fid, d1, d2).map(|f| (d2, f))),
+                    _ => None,
+                }
+            };
+            let role: &[&str] = match (fil, &two) {
+                (true, _) => &["Radius"],
+                (false, Some(_)) => &["Distance 1"],
+                (false, None) => &["Distance", "leftDistance"],
+            };
             for (k, (v, es, bad)) in cx.blend_sets(fid, role).into_iter().enumerate() {
                 let mut j = Map::new();
+                match &two {
+                    Some(Ok((d2, face))) => {
+                        j.insert("distance2".into(), mm(*d2).into());
+                        j.insert("face".into(), face.clone());
+                    }
+                    Some(Err(why)) => {
+                        j.insert("error".into(), format!("a chamfer of two distances: {why}").into());
+                    }
+                    None => {}
+                }
                 j.insert("type".into(), if fil { "fillet" } else { "chamfer" }.into());
                 j.insert("name".into(), if k == 0 { nm.clone() } else { format!("{nm} set {}", k + 1) }.into());
                 j.insert("source_id".into(), fid.into());
@@ -1286,6 +1341,24 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         } else if d.is(fid, "AE12AD3F") || d.is(fid, "E8816367") || d.is(fid, "11F1A5CE") {
             let linear = !d.is(fid, "11F1A5CE");
             let ins = g.inputs(d, fid);
+            // A pattern of one feature that made a body of its own, a mirror of a body into a
+            // new one (5905's R-Pattern3): the copies are copies of that body, a body pattern.
+            let body_feature: Option<String> = match ins.as_slice() {
+                [one] => names
+                    .get(one)
+                    .filter(|n| {
+                        feats.iter().any(|f| {
+                            f.get("name").and_then(Value::as_str) == Some(n.as_str())
+                                && f.get("type").and_then(Value::as_str) == Some("mirror")
+                                && f.get("merge").and_then(Value::as_bool) == Some(false)
+                                && f.get("creates_bodies").and_then(Value::as_u64) == Some(1)
+                                && f.get("features").and_then(Value::as_array).is_some_and(Vec::is_empty)
+                        })
+                    })
+                    .cloned(),
+                _ => None,
+            };
+            let ins = if body_feature.is_some() { Vec::new() } else { ins };
             let mut ps: Params = Vec::new();
             for q in ref_ids(d, d.rec(fid)) {
                 if d.is(q, "D91D429C") || d.is(q, "A085449A") {
@@ -1325,8 +1398,8 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             }
             // A pattern of bodies names no feature: the bodies it copies are the ones its input
             // records reach, each named by the feature that made it.
-            let mut body_in: Vec<String> = Vec::new();
-            if ins.is_empty() {
+            let mut body_in: Vec<String> = body_feature.into_iter().collect();
+            if body_in.is_empty() && ins.is_empty() {
                 for l in g.selected_bodies(d, fid) {
                     if let Some(c) = g.creator.get(&l).copied().filter(|c| *c != fid)
                         && let Some(n) = names.get(&c)
@@ -1909,6 +1982,9 @@ fn blocker(f: &Value) -> Option<String> {
             None
         }
         "fillet" | "chamfer" => {
+            if has("error") {
+                return Some(text("error").unwrap_or("its layout is not recognised").to_string());
+            }
             let empty = f.get("edges").and_then(Value::as_array).is_none_or(Vec::is_empty);
             if empty || has("edges_unresolved") {
                 return Some(format!(
@@ -2122,6 +2198,33 @@ pub(super) fn placement_of(v: &Value) -> Option<crate::fusion::Placement> {
 }
 
 /// Moves one feature by a placement: every point turns and shifts, every direction turns.
+/// Moves a face pick: its point and normal, and a stored pick's points and surface.
+fn move_pick(fc: &mut Map<String, Value>, pl: &crate::fusion::Placement) {
+    let pt = |v: Option<&Value>| get3(v).map(|p| v3mm_raw(xf_point(pl, p)));
+    let dir = |v: Option<&Value>| get3(v).map(|p| v3_9(xf_dir(pl, p)));
+    let (p, n) = (pt(fc.get("point")), dir(fc.get("normal")));
+    for (k, v) in [("point", p), ("normal", n)] {
+        if let Some(v) = v {
+            fc.insert(k.into(), v);
+        }
+    }
+    if let Some(ps) = fc.get_mut("points").and_then(Value::as_array_mut) {
+        for q in ps.iter_mut() {
+            if let Some(m) = pt(Some(q)) {
+                *q = m;
+            }
+        }
+    }
+    if let Some(sf) = fc.get_mut("surface").and_then(Value::as_object_mut) {
+        let (o, n, a) = (pt(sf.get("origin")), dir(sf.get("normal")), dir(sf.get("axis")));
+        for (k, v) in [("origin", o), ("normal", n), ("axis", a)] {
+            if let Some(v) = v {
+                sf.insert(k.into(), v);
+            }
+        }
+    }
+}
+
 pub(super) fn move_feature(f: &mut Value, pl: &crate::fusion::Placement) {
     let pl = *pl;
     let ty = f.get("type").and_then(Value::as_str).unwrap_or("").to_string();
@@ -2139,6 +2242,10 @@ pub(super) fn move_feature(f: &mut Value, pl: &crate::fusion::Placement) {
             }
         }
         "fillet" | "chamfer" => {
+            // A chamfer's reference face (two distances).
+            if let Some(fc) = f.get_mut("face").and_then(Value::as_object_mut) {
+                move_pick(fc, &pl);
+            }
             if let Some(es) = f.get_mut("edges").and_then(Value::as_array_mut) {
                 for e in es {
                     if let Some(m) = pt(e.get("midpoint"))

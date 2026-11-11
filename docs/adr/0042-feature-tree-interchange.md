@@ -548,3 +548,19 @@ the face's boundary (mm, at most 256), and `surface`, the surface the face lies 
   least one point: none, or a tie, skips the feature with the reason. Faces of any surface type
   (revolves, blends, splines) are picked this way; a face the source moved without renaming it
   is picked by the points of all its states, of which the model holds the right ones.
+
+## Amendment (2026-11-11): extrudes to both sides with a taper per side
+
+- An `extrude` may carry `distance2` (mm, signed along the sketch normal as `distance` is, on
+  the other side of the sketch plane) and `taper2_deg` (degrees, as `taper_deg`): the solid runs
+  from the sketch plane to `distance` with `taper_deg` and from it to `distance2` with
+  `taper2_deg`, each wall leaning from the sketch plane. Fusion's two-sided extrudes with a
+  taper have this form (`TaperAngle`, `Side2TaperAngle`): one extrude from a moved sketch would
+  lean the whole length. `distance2` on the same side as `distance`, a symmetric extrude or a
+  revolve with `distance2` is refused.
+- The importer builds each side as an extrude of its own, drafts its side faces about the sketch
+  plane, and puts both into one combine with the target (a new body: the second side joins the
+  first). The feature is that combine, for patterns as for any cut or join: a feature pattern of
+  a tapered extrude repeats what the combine removed or added.
+- A chamfer's `face` (the reference face of `distance2`) may be a stored-face pick (`points`,
+  `surface`); for a component placed by its occurrence the pick moves with the component.
