@@ -1363,7 +1363,10 @@ fn suppressed_instances(d: &Design, fid: u64, copies: usize) -> Option<Vec<u32>>
             continue;
         }
         let ks: Vec<u32> = (0..n).filter_map(|i| u(at + 4 + 4 * i)).collect();
-        if ks.len() == n && ks.iter().all(|k| (2..=copies as u32).contains(k)) && ks.windows(2).all(|w| w[0] < w[1]) {
+        if ks.len() == n
+            && ks.iter().all(|k| (2..=copies as u32).contains(k))
+            && ks.windows(2).all(|w| matches!(w, [a, b] if a < b))
+        {
             cover::field(r, at, 4 * (n + 1), "pattern.suppressed");
             return Some(ks);
         }
