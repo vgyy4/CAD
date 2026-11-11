@@ -1599,24 +1599,6 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         } else if d.is(fid, "AE12AD3F") || d.is(fid, "E8816367") || d.is(fid, "11F1A5CE") {
             let linear = !d.is(fid, "11F1A5CE");
             let ins = g.inputs(d, fid);
-            // A pattern of one feature that made a body of its own, a mirror of a body into a
-            // new one (5905's R-Pattern3): the copies are copies of that body, a body pattern.
-            let body_feature: Option<String> = match ins.as_slice() {
-                [one] => names
-                    .get(one)
-                    .filter(|n| {
-                        feats.iter().any(|f| {
-                            f.get("name").and_then(Value::as_str) == Some(n.as_str())
-                                && f.get("type").and_then(Value::as_str) == Some("mirror")
-                                && f.get("merge").and_then(Value::as_bool) == Some(false)
-                                && f.get("creates_bodies").and_then(Value::as_u64) == Some(1)
-                                && f.get("features").and_then(Value::as_array).is_some_and(Vec::is_empty)
-                        })
-                    })
-                    .cloned(),
-                _ => None,
-            };
-            let ins = if body_feature.is_some() { Vec::new() } else { ins };
             let mut ps: Params = Vec::new();
             for q in ref_ids(d, d.rec(fid)) {
                 if d.is(q, "D91D429C") || d.is(q, "A085449A") {
@@ -1632,6 +1614,43 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 }
             }
             let val = |n: &str| pget(&ps, n).and_then(|p| p.value);
+            // One new body per copy: fewer means the file suppresses some instances (the sample
+            // C-Pattern of 12 makes 9 bodies), which a tree pattern cannot say.
+            let made = g.body_links(d, fid, 4).iter().filter(|l| g.creator.get(l) == Some(&fid)).count();
+            let copies = {
+                let n = val("countU").unwrap_or(1.0).round().max(1.0) as usize;
+                if linear { n * val("CountV").unwrap_or(1.0).round().max(1.0) as usize } else { n }
+            };
+            // A pattern of one feature that made a body of its own, a mirror of a body into a
+            // new one (5905's R-Pattern3): the copies are copies of that body, a body pattern.
+            // So is a pattern of a new-body extrude, revolve or sweep that makes one body per
+            // copy (2190's R-Pattern1 of Extrude4: three bodies), where it is the feature just
+            // before the pattern (no later feature has changed its body).
+            let new_body = |f: &Value| {
+                matches!(f.get("type").and_then(Value::as_str), Some("extrude" | "revolve" | "sweep"))
+                    && f.get("operation").and_then(Value::as_str) == Some("new")
+                    && f.get("creates_bodies").and_then(Value::as_u64) == Some(1)
+                    && made + 1 == copies
+                    && copies > 1
+            };
+            let last_solid = feats.iter().rev().find(|f| f.get("type").and_then(Value::as_str) != Some("sketch"));
+            let body_feature: Option<String> = match ins.as_slice() {
+                [one] => names
+                    .get(one)
+                    .filter(|n| {
+                        feats.iter().any(|f| {
+                            f.get("name").and_then(Value::as_str) == Some(n.as_str())
+                                && f.get("type").and_then(Value::as_str) == Some("mirror")
+                                && f.get("merge").and_then(Value::as_bool) == Some(false)
+                                && f.get("creates_bodies").and_then(Value::as_u64) == Some(1)
+                                && f.get("features").and_then(Value::as_array).is_some_and(Vec::is_empty)
+                        }) || last_solid
+                            .is_some_and(|f| f.get("name").and_then(Value::as_str) == Some(n.as_str()) && new_body(f))
+                    })
+                    .cloned(),
+                _ => None,
+            };
+            let ins = if body_feature.is_some() { Vec::new() } else { ins };
             let in_names: Vec<String> =
                 ins.iter().map(|q| names.get(q).cloned().unwrap_or_else(|| q.to_string())).collect();
             let mut dirs = feature::pattern_dirs(d, fid);
@@ -1667,13 +1686,6 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                     }
                 }
             }
-            // One new body per copy: fewer means the file suppresses some instances (the sample
-            // C-Pattern of 12 makes 9 bodies), which a tree pattern cannot say.
-            let made = g.body_links(d, fid, 4).iter().filter(|l| g.creator.get(l) == Some(&fid)).count();
-            let copies = {
-                let n = val("countU").unwrap_or(1.0).round().max(1.0) as usize;
-                if linear { n * val("CountV").unwrap_or(1.0).round().max(1.0) as usize } else { n }
-            };
             let target: Option<&str> = match body_in.as_slice() {
                 [one] if made + 1 == copies => Some(one.as_str()),
                 _ => None,
