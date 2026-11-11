@@ -465,6 +465,106 @@ fn op_target(j: &mut Map<String, Value>, g: &Graph, d: &Design, fid: u64, names:
 /// Sweep `FCBB1707`: the operation enum is the first u32 of the body; the profile is a `4BD53E5A`
 /// (names its sketch), the path a list of `5A1BF548` -> `E2CEFD18` sketch-curve references
 /// (`u64 sketch data id`, `u64 crv_primary_id`).
+/// An extrude whose profile is a face of a body, not a sketch: where the face is the end cap
+/// of an earlier extrude (one name, that extrude's only operation) that later joins from the
+/// same sketch have built over in part, its profile is the regions of that extrude's sketch
+/// that no such join covers, at the cap (610: Extrude8 cuts 9 mm down from the part of
+/// Extrude1's top that Extrude2, joined on the other region of Sketch1, leaves open; the
+/// bounded face's other faces are those joins' sides). Nothing changes where that is not so.
+fn profile_of_an_exposed_cap(cx: &mut Ctx, fid: u64, j: &mut Map<String, Value>, feats: &[Value]) {
+    if !j.contains_key("profile_note") || !j.get("sketch").is_some_and(Value::is_null) || j.contains_key("start") {
+        return;
+    }
+    let d = cx.d;
+    let faces: Vec<Vec<naming::FaceName>> = cx
+        .edge_recipes_of(fid)
+        .into_iter()
+        .filter_map(|r| match naming::recipe(d, r) {
+            (Some(RecipeKind::BoundedFace | RecipeKind::Face), Some(names)) => Some(names),
+            _ => None,
+        })
+        .collect();
+    let [names] = faces.as_slice() else { return };
+    let Some([(g, ops)]) = names.first().map(Vec::as_slice) else { return };
+    let ([op], "1" | "2") = (ops.as_slice(), g.as_str()) else { return };
+    let Some(x) = u64::try_from(*op).ok().and_then(|o| cx.opmap.get(&o).copied()) else { return };
+    let Some(at) = feats.iter().position(|f| f.get("source_id").and_then(Value::as_u64) == Some(x)) else { return };
+    let Some(xf) = feats.get(at) else { return };
+    let plain = |f: &Value| {
+        f.get("type").and_then(Value::as_str) == Some("extrude")
+            && ["start", "extent_from", "two_sided", "taper_deg", "error"].iter().all(|k| f.get(*k).is_none())
+            && f.get("symmetric").and_then(Value::as_bool) != Some(true)
+    };
+    let (Some(sid), Some(dx), Some(seeds)) = (
+        xf.get("sketch_source_id").and_then(Value::as_u64),
+        xf.get("distance").and_then(Value::as_f64),
+        xf.get("profiles").and_then(Value::as_array),
+    ) else {
+        return;
+    };
+    if !plain(xf) || xf.get("name").and_then(Value::as_str).is_none() {
+        return;
+    }
+    let point = |v: &Value| -> Option<[f64; 2]> {
+        let p = v.get("point")?.as_array()?;
+        Some([p.first()?.as_f64()?, p.get(1)?.as_f64()?])
+    };
+    let mut open: Vec<[f64; 2]> = seeds.iter().filter_map(point).collect();
+    if open.len() != seeds.len() {
+        return;
+    }
+    // The joins from the same sketch that reach past the cap (only the far cap is built over).
+    let mut covering: Vec<u64> = Vec::new();
+    for f in feats.iter().skip(at + 1) {
+        let Some(df) = f.get("distance").and_then(Value::as_f64) else { continue };
+        if plain(f)
+            && f.get("operation").and_then(Value::as_str) == Some("join")
+            && f.get("sketch_source_id").and_then(Value::as_u64) == Some(sid)
+            && g == "2"
+            && df * dx > 0.0
+            && df.abs() > dx.abs()
+        {
+            let Some(fs) = f.get("profiles").and_then(Value::as_array) else { return };
+            for q in fs.iter().filter_map(point) {
+                open.retain(|p| (p[0] - q[0]).abs() > 1e-6 || (p[1] - q[1]).abs() > 1e-6);
+            }
+            covering.extend(f.get("source_id").and_then(Value::as_u64));
+        }
+    }
+    // The faces that bound the face are those joins'.
+    let bounded_by_them = names.iter().skip(1).all(|f| {
+        f.iter().all(|(_, o)| {
+            o.first()
+                .and_then(|o| u64::try_from(*o).ok())
+                .and_then(|o| cx.opmap.get(&o))
+                .is_some_and(|c| covering.contains(c))
+        })
+    });
+    if open.is_empty() || open.len() == seeds.len() || !bounded_by_them {
+        return;
+    }
+    let Some(pl) = cx.sketch(sid).plane else { return };
+    let Some(e) = extrude_raw(d, fid) else { return };
+    let (Some(v), Some(along)) = (e.vec, pget(&e.params, "AlongDistance").and_then(|p| p.value)) else { return };
+    if dot(pl.z, v).abs() < 1e-6 {
+        return;
+    }
+    let sign = if dot(pl.z, v) >= 0.0 { 1.0 } else { -1.0 };
+    let t = if g == "2" { dx } else { 0.0 };
+    j.remove("profile_note");
+    j.insert("sketch".into(), xf.get("sketch").cloned().unwrap_or(Value::Null));
+    j.insert("sketch_source_id".into(), sid.into());
+    j.insert("profiles".into(), open.iter().map(|p| json!({"point": p})).collect::<Vec<_>>().into());
+    j.insert("distance".into(), (mm(along) * sign).into());
+    if t != 0.0 {
+        j.insert("start".into(), t.into());
+    }
+    j.insert(
+        "profile_from".into(),
+        "the regions of an earlier extrude's sketch left open at its end cap (the face it extrudes)".into(),
+    );
+}
+
 /// An extrude to both sides by two distances has no form of its own in the tree: it becomes one
 /// extrude from a copy of its sketch moved along the normal to where the second side ends,
 /// over the length between the two ends (the same solid; the copy is named `<extrude> start`).
@@ -1402,6 +1502,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         } else if d.is(fid, EXTRUDE) {
             let mut j = extrude_json(cx, fid, &nm, &sketch_names);
             super::thin::thin_extrude(cx, fid, &mut j, &mut feats, &sketch_names, &nm);
+            profile_of_an_exposed_cap(cx, fid, &mut j, &feats);
             two_sided_from_a_moved_sketch(cx, &mut j, &nm, &mut feats);
             in_own_component(&mut j, "sketch", comp, &mut feats, nbefore, format!("{nm} sketch"));
             let made = op_target(&mut j, &g, d, fid, &names);
