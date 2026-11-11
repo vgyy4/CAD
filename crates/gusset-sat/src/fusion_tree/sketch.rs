@@ -531,6 +531,9 @@ pub(super) struct Seg {
 #[derive(Debug)]
 pub(super) struct RegionEnt {
     pub point: P2,
+    /// Points in the further faces of the sketch the region is made of, where other curves of
+    /// the sketch cut it (see [`geom::face_points`]).
+    pub more_points: Vec<P2>,
     pub segments: Vec<Rc<Seg>>,
     pub naming_segments: Option<Vec<Rc<Seg>>>,
 }
@@ -686,9 +689,19 @@ impl RegionCache {
                     let outer: Vec<&Vec<P2>> = rings.iter().filter(|(f, _)| *f == 1).map(|(_, r)| r).collect();
                     let holes: Vec<&[P2]> = rings.iter().filter(|(f, _)| *f != 1).map(|(_, r)| r.as_slice()).collect();
                     let [outer] = outer.as_slice() else { return Err(format!("outer loops {}", outer.len())) };
-                    let point = geom::interior_point(outer, &holes).ok_or("no interior point")?;
+                    // The sketch's other curves (whole, the loops' own included: a curve can run
+                    // on through the region past the piece that bounds it).
+                    let all = allpolys
+                        .get_or_insert_with(|| curve_ids.iter().map(|kk| (*kk, curve_polyline(d, s, *kk))).collect());
+                    let others: Vec<&[P2]> = all
+                        .iter()
+                        .filter(|(q, _)| !s.other.contains_key(q))
+                        .filter_map(|(_, v)| v.as_deref())
+                        .collect();
+                    let mut points = geom::face_points(outer, &holes, &others).ok_or("no interior point")?.into_iter();
+                    let point = points.next().ok_or("no interior point")?;
                     let naming_segments = naming.as_ref().map(|n| if k == 0 { n.clone() } else { Vec::new() });
-                    pts.push(RegionEnt { point, segments, naming_segments });
+                    pts.push(RegionEnt { point, more_points: points.collect(), segments, naming_segments });
                 }
             }
         }

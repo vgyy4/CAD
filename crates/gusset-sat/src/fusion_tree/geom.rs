@@ -528,6 +528,146 @@ fn seg_dist(p: P2, a: P2, b: P2) -> f64 {
     libm::hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
 }
 
+/// Whether the segments `a`-`b` and `c`-`d` meet (touching counts).
+fn segs_meet(a: P2, b: P2, c: P2, d: P2) -> bool {
+    let o = |p: P2, q: P2, r: P2| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    let (d1, d2, d3, d4) = (o(c, d, a), o(c, d, b), o(a, b, c), o(a, b, d));
+    if (d1 > 0.0) != (d2 > 0.0) && (d3 > 0.0) != (d4 > 0.0) {
+        return true;
+    }
+    let on = |p: P2, q: P2, r: P2, v: f64| {
+        v == 0.0 && r[0] >= p[0].min(q[0]) && r[0] <= p[0].max(q[0]) && r[1] >= p[1].min(q[1]) && r[1] <= p[1].max(q[1])
+    };
+    on(c, d, a, d1) || on(c, d, b, d2) || on(a, b, c, d3) || on(a, b, d, d4)
+}
+
+/// One point in every face the curves `others` cut the region (`outer` less `holes`) into; the
+/// region's own interior point alone when none of them runs through it. A sketch region as
+/// Fusion records it can be the union of several faces of the sketch (a disc whose record has
+/// no hole although a smaller circle lies in it; a square whose corner a circle crosses): a
+/// pick in each face names the whole region. Found on a grid: two grid points lie in one face
+/// when a path of grid steps joins them that crosses neither the region's edges nor a curve, so
+/// a face narrower than a grid step can be missed (the rebuild check then refuses the result).
+pub(super) fn face_points(outer: &[P2], holes: &[&[P2]], others: &[&[P2]]) -> Option<Vec<P2>> {
+    const N: usize = 96;
+    let x0 = outer.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+    let x1 = outer.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+    let y0 = outer.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+    let y1 = outer.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+    let size = (x1 - x0).max(y1 - y0);
+    if size.is_nan() || size <= 0.0 {
+        return None;
+    }
+    let mut edges: Vec<(P2, P2)> = Vec::new();
+    for r in std::iter::once(&outer).chain(holes.iter()) {
+        for (i, a) in r.iter().enumerate() {
+            if let Some(b) = r.get((i + 1) % r.len()) {
+                edges.push((*a, *b));
+            }
+        }
+    }
+    // The pieces of the other curves that run through the region: off its edges, inside it.
+    let tol = 1e-6 * size;
+    let within = |p: P2| {
+        inside(p, outer) && !holes.iter().any(|h| inside(p, h)) && edges.iter().all(|(a, b)| seg_dist(p, *a, *b) > tol)
+    };
+    // A curve cuts the region when a point of it lies inside, off the region's edges (looked for
+    // at 16 steps along each of its chords). Its chords near the region are walls then.
+    let mut cuts: Vec<(P2, P2)> = Vec::new();
+    let mut cut = false;
+    for c in others {
+        for w in c.windows(2) {
+            let [a, b] = w else { continue };
+            if dist(*a, *b) == 0.0
+                || a[0].max(b[0]) < x0
+                || a[0].min(b[0]) > x1
+                || a[1].max(b[1]) < y0
+                || a[1].min(b[1]) > y1
+            {
+                continue;
+            }
+            cuts.push((*a, *b));
+            cut = cut
+                || (0..=16).any(|k| {
+                    let t = f64::from(k) / 16.0;
+                    within([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])])
+                });
+        }
+    }
+    if !cut {
+        return interior_point(outer, holes).map(|p| vec![p]);
+    }
+    let walls: Vec<(P2, P2)> = edges.iter().chain(cuts.iter()).copied().collect();
+    // Grid points off the lines of an axis-aligned sketch.
+    let at = |i: usize, j: usize| {
+        [x0 + (x1 - x0) * (i as f64 + 0.37) / N as f64, y0 + (y1 - y0) * (j as f64 + 0.41) / N as f64]
+    };
+    let ok: Vec<bool> = (0..N * N)
+        .map(|k| {
+            let p = at(k / N, k % N);
+            inside(p, outer) && !holes.iter().any(|h| inside(p, h))
+        })
+        .collect();
+    let mut parent: Vec<usize> = (0..N * N).collect();
+    fn root(parent: &mut [usize], mut k: usize) -> usize {
+        while let Some(&p) = parent.get(k) {
+            if p == k {
+                break;
+            }
+            k = p;
+        }
+        k
+    }
+    let blocked = |p: P2, q: P2| {
+        let (lx, hx, ly, hy) = (p[0].min(q[0]), p[0].max(q[0]), p[1].min(q[1]), p[1].max(q[1]));
+        walls.iter().any(|(a, b)| {
+            a[0].max(b[0]) >= lx
+                && a[0].min(b[0]) <= hx
+                && a[1].max(b[1]) >= ly
+                && a[1].min(b[1]) <= hy
+                && segs_meet(p, q, *a, *b)
+        })
+    };
+    for i in 0..N {
+        for j in 0..N {
+            let k = i * N + j;
+            if ok.get(k) != Some(&true) {
+                continue;
+            }
+            for (i2, j2) in [(i + 1, j), (i, j + 1)] {
+                let k2 = i2 * N + j2;
+                if i2 < N && j2 < N && ok.get(k2) == Some(&true) && !blocked(at(i, j), at(i2, j2)) {
+                    let (a, b) = (root(&mut parent, k), root(&mut parent, k2));
+                    if a != b
+                        && let Some(slot) = parent.get_mut(a)
+                    {
+                        *slot = b;
+                    }
+                }
+            }
+        }
+    }
+    // Per face, the grid point farthest from every wall.
+    let mut best: Vec<(usize, f64, P2)> = Vec::new();
+    for k in 0..N * N {
+        if ok.get(k) != Some(&true) {
+            continue;
+        }
+        let p = at(k / N, k % N);
+        let r = root(&mut parent, k);
+        let dmin = walls.iter().map(|(a, b)| seg_dist(p, *a, *b)).fold(f64::INFINITY, f64::min);
+        match best.iter_mut().find(|b| b.0 == r) {
+            Some(b) if dmin > b.1 => (b.1, b.2) = (dmin, p),
+            Some(_) => {}
+            None => best.push((r, dmin, p)),
+        }
+    }
+    if best.is_empty() {
+        return None;
+    }
+    Some(best.into_iter().map(|b| b.2).collect())
+}
+
 /// A point inside `outer` and outside every hole, as far from all edges as a grid search finds.
 pub(super) fn interior_point(outer: &[P2], holes: &[&[P2]]) -> Option<P2> {
     let x0 = outer.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);

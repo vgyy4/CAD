@@ -1560,3 +1560,44 @@ fn a_records_own_id_is_not_a_reference() {
     let d = Design::new(&m, &bulk).unwrap();
     assert_eq!(super::stream::ref_ids(&d, d.rec(0x0501)), vec![5]);
 }
+
+#[test]
+fn a_region_cut_by_other_curves_gets_a_point_in_every_face() {
+    let square: Vec<geom::P2> = vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
+    let circle = |c: geom::P2, r: f64| -> Vec<geom::P2> {
+        (0..=64)
+            .map(|k| {
+                let t = std::f64::consts::TAU * f64::from(k) / 64.0;
+                [c[0] + r * libm::cos(t), c[1] + r * libm::sin(t)]
+            })
+            .collect()
+    };
+    // Nothing runs through it: the one interior point.
+    let outside = circle([9.0, 9.0], 1.0);
+    let own: Vec<geom::P2> = vec![[0.0, 0.0], [4.0, 0.0]];
+    let pts = geom::face_points(&square, &[], &[&outside, &own]).unwrap();
+    assert_eq!(pts.len(), 1);
+    // A circle inside: the disc and the rest.
+    let disc = circle([2.0, 2.0], 1.0);
+    let pts = geom::face_points(&square, &[], &[&disc]).unwrap();
+    assert_eq!(pts.len(), 2);
+    let in_disc = |p: &geom::P2| libm::hypot(p[0] - 2.0, p[1] - 2.0) < 1.0;
+    assert_eq!(pts.iter().filter(|p| in_disc(p)).count(), 1);
+    // A circle across a corner: the lens in the square and the rest (the part outside is not
+    // the region's).
+    let corner = circle([0.0, 0.0], 1.5);
+    let pts = geom::face_points(&square, &[], &[&corner]).unwrap();
+    assert_eq!(pts.len(), 2);
+    assert!(pts.iter().all(|p| geom::inside(*p, &square)));
+    assert_eq!(pts.iter().filter(|p| libm::hypot(p[0], p[1]) < 1.5).count(), 1);
+    // A line that ends inside cuts nothing off; a hole is no face.
+    let spur: Vec<geom::P2> = vec![[2.0, -1.0], [2.0, 3.0]];
+    assert_eq!(geom::face_points(&square, &[], &[&spur]).unwrap().len(), 1);
+    let hole = circle([2.0, 2.0], 1.0);
+    let pts = geom::face_points(&square, &[&hole], &[&hole]).unwrap();
+    assert_eq!(pts.len(), 1);
+    assert!(!in_disc(&pts[0]));
+    // Two lines across a ring: two halves, not joined over the hole.
+    let across: Vec<geom::P2> = vec![[-1.0, 2.0], [5.0, 2.0]];
+    assert_eq!(geom::face_points(&square, &[&hole], &[&across]).unwrap().len(), 2);
+}

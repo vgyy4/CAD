@@ -269,7 +269,11 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
             Ok(rg) => {
                 j.insert(
                     "profiles".into(),
-                    rg.iter().map(|r| json!({"point": [mm(r.point[0]), mm(r.point[1])]})).collect::<Vec<_>>().into(),
+                    rg.iter()
+                        .flat_map(|r| std::iter::once(&r.point).chain(r.more_points.iter()))
+                        .map(|p| json!({"point": [mm(p[0]), mm(p[1])]}))
+                        .collect::<Vec<_>>()
+                        .into(),
                 );
             }
             Err(why) => {
