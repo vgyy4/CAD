@@ -13,8 +13,6 @@ use serde_json::{Value, json};
 pub(super) enum Combined {
     /// A tree `combine`.
     Feature(Value),
-    /// Nothing: the tree already holds its result (the reason).
-    Redundant(String),
     /// Not read (the reason).
     Refused(String),
 }
@@ -93,26 +91,37 @@ impl Edit<'_> {
                 Some((m, f))
                     if matches!(f.get("type").and_then(Value::as_str), Some("pattern_linear" | "pattern_circular")) =>
                 {
-                    // A copy of a body pattern. The tree's pattern of a body unites the copies
-                    // with the original, so joining all the copies to that original is done.
-                    let whole = f.get("target").and_then(Value::as_str) == Some(target.as_str())
-                        && f.get("features").and_then(Value::as_array).is_some_and(Vec::is_empty);
-                    if !whole || copies.first().is_some_and(|c| *c != m) {
-                        return refuse("a tool of the Combine is a pattern copy of another body than its target");
+                    // A copy of a body pattern: a body of its own (`<pattern>[i]`). Which copy
+                    // a link is, the record does not say; all copies of one pattern together
+                    // need no such pairing.
+                    if f.get("merge").and_then(Value::as_bool) != Some(false) {
+                        return refuse("a tool of the Combine is a copy of a pattern that is not a body pattern");
                     }
                     copies.push(m);
                 }
                 _ => return refuse("a tool of the Combine is not the one body of a feature of the tree"),
             }
         }
-        if let Some(p) = copies.first() {
-            let made = self.g.creator.values().filter(|c| *c == p).count();
-            if op != "join" || !tools.is_empty() || copies.len() != made {
-                return refuse("the Combine takes pattern copies otherwise than joining all of them to their original");
+        let mut patterns = copies.clone();
+        patterns.sort_unstable();
+        patterns.dedup();
+        for p in patterns {
+            // The tree entries of the pattern (two for a symmetric one) and the copies they make.
+            let mut names: Vec<String> = Vec::new();
+            for f in self.feats.iter().filter(|f| f.get("source_id").and_then(Value::as_u64) == Some(p)) {
+                let (Some(n), Some(count)) =
+                    (f.get("name").and_then(Value::as_str), f.get("count").and_then(Value::as_u64))
+                else {
+                    return refuse("a pattern whose copies the Combine takes has no count");
+                };
+                names.extend((1..count).map(|i| super::json::copy_name(n, i)));
             }
-            return Combined::Redundant(
-                "it joins the copies of a body pattern to the original, which the tree's pattern has done".into(),
-            );
+            let made = self.g.creator.values().filter(|c| **c == p).count();
+            let taken = copies.iter().filter(|c| **c == p).count();
+            if taken != made || names.len() != made {
+                return refuse("the Combine takes some copies of a body pattern, not all of them");
+            }
+            tools.extend(names);
         }
         if tools.is_empty() {
             return refuse("the Combine has no tools");

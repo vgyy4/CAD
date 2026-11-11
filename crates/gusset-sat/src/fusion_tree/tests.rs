@@ -236,6 +236,15 @@ fn a_body_pattern_names_its_body_and_does_not_chain() {
     assert_eq!(one.len(), 1);
     assert_eq!(one[0]["target"], "Extrude5");
     assert_eq!(one[0]["features"], json!([]));
+    // Each copy of a body is a body of its own in the file.
+    assert_eq!(one[0]["merge"], false);
+    assert_eq!(super::json::copy_name("R-Pattern1", 2), "R-Pattern1[2]");
+    // A component that stands in a second place: the copies follow their pattern's new name.
+    let mut combine = json!({"type": "combine", "name": "Combine1", "target": "Extrude5",
+        "tools": ["R-Pattern1[1]", "R-Pattern1[3]", "Other[1]"]});
+    let map = [("R-Pattern1".to_string(), "R-Pattern1 [2]".to_string())].into_iter().collect();
+    super::json::rename(&mut combine, &map);
+    assert_eq!(combine["tools"], json!(["R-Pattern1 [2][1]", "R-Pattern1 [2][3]", "Other[1]"]));
     // Two directions would need the first copies as features.
     let two: Vec<(geom::V3, geom::V3)> = vec![dirs[0], ([0.0; 3], [1.0, 0.0, 0.0])];
     assert!(mk(2.0, &two).is_none());

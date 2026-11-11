@@ -55,10 +55,23 @@ impl Edit<'_> {
             matches!(f.get("type").and_then(Value::as_str), Some("extrude" | "sweep" | "stored_body"))
                 && f.get("creates_bodies").and_then(Value::as_u64).is_none_or(|n| n == 1)
         });
-        if !single {
-            return Err(format!("the maker of the selected body ({name}) is not a one-body feature of the tree"));
+        if single {
+            return Ok(name.clone());
         }
-        Ok(name.clone())
+        // The one copy of a body pattern of two: `<pattern>[1]`. Which of several copies a body
+        // is, the record does not say.
+        let made = self.g.creator.values().filter(|c| **c == maker).count();
+        let entries: Vec<&Value> =
+            self.feats.iter().filter(|f| f.get("source_id").and_then(Value::as_u64) == Some(maker)).collect();
+        if let ([f], 1) = (entries.as_slice(), made)
+            && matches!(f.get("type").and_then(Value::as_str), Some("pattern_linear" | "pattern_circular"))
+            && f.get("merge").and_then(Value::as_bool) == Some(false)
+            && f.get("count").and_then(Value::as_u64) == Some(2)
+            && let Some(n) = f.get("name").and_then(Value::as_str)
+        {
+            return Ok(super::json::copy_name(n, 1));
+        }
+        Err(format!("the maker of the selected body ({name}) is not a one-body feature of the tree"))
     }
 
     /// The `9716F783` selections under the feature's selection lists.

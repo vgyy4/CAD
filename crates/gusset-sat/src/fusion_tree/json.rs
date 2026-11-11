@@ -642,17 +642,34 @@ pub(super) fn linear_pattern_chain(p: &PatternInputs) -> Option<Vec<Value>> {
                 format!("{} {}{}", p.name, tag, if parts.len() == 1 { String::new() } else { (k + 1).to_string() })
             };
             let features: Vec<String> = p.originals.iter().chain(made.iter()).cloned().collect();
-            out.push(json!({
+            let mut j = json!({
                 "type": "pattern_linear", "name": nm, "features": features,
                 "direction": [round9(dir[0]), round9(dir[1]), round9(dir[2])], "spacing": round9(*sp_), "count": n_,
                 "target": p.target, "pattern_axis": tag, "symmetric": sy,
                 "note": format!("direction = the stored F2A7590D vector (sign included){}", if sy { "; symmetric about the original: split into + and - halves" } else { "" }),
-            }));
+            });
+            unmerged(&mut j);
+            out.push(j);
             names_now.push(nm);
         }
         made.extend(names_now);
     }
     Some(out)
+}
+
+/// A pattern of a body makes one new body per copy in the file: the tree's pattern keeps them
+/// apart (`merge: false`; copy `i` is the body `<name>[i]`).
+fn unmerged(pattern: &mut Value) {
+    if pattern.get("target").is_some_and(Value::is_string)
+        && let Some(o) = pattern.as_object_mut()
+    {
+        o.insert("merge".into(), false.into());
+    }
+}
+
+/// `<name>[i]`, the tree's name of copy `i` of the unmerged body pattern `name`.
+pub(super) fn copy_name(name: &str, i: u64) -> String {
+    format!("{name}[{i}]")
 }
 
 pub(super) fn design_json(cx: &mut Ctx) -> Value {
@@ -926,11 +943,13 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 && let Some(angle) = val("TotalAngle").map(f64::to_degrees)
                 && (angle - 360.0).abs() < 1e-6
             {
-                feats.push(json!({"type": "pattern_circular", "name": nm, "source_id": fid,
+                let mut j = json!({"type": "pattern_circular", "name": nm, "source_id": fid,
                     "features": in_names, "target": target,
                     "axis": {"origin": v3mm(*pt), "direction": [round9(dir[0]), round9(dir[1]), round9(dir[2])]},
                     "angle": 360.0, "count": count.round() as i64,
-                    "note": "axis = the stored F2A7590D point and vector"}));
+                    "note": "axis = the stored F2A7590D point and vector"});
+                unmerged(&mut j);
+                feats.push(j);
                 tag_feats(&mut feats, nbefore, comp.map(|c| (c, comp_name.as_deref())), extra.contains(&fid));
                 continue;
             }
@@ -974,10 +993,6 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             let ed = super::bodyops::Edit { d, g: &g, names: &names, feats: &feats };
             match ed.combine(fid, &nm) {
                 super::combine::Combined::Feature(j) => feats.push(j),
-                super::combine::Combined::Redundant(why) => {
-                    skipped.push(json!({"name": name, "fusion_type": fusion_type, "reason": why, "source_id": fid}));
-                    continue;
-                }
                 super::combine::Combined::Refused(why) => {
                     feats.push(json!({"type": "unsupported", "fusion_type": fusion_type, "name": nm,
                         "class_guid": class, "source_id": fid, "error": why}));
@@ -1540,6 +1555,12 @@ pub(super) fn rename(v: &mut Value, map: &HashMap<String, String>) {
         Value::String(s) => {
             if let Some(n) = map.get(s.as_str()) {
                 *s = n.clone();
+            } else if let Some((base, copy)) = s.rsplit_once('[')
+                && copy.strip_suffix(']').is_some_and(|i| !i.is_empty() && i.bytes().all(|c| c.is_ascii_digit()))
+                && let Some(n) = map.get(base)
+            {
+                // A copy of a body pattern (`<pattern>[i]`) follows its pattern's name.
+                *s = format!("{n}[{copy}");
             }
         }
         Value::Array(a) => a.iter_mut().for_each(|x| rename(x, map)),
