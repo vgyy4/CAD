@@ -657,6 +657,25 @@ pub(super) fn linear_pattern_chain(p: &PatternInputs) -> Option<Vec<Value>> {
     Some(out)
 }
 
+/// The feature that made every face a mirror of faces selects, where it is one: each selection
+/// is a face recipe naming one face by its generator and one operation, and the operations all
+/// stand for the same feature.
+fn mirrored_faces_maker(cx: &Ctx, fid: u64) -> Option<u64> {
+    let mut maker: Option<u64> = None;
+    for rid in cx.input_recipes(fid) {
+        let (Some(RecipeKind::Face), Some(faces)) = naming::recipe(cx.d, rid) else { return None };
+        let [name] = faces.as_slice() else { return None };
+        let [(_, ops)] = name.as_slice() else { return None };
+        let [op] = ops.as_slice() else { return None };
+        let f = cx.opmap.get(&u64::try_from(*op).ok()?).copied()?;
+        if maker.is_some_and(|m| m != f) {
+            return None;
+        }
+        maker = Some(f);
+    }
+    maker
+}
+
 /// A pattern of a body makes one new body per copy in the file: the tree's pattern keeps them
 /// apart (`merge: false`; copy `i` is the body `<name>[i]`).
 fn unmerged(pattern: &mut Value) {
@@ -819,7 +838,19 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                         }
                     }
                     let made = g.body_links(d, fid, 4).iter().filter(|l| g.creator.get(l) == Some(&fid)).count();
-                    if known && !body_in.is_empty() && made == body_in.len() {
+                    if let (true, 0, Some(maker)) = (body_in.is_empty(), made, mirrored_faces_maker(cx, fid))
+                        && let Some(of) = names.get(&maker)
+                        && feats.iter().any(|f| {
+                            f.get("source_id").and_then(Value::as_u64) == Some(maker)
+                                && f.get("type").and_then(Value::as_str) == Some("extrude")
+                                && matches!(f.get("operation").and_then(Value::as_str), Some("cut" | "join"))
+                        })
+                    {
+                        // A mirror of faces that one cut or join made: that feature, mirrored.
+                        feats.push(json!({"type": "mirror", "name": nm, "source_id": fid, "features": [of],
+                            "plane": {"origin": v3mm(o), "normal": [round9(n[0]), round9(n[1]), round9(n[2])]},
+                            "note": "a mirror of faces, all of them made by this one feature"}));
+                    } else if known && !body_in.is_empty() && made == body_in.len() {
                         for (k, t) in body_in.iter().enumerate() {
                             let name = if k == 0 { nm.clone() } else { format!("{nm} body {}", k + 1) };
                             feats.push(json!({"type": "mirror", "name": name, "source_id": fid, "features": [],
