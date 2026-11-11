@@ -861,6 +861,37 @@ pub(super) fn copy_name(name: &str, i: u64) -> String {
     format!("{name}[{i}]")
 }
 
+/// A feature of one component that uses a sketch of another takes the sketch in its own
+/// component, at the sketch's own coordinates: the stored bodies have it so (4863: Header
+/// Female's Extrude1 of the header's Sketch1, the Pins' sweeps along the header's path), and
+/// the occurrences that joints moved apart later do not carry it along. The feature gets a copy
+/// of the sketch, which is placed with the feature's component. `key` names the sketch (by
+/// tree name); sketches written for this feature (`nbefore` on) are tagged with its component
+/// already.
+fn in_own_component(
+    j: &mut Map<String, Value>,
+    key: &str,
+    comp: Option<u64>,
+    feats: &mut Vec<Value>,
+    nbefore: usize,
+    copy: String,
+) {
+    let Some(sk) = j.get(key).and_then(Value::as_str) else { return };
+    let found = feats.iter().take(nbefore).rev().find(|f| {
+        f.get("type").and_then(Value::as_str) == Some("sketch") && f.get("name").and_then(Value::as_str) == Some(sk)
+    });
+    if let Some(Value::Object(c)) = found
+        && let (Some(theirs), Some(ours)) = (c.get("_component").and_then(Value::as_u64), comp)
+        && theirs != ours
+    {
+        let mut c = c.clone();
+        c.insert("name".into(), copy.clone().into());
+        c.insert("plane_note".into(), "a sketch of another component, taken in this feature's".into());
+        j.insert(key.into(), copy.into());
+        feats.push(Value::Object(c));
+    }
+}
+
 pub(super) fn design_json(cx: &mut Ctx) -> Value {
     let d = cx.d;
     let mut feats: Vec<Value> = Vec::new();
@@ -913,6 +944,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         } else if d.is(fid, EXTRUDE) {
             let mut j = extrude_json(cx, fid, &nm, &sketch_names);
             two_sided_from_a_moved_sketch(cx, &mut j, &nm, &mut feats);
+            in_own_component(&mut j, "sketch", comp, &mut feats, nbefore, format!("{nm} sketch"));
             let made = op_target(&mut j, &g, d, fid, &names);
             j.insert("creates_bodies".into(), made.into());
             feats.push(Value::Object(j));
@@ -957,29 +989,8 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                     }
                 }
             }
-            // A path drawn in another component's sketch is taken in the sweep's own component
-            // as it lies there (the stored body: the path's coordinates in that sketch's own
-            // component frame, with whatever the occurrences did later). Placed with the
-            // component of the sweep, a copy of the path sketch.
-            if let Some(pid) = j.get("path_source_id").and_then(Value::as_u64) {
-                let path = feats
-                    .iter()
-                    .find(|f| {
-                        f.get("type").and_then(Value::as_str) == Some("sketch")
-                            && f.get("source_id").and_then(Value::as_u64) == Some(pid)
-                    })
-                    .cloned();
-                if let Some(Value::Object(mut c)) = path
-                    && let (Some(theirs), Some(ours)) = (c.get("_component").and_then(Value::as_u64), comp)
-                    && theirs != ours
-                {
-                    let copy = format!("{nm} path");
-                    c.insert("name".into(), copy.clone().into());
-                    c.insert("plane_note".into(), "a sweep path of another component, in the sweep's".into());
-                    j.insert("path".into(), copy.into());
-                    feats.push(Value::Object(c));
-                }
-            }
+            in_own_component(&mut j, "sketch", comp, &mut feats, nbefore, format!("{nm} sketch"));
+            in_own_component(&mut j, "path", comp, &mut feats, nbefore, format!("{nm} path"));
             let made = op_target(&mut j, &g, d, fid, &names);
             j.insert("creates_bodies".into(), made.into());
             feats.push(Value::Object(j));
@@ -1013,6 +1024,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             }
         } else if d.is(fid, "E3849A15") {
             let mut j = revolve_json(cx, fid, &nm, &sketch_names);
+            in_own_component(&mut j, "sketch", comp, &mut feats, nbefore, format!("{nm} sketch"));
             let made = op_target(&mut j, &g, d, fid, &names);
             j.insert("creates_bodies".into(), made.into());
             feats.push(Value::Object(j));
