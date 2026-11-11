@@ -33,6 +33,8 @@
 #include <Geom_CylindricalSurface.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepTools.hxx>
+#include <BRepTools_History.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <GCPnts_AbscissaPoint.hxx>
 #include <GeomAPI_Interpolate.hxx>
@@ -574,14 +576,11 @@ int shapes_out(std::vector<GsShape*>& v, GsShape*** out, size_t* n) {
   return GS_OK;
 }
 
-template <typename Mk>
-int finish_blend(Mk& mk, const GsShape* s, bool fillet, GsShape** out, GsBuf* origins) {
-  mk.Build();
-  if (!mk.IsDone()) return fail(fillet ? "fillet failed" : "chamfer failed");
-  TopoDS_Shape result = mk.Shape();
-  // A blend can leave tolerances and small seams that BRepCheck rejects, which ShapeFix repairs
-  // (FreeCAD's fillet does the same when its own validity test fails).
-  Handle(ShapeBuild_ReShape) ctx;
+// A blend's shape, or its repair where BRepCheck rejects it (tolerances and small seams that
+// ShapeFix mends, as FreeCAD's fillet does when its own validity test fails); `ctx` then maps
+// the blend's faces to the repaired shape's.
+TopoDS_Shape valid_blend(const TopoDS_Shape& made, bool fillet, Handle(ShapeBuild_ReShape)& ctx) {
+  TopoDS_Shape result = made;
   if (!BRepCheck_Analyzer(result, true, true).IsValid()) {
     ShapeFix_ShapeTolerance tol;
     tol.LimitTolerance(result, Precision::Confusion(), Precision::Confusion(), TopAbs_SHAPE);
@@ -595,15 +594,184 @@ int finish_blend(Mk& mk, const GsShape* s, bool fillet, GsShape** out, GsBuf* or
       throw Standard_Failure((std::string(fillet ? "fillet" : "chamfer") + " produced an invalid solid").c_str());
     }
   }
+  return result;
+}
+
+// The origins of a blend's faces from its history `h` (anything with Modified and Generated).
+template <typename H>
+void blend_origins(H& h, const TopoDS_Shape& in, const TopoDS_Shape& result, const Handle(ShapeBuild_ReShape)& ctx,
+                   std::vector<int64_t>& o) {
   ShapeMap out_faces;
   TopExp::MapShapes(result, TopAbs_FACE, out_faces);
-  std::vector<int64_t> o;
-  record_input_faces(mk, s->s, 0, out_faces, o, ctx);
-  record_generated(mk, s->s, TopAbs_EDGE, GS_ORIGIN_FROM_EDGE, 0, out_faces, o, ctx);
-  record_generated(mk, s->s, TopAbs_VERTEX, GS_ORIGIN_FROM_VERTEX, 0, out_faces, o, ctx);
-  to_buf(o, origins);
-  *out = new GsShape{result};
-  return GS_OK;
+  record_input_faces(h, in, 0, out_faces, o, ctx);
+  record_generated(h, in, TopAbs_EDGE, GS_ORIGIN_FROM_EDGE, 0, out_faces, o, ctx);
+  record_generated(h, in, TopAbs_VERTEX, GS_ORIGIN_FROM_VERTEX, 0, out_faces, o, ctx);
+}
+
+// One edge of a blend: its size(s) and, for a chamfer with a reference face, that face.
+struct BlendEdge {
+  TopoDS_Edge e;
+  TopoDS_Face ref;  // null: no reference face
+  double a, b;      // fillet radius / chamfer distances (`a` on `ref`)
+  int mode;         // 0: one size, 1: two distances, 2: distance `a` and angle `b`
+};
+
+void add_blend(BRepFilletAPI_MakeFillet& mk, const BlendEdge& x) { mk.Add(x.a, x.e); }
+void add_blend(BRepFilletAPI_MakeChamfer& mk, const BlendEdge& x) {
+  if (x.mode == 1) mk.Add(x.a, x.b, x.e, x.ref);
+  else if (x.mode == 2) mk.AddDA(x.a, x.b, x.e, x.ref);
+  else mk.Add(x.a, x.e);
+}
+
+// Do the edges touch (a common vertex) or bound a common face? Blends of edges that do
+// neither are independent: made one after the other they give the shape made at once.
+bool blends_independent(const TopoDS_Shape& s, const std::vector<BlendEdge>& es) {
+  AncMap anc;
+  TopExp::MapShapesAndAncestors(s, TopAbs_EDGE, TopAbs_FACE, anc);
+  for (size_t i = 0; i < es.size(); ++i) {
+    for (size_t j = i + 1; j < es.size(); ++j) {
+      TopoDS_Vertex a0, a1, b0, b1;
+      TopExp::Vertices(es[i].e, a0, a1);
+      TopExp::Vertices(es[j].e, b0, b1);
+      for (const TopoDS_Vertex& va : {a0, a1})
+        for (const TopoDS_Vertex& vb : {b0, b1})
+          if (!va.IsNull() && va.IsSame(vb)) return false;
+      int ia = anc.FindIndex(es[i].e), ib = anc.FindIndex(es[j].e);
+      if (ia <= 0 || ib <= 0) return false;
+      for (ShapeList::Iterator x(anc(ia)); x.More(); x.Next())
+        for (ShapeList::Iterator y(anc(ib)); y.More(); y.Next())
+          if (x.Value().IsSame(y.Value())) return false;
+    }
+  }
+  return true;
+}
+
+// The image of `x` after the passes so far: itself when untouched, its one modification,
+// else null (removed or split).
+TopoDS_Shape image_of(const BRepTools_History& h, const TopoDS_Shape& x) {
+  if (x.IsNull() || h.IsRemoved(x)) return TopoDS_Shape();
+  const ShapeList& m = h.Modified(x);
+  if (m.IsEmpty()) return x;
+  if (m.Extent() == 1) return m.First();
+  return TopoDS_Shape();
+}
+
+// The edge of `s` with the ends and the middle of `e` (within 1e-7 mm), else null.
+TopoDS_Shape same_edge(const TopoDS_Shape& s, const TopoDS_Edge& e) {
+  auto key = [](const TopoDS_Edge& x, gp_Pnt& p0, gp_Pnt& p1, gp_Pnt& pm) {
+    BRepAdaptor_Curve c(x);
+    p0 = c.Value(c.FirstParameter());
+    p1 = c.Value(c.LastParameter());
+    pm = c.Value(0.5 * (c.FirstParameter() + c.LastParameter()));
+  };
+  gp_Pnt a0, a1, am;
+  key(e, a0, a1, am);
+  const double tol = 1e-7;
+  TopoDS_Shape found;
+  ShapeMap edges;
+  TopExp::MapShapes(s, TopAbs_EDGE, edges);
+  for (int i = 1; i <= edges.Extent(); ++i) {
+    gp_Pnt b0, b1, bm;
+    key(TopoDS::Edge(edges(i)), b0, b1, bm);
+    bool ends = (a0.Distance(b0) < tol && a1.Distance(b1) < tol) || (a0.Distance(b1) < tol && a1.Distance(b0) < tol);
+    if (!ends || am.Distance(bm) >= tol) continue;
+    if (!found.IsNull()) return TopoDS_Shape();
+    found = edges(i);
+  }
+  return found;
+}
+
+// A blend of independent edges made one edge at a time (OCCT fails on some sets that it
+// blends edge by edge, e.g. the two bend edges of a bent bar). False when a pass fails;
+// else `hist` holds the history from `in` to `result`.
+template <typename Mk>
+bool blend_in_passes(const TopoDS_Shape& in, const std::vector<BlendEdge>& es, TopoDS_Shape& result,
+                     BRepTools_History& hist) {
+  TopoDS_Shape cur = in;
+  bool first = true;
+  for (const auto& x0 : es) {
+    BlendEdge x = x0;
+    if (!first) {
+      TopoDS_Shape e = image_of(hist, x0.e);
+      if (e.IsNull()) {
+        // A fillet rebuilds the edges around the faces it trims and calls the old ones
+        // deleted: the edge is then the one of `cur` that lies where it lay.
+        e = same_edge(cur, x0.e);
+        if (e.IsNull()) return false;
+        hist.ReplaceModified(x0.e, e);
+      }
+      if (e.ShapeType() != TopAbs_EDGE) return false;
+      x.e = TopoDS::Edge(e);
+      if (!x0.ref.IsNull()) {
+        TopoDS_Shape r = image_of(hist, x0.ref);
+        if (r.IsNull() || r.ShapeType() != TopAbs_FACE) return false;
+        x.ref = TopoDS::Face(r);
+      }
+    }
+    Mk mk(cur);
+    add_blend(mk, x);
+    mk.Build();
+    if (!mk.IsDone()) return false;
+    ShapeList args;
+    args.Append(cur);
+    if (first) hist = BRepTools_History(args, mk);
+    else hist.Merge(args, mk);
+    cur = mk.Shape();
+    first = false;
+  }
+  result = cur;
+  return !first;
+}
+
+// Defined below: the blend made by cutting away the corner of each edge.
+int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
+                     GsShape** out, GsBuf* origins);
+
+// Blends the edges at once; where OCCT fails, independent edges one after another; failing
+// that, the corners of convex edges between perpendicular faces cut away by tools whose
+// removed volume is checked against the corners' own (`blend_by_corners`).
+template <typename Mk>
+int blend_edges(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
+                GsShape** out, GsBuf* origins) {
+  std::string first_error = fillet ? "fillet failed" : "chamfer failed";
+  try {
+    Mk mk(s->s);
+    for (const auto& x : es) add_blend(mk, x);
+    mk.Build();
+    if (mk.IsDone()) {
+      Handle(ShapeBuild_ReShape) ctx;
+      TopoDS_Shape result = valid_blend(mk.Shape(), fillet, ctx);
+      std::vector<int64_t> o;
+      blend_origins(mk, s->s, result, ctx, o);
+      to_buf(o, origins);
+      *out = new GsShape{result};
+      return GS_OK;
+    }
+  } catch (const Standard_Failure& e) {
+    const char* w = e.what();
+    if (w && *w) first_error = std::string("geometry kernel error: ") + w;
+  }
+  if (es.size() > 1 && blends_independent(s->s, es)) {
+    try {
+      TopoDS_Shape made;
+      BRepTools_History hist;
+      if (blend_in_passes<Mk>(s->s, es, made, hist)) {
+        Handle(ShapeBuild_ReShape) ctx;
+        TopoDS_Shape result = valid_blend(made, fillet, ctx);
+        std::vector<int64_t> o;
+        blend_origins(hist, s->s, result, ctx, o);
+        to_buf(o, origins);
+        *out = new GsShape{result};
+        return GS_OK;
+      }
+    } catch (const Standard_Failure&) {
+    }
+  }
+  try {
+    if (blend_by_corners(s, es, idx, fillet, out, origins) == GS_OK) return GS_OK;
+  } catch (const Standard_Failure&) {
+  }
+  return fail(first_error);
 }
 
 template <typename Mk>
@@ -612,9 +780,13 @@ int blend(const GsShape* s, const uint32_t* edges, size_t nedges, double size, b
   if (!s || !out || !origins || (!edges && nedges)) return fail("null argument");
   if (nedges == 0) return fail("no edges selected");
   if (!std::isfinite(size) || size <= 0) return fail(fillet ? "fillet radius must be positive" : "chamfer distance must be positive");
-  Mk mk(s->s);
-  for (size_t i = 0; i < nedges; ++i) mk.Add(size, edge_by_index(s->s, edges[i]));
-  return finish_blend(mk, s, fillet, out, origins);
+  std::vector<BlendEdge> es;
+  std::vector<uint32_t> idx;
+  for (size_t i = 0; i < nedges; ++i) {
+    es.push_back(BlendEdge{edge_by_index(s->s, edges[i]), TopoDS_Face(), size, size, 0});
+    idx.push_back(edges[i]);
+  }
+  return blend_edges<Mk>(s, es, idx, fillet, out, origins);
 }
 
 // Does the shape have a face that is not a plane, cylinder, cone, sphere or torus?
@@ -1619,6 +1791,181 @@ std::unique_ptr<BRepAlgoAPI_BooleanOperation> run_boolean_checked(int op, const 
   throw Standard_Failure("boolean operation produced an invalid solid");
 }
 
+
+// The outward normal of face `f` at its point nearest to `p`.
+bool outward_normal(const TopoDS_Face& f, const gp_Pnt& p, gp_Dir& n) {
+  GeomAPI_ProjectPointOnSurf proj(p, BRep_Tool::Surface(f));
+  if (!proj.IsDone() || proj.NbPoints() < 1) return false;
+  double u = 0, v = 0;
+  proj.LowerDistanceParameters(u, v);
+  BRepAdaptor_Surface sf(f, false);
+  BRepLProp_SLProps props(sf, u, v, 1, 1e-9);
+  if (!props.IsNormalDefined()) return false;
+  n = props.Normal();
+  if (f.Orientation() == TopAbs_REVERSED) n.Reverse();
+  return true;
+}
+
+// The corner a blend takes off one edge, as a tool: `cutter` reaches past the faces (so the
+// boolean meets no coincident boundary there), `ideal` is the corner alone, `face` the cutter's
+// blend face.
+struct Corner {
+  TopoDS_Shape cutter;
+  double ideal = 0;
+  TopoDS_Shape face;
+};
+
+// The corner of a convex edge between two perpendicular faces whose section is the same all
+// along it: a straight edge between two planes (the corner is a prism) or a whole circle
+// between a plane across its axis and a cylinder about it (the corner is revolved). `a` is
+// measured on `x.ref` (or the first face), `b` on the other face.
+bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, bool fillet, Corner& out) {
+  int ei = anc.FindIndex(x.e);
+  if (ei <= 0) return false;
+  std::vector<TopoDS_Face> fs;
+  for (ShapeList::Iterator it(anc(ei)); it.More(); it.Next()) {
+    bool seen = false;
+    for (const auto& g : fs) seen = seen || g.IsSame(it.Value());
+    if (!seen) fs.push_back(TopoDS::Face(it.Value()));
+  }
+  if (fs.size() != 2) return false;
+  if (!x.ref.IsNull() && fs[1].IsSame(x.ref)) std::swap(fs[0], fs[1]);
+  if (!x.ref.IsNull() && !fs[0].IsSame(x.ref)) return false;
+  double a = x.a, b = x.b;
+  if (fillet || x.mode == 0) b = a;
+  else if (x.mode != 1) return false;
+  if (!(a > 0) || !(b > 0)) return false;
+  BRepAdaptor_Curve c(x.e);
+  const double t0 = c.FirstParameter(), t1 = c.LastParameter();
+  const bool line = c.GetType() == GeomAbs_Line;
+  const bool circle = c.GetType() == GeomAbs_Circle;
+  if (!line && !circle) return false;
+  BRepAdaptor_Surface s0(fs[0], false), s1(fs[1], false);
+  gp_Pnt p0 = c.Value(line ? t0 : 0.5 * (t0 + t1));
+  gp_Dir n1, n2;
+  if (!outward_normal(fs[0], p0, n1) || !outward_normal(fs[1], p0, n2)) return false;
+  if (std::fabs(n1.Dot(n2)) > 1e-9) return false;
+  if (line) {
+    if (s0.GetType() != GeomAbs_Plane || s1.GetType() != GeomAbs_Plane) return false;
+  } else {
+    // A whole circle; one face a plane across its axis, the other a cylinder about it.
+    if (std::fabs(t1 - t0 - 2 * M_PI) > 1e-9) return false;
+    gp_Ax1 ax = c.Circle().Axis();
+    const BRepAdaptor_Surface& pl = s0.GetType() == GeomAbs_Plane ? s0 : s1;
+    const BRepAdaptor_Surface& cy = s0.GetType() == GeomAbs_Cylinder ? s0 : s1;
+    if (pl.GetType() != GeomAbs_Plane || cy.GetType() != GeomAbs_Cylinder) return false;
+    if (!pl.Plane().Axis().IsParallel(ax, 1e-9)) return false;
+    gp_Cylinder cyl = cy.Cylinder();
+    if (!cyl.Axis().IsParallel(ax, 1e-9) || gp_Lin(cyl.Axis()).Distance(ax.Location()) > 1e-7) return false;
+    if (std::fabs(cyl.Radius() - c.Circle().Radius()) > 1e-7) return false;
+  }
+  // The section, in the plane of n1 and n2 at p0: inward along the first face is -n2.
+  const gp_Vec v1(n1), v2(n2);
+  const double d = 0.25 * std::min(a, b);
+  gp_Pnt A = p0.Translated(-v2 * a), B = p0.Translated(-v1 * b);
+  auto section = [&](bool reach) -> std::pair<TopoDS_Face, TopoDS_Edge> {
+    BRepBuilderAPI_MakeWire mw;
+    TopoDS_Edge blend;
+    if (fillet) {
+      gp_Pnt o = p0.Translated(-(v1 + v2) * a);
+      gp_Pnt m = o.Translated((v1 + v2).Normalized() * a);
+      GC_MakeArcOfCircle arc(A, m, B);
+      if (!arc.IsDone()) throw Standard_Failure("could not build the corner");
+      blend = BRepBuilderAPI_MakeEdge(arc.Value()).Edge();
+    } else {
+      blend = BRepBuilderAPI_MakeEdge(A, B).Edge();
+    }
+    mw.Add(blend);
+    if (reach) {
+      gp_Pnt B2 = B.Translated(v2 * d), K = p0.Translated((v1 + v2) * d), A2 = A.Translated(v1 * d);
+      mw.Add(BRepBuilderAPI_MakeEdge(B, B2).Edge());
+      mw.Add(BRepBuilderAPI_MakeEdge(B2, K).Edge());
+      mw.Add(BRepBuilderAPI_MakeEdge(K, A2).Edge());
+      mw.Add(BRepBuilderAPI_MakeEdge(A2, A).Edge());
+    } else {
+      mw.Add(BRepBuilderAPI_MakeEdge(B, p0).Edge());
+      mw.Add(BRepBuilderAPI_MakeEdge(p0, A).Edge());
+    }
+    if (!mw.IsDone()) throw Standard_Failure("could not build the corner");
+    BRepBuilderAPI_MakeFace mf(mw.Wire(), true);
+    if (!mf.IsDone()) throw Standard_Failure("could not build the corner");
+    return {mf.Face(), blend};
+  };
+  auto solid_of = [&](const TopoDS_Face& f, const TopoDS_Edge& blend, TopoDS_Shape& face) -> TopoDS_Shape {
+    TopoDS_Shape sh;
+    if (line) {
+      BRepPrimAPI_MakePrism mk(f, gp_Vec(c.Value(t0), c.Value(t1)));
+      mk.Build();
+      if (!mk.IsDone()) throw Standard_Failure("could not build the corner");
+      sh = mk.Shape();
+      const ShapeList& g = mk.Generated(blend);
+      if (!g.IsEmpty()) face = g.First();
+    } else {
+      BRepPrimAPI_MakeRevol mk(f, c.Circle().Axis(), 2 * M_PI);
+      mk.Build();
+      if (!mk.IsDone()) throw Standard_Failure("could not build the corner");
+      sh = mk.Shape();
+      const ShapeList& g = mk.Generated(blend);
+      if (!g.IsEmpty()) face = g.First();
+    }
+    return sh;
+  };
+  auto [fi, bi] = section(false);
+  TopoDS_Shape unused;
+  out.ideal = std::fabs(signed_volume(solid_of(fi, bi, unused)));
+  auto [fc, bc] = section(true);
+  out.cutter = solid_of(fc, bc, out.face);
+  if (signed_volume(out.cutter) < 0) out.cutter.Reverse();
+  (void)body;
+  return !out.face.IsNull() && out.ideal > 0;
+}
+
+// The blend as booleans: each edge's corner cut away. Only where every edge has such a
+// corner, and the material removed is exactly the corners' volume (so each corner lay wholly
+// in the body and no cutter took anything else).
+int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
+                     GsShape** out, GsBuf* origins) {
+  AncMap anc;
+  TopExp::MapShapesAndAncestors(s->s, TopAbs_EDGE, TopAbs_FACE, anc);
+  std::vector<Corner> cs;
+  ShapeList args, tools;
+  args.Append(s->s);
+  double ideal = 0;
+  for (const auto& x : es) {
+    Corner c;
+    if (!corner_of(s->s, anc, x, fillet, c)) return fail("no corner");
+    ideal += c.ideal;
+    tools.Append(c.cutter);
+    cs.push_back(c);
+  }
+  auto b = run_boolean_checked(GS_BOOL_CUT, args, tools);
+  TopoDS_Shape result = b->Shape();
+  if (result.IsNull()) return fail("no result");
+  const double before = std::fabs(signed_volume(s->s)), after = std::fabs(signed_volume(result));
+  if (std::fabs(before - after - ideal) > 1e-7 * std::max(1.0, before)) return fail("the corners were not all material");
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  record_input_faces(*b, s->s, 0, out_faces, o);
+  for (size_t i = 0; i < cs.size(); ++i) {
+    const TopoDS_Shape& f = cs[i].face;
+    std::vector<TopoDS_Shape> res;
+    const ShapeList& mods = b->Modified(f);
+    for (ShapeList::Iterator it(mods); it.More(); it.Next()) res.push_back(it.Value());
+    if (mods.IsEmpty() && !b->IsDeleted(f)) res.push_back(f);
+    bool found = false;
+    for (const auto& g : res) {
+      int k = out_faces.FindIndex(g);
+      if (k <= 0) continue;
+      found = true;
+      push_origin(o, k - 1, GS_ORIGIN_FROM_EDGE, 0, idx[i]);
+    }
+    if (!found) return fail("a corner left no blend face");
+  }
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+}
 }  // namespace
 }  // extern "C++"
 
@@ -1704,15 +2051,16 @@ int gs_chamfer_asym(const GsShape* s, const uint32_t* edges, const uint32_t* fac
   if (mode == 2 && (!std::isfinite(b) || b <= 0 || b >= M_PI / 2)) return fail("chamfer angle must be between 0 and 90 degrees");
   ShapeMap face_map;
   TopExp::MapShapes(s->s, TopAbs_FACE, face_map);
-  BRepFilletAPI_MakeChamfer mk(s->s);
+  std::vector<BlendEdge> es;
+  std::vector<uint32_t> idx;
   for (size_t i = 0; i < nedges; ++i) {
     if (faces[i] >= uint32_t(face_map.Extent())) return fail("face index out of range");
     TopoDS_Edge e = edge_by_index(s->s, edges[i]);
     TopoDS_Face f = TopoDS::Face(face_map(int(faces[i]) + 1));
-    if (mode == 1) mk.Add(a, b, e, f);
-    else mk.AddDA(a, b, e, f);
+    es.push_back(BlendEdge{e, f, a, b, mode});
+    idx.push_back(edges[i]);
   }
-  return finish_blend(mk, s, false, out, origins);
+  return blend_edges<BRepFilletAPI_MakeChamfer>(s, es, idx, false, out, origins);
   GS_GUARD_END
 }
 

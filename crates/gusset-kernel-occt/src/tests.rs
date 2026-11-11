@@ -1627,3 +1627,55 @@ fn a_periodic_quadratic_bspline_and_a_quintic_edge_have_exact_areas() {
     let m = k().mass_properties(&r.shape).unwrap();
     assert!(close(m.volume, 12.0, 1e-9), "{}", m.volume);
 }
+
+/// The straight edge of `r` that is `len` long, parallel to Z, at `(x, y)`.
+fn vertical_edge_at(r: &OpResult, x: f64, y: f64, len: f64) -> u32 {
+    let t = k().topology(&r.shape).unwrap();
+    t.edges
+        .iter()
+        .position(|e| {
+            (e.length - len).abs() < 1e-9 && (e.midpoint[0] - x).abs() < 1e-9 && (e.midpoint[1] - y).abs() < 1e-9
+        })
+        .unwrap() as u32
+}
+
+#[test]
+fn fillets_that_meet_make_a_full_round() {
+    // An 8 mm wide end: radius 4 on both of its corners leaves nothing of the end face (OCCT's
+    // blend fails there; the corners are cut away instead).
+    let b = plain_box(8.0, 20.0, 2.0);
+    let e0 = vertical_edge_at(&b, 0.0, 0.0, 2.0);
+    let e1 = vertical_edge_at(&b, 8.0, 0.0, 2.0);
+    let f = k().fillet(&b.shape, &[e0, e1], 4.0).unwrap();
+    let corner = 16.0 - 4.0 * std::f64::consts::PI;
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, 320.0 - 2.0 * 2.0 * corner, 1e-7), "{}", m.volume);
+    for e in [e0, e1] {
+        assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+    }
+    // A radius whose corners reach past the faces is still refused.
+    assert!(k().fillet(&b.shape, &[e0, e1], 4.5).is_err());
+}
+
+#[test]
+fn chamfer_that_takes_a_whole_face() {
+    // A 1 mm disc: a 1 mm chamfer of its bottom rim leaves no cylinder below the top rim.
+    let disc = Profile {
+        frame: Frame::XY,
+        regions: vec![Region2 {
+            outer: Loop2 {
+                edges: vec![ProfileEdge { seg: Seg2::Circle { center: [0.0, 0.0], radius: 10.0 }, tag: 1 }],
+            },
+            holes: vec![],
+        }],
+    };
+    let d = k().extrude(&disc, &ExtrudeSpec { distance: 1.0, symmetric: false }).unwrap();
+    let t = k().topology(&d.shape).unwrap();
+    let rim = t.edges.iter().position(|e| e.midpoint[2].abs() < 1e-9 && e.length > 60.0).unwrap() as u32;
+    let c = k().chamfer(&d.shape, &[rim], 1.0).unwrap();
+    let ring = 0.5 * 2.0 * std::f64::consts::PI * (10.0 - 1.0 / 3.0);
+    let m = k().mass_properties(&c.shape).unwrap();
+    assert!(close(m.volume, 100.0 * std::f64::consts::PI - ring, 1e-7), "{}", m.volume);
+    assert!(c.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: rim }));
+    assert_eq!(k().topology(&c.shape).unwrap().faces.len(), 3);
+}
