@@ -1550,7 +1550,7 @@ fn fusion_history(
     // "The design has no feature timeline": nothing to say about this design.
     let no_timeline = |why: &str| why.starts_with("the design has no") || why.starts_with("the file has no");
     let mut entries = read(bytes, &mut budget)?;
-    let tree = if has_stream(&entries) {
+    let mut tree = if has_stream(&entries) {
         match gusset_sat::fusion_tree::feature_tree(&entries, file_name) {
             Ok(t) => t,
             Err(why) if no_timeline(&why) => return Err(String::new()),
@@ -1631,9 +1631,9 @@ fn fusion_history(
             _ => return Err(String::new()),
         }
     };
+    let stored = fusion_stored_bodies(&mut tree, &entries, bodies, kernel, importer, cancel)?;
     let text = serde_json::to_vec(&tree).map_err(|e| e.to_string())?;
     let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
-    let stored = fusion_stored_bodies(&tree, &entries, bodies, kernel, importer, cancel)?;
     t.stored_bodies = stored.clone();
     match rebuild_check(&mut t, bodies, kernel, file_name, "the file's stored") {
         Ok(note) => {
@@ -1674,9 +1674,11 @@ fn fusion_history(
 /// the component's placement like the tree's other features; a body of several lumps (the copper of
 /// a board) is one stored body per lump, in the order the lumps come in. A history that has
 /// nothing but stored bodies, or whose stored body is already the finished body that a later
-/// feature changes, is not a history: the rebuild check would pass trivially.
+/// feature changes, is not a history: the rebuild check would pass trivially. A stored body
+/// that comes in as several solids (4343: an island inside a cavity of one ACIS lump) and that
+/// no other feature names becomes that many stored bodies of the tree, in the order they come in.
 fn fusion_stored_bodies(
-    tree: &Value,
+    tree: &mut Value,
     entries: &[(String, Vec<u8>)],
     bodies: &[PreparedBody],
     kernel: &Arc<dyn gusset_kernel::Kernel>,
@@ -1696,6 +1698,20 @@ fn fusion_stored_bodies(
         return Err("the design has too many base feature bodies".into());
     }
     let mut out: Vec<Vec<u8>> = Vec::new();
+    // Stored bodies (by number) that came in as several solids, and how many.
+    let mut pieces: Vec<(usize, usize)> = Vec::new();
+    // Whether a feature other than the stored body names it (a target, a tool, an input).
+    let named_elsewhere = |name: &str| {
+        fn holds(v: &Value, name: &str) -> bool {
+            match v {
+                Value::String(s) => s == name,
+                Value::Array(a) => a.iter().any(|x| holds(x, name)),
+                Value::Object(o) => o.iter().any(|(k, x)| k != "name" && holds(x, name)),
+                _ => false,
+            }
+        }
+        feats.iter().any(|f| f.get("name").and_then(Value::as_str) != Some(name) && holds(f, name))
+    };
     // The last body converted: (blob, index, placement) and its solids.
     type Converted = ((String, usize, Option<String>), Vec<Vec<u8>>);
     let mut converted: Option<Converted> = None;
@@ -1745,18 +1761,31 @@ fn fusion_stored_bodies(
             }
             _ => match solids {
                 [one] => one,
+                [first, rest @ ..] if !rest.is_empty() && !named_elsewhere(name) => {
+                    pieces.push((k, 1 + rest.len()));
+                    out.push(first.clone());
+                    out.extend(rest.iter().cloned());
+                    continue;
+                }
                 _ => return Err(format!("the stored body {name} did not come in as one body")),
             },
         };
         out.push(blob.clone());
     }
+    if !pieces.is_empty() {
+        split_stored_bodies(tree, &pieces);
+    }
+    let feats = tree.get("features").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+    let stored_feats: Vec<&Value> = feats.iter().filter(|f| ty(f) == "stored_body").collect();
     // A later feature that changes a stored body must find it as it was before: when the stored
     // body is the very body the file ends with, the feature has nothing left to do and the
     // rebuild would agree with the file whatever the feature was.
     let names: std::collections::HashMap<&str, usize> =
         stored_feats.iter().enumerate().filter_map(|(k, f)| Some((f.get("name")?.as_str()?, k))).collect();
     let mut targeted: Vec<usize> = Vec::new();
-    for f in feats.iter().filter(|f| ty(f) != "stored_body") {
+    // A mirror into a new body leaves its target as it is: the copy is what it rebuilds.
+    let copies = |f: &&Value| ty(f) == "mirror" && f.get("merge").and_then(Value::as_bool) == Some(false);
+    for f in feats.iter().filter(|f| ty(f) != "stored_body" && !copies(f)) {
         let t = f.get("target");
         let list: Vec<&str> = match t {
             Some(Value::String(s)) => vec![s.as_str()],
@@ -1784,6 +1813,44 @@ fn fusion_stored_bodies(
         }
     }
     Ok(out)
+}
+
+/// Writes each stored body `k` that came in as `n` solids as `n` stored bodies (the first keeps
+/// its name, the others are "<name> piece <i>"), and numbers the stored bodies in tree order again.
+fn split_stored_bodies(tree: &mut Value, pieces: &[(usize, usize)]) {
+    let Some(feats) = tree.get_mut("features").and_then(Value::as_array_mut) else { return };
+    let mut out = Vec::with_capacity(feats.len());
+    let mut k = 0usize;
+    for f in feats.drain(..) {
+        if f.get("type").and_then(Value::as_str) != Some("stored_body") {
+            out.push(f);
+            continue;
+        }
+        let n = pieces.iter().find(|(at, _)| *at == k).map_or(1, |p| p.1);
+        k += 1;
+        let name = f.get("name").and_then(Value::as_str).unwrap_or("?").to_string();
+        let copies: Vec<Value> = (1..n)
+            .map(|i| {
+                let mut c = f.clone();
+                if let Some(o) = c.as_object_mut() {
+                    o.insert("name".into(), format!("{name} piece {}", i + 1).into());
+                }
+                c
+            })
+            .collect();
+        out.push(f);
+        out.extend(copies);
+    }
+    let mut num = 0u64;
+    for f in &mut out {
+        if f.get("type").and_then(Value::as_str) == Some("stored_body")
+            && let Some(o) = f.as_object_mut()
+        {
+            o.insert("body".into(), num.into());
+            num += 1;
+        }
+    }
+    *feats = out;
 }
 
 /// Whether two solids are the same solid at the same place, as far as volume (within
