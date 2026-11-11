@@ -281,6 +281,19 @@ new-body extrudes match (was 206/236).
   the normal; one-sided offsets give side and reach (L-Bracket Extrude2: −10 mm, i.e. through the
   10 mm leg).
 
+* Start off the profile plane (`ProfileOffset`, 68 extrudes in adafruit-more): with no face recipe among
+  the extrude's recipes it is an offset plane at that distance along the normal (signed like
+  `AlongDistance`); with one `BoundedFace`/`Face` recipe (and no `Side1Offset` end) the start is that face's
+  plane plus the offset ("from object"; every such offset in the corpus is 0). 3464 Joy Bonnet: Extrude2-8
+  start on the board's top or on the cap of an earlier extrude, and each then adds exactly its stored tool.
+  The cap offsets that name faces later include the start. Written as an extrude from a copy of its
+  sketch moved to the start (`<name> start`), like an extrude to two sides. A start with two face
+  recipes (start and to-object end; which is which is not known) or a face that is not a plane parallel
+  to the sketch is refused.
+* OffsetFaces `D087EFE5`: the faces are `7ACC2A03` face recipes under its selection (planar caps and sides),
+  the `distance` parameter positive away from the material. 3464's OffsetFaces3 (-1.437 mm on the two
+  long sides of the header) gives the volume of the file's end body (6406.567 mm3).
+
 ### Patterns, mirror, revolve axis
 * Linear pattern direction: `F2A7590D` → `5662F619` → edge recipe → edge direction; the sign is
   chosen where the stored body holds the first copy of the input extrude's profile edges

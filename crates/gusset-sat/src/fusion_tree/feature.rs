@@ -1,7 +1,7 @@
 //! Reading single features out of the design stream: names, parameters, extrudes, the entries a
 //! fillet or chamfer picks, holes, pattern directions and mirror planes.
 
-use super::geom::{V3, cross, dot};
+use super::geom::{Plane, V3, cross, dot};
 use super::naming::{self, ExtGeom, RecipeKind};
 use super::sketch::{self, Sketch};
 use super::stream::{
@@ -206,9 +206,44 @@ impl Ctx<'_> {
         if let Some(r) = self.exts.get(&fid) {
             return r.clone();
         }
+        // A start face that names this extrude itself must not recurse.
+        self.exts.insert(fid, None);
         let r = self.ext_geom_once(fid).map(Rc::new);
         self.exts.insert(fid, r.clone());
         r
+    }
+
+    /// Where an extrude starts (cm along its sketch plane's normal; 0 on the sketch plane).
+    /// A `ProfileOffset` parameter marks a start off the profile plane: with no face recipe it
+    /// is that offset (an offset plane), with one face recipe (and no `Side1Offset` end, whose
+    /// target is a face recipe too) the plane of that face, a cap or planar side, plus the
+    /// offset ("from object"; every such start in the corpus has offset 0). The offset takes the
+    /// direction's sign like `AlongDistance`. `Err` where the start is a face that is not a
+    /// known plane parallel to the sketch, or which face is the start is not known.
+    pub(super) fn extrude_start(&mut self, fid: u64, e: &ExtRaw, pl: &Plane, sign: f64) -> Result<f64, &'static str> {
+        let Some(off) = pget(&e.params, "ProfileOffset") else { return Ok(0.0) };
+        let off = off.value.ok_or("the start offset has no value")? * sign;
+        let d = self.d;
+        let mut faces = Vec::new();
+        for rid in self.edge_recipes_of(fid) {
+            if let (Some(RecipeKind::BoundedFace | RecipeKind::Face), Some(names)) = naming::recipe(d, rid) {
+                faces.push(names);
+            }
+        }
+        let to_object = pget(&e.params, "Side1Offset").is_some();
+        match (faces.as_slice(), to_object) {
+            ([], _) | ([_], true) => Ok(off),
+            ([names], false) => {
+                let (g, ops) = names.first().and_then(|f| f.first()).ok_or("the start face has no name")?;
+                match self.face(g, ops) {
+                    Some(naming::FaceG::Plane { n, p, .. }) if (dot(n, pl.z).abs() - 1.0).abs() < 1e-9 => {
+                        Ok(dot(n, super::geom::sub(p, pl.origin)) / dot(n, pl.z) + off)
+                    }
+                    _ => Err("its start face is not a plane parallel to the sketch"),
+                }
+            }
+            _ => Err("its start and end are both faces"),
+        }
     }
 
     fn ext_geom_once(&mut self, fid: u64) -> Option<ExtGeom> {
@@ -233,12 +268,13 @@ impl Ctx<'_> {
         let (mut t0, mut t1) = (None, None);
         if let Some(a) = pget(&e.params, "AlongDistance").and_then(|p| p.value) {
             let a = a * sign;
+            let s0 = self.extrude_start(fid, &e, &pl, sign).ok()?;
             if e.extent == 3 {
-                (t0, t1) = (Some(-a / 2.0), Some(a / 2.0));
+                (t0, t1) = (Some(s0 - a / 2.0), Some(s0 + a / 2.0));
             } else if let (2, Some(ag)) = (e.extent, pget(&e.params, "AgainstDistance").and_then(|p| p.value)) {
-                (t0, t1) = (Some(-ag * sign), Some(a));
+                (t0, t1) = (Some(s0 - ag * sign), Some(s0 + a));
             } else {
-                (t0, t1) = (Some(0.0), Some(a));
+                (t0, t1) = (Some(s0), Some(s0 + a));
             }
         }
         Some(ExtGeom { pl, sketch: s, segs, t0, t1 })

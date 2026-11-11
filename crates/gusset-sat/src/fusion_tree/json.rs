@@ -296,6 +296,18 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         }
         _ => 1.0,
     };
+    // Where it starts, off the sketch plane (cm along its normal).
+    let start = match &plane {
+        Some(pl) => cx.extrude_start(fid, &e, pl, sign),
+        None => Ok(0.0),
+    };
+    let start = match start {
+        Ok(t) => t,
+        Err(why) => {
+            j.insert("start_error".into(), why.into());
+            0.0
+        }
+    };
     let mut distance = along.and_then(|a| a.value).map(|v| mm(v) * sign);
     if let Some(a) = along {
         j.insert("distance_expr".into(), a.expr.as_str().into());
@@ -318,7 +330,7 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
                 && (dot(n, pl.z).abs() - 1.0).abs() < 1e-9
             {
                 let t = dot(n, geom::sub(p, pl.origin)) / dot(n, pl.z);
-                distance = Some(mm(t + if t >= 0.0 { off } else { -off }));
+                distance = Some(mm(t + if t >= 0.0 { off } else { -off } - start));
                 j.insert("extent_from".into(), "to object".into());
             }
             break;
@@ -341,6 +353,9 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         }
     }
     j.insert("distance".into(), distance.map_or(Value::Null, Value::from));
+    if start != 0.0 {
+        j.insert("start".into(), mm(start).into());
+    }
     if distance.is_none() {
         j.insert("extent".into(), "not a distance (to object / through all)".into());
     }
@@ -384,19 +399,23 @@ fn op_target(j: &mut Map<String, Value>, g: &Graph, d: &Design, fid: u64, names:
 /// An extrude to both sides by two distances has no form of its own in the tree: it becomes one
 /// extrude from a copy of its sketch moved along the normal to where the second side ends,
 /// over the length between the two ends (the same solid; the copy is named `<extrude> start`).
+/// An extrude that starts off its sketch plane (`start`, mm: an offset plane or a face) is
+/// written the same way, from a copy moved to its start.
 fn two_sided_from_a_moved_sketch(cx: &mut Ctx, j: &mut Map<String, Value>, name: &str, feats: &mut Vec<Value>) {
-    if j.get("two_sided").and_then(Value::as_bool) != Some(true) {
-        return;
-    }
-    let (Some(d1), Some(d2), Some(sid)) = (
-        j.get("distance").and_then(Value::as_f64),
-        j.get("distance2").and_then(Value::as_f64),
-        j.get("sketch_source_id").and_then(Value::as_u64),
-    ) else {
+    let start = j.get("start").and_then(Value::as_f64).unwrap_or(0.0);
+    let two_sided = j.get("two_sided").and_then(Value::as_bool) == Some(true);
+    let (Some(d1), Some(sid)) =
+        (j.get("distance").and_then(Value::as_f64), j.get("sketch_source_id").and_then(Value::as_u64))
+    else {
         return;
     };
     // The solid lies between the two reaches (a negative second distance starts it off the
-    // sketch plane, on the first side).
+    // sketch plane, on the first side); both move with the start.
+    let (d1, d2) = match j.get("distance2").and_then(Value::as_f64) {
+        Some(d2) if two_sided => (d1 + start, d2 + start),
+        _ if two_sided || start == 0.0 => return,
+        _ => (d1 + start, start),
+    };
     if (d1 - d2).abs() < 1e-9 {
         return;
     }
@@ -413,14 +432,28 @@ fn two_sided_from_a_moved_sketch(cx: &mut Ctx, j: &mut Map<String, Value>, name:
     };
     let o = geom::add(pl.origin, geom::mul(pl.z, d2 / 10.0));
     c.insert("plane".into(), json!({"origin": v3mm(o), "x_axis": pl.x, "y_axis": pl.y}));
-    c.insert("plane_note".into(), "moved along its normal to the far end of an extrude to both sides".into());
+    c.insert(
+        "plane_note".into(),
+        if two_sided {
+            "moved along its normal to the far end of an extrude to both sides"
+        } else {
+            "moved along its normal to where the extrude starts"
+        }
+        .into(),
+    );
     let copy = format!("{name} start");
     c.insert("name".into(), copy.clone().into());
     feats.push(Value::Object(c));
     j.insert("sketch".into(), copy.into());
     j.insert("distance".into(), round6(d1 - d2).into());
     j.insert("two_sided".into(), false.into());
-    j.insert("extent_from".into(), format!("two sides ({d1} and {d2} mm) as one extrude from a moved sketch").into());
+    j.remove("start");
+    let how = if two_sided {
+        format!("two sides ({d1} and {d2} mm) as one extrude from a moved sketch")
+    } else {
+        format!("from {d2} mm off the sketch plane, as an extrude from a moved sketch")
+    };
+    j.insert("extent_from".into(), how.into());
     j.remove("distance_expr");
     j.remove("distance2");
     j.remove("distance2_expr");
@@ -1026,6 +1059,8 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             feats.push(j);
         } else if c8 == "E8063467" {
             feats.push(shell_json(cx, fid, &nm, &fusion_type, class));
+        } else if c8 == "D087EFE5" {
+            feats.push(offset_faces_json(cx, fid, &nm, &fusion_type, class));
         } else if c8 == "F4163A07" {
             feats.push(super::bodyops::draft_json(cx, fid, &nm, &fusion_type, class));
         } else if matches!(c8.as_str(), "64E40C8E" | "D45FD6C4" | "4A782808") {
@@ -1176,6 +1211,45 @@ pub(super) fn joins_of_several_bodies(feats: &mut Vec<Value>) {
         feats.insert(i + 1, Value::Object(c));
         i += 2;
     }
+}
+
+/// OffsetFaces `D087EFE5`: the faces are `7ACC2A03` face recipes under its selection (planar
+/// caps and sides of extrudes, resolved like a shell's), the offset its `distance` parameter,
+/// positive away from the material (3464 OffsetFaces3: -1.437 mm takes material off; the rebuild
+/// of that design against its stored bodies confirms the sign).
+fn offset_faces_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, class: &str) -> Value {
+    let d = cx.d;
+    let fail = |why: &str| {
+        json!({"type": "unsupported", "fusion_type": fusion_type, "name": name, "class_guid": class,
+            "source_id": fid, "error": why})
+    };
+    let values = feature::param_values(d, fid, &["distance"]);
+    let [distance] = values.as_slice() else {
+        return fail("the offset has no single distance");
+    };
+    if !distance.is_finite() || *distance == 0.0 {
+        return fail("the offset distance is zero");
+    }
+    let mut faces: Vec<Value> = Vec::new();
+    for rid in cx.input_recipes(fid) {
+        let (kind, names) = naming::recipe(d, rid);
+        let (Some(naming::RecipeKind::Face | naming::RecipeKind::BoundedFace), Some(names)) = (kind, names) else {
+            return fail("an offset face is not a face recipe");
+        };
+        let Some((g, ops)) = names.first().and_then(|f| f.first()) else {
+            return fail("an offset face has no name");
+        };
+        match cx.face_with_middle(g, ops) {
+            // A side's middle; a cap's point is its plane's (the importer takes the nearest face
+            // of that plane).
+            Some(naming::FaceG::Plane { mid, .. }) => faces.push(json!({"point": v3mm(mid)})),
+            _ => return fail("an offset face is not a cap or planar side of an extrude"),
+        }
+    }
+    if faces.is_empty() {
+        return fail("no offset face was found");
+    }
+    json!({"type": "offset_face", "name": name, "source_id": fid, "faces": faces, "distance": mm(*distance)})
 }
 
 /// Shell `E8063467`: the faces it removes are `7ACC2A03` face recipes under its selection records
@@ -1364,6 +1438,12 @@ fn blocker(f: &Value) -> Option<String> {
             if !has("distance") {
                 return Some("its extent is not a distance (to object / through all)".into());
             }
+            if let Some(why) = text("start_error") {
+                return Some(why.to_string());
+            }
+            if has("start") {
+                return Some("it starts off its sketch plane".into());
+            }
             if f.get("two_sided").and_then(Value::as_bool) == Some(true) {
                 return Some("it extrudes to both sides by different distances".into());
             }
@@ -1406,7 +1486,8 @@ fn blocker(f: &Value) -> Option<String> {
             }
             None
         }
-        "hole" | "mirror" | "shell" | "draft" | "move_body" | "scale_body" | "remove_body" | "combine" => None,
+        "hole" | "mirror" | "shell" | "draft" | "offset_face" | "move_body" | "scale_body" | "remove_body"
+        | "combine" => None,
         "component_insert" => Some("the design it inserts is not merged into the tree".into()),
         "stored_body" => (!has("brep")).then(|| "the stored body names no blob".to_string()),
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),
@@ -1580,6 +1661,18 @@ pub(super) fn move_feature(f: &mut Value, pl: &crate::fusion::Placement) {
                             if let Some(m) = pt(Some(q)) {
                                 *q = m;
                             }
+                        }
+                    }
+                }
+            }
+        }
+        "shell" | "offset_face" => {
+            if let Some(fs) = f.get_mut("faces").and_then(Value::as_array_mut) {
+                for fc in fs.iter_mut().filter_map(Value::as_object_mut) {
+                    let (p, n) = (pt(fc.get("point")), dir(fc.get("normal")));
+                    for (k, v) in [("point", p), ("normal", n)] {
+                        if let Some(v) = v {
+                            fc.insert(k.into(), v);
                         }
                     }
                 }

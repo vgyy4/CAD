@@ -1654,13 +1654,13 @@ fn fusion_history(
         Err(why) if why.contains("mm3") => {
             // One stored solid cannot be told into states and tools; with the file's end bodies
             // it is the state the end bodies follow.
-            let ends = fusion_end_bodies(&tree, &entries, kernel, importer, cancel);
+            let (ends, end_box) = fusion_end_bodies(&tree, &entries, kernel, importer, cancel);
             if bodies.len() <= 1 && ends.is_empty() {
                 return Err(why);
             }
             let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
             t.stored_bodies = stored;
-            let note = fusion_states_check(&mut t, bodies, &ends, kernel, file_name)
+            let note = fusion_states_check(&mut t, bodies, (&ends, end_box), kernel, file_name)
                 .map_err(|states| format!("{why}; checked step by step: {states}"))?;
             Ok((t, Some(note)))
         }
@@ -1803,52 +1803,61 @@ fn fusion_stored_bodies(
 /// bodies after the last chamfer, where the `.smb` holds the states before the blends and the cut
 /// tools; 2011 and 931: the one filleted body). Empty, so that nothing is concluded from them,
 /// where the tree has a stored body (a Base Feature's blob holds its own bodies), where a blob or
-/// one of its solid bodies cannot be read, or where there are too many.
+/// one of its solid bodies cannot be read, or where there are too many. Also the box of all of
+/// them.
 fn fusion_end_bodies(
     tree: &Value,
     entries: &[(String, Vec<u8>)],
     kernel: &Arc<dyn gusset_kernel::Kernel>,
     importer: &dyn Importer,
     cancel: &CancelFlag,
-) -> Vec<f64> {
+) -> (Vec<f64>, Option<gusset_kernel::BBox>) {
     let feats = tree.get("features").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
     if feats.iter().any(|f| f.get("type").and_then(Value::as_str) == Some("stored_body")) {
-        return Vec::new();
+        return (Vec::new(), None);
     }
     let limits = gusset_sat::Limits::default();
     let mut out = Vec::new();
+    let mut bbox: Option<gusset_kernel::BBox> = None;
     for (_, blob) in
         entries.iter().filter(|(n, _)| n.contains("Breps.BlobParts/") && n.to_ascii_lowercase().ends_with(".smbh"))
     {
-        let Ok(count) = gusset_sat::body_count(blob, &limits) else { return Vec::new() };
+        let Ok(count) = gusset_sat::body_count(blob, &limits) else { return (Vec::new(), None) };
         if out.len() + count > MAX_F3D_BODIES {
-            return Vec::new();
+            return (Vec::new(), None);
         }
         for nth in 0..count {
             if cancel.load(Ordering::Relaxed) {
-                return Vec::new();
+                return (Vec::new(), None);
             }
             let step = match gusset_sat::to_step_nth(blob, "end body", &limits, None, nth, count) {
                 Ok(c) => c.step,
                 // A sheet body is no body of the rebuilt model either.
                 Err(gusset_sat::SatError::Unsupported(why)) if why.ends_with("is not a solid") => continue,
-                Err(_) => return Vec::new(),
+                Err(_) => return (Vec::new(), None),
             };
-            let Ok(solids) = importer.import("step", step.as_bytes(), cancel) else { return Vec::new() };
+            let Ok(solids) = importer.import("step", step.as_bytes(), cancel) else { return (Vec::new(), None) };
             let mut volume = 0.0;
             for (_, solid) in &solids {
                 let Some(v) = kernel.read_native(solid).ok().and_then(|s| kernel.mass_properties(&s).ok()) else {
-                    return Vec::new();
+                    return (Vec::new(), None);
                 };
                 volume += v.volume;
+                let Some(b) = kernel.read_native(solid).ok().and_then(|s| kernel.bbox(&s).ok()) else {
+                    return (Vec::new(), None);
+                };
+                bbox = Some(bbox.map_or(b, |a| gusset_kernel::BBox {
+                    min: [a.min[0].min(b.min[0]), a.min[1].min(b.min[1]), a.min[2].min(b.min[2])],
+                    max: [a.max[0].max(b.max[0]), a.max[1].max(b.max[1]), a.max[2].max(b.max[2])],
+                }));
             }
             if solids.is_empty() {
-                return Vec::new();
+                return (Vec::new(), None);
             }
             out.push(volume);
         }
     }
-    out
+    (out, bbox)
 }
 
 /// How many copies of its cut tool (or added body) each feature makes, from the tree: a cut or
@@ -2213,11 +2222,12 @@ fn fusion_explain_placed(
 /// ([`fusion_ends_agree`]): then the end result itself is what confirms the last features, as it
 /// does for a file whose `.smb` holds the end result. The finished model must also lie
 /// in the box of the stored solids that are states or tools of joins (a cut's tool may reach out
-/// of the body it cuts).
+/// of the body it cuts), or, where the end bodies confirm it, in theirs (`end_box`: a body moved
+/// after the last stored state lies only where the end bodies are).
 fn fusion_states_check(
     tree: &mut crate::tree_import::Tree,
     bodies: &[PreparedBody],
-    ends: &[f64],
+    (ends, end_box): (&[f64], Option<gusset_kernel::BBox>),
     kernel: &Arc<dyn gusset_kernel::Kernel>,
     file_name: &str,
 ) -> Result<String, String> {
@@ -2507,7 +2517,10 @@ fn fusion_states_check(
     if let (Some(w), Some(g)) = (want_box, final_box) {
         let tol = 1e-4 * (1.0 + gusset_kernel::norm(w.size()));
         let far = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).any(|(a, b)| (a - b).abs() > tol);
-        if far(w.min, g.min) || far(w.max, g.max) {
+        // Where the file's end bodies confirm the finished bodies, the model may lie where they
+        // lie instead: a body moved after the last stored state is stored there only.
+        let at_ends = by_ends && end_box.is_some_and(|e| !far(e.min, g.min) && !far(e.max, g.max));
+        if (far(w.min, g.min) || far(w.max, g.max)) && !at_ends {
             return Err(format!(
                 "the features lie in {:?}..{:?}, the stored solids in {:?}..{:?}",
                 g.min, g.max, w.min, w.max

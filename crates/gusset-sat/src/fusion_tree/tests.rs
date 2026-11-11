@@ -435,6 +435,18 @@ fn the_check_names_the_first_feature_it_cannot_read() {
         {"type": "extrude", "name": "E", "profiles": [], "distance": 5.0, "operation": "new", "two_sided": true},
     ]});
     assert!(check(&two_sided).unwrap_err().contains("both sides"));
+    // An extrude whose start face is not known, or whose start was not moved into its sketch.
+    let start = |extra: serde_json::Value| {
+        let mut e = json!({"type": "extrude", "name": "E", "profiles": [], "distance": 5.0, "operation": "new"});
+        if let (Some(e), serde_json::Value::Object(x)) = (e.as_object_mut(), extra) {
+            e.extend(x);
+        }
+        check(&json!({"features": [e]})).unwrap_err()
+    };
+    assert!(
+        start(json!({"start_error": "its start face is not a plane parallel to the sketch"})).contains("start face")
+    );
+    assert!(start(json!({"start": 1.6})).contains("off its sketch plane"));
     let unresolved = json!({"features": [
         {"type": "extrude", "name": "E", "profiles": [], "distance": 5.0, "operation": "new"},
         {"type": "fillet", "name": "F", "radius": 1.0, "edges": [{"midpoint": [0, 0, 0]}], "edges_unresolved": 2},
@@ -1651,6 +1663,11 @@ fn edge_paths_and_picked_faces_move_with_a_placement() {
     super::json::move_feature(&mut fillet, &pl);
     assert_eq!(fillet["edges"][0]["midpoint"], json!([8.0, 1.0, 3.0]));
     assert_eq!(fillet["edges"][0]["path"], json!([[10.0, 1.0, 3.0], [8.0, 1.0, 3.0]]));
+    for ty in ["shell", "offset_face"] {
+        let mut f = json!({"type": ty, "name": "S", "faces": [{"point": [1.0, 2.0, 3.0], "normal": [1.0, 0.0, 0.0]}]});
+        super::json::move_feature(&mut f, &pl);
+        assert_eq!(f["faces"][0], json!({"point": [8.0, 1.0, 3.0], "normal": [0.0, 1.0, 0.0]}), "{ty}");
+    }
 }
 
 #[test]
