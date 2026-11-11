@@ -1167,3 +1167,45 @@ two Adafruit sets (38 distinct joints; four records are repeats); all lengths in
 * 3957, 4200 and 4400 now come in as history (their box mismatches were the unplaced or pre-joint occurrences).
   4800 is unchanged: its one joint is verified and its bodies already stood where the path records have them, so
   its box mismatch (features y -5.215..5.585, stored -5.085..6.785; 293.8 mm3 short) is not a joint's.
+
+## 25. Round 17 A: stale profile records, curves drawn twice, tapered extrudes (2026-11-11)
+
+### Profile records (`0D57BD2F`) that outlive their curves
+* A profile record is not always rewritten when its sketch is edited. 5360 (a connector cut down from four pins to
+  three) still lists the fourth pin's circles (`crv_primary_id` 171, 175, 183) as holes of the housing and as
+  regions of their own; no record of the design carries those ids (searched over every record's attributes). 2756
+  lists a deleted circle (357) as a hole of a rectangle (child 0) and as the island inside it (child 1).
+* Reading: a loop whose curves are all unknown is gone. A hole loop is dropped; a part whose outer loop (flag 1) is
+  gone is dropped. A loop with some known and some unknown curves still stops the import ("curve unknown").
+
+### Curves drawn twice
+* A circle drawn twice (two `F0130424` records with the same centre, radius and seam): the copy touches the
+  circle along its whole length, so it cuts it only at its own ends, the shared seam. 324's shaft flat: a chord
+  whose ends lie on the circle, two copies of the circle, each listed as piece 2 of 3 (the cap above the chord: the
+  pieces end at the chord's first end, its second end and the seam). The cut parameters now take a curved
+  polyline lying wholly on the curve as its two end points.
+* A loop that lists every edge twice can chain by walking each edge out and back (3027's slot: two half circles
+  and two lines, each drawn twice) or round twice (its circle drawn twice, chained at the seam): the ring passes
+  its points twice and holds no interior point. Such a ring is replaced by the ring of the loop's curves taken once
+  each, when that ring is simple.
+* 858 is not settled: a circle drawn twice with a square (half-width = radius, so its sides are tangent at the
+  seam and opposite it) lists the circle as 5 pieces (1, 3 and 4 in the loop). The loop closes only when the
+  tangent point opposite the seam cuts the circle and the seam does not; the seam cut that 324 needs gives the
+  wrong pieces here.
+
+### A piece that nothing cuts
+* 512 lists the outline's bottom edge as piece 2 of 3 beside the four sides of an inner rectangle that closes on
+  its own (its top lies on the outline's top, listed as piece 2 of 3 too); nothing in the sketch meets that bottom
+  edge. A piece that cannot be cut out of its curve is now left out when the loop's other curves close without it;
+  otherwise the import still stops ("curve piece a/b not reproduced").
+
+### Tapered extrudes
+* `TaperAngle` (radians, a model parameter of the extrude like `AlongDistance`): negative leans the side walls
+  inward, so the solid narrows away from its sketch plane (592's plug shell: -3 deg over 12 mm; 6299's lips:
+  -45 deg). The sign is confirmed by the state check: 592 passes with the solid narrowing and fails (a fillet edge
+  0.445 mm off) the other way.
+* Import: the straight extrude as a body of its own, a `draft` of all its side faces (`Name/side(...)`) about the
+  sketch plane pulled along the sweep by the negated angle, then a `combine` with the target for join, cut and
+  intersect. Symmetric and two-sided tapers are still refused.
+* Edges on a tapered extrude's side faces are not modelled from the profile (the walls lean); they come from the
+  stored bodies' named edges.

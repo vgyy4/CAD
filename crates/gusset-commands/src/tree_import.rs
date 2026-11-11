@@ -216,6 +216,10 @@ struct SolidF {
     /// Extrude to a face: sweep against the source sketch's normal.
     #[serde(default)]
     reverse: bool,
+    /// Extrude: the side walls lean by this angle (degrees) from the sweep direction;
+    /// negative narrows the solid away from its sketch (Fusion's taper angle).
+    #[serde(default)]
+    taper_deg: Option<f64>,
 }
 
 /// The default of the `refine` field of a body-combining tree feature: unified.
@@ -1231,6 +1235,10 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
             other => return Err(format!("end condition '{}' is not blind or to_face", short(other))),
         }
     }
+    let taper = if revolve { None } else { d.taper_deg.filter(|t| *t != 0.0) };
+    if let Some(t) = taper {
+        return tapered(g, s, d, &name, args, op, &sm, t);
+    }
     args.push(format!("op: {op}"));
     if op != "new"
         && let Some(t) = &d.target
@@ -1250,6 +1258,92 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
     }
     g.made.push(name.clone());
     g.features.insert(d.name.clone(), name);
+    Ok(())
+}
+
+/// A tapered extrude: the straight extrude as a body of its own, its side faces drafted about
+/// the sketch plane, then combined with the body it changes. Gusset's extrude has no taper; a
+/// draft of the side walls with the sketch plane as neutral plane gives the same solid (the
+/// profile keeps its place on the sketch plane and every wall leans by the angle).
+#[allow(clippy::too_many_arguments)]
+fn tapered(
+    g: &mut Gen,
+    s: &Session,
+    d: &SolidF,
+    name: &str,
+    mut args: Vec<String>,
+    op: &str,
+    sm: &SketchMap,
+    taper: f64,
+) -> Result<(), String> {
+    let taper = finite(taper, "the taper angle")?;
+    if taper.abs() >= 89.0 {
+        return Err("a taper of 89 degrees or more is not imported".into());
+    }
+    if d.symmetric || d.end_condition.as_deref().is_some_and(|e| e != "blind") {
+        return Err("a tapered extrude that is symmetric or ends on a face is not imported yet".into());
+    }
+    let dist = d.distance.ok_or("an extrude without a distance")?;
+    args.push("op: new".into());
+    let _ = writeln!(
+        g.text,
+        "
+extrude {name} ({})",
+        args.join(", ")
+    );
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {
+        return Err(format!("it does not build here: {}", e.message));
+    }
+    let prefix = format!("{name}/side(");
+    let mut sides: Vec<String> = Vec::new();
+    for b in ev.bodies.iter().filter(|b| b.feature == name) {
+        for f in &b.names.faces {
+            let f = f.to_string();
+            if f.starts_with(&prefix) && !sides.contains(&f) {
+                sides.push(f);
+            }
+        }
+    }
+    if sides.is_empty() || sides.len() > MAX_PICKS {
+        return Err("the tapered extrude has no side faces to lean".into());
+    }
+    g.made.push(name.to_string());
+    // The sweep runs along the Gusset sketch's normal when the distance written (negated for a
+    // flipped plane) is positive; the draft pulls along the sweep, and a positive draft angle
+    // narrows the solid towards the pull side.
+    let ng = cross(sm.x, sm.y);
+    let pull = if (dist > 0.0) != sm.flipped { ng } else { ng.map(|c| -c) };
+    let draft = g.fresh(&format!("{name} taper"), "Draft");
+    let (plane, against) = v2::datum_plane_facing(g, &draft, sm.origin, pull)?;
+    let flip = if against { ", flip: true" } else { "" };
+    let _ = writeln!(
+        g.text,
+        "\ndraft {draft} (body: {name}, faces: [{}], plane: {}, angle: {} deg{flip})",
+        sides.join(", "),
+        plane,
+        num(-taper)
+    );
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    if let Some(e) = ev.errors().iter().find(|e| e.feature == draft) {
+        return Err(format!("its taper does not build here: {}", e.message));
+    }
+    g.made.push(draft);
+    if op == "new" {
+        g.features.insert(d.name.clone(), name.to_string());
+        return Ok(());
+    }
+    let t = d.target.as_ref().ok_or("the body it changes is not named")?;
+    let target = g.body_named(t, "target")?;
+    let comb = g.fresh(&format!("{name} combine"), "Combine");
+    let unrefined = if d.refine { "" } else { ", refine: false" };
+    let _ = writeln!(g.text, "\ncombine {comb} (body: {target}, tools: [{name}], op: {op}{unrefined})");
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    if let Some(e) = ev.errors().iter().find(|e| e.feature == comb) {
+        return Err(format!("it does not build here: {}", e.message));
+    }
+    g.made.push(comb);
+    g.features.insert(d.name.clone(), target);
     Ok(())
 }
 

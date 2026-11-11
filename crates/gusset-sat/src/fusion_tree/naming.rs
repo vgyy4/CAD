@@ -202,6 +202,8 @@ pub(super) struct ExtGeom {
     pub segs: Vec<Rc<Seg>>,
     pub t0: Option<f64>,
     pub t1: Option<f64>,
+    /// The side walls lean (a taper angle): they do not stand on the profile.
+    pub tapered: bool,
 }
 
 /// Generator text to (profile curve piece index in `ExtGeom::segs`, traversed forward).
@@ -763,6 +765,10 @@ impl Ctx<'_> {
             let t = if g == "1" { eg.t0 } else { eg.t1 }?;
             let p = world(&pl, [0.0, 0.0], t);
             return Some(FaceG::Plane { n: z, p, cap: true, mid: p });
+        }
+        if eg.tapered {
+            // A leaning wall is not modelled: its edges come from the stored bodies.
+            return None;
         }
         let mut face_mid: Option<V3> = None;
         let sg: Rc<Seg> = match self.truth(&eg, g, *ops.first()?) {

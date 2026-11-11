@@ -1447,8 +1447,8 @@ fn blocker(f: &Value) -> Option<String> {
             if f.get("two_sided").and_then(Value::as_bool) == Some(true) {
                 return Some("it extrudes to both sides by different distances".into());
             }
-            if has("taper_deg") {
-                return Some("it is tapered".into());
+            if has("taper_deg") && f.get("symmetric").and_then(Value::as_bool) == Some(true) {
+                return Some("it is tapered and symmetric".into());
             }
             let op = text("operation").unwrap_or("");
             if !matches!(op, "new" | "join" | "cut" | "intersect") {

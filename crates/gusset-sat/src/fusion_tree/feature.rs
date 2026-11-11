@@ -277,7 +277,8 @@ impl Ctx<'_> {
                 (t0, t1) = (Some(s0), Some(s0 + a));
             }
         }
-        Some(ExtGeom { pl, sketch: s, segs, t0, t1 })
+        let tapered = pget(&e.params, "TaperAngle").and_then(|p| p.value).is_some_and(|t| t != 0.0);
+        Some(ExtGeom { pl, sketch: s, segs, t0, t1, tapered })
     }
 
     pub(super) fn gen_map(&mut self, fid: u64) -> Option<Rc<naming::GenMap>> {

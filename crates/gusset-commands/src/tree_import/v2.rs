@@ -732,11 +732,18 @@ pub(super) fn mirror(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value]) -> 
 /// The text name of the plane through `o` with normal `n`: a base plane when it is one, else
 /// an offset or tilted datum plane written to the text (named after `name`).
 fn datum_plane(g: &mut Gen, name: &str, o: V3, n: V3) -> Result<String, String> {
+    datum_plane_facing(g, name, o, n).map(|p| p.0)
+}
+
+/// [`datum_plane`], and whether the plane's normal points against `n`.
+pub(super) fn datum_plane_facing(g: &mut Gen, name: &str, o: V3, n: V3) -> Result<(String, bool), String> {
     let mut found = None;
+    let mut against = false;
     for (base, x, y) in BASES {
         let bn = cross(x, y);
         if (dot(n, bn).abs() - 1.0).abs() < 1e-9 {
             found = Some((base, dot(o, bn)));
+            against = dot(n, bn) < 0.0;
             break;
         }
     }
@@ -752,6 +759,7 @@ fn datum_plane(g: &mut Gen, name: &str, o: V3, n: V3) -> Result<String, String> 
         None => {
             let prefix = g.fresh(&format!("{name}_m"), "Plane");
             let placed = super::tilted(&prefix, o, n).ok_or("its plane is degenerate")?;
+            against = placed.flipped;
             for (dn, dl) in &placed.datums {
                 if !g.taken.insert(dn.to_ascii_lowercase()) {
                     return Err(format!("the name '{dn}' for its plane is taken"));
@@ -762,7 +770,7 @@ fn datum_plane(g: &mut Gen, name: &str, o: V3, n: V3) -> Result<String, String> 
             placed.plane
         }
     };
-    Ok(plane)
+    Ok((plane, against))
 }
 
 /// The whole body, across a base plane or an offset datum plane.
