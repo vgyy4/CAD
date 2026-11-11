@@ -1681,24 +1681,32 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         let tb = g.body_named(t, "body")?;
         by_body = collect(Some(&tb))?;
     }
-    if by_body.len() != 1 {
-        return Err("its edges are on several bodies".into());
+    if by_body.is_empty() {
+        return Err("no edges".into());
     }
-    let (body, mut names) = by_body.into_iter().next().ok_or("no edges")?;
-    // Several source pieces of one edge of the model name it once.
-    let mut seen = HashSet::new();
-    names.retain(|n| seen.insert(n.clone()));
-    let name = g.fresh(&d.name, if fillet { "Fillet" } else { "Chamfer" });
+    // Edges on several bodies (Fusion blends them in one feature): one blend per body, each
+    // with the same size.
     let (kw, key) = if fillet { ("fillet", "radius") } else { ("chamfer", "distance") };
-    let second = if fillet { String::new() } else { chamfer_second(g, s, d, &body, &names)? };
-    let line = format!("\n{kw} {name} (edges: [{}], {key}: {} mm{second})\n", names.join(", "), num(size));
-    g.text.push_str(&line);
+    let mut made = Vec::new();
+    for (body, mut names) in by_body {
+        // Several source pieces of one edge of the model name it once.
+        let mut seen = HashSet::new();
+        names.retain(|n| seen.insert(n.clone()));
+        let name = g.fresh(&d.name, if fillet { "Fillet" } else { "Chamfer" });
+        let second = if fillet { String::new() } else { chamfer_second(g, s, d, &body, &names)? };
+        let line = format!("\n{kw} {name} (edges: [{}], {key}: {} mm{second})\n", names.join(", "), num(size));
+        g.text.push_str(&line);
+        made.push(name);
+    }
     let ev = g.evaluate(s).map_err(|e| e.message)?;
-    if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {
+    if let Some(e) = ev.errors().iter().find(|e| made.contains(&e.feature)) {
         return Err(format!("it does not build here: {}", e.message));
     }
-    g.made.push(name.clone());
-    g.features.insert(d.name.clone(), name);
+    // The tree's name stands for the first; the others are only made.
+    if let Some(first) = made.first() {
+        g.features.insert(d.name.clone(), first.clone());
+    }
+    g.made.extend(made);
     Ok(())
 }
 
