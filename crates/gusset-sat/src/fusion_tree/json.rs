@@ -32,6 +32,9 @@ const NON_GEOMETRIC: [(&str, &str); 13] = [
     (super::CUSTOM_FEATURE, "custom feature (package generator): the features it made follow it in the timeline"),
 ];
 
+/// Derived Base Feature: the bodies of another design, derived into this one (section 30).
+const DERIVED_BASE: &str = "B1E5B971";
+
 fn op_name(op: u8) -> String {
     match op {
         1 => "join".into(),
@@ -1543,7 +1546,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 Err(why) => feats.push(json!({"type": "unsupported", "fusion_type": fusion_type, "name": nm,
                     "class_guid": class, "source_id": fid, "error": why})),
             }
-        } else if c8 == "D7015B81" {
+        } else if c8 == "D7015B81" || c8 == DERIVED_BASE {
             // Base Feature: its visible bodies are bodies the file stores (section 13), handed
             // to the importer as `stored_body` features.
             match base_feature_bodies(d, &g, fid) {

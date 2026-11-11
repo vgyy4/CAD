@@ -1563,3 +1563,11 @@ Reader: `timeline` in `fusion_tree/mod.rs`, `carry_moved_bodies` in `fusion_tree
 * 5967 then builds every header (the stored pin states 0.6504 and 0.6774 mm3 and the socket tool 0.7493 mm3 are
   explained) and stops at the board: `Extrude2` (the board's PCB cut) changes the volume by 835.9874 mm3 while the
   537 stored tools no other feature explains hold 687.7067 mm3.
+
+### Derived Base Feature `B1E5B971` (3502)
+* The bodies of another design derived into this one (3502: the display's glass, polarizers and flex of a separate
+  design, seven features, each behind a component activation). The record is the creator of `D26351F0` body links
+  whose bodies name a `.smbh` state list, exactly as a Base Feature's: the reader takes them the same way, as stored
+  bodies (the source design is not in the file, so there is nothing to rebuild them from). Two of the seven make no
+  body and are skipped.
+* 3502 then stops at `Bend1` (`1CF7B9E3`, a bend of the flex body in Component7, each bend right after a sketch of its own): not decoded.
