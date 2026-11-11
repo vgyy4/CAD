@@ -1946,11 +1946,23 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             }
             feats.push(j);
         } else if c8 == "584D9526" {
-            match super::thread::json(cx, fid, &nm, &fusion_type, class) {
-                Ok(note) => {
+            // The body its face is on, by the feature that made it (as a blend's).
+            let mut on: Vec<String> = g
+                .body_links(d, fid, 2)
+                .iter()
+                .filter_map(|l| g.creator.get(l).copied())
+                .filter(|c| *c != fid)
+                .filter_map(|c| names.get(&c).cloned())
+                .collect();
+            on.sort();
+            on.dedup();
+            let body = if let [one] = on.as_slice() { Some(one.as_str()) } else { None };
+            match super::thread::json(cx, fid, &nm, &fusion_type, class, body) {
+                Ok(super::thread::Word::Cosmetic(note)) => {
                     skipped.push(json!({"name": name, "fusion_type": fusion_type, "reason": note, "source_id": fid}));
                     continue;
                 }
+                Ok(super::thread::Word::Features(fs)) => feats.extend(fs),
                 Err(j) => feats.push(j),
             }
         } else if c8 == "E8063467" {
@@ -2035,6 +2047,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
     }
     joins_that_make_bodies(&mut feats);
     joins_of_several_bodies(&mut feats);
+    super::thread::moved_edges(&mut feats);
     let comp_json: Vec<Value> = comps.iter().map(|(c, n, b)| json!({"name": n, "source_id": c, "bodies": b})).collect();
     let with_bodies = comps.iter().filter(|c| !c.2.is_empty()).count();
     let distinct: HashSet<Option<&str>> = feats.iter().map(|f| f.get("component").and_then(Value::as_str)).collect();
@@ -2554,7 +2567,7 @@ fn blocker(f: &Value) -> Option<String> {
             if has("error") {
                 return Some(text("error").unwrap_or("its layout is not recognised").to_string());
             }
-            if !has("sketch") || !has("path") {
+            if !has("sketch") || !(has("path") || has("helix")) {
                 return Some("its profile or path sketch is not decoded".into());
             }
             let op = text("operation").unwrap_or("");

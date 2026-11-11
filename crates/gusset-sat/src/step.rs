@@ -372,7 +372,8 @@ fn helix_fit(c: V3, m: V3, n: V3, p: V3, ends: [f64; 2]) -> Result<Bs3, SatError
     let first = w.iter().copied().find(|v| v.abs() > 1e-9).unwrap_or(1.0);
     let sense = if first < 0.0 { -1.0 } else { 1.0 };
     let w = [w[0] * sense, w[1] * sense, w[2] * sense];
-    let k = (0..3).min_by(|a, b| w[*a].abs().total_cmp(&w[*b].abs())).unwrap_or(0);
+    let mag = |i: usize| w.get(i).map_or(f64::INFINITY, |v| v.abs());
+    let k = (0..3).min_by(|a, b| mag(*a).total_cmp(&mag(*b))).unwrap_or(0);
     let mut e = [0.0; 3];
     if let Some(v) = e.get_mut(k) {
         *v = 1.0;

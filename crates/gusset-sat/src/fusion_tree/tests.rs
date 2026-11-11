@@ -2072,11 +2072,71 @@ fn a_thread_is_modeled_when_a_stored_body_holds_its_helix() {
     // No helix of its pitch on its radii: cosmetic, left out with a note.
     let other = blob(0.2);
     let files = [("BREP.a.smbh", &other[..])];
-    let note = super::thread::json(&super::Ctx::new(&d, &files), 5, "Thread1", "Thread", G1).unwrap();
+    let Ok(super::thread::Word::Cosmetic(note)) =
+        super::thread::json(&mut super::Ctx::new(&d, &files), 5, "Thread1", "Thread", G1, Some("Extrude1"))
+    else {
+        panic!("not cosmetic")
+    };
     assert!(note.starts_with("a cosmetic thread (M16x1 6g, external"), "{note}");
     let own = blob(0.1);
     let files = [("BREP.a.smbh", &own[..])];
-    let j = super::thread::json(&super::Ctx::new(&d, &files), 5, "Thread1", "Thread", G1).unwrap_err();
+    // Modeled, but on no face the tree knows: refused with what it is.
+    let Err(j) = super::thread::json(&mut super::Ctx::new(&d, &files), 5, "Thread1", "Thread", G1, Some("Extrude1"))
+    else {
+        panic!("not refused")
+    };
     assert_eq!(j["type"], "unsupported");
     assert!(j["error"].as_str().unwrap().starts_with("a modeled thread (M16x1 6g, external, major 15.884 mm"), "{j}");
+}
+
+#[test]
+fn a_modeled_thread_is_the_face_moved_and_a_groove_cut_square() {
+    use super::thread::{Face, Thread, features, moved_edges};
+    // 1145: M16x1 6g, 9 mm from 4 mm, on the side of a 16.4 mm rod extruded 13 mm up Z.
+    let t = Thread {
+        angle: 60.0,
+        class: "6g".into(),
+        designation: "M16x1".into(),
+        internal: false,
+        major: 1.5884,
+        minor: 1.4741,
+        pitch: 0.1,
+        length: Some(0.9),
+        offset: Some(0.4),
+        end_code: 2,
+    };
+    let f = Face { centre: [0.0; 3], normal: [0.0, 0.0, 1.0], x: [1.0, 0.0, 0.0], t0: 0.0, t1: 1.3, radius: 0.82 };
+    let fs = features(&t, &f, "Thread1", "Extrude1").unwrap();
+    let face = &fs[1];
+    assert_eq!(
+        (face["type"].as_str(), face["operation"].as_str(), face["distance"].as_f64()),
+        (Some("extrude"), Some("cut"), Some(13.0))
+    );
+    assert_eq!(fs[0]["curves"][0]["radius"], 7.942);
+    // Grooves a turn each from a pitch below the start; the first is cut off at z = 4 mm, the
+    // last runs out through the top face.
+    let sweeps: Vec<&serde_json::Value> = fs.iter().filter(|f| f["type"] == "sweep").collect();
+    assert_eq!(sweeps.len(), 11);
+    assert_eq!(sweeps[0]["operation"], "new");
+    assert_eq!(sweeps[10]["operation"], "cut");
+    let ends = fs.iter().find(|f| f["name"] == "Thread1 groove 1 ends sketch").unwrap();
+    assert_eq!(ends["plane"]["origin"][2], 4.0);
+    // At the sketch's x the groove's flat at the major diameter starts at 0 mod P.
+    let p = &fs[2]["points"];
+    let (r, z) = (p[0]["x"].as_f64().unwrap(), p[0]["y"].as_f64().unwrap());
+    let at_major = (z + (r - 7.942) * libm::tan(30f64.to_radians())).rem_euclid(1.0);
+    assert!(at_major.min(1.0 - at_major) < 1e-6, "{z} {r}");
+    // A later fillet's edge on the old face follows it to the major diameter.
+    let mut feats = fs.clone();
+    feats.push(json!({"type": "fillet", "edges": [{"midpoint": [-8.2, 0.0, 0.0], "path": [[8.2, 0.0, 0.0]]},
+        {"midpoint": [-6.5, 0.0, 18.2]}]}));
+    moved_edges(&mut feats);
+    let last = feats.last().unwrap();
+    assert_eq!(last["edges"][0]["midpoint"], json!([-7.942, 0.0, 0.0]));
+    assert_eq!(last["edges"][0]["path"], json!([[7.942, 0.0, 0.0]]));
+    assert_eq!(last["edges"][1]["midpoint"], json!([-6.5, 0.0, 18.2]));
+    assert!(feats.iter().all(|f| f.get("moves_face").is_none()));
+    // A face narrower than the thread, an unknown offset end: refused.
+    assert!(features(&t, &Face { radius: 0.7, ..f.clone() }, "T", "E").is_err());
+    assert!(features(&Thread { end_code: 7, ..t.clone() }, &f, "T", "E").is_err());
 }
