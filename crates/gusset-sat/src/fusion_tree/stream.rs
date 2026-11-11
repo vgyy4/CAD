@@ -291,12 +291,37 @@ pub(super) fn ref_end(d: &Design, rec: &[u8], j: usize) -> Option<(u64, usize)> 
     }
 }
 
+/// A record's own id: it follows the record's tag (a `str` of digits) at the start.
+fn own_id(rec: &[u8]) -> Option<u64> {
+    let n = u32_at(rec, 0)? as usize;
+    if !(1..=4).contains(&n) || !rec.get(4..4 + n)?.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    u64_at(rec, 4 + n)
+}
+
+/// Whether `rec[j..j + 8]` is the record's own id behind a tag (a `str` of one to four digits):
+/// in its header, and again where a record ends with a second tag and its id (a body link's
+/// `261`). Such an id whose low byte is `01` reads like a reference to the object `id >> 8`.
+fn own_id_at(rec: &[u8], j: usize, own: u64) -> bool {
+    u64_at(rec, j) == Some(own)
+        && (1..=4usize).any(|n| {
+            j >= n + 4
+                && u32_at(rec, j - n - 4) == Some(n as u32)
+                && rec.get(j - n..j).is_some_and(|t| t.iter().all(u8::is_ascii_digit))
+        })
+}
+
 /// Every reference in `rec` from `start`: (offset, object id).
 pub(super) fn refs_at(d: &Design, rec: &[u8], start: usize) -> Vec<(usize, u64)> {
     let mut out = Vec::new();
     let mut j = start;
+    // Only an id with the low byte `01` can be taken for a reference.
+    let own = own_id(rec).filter(|id| id & 0xff == 1);
     while j + 10 <= rec.len() {
-        if let Some((q, e)) = ref_end(d, rec, j) {
+        if own.is_some_and(|id| own_id_at(rec, j, id)) {
+            j += 8;
+        } else if let Some((q, e)) = ref_end(d, rec, j) {
             out.push((j, q));
             j = e;
         } else {

@@ -1530,3 +1530,29 @@ fn a_spline_array_is_count_capacity_size_and_doubles() {
     cap[4] = 1;
     assert_eq!(sketch::spline_array(&cap, 0, 1), None);
 }
+
+#[test]
+fn a_records_own_id_is_not_a_reference() {
+    // Record 0x0501 (1281): its id's bytes `01 05 00 ...` read like a reference to object 5, in
+    // the header and behind the second tag a body link ends with.
+    let r5 = record(257, 5, &[]);
+    let mut body = r#ref(5);
+    body.extend(s("261"));
+    body.extend(le64(0x0501));
+    body.extend([0; 12]);
+    let r = record(405, 0x0501, &body);
+    let mut bulk = r5.clone();
+    bulk.extend(&r);
+    let m = meta(&[(5, 0), (0x0501, r5.len() as u64)], &|i| usize::from(i == 5));
+    let d = Design::new(&m, &bulk).unwrap();
+    // One reference: the real one of the body.
+    assert_eq!(super::stream::ref_ids(&d, d.rec(0x0501)), vec![5]);
+    // The same bytes behind no tag stay a reference.
+    let mut body = le64(0x0501);
+    body.extend([0; 12]);
+    let r = record(405, 0x0501, &body);
+    let mut bulk = r5.clone();
+    bulk.extend(&r);
+    let d = Design::new(&m, &bulk).unwrap();
+    assert_eq!(super::stream::ref_ids(&d, d.rec(0x0501)), vec![5]);
+}
