@@ -1679,3 +1679,33 @@ fn chamfer_that_takes_a_whole_face() {
     assert!(c.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: rim }));
     assert_eq!(k().topology(&c.shape).unwrap().faces.len(), 3);
 }
+
+#[test]
+fn shell_of_a_body_of_two_solids() {
+    // Two boxes as one body: each is shelled with its own opened face.
+    let mut far = rect(10.0, 10.0, 20);
+    for e in &mut far.edges {
+        if let Seg2::Line { a, b } = &mut e.seg {
+            a[0] += 20.0;
+            b[0] += 20.0;
+        }
+    }
+    let p = Profile {
+        frame: Frame::XY,
+        regions: vec![Region2 { outer: rect(10.0, 10.0, 10), holes: vec![] }, Region2 { outer: far, holes: vec![] }],
+    };
+    let b = k().extrude(&p, &ExtrudeSpec { distance: 5.0, symmetric: false }).unwrap();
+    let t = k().topology(&b.shape).unwrap();
+    let tops: Vec<u32> = (0..t.faces.len()).filter(|&i| t.faces[i].normal[2] > 0.9).map(|i| i as u32).collect();
+    assert_eq!(tops.len(), 2);
+    let r = k().shell(&b.shape, &tops, 1.0).unwrap();
+    let m = k().mass_properties(&r.shape).unwrap();
+    assert!(close(m.volume, 2.0 * (500.0 - 8.0 * 8.0 * 4.0), 1e-9), "{}", m.volume);
+    // One opened face: the other box stays solid.
+    let one = k().shell(&b.shape, &tops[..1], 1.0).unwrap();
+    let m = k().mass_properties(&one.shape).unwrap();
+    assert!(close(m.volume, 1000.0 - 8.0 * 8.0 * 4.0, 1e-9), "{}", m.volume);
+    let rt = k().topology(&one.shape).unwrap();
+    assert_eq!(one.face_origins.len(), rt.faces.len());
+    assert!(one.face_origins.iter().all(|o| !o.is_empty()));
+}

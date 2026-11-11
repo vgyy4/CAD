@@ -2262,11 +2262,64 @@ int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thic
     if (in_faces.Extent() <= 0 || faces[i] >= uint32_t(in_faces.Extent())) return fail("face index out of range");
     closing.Append(in_faces(int(faces[i]) + 1));
   }
-  // OCCT: a negative offset builds the wall inside the solid.
-  BRepOffsetAPI_MakeThickSolid mk;
-  mk.MakeThickSolidByJoin(s->s, closing, -thickness, 1e-4, BRepOffset_Skin, false, false, GeomAbs_Intersection);
-  if (!mk.IsDone()) return fail("shell failed");
-  TopoDS_Shape result = mk.Shape();
+  // OCCT: a negative offset builds the wall inside the solid. A body of several solids is
+  // shelled solid by solid (OCCT fails on the compound): each solid with an opened face, and
+  // every solid when no face is opened; a solid none of whose faces is opened stays as it is
+  // (as in Fusion, whose shell acts on the bodies of its faces).
+  std::vector<TopoDS_Shape> solids;
+  for (TopExp_Explorer ex(s->s, TopAbs_SOLID); ex.More(); ex.Next()) solids.push_back(ex.Current());
+  std::vector<std::unique_ptr<BRepOffsetAPI_MakeThickSolid>> mks;
+  std::vector<TopoDS_Shape> parts;
+  // The maker that shelled each input face's solid (-1: the solid was kept).
+  std::vector<int> maker_of(size_t(in_faces.Extent()), -1);
+  auto shell_part = [&](const TopoDS_Shape& part, const ShapeList& open) -> int {
+    auto mk = std::make_unique<BRepOffsetAPI_MakeThickSolid>();
+    mk->MakeThickSolidByJoin(part, open, -thickness, 1e-4, BRepOffset_Skin, false, false, GeomAbs_Intersection);
+    if (!mk->IsDone() || mk->Shape().IsNull()) {
+      // The same join with every pair of offset faces intersected (OCCT's slower, thorough
+      // mode): it shells some filleted parts the default one fails on.
+      mk = std::make_unique<BRepOffsetAPI_MakeThickSolid>();
+      mk->MakeThickSolidByJoin(part, open, -thickness, 1e-4, BRepOffset_Skin, true, false, GeomAbs_Intersection);
+    }
+    if (!mk->IsDone() || mk->Shape().IsNull()) return -1;
+    parts.push_back(mk->Shape());
+    mks.push_back(std::move(mk));
+    return int(mks.size()) - 1;
+  };
+  if (solids.size() <= 1) {
+    int k = shell_part(s->s, closing);
+    if (k < 0) return fail("shell failed");
+    for (auto& m : maker_of) m = k;
+  } else {
+    for (const auto& so : solids) {
+      ShapeMap mine;
+      TopExp::MapShapes(so, TopAbs_FACE, mine);
+      ShapeList open;
+      for (ShapeList::Iterator it(closing); it.More(); it.Next())
+        if (mine.Contains(it.Value())) open.Append(it.Value());
+      int k = -1;
+      if (!open.IsEmpty() || nfaces == 0) {
+        k = shell_part(so, open);
+        if (k < 0) return fail("shell failed");
+      } else {
+        parts.push_back(so);
+      }
+      for (int j = 1; j <= mine.Extent(); ++j) {
+        int fi = in_faces.FindIndex(mine(j));
+        if (fi > 0) maker_of[size_t(fi - 1)] = k;
+      }
+    }
+  }
+  TopoDS_Shape result;
+  if (parts.size() == 1) {
+    result = parts[0];
+  } else {
+    TopoDS_Compound comp;
+    BRep_Builder bb;
+    bb.MakeCompound(comp);
+    for (const auto& p : parts) bb.Add(comp, p);
+    result = comp;
+  }
   if (result.IsNull()) return fail("shell produced no result");
   ShapeMap out_faces;
   TopExp::MapShapes(result, TopAbs_FACE, out_faces);
@@ -2275,6 +2328,13 @@ int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thic
     bool removed = false;
     for (size_t k = 0; k < nfaces; ++k) removed = removed || faces[k] == uint32_t(i - 1);
     const TopoDS_Shape& g = in_faces(i);
+    const int k = maker_of[size_t(i - 1)];
+    if (k < 0) {
+      int idx = out_faces.FindIndex(g);
+      if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
+      continue;
+    }
+    BRepOffsetAPI_MakeThickSolid& mk = *mks[size_t(k)];
     if (removed) {
       // The ring left where a removed face was inherits that face's identity.
       const ShapeList& mods = mk.Modified(g);
