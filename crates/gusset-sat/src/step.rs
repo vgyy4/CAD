@@ -382,10 +382,14 @@ fn helix_fit(c: V3, m: V3, n: V3, p: V3, ends: [f64; 2]) -> Result<Bs3, SatError
 }
 
 /// A helical ruled surface (`spline-surface ... { helix_spl_line [version] F u0 F u1 F t0 F t1
-/// F t0 F t1 centre major minor pitch taper direction ...`, a thread's flank or land): the point
-/// at `(u, t)` is the helix of [`helix`] at `t` plus `u` times the direction (checked against the
-/// vertices of two faces of a threaded part: the points of the helix's own edges at `u = 0`).
-/// Written as degree 1 across and the helix's cubic fit along, over the helix's full range.
+/// F t0 F t1 centre major minor pitch taper axis null_surface null_surface nullbs nullbs
+/// rise twist climb }`, a thread's flank): the helix of [`helix`] with its radius vectors scaled
+/// by `1 + u rise` and moved `u climb` along the unit axis, so each ruling runs from the helix at
+/// `u0` straight to the one at `u1` (round 22 L: the flanks of four modeled threads, whose rise is
+/// the flank's radial depth over the helix radius per unit of `u` and whose climb is its axial
+/// run; every edge of their faces lies on it). The twist (a turn about the axis per `u`) is zero
+/// in every sample and refused otherwise. Written as degree 1 across and the helices' cubic fit
+/// along, over the helix's full range.
 fn helix_surface(r: &Rec, from: usize) -> Result<Bs3Surface, SatError> {
     let bad = |m: &str| SatError::Malformed(format!("helix surface: {m}"));
     let mut k = from;
@@ -409,19 +413,38 @@ fn helix_surface(r: &Rec, from: usize) -> Result<Bs3Surface, SatError> {
     if r.num(k + 12).is_some_and(|t| t.abs() > 1e-12) {
         return Err(SatError::Unsupported("tapered helical surfaces are not read yet".into()));
     }
-    let d = r.vec3(k + 13).ok_or_else(|| bad("direction"))?;
+    let axis = r.vec3(k + 13).ok_or_else(|| bad("axis"))?;
+    let len = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    if !(len.is_finite() && len > 1e-12) {
+        return Err(bad("axis"));
+    }
+    let axis = [axis[0] / len, axis[1] / len, axis[2] / len];
+    if (0..4).any(|i| r.word(k + 16 + i) != Some(if i < 2 { "null_surface" } else { "nullbs" })) {
+        return Err(SatError::Unsupported("helical surfaces with support surfaces are not read yet".into()));
+    }
+    let [rise, twist, climb] = r.vec3(k + 20).ok_or_else(|| bad("direction"))?;
+    if !(rise.is_finite() && climb.is_finite()) {
+        return Err(bad("direction"));
+    }
+    if twist.abs() > 1e-9 {
+        return Err(SatError::Unsupported("twisted helical surfaces are not read yet".into()));
+    }
     let [u0, u1] = ends[0];
     if u1.partial_cmp(&u0) != Some(std::cmp::Ordering::Greater) {
         return Err(bad("range"));
     }
-    let curve = helix_fit(c, m, n, p, ends[1])?;
-    let at = |q: V3, u: f64| [q[0] + d[0] * u, q[1] + d[1] * u, q[2] + d[2] * u];
-    let points = [u0, u1].iter().map(|u| curve.points.iter().map(|q| at(*q, *u)).collect()).collect();
+    let row = |u: f64| {
+        let f = 1.0 + u * rise;
+        let at = |v: V3, s: f64| [v[0] * s, v[1] * s, v[2] * s];
+        let cu = [c[0] + axis[0] * u * climb, c[1] + axis[1] * u * climb, c[2] + axis[2] * u * climb];
+        helix_fit(cu, at(m, f), at(n, f), p, ends[1])
+    };
+    let (a, b) = (row(u0)?, row(u1)?);
     Ok(Bs3Surface {
         degree: [1, 3],
-        knots: [vec![u0, u1], curve.knots],
-        mults: [vec![2, 2], curve.mults],
-        points,
+        knots: [vec![u0, u1], a.knots],
+        mults: [vec![2, 2], a.mults],
+        points: vec![a.points, b.points],
         weights: None,
     })
 }
@@ -1478,11 +1501,12 @@ mod surface_layout_tests {
     }
 
     #[test]
-    fn a_helical_ruled_surface_is_the_helix_swept_along_its_direction() {
-        // Two turns, pitch -3 along z, radius 10, a 0.2 wide land along (0, 0, -1).
+    fn a_helical_ruled_surface_runs_between_two_helices() {
+        // Two turns, pitch -3 along z, radius 10; a flank 0.2 across that grows the radius by
+        // 0.5 x 10 per unit and climbs 2 per unit along the axis (0, 0, -1).
         let two_turns = 4.0 * std::f64::consts::PI;
         let head = "22310 F 0 F 0.2 F 0 F 12.566370614359172 F 0 F 12.566370614359172";
-        let tail = "0 0 3 0 -10 0 -10 0 0 0 0 -3 0 0 0 -1 null_surface null_surface nullbs nullbs";
+        let tail = "0 0 3 0 -10 0 -10 0 0 0 0 -3 0 0 0 -1 null_surface null_surface nullbs nullbs 0.5 0 2 }";
         let r = |h: &str| rec(&format!("{h} {tail}"));
         let sf = helix_surface(&r(head), 0).unwrap();
         assert_eq!(sf.degree, [1, 3]);
@@ -1491,15 +1515,22 @@ mod surface_layout_tests {
         assert_eq!(row0.len(), row1.len());
         let near = |a: V3, b: V3| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9);
         assert!(near(row0[0], [0.0, -10.0, 3.0]));
-        assert!(near(row1[0], [0.0, -10.0, 2.8]));
+        // At u = 0.2: radius 10 x 1.1, 0.4 down the axis.
+        assert!(near(row1[0], [0.0, -11.0, 2.6]));
         // Two turns later the helix is back at the start, six lower.
         assert!(near(*row0.last().unwrap(), [0.0, -10.0, -3.0]));
+        assert!(near(*row1.last().unwrap(), [0.0, -11.0, -3.4]));
         assert_eq!(sf.knots[1].last().copied(), Some(two_turns));
         assert_eq!(sf.mults[1].iter().sum::<usize>(), row0.len() + 4);
-        // Hostile: a million turns, a tapered helix, a missing range, non-numbers.
-        let many = head.replace("12.566370614359172", "6283185.3").replace("12.566370614359172", "6283185.3");
+        // Hostile: a million turns, a tapered helix, a twist, no direction, a missing range,
+        // non-numbers.
+        let many = head.replace("12.566370614359172", "6283185.3");
         assert!(helix_surface(&r(&many), 0).is_err());
-        assert!(helix_surface(&rec(&format!("{head} 0 0 3 0 -10 0 -10 0 0 0 0 -3 0.5 0 0 -1")), 0).is_err());
+        assert!(
+            helix_surface(&rec(&format!("{head} {}", tail.replacen("-3 0 0 0 -1", "-3 0.5 0 0 -1", 1))), 0).is_err()
+        );
+        assert!(helix_surface(&rec(&format!("{head} {}", tail.replace("0.5 0 2", "0.5 0.1 2"))), 0).is_err());
+        assert!(helix_surface(&rec(&format!("{head} 0 0 3 0 -10 0 -10 0 0 0 0 -3 0 0 0 -1")), 0).is_err());
         assert!(helix_surface(&rec("22310 F 0 F 0.2"), 0).is_err());
         assert!(helix_surface(&rec("22310 F 0 F nan F 0 F 1 F 0 F 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"), 0).is_err());
         assert!(helix_surface(&rec("22310 F 0 F 0 F 0 F 1 F 0 F 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1"), 0).is_err());
