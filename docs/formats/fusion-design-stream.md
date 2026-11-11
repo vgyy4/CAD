@@ -1209,3 +1209,17 @@ two Adafruit sets (38 distinct joints; four records are repeats); all lengths in
   intersect. Symmetric and two-sided tapers are still refused.
 * Edges on a tapered extrude's side faces are not modelled from the profile (the walls lean); they come from the
   stored bodies' named edges.
+
+### Revolve (`E3849A15`) decoded (revises 12.5)
+* Body: `u32 operation` first (4 = new body in both corpus revolves, the extrude enum's values), then `u32 2`
+  (meaning not known; both revolves have it), `u8 0`, `u32 1`.
+* Profile: a `2CA5A1CD` selection -> `4BD53E5A` profile record, read like an extrude's (`0D57BD2F` regions).
+* Angle: the model parameter `AlongAngle` (radians; 360 deg in both).
+* Axis: a second `2CA5A1CD` selection -> `5A1BF548` -> `E2CEFD18` sketch-curve reference, the same as a sweep
+  path's curve. Its last 16 bytes are `u64 sketch data id`, `u64 crv_primary_id`: at 0x1d in the 45-byte records
+  of 1145 and 3722 (tags `282`, `270`), at 0x21 in the 49-byte ones the sweep reader met. In both designs the axis
+  is a line of the profile's own sketch (1145: two whole-turn revolves of one sketch about lines 114 and 134).
+* Import: `revolve` with `axis: {line}` and `angle: 360`. A part turn (which way it turns is not decoded), an axis
+  in another sketch or not a line, and any parameter besides `AlongAngle` are refused. Both designs' revolves
+  build; neither design reaches the state check yet (1145 stops at a Thread, 3722 at a shell whose removed face
+  is not a cap or planar side of an extrude), so their shape is not confirmed.

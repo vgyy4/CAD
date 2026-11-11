@@ -490,6 +490,26 @@ fn the_check_names_the_first_feature_it_cannot_read() {
     ]});
     assert!(check(&unresolved).unwrap_err().contains("fillet edges"));
     assert!(check(&json!({"features": []})).unwrap_err().contains("no feature timeline"));
+    // A revolve needs its profile, axis and angle; a taper is refused only with a symmetric extent.
+    let rev = |extra: serde_json::Value| {
+        let mut r = json!({"type": "revolve", "name": "R", "profiles": [{"point": [1, 1]}],
+            "axis": {"line": "c1"}, "angle": 360.0, "operation": "new"});
+        if let (Some(r), serde_json::Value::Object(x)) = (r.as_object_mut(), extra) {
+            r.extend(x);
+        }
+        let e = json!({"type": "extrude", "name": "E", "profiles": [], "distance": 5.0, "operation": "new"});
+        check(&json!({"features": [e, r]}))
+    };
+    assert!(rev(json!({})).is_ok());
+    assert!(rev(json!({"axis": null})).unwrap_err().contains("axis"));
+    assert!(rev(json!({"error": "a part revolve"})).unwrap_err().contains("a part revolve"));
+    assert!(rev(json!({"operation": "join"})).unwrap_err().contains("not one body"));
+    let taper = |sym: bool| {
+        check(&json!({"features": [{"type": "extrude", "name": "E", "profiles": [], "distance": 5.0,
+            "operation": "new", "taper_deg": -3.0, "symmetric": sym}]}))
+    };
+    assert!(taper(false).is_ok());
+    assert!(taper(true).unwrap_err().contains("tapered and symmetric"));
 }
 
 #[test]

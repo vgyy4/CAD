@@ -459,6 +459,103 @@ fn two_sided_from_a_moved_sketch(cx: &mut Ctx, j: &mut Map<String, Value>, name:
     j.remove("distance2_expr");
 }
 
+/// Revolve `E3849A15`: the operation enum is the first u32 of the body (as an extrude's); the
+/// profile a `4BD53E5A` (names its sketch) like an extrude's; the angle the model parameter
+/// `AlongAngle`; the axis a `2CA5A1CD` selection -> `5A1BF548` -> `E2CEFD18` sketch-curve
+/// reference, as a sweep path names its curves: its last 16 bytes are `u64 sketch data id`,
+/// `u64 crv_primary_id` (at 0x1d in the 45-byte records whose tag has three decimal places, at
+/// 0x21 in the 49-byte ones). Only an axis that is a line of the profile's own sketch and a whole turn are
+/// read (every revolve of the corpus); which way a part turn goes is not decoded.
+fn revolve_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, String>) -> Map<String, Value> {
+    let d = cx.d;
+    let mut j = Map::new();
+    j.insert("type".into(), "revolve".into());
+    j.insert("name".into(), name.into());
+    j.insert("source_id".into(), fid.into());
+    let rec = d.rec(fid);
+    let Some(h) = stream::parse_header(rec) else {
+        j.insert("error".into(), "layout not recognised".into());
+        return j;
+    };
+    let op = match stream::u32_at(rec, h.body) {
+        Some(op @ 1..=4) => op as u8,
+        _ => {
+            j.insert("error".into(), "layout not recognised".into());
+            return j;
+        }
+    };
+    cover::field(rec, h.body, 4, "revolve.operation");
+    j.insert("operation".into(), op_name(op).into());
+    j.insert("target".into(), Value::Null);
+    let profile = feature::profile_sketch_of(d, rec);
+    j.insert("sketch".into(), profile.and_then(|s| sketch_names.get(&s)).map_or(Value::Null, |s| s.as_str().into()));
+    j.insert("sketch_source_id".into(), profile.map_or(Value::Null, Value::from));
+    let Some(sid) = profile else {
+        j.insert("error".into(), "the profile is not a sketch profile".into());
+        return j;
+    };
+    let s = cx.sketch(sid);
+    match cx.rc.regions(d, fid, &s) {
+        Ok(rg) => {
+            j.insert(
+                "profiles".into(),
+                rg.iter()
+                    .flat_map(|r| std::iter::once(&r.point).chain(r.more_points.iter()))
+                    .map(|p| json!({"point": [mm(p[0]), mm(p[1])]}))
+                    .collect::<Vec<_>>()
+                    .into(),
+            );
+        }
+        Err(why) => {
+            j.insert("error".into(), format!("profile regions not decoded: {why}").into());
+            return j;
+        }
+    }
+    let ps = params_of(d, fid);
+    let Some(angle) = pget(&ps, "AlongAngle").and_then(|p| p.value) else {
+        j.insert("error".into(), "the revolve has no angle".into());
+        return j;
+    };
+    if let Some((other, _)) = ps.iter().find(|(k, _)| k != "AlongAngle") {
+        j.insert("error".into(), format!("the revolve has a parameter '{other}' (not decoded)").into());
+        return j;
+    }
+    if (angle.abs() - std::f64::consts::TAU).abs() > 1e-9 {
+        j.insert("error".into(), "a part revolve (which way it turns is not decoded)".into());
+        return j;
+    }
+    j.insert("angle".into(), 360.0.into());
+    let mut axes: Vec<(u64, u64)> = Vec::new();
+    for q in ref_ids(d, rec).into_iter().filter(|q| d.is(*q, "2CA5A1CD")) {
+        for q2 in ref_ids(d, d.rec(q)).into_iter().filter(|q2| d.is(*q2, "5A1BF548")) {
+            for c in ref_ids(d, d.rec(q2)).into_iter().filter(|c| d.is(*c, "E2CEFD18")) {
+                let r = d.rec(c);
+                let word = |o: usize| r.get(o..o + 8).and_then(|b| b.try_into().ok()).map(u64::from_le_bytes);
+                let at = r.len().saturating_sub(16);
+                if let (Some(sk), Some(prim)) = (word(at), word(at + 8)) {
+                    cover::field(r, at, 16, "revolve-axis.sketch-curve");
+                    if !axes.contains(&(sk, prim)) {
+                        axes.push((sk, prim));
+                    }
+                }
+            }
+        }
+    }
+    let line = match axes.as_slice() {
+        [(sk, prim)] if *sk == sid => sketch::curve_by_primary(d, &s, *prim).filter(|c| s.lines.contains_key(c)),
+        _ => None,
+    };
+    match line {
+        Some(c) => {
+            j.insert("axis".into(), json!({"line": format!("c{c}")}));
+        }
+        None => {
+            j.insert("error".into(), "the revolve axis is not a line of its sketch".into());
+        }
+    }
+    j
+}
+
 fn sweep_json(
     cx: &mut Ctx,
     fid: u64,
@@ -859,8 +956,10 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 feats.push(Value::Object(j));
             }
         } else if d.is(fid, "E3849A15") {
-            feats.push(json!({"type": "unsupported", "fusion_type": "Revolve", "name": nm, "source_id": fid,
-                "error": "the revolve axis is a topological reference (not decoded)"}));
+            let mut j = revolve_json(cx, fid, &nm, &sketch_names);
+            let made = op_target(&mut j, &g, d, fid, &names);
+            j.insert("creates_bodies".into(), made.into());
+            feats.push(Value::Object(j));
         } else if d.is(fid, "1C037A07") {
             feats.push(Value::Object(hole_json(cx, fid, &nm)));
         } else if d.is(fid, "D1728651") {
@@ -1469,6 +1568,22 @@ fn blocker(f: &Value) -> Option<String> {
             }
             let key = if t == "fillet" { "radius" } else { "distance" };
             (!has(key)).then(|| format!("the {t} has no {key}"))
+        }
+        "revolve" => {
+            if has("error") {
+                return Some(text("error").unwrap_or("its layout is not recognised").to_string());
+            }
+            if !f.get("profiles").is_some_and(Value::is_array) || !has("axis") || !has("angle") {
+                return Some("its profile, axis or angle is not decoded".into());
+            }
+            let op = text("operation").unwrap_or("");
+            if !matches!(op, "new" | "join" | "cut" | "intersect") {
+                return Some(format!("its operation is {op}"));
+            }
+            if matches!(op, "join" | "cut" | "intersect") && !f.get("target").is_some_and(Value::is_string) {
+                return Some("the body it changes is not one body of one feature".into());
+            }
+            None
         }
         "sweep" => {
             if has("error") {
