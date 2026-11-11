@@ -1707,6 +1707,67 @@ fn fillets_that_round_a_window_end() {
 }
 
 #[test]
+fn fillets_between_a_bar_and_a_disc() {
+    // A 2 mm wide bar out of a disc of radius 5: the concave edges where the bar's sides meet the
+    // disc's rim (a plane and a cylinder) rounded with radius 0.5. The bar ends where the rounds
+    // end, so they leave nothing of its sides (OCCT's blend fails); the corners are filled.
+    let s = 24f64.sqrt();
+    let end = 28f64.sqrt();
+    let p = Profile {
+        frame: Frame::XY,
+        regions: vec![Region2 {
+            outer: Loop2 {
+                edges: vec![
+                    ProfileEdge {
+                        seg: Seg2::Arc { center: [0.0, 0.0], start: [s, 1.0], end: [s, -1.0], ccw: true },
+                        tag: 1,
+                    },
+                    ProfileEdge { seg: Seg2::Line { a: [s, -1.0], b: [end, -1.0] }, tag: 2 },
+                    ProfileEdge { seg: Seg2::Line { a: [end, -1.0], b: [end, 1.0] }, tag: 3 },
+                    ProfileEdge { seg: Seg2::Line { a: [end, 1.0], b: [s, 1.0] }, tag: 4 },
+                ],
+            },
+            holes: vec![],
+        }],
+    };
+    let b = k().extrude(&p, &ExtrudeSpec { distance: 2.0, symmetric: false }).unwrap();
+    let e0 = vertical_edge_at(&b, s, 1.0, 2.0);
+    let e1 = vertical_edge_at(&b, s, -1.0, 2.0);
+    let f = k().fillet(&b.shape, &[e0, e1], 0.5).unwrap();
+    // One corner's section: from the edge along the bar's side to the round, round it to the rim,
+    // back along the rim (shoelace over a fine polyline).
+    let (r, big) = (0.5, 5.0);
+    let o = [(28f64).sqrt(), 1.5];
+    let t2 = [o[0] * big / 5.5, o[1] * big / 5.5];
+    let mut pts: Vec<[f64; 2]> = vec![[s, 1.0], [o[0], 1.0]];
+    let n = 20000;
+    let (a0, a1) = (-std::f64::consts::FRAC_PI_2, (t2[1] - o[1]).atan2(t2[0] - o[0]));
+    for i in 1..=n {
+        let a = a0 + (a1 - a0) * f64::from(i) / f64::from(n);
+        pts.push([o[0] + r * a.cos(), o[1] + r * a.sin()]);
+    }
+    let (b0, b1) = (t2[1].atan2(t2[0]), 1f64.atan2(s));
+    for i in 1..n {
+        let a = b0 + (b1 - b0) * f64::from(i) / f64::from(n);
+        pts.push([big * a.cos(), big * a.sin()]);
+    }
+    let area = 0.5
+        * (0..pts.len())
+            .map(|i| {
+                let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+                p[0] * q[1] - q[0] * p[1]
+            })
+            .sum::<f64>()
+            .abs();
+    let before = k().mass_properties(&b.shape).unwrap().volume;
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, before + 2.0 * 2.0 * area, 1e-6), "{} vs {}", m.volume, before + 4.0 * area);
+    for e in [e0, e1] {
+        assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+    }
+}
+
+#[test]
 fn fillet_of_an_arc_that_takes_its_whole_face() {
     // A 1 mm half disc of radius 10: a 1 mm fillet of its top arc leaves nothing of the
     // cylinder (OCCT's blend fails); the corner is cut away and ends on the flat side.

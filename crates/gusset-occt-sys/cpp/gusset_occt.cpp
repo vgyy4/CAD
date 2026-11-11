@@ -92,6 +92,7 @@
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeHalfSpace.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
+#include <ElCLib.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <BinTools.hxx>
@@ -1876,6 +1877,96 @@ bool arc_ends(const TopoDS_Shape& body, const TopoDS_Edge& e, const std::vector<
   return ends.size() == 2;
 }
 
+// The corner of a fillet of a straight concave edge between a plane and a cylinder about an
+// axis along the edge (512 Fillet3: a 0.6 mm groove whose ends, the sides of the arms that cross
+// it, are rounded with radius 0.3, which leaves nothing of the ends). The section is the same
+// all along the edge: the region between the corner, the plane, the circle and the round of
+// radius `r` that touches both on the open side. The tool fills it (a prism along the edge).
+bool plane_cylinder_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>& fs, double r,
+                           const BRepAdaptor_Curve& c, Corner& out) {
+  const double t0 = c.FirstParameter(), t1 = c.LastParameter();
+  const gp_Pnt e0 = c.Value(t0), e1 = c.Value(t1);
+  if (e0.Distance(e1) < 1e-9) return false;
+  const gp_Dir along(gp_Vec(e0, e1));
+  BRepAdaptor_Surface s0(fs[0], false), s1(fs[1], false);
+  const bool plane_first = s0.GetType() == GeomAbs_Plane;
+  const TopoDS_Face& pf = plane_first ? fs[0] : fs[1];
+  const TopoDS_Face& cf = plane_first ? fs[1] : fs[0];
+  const BRepAdaptor_Surface& ps = plane_first ? s0 : s1;
+  const BRepAdaptor_Surface& cs = plane_first ? s1 : s0;
+  if (ps.GetType() != GeomAbs_Plane || cs.GetType() != GeomAbs_Cylinder) return false;
+  const gp_Cylinder cyl = cs.Cylinder();
+  if (!cyl.Axis().Direction().IsParallel(along, 1e-9)) return false;
+  if (std::fabs(ps.Plane().Axis().Direction().Dot(along)) > 1e-9) return false;
+  const gp_Pnt mid = c.Value(0.5 * (t0 + t1));
+  gp_Dir np, nc;
+  if (!outward_normal(pf, mid, np) || !outward_normal(cf, mid, nc)) return false;
+  // Concave: beside the edge along each face, the body goes on.
+  const double eps = 1e-3 * r;
+  BRepClass3d_SolidClassifier in(body, mid.Translated((gp_Vec(np) - gp_Vec(nc)) * eps), 1e-9);
+  if (in.State() != TopAbs_IN) return false;
+  // The section through the edge's first point, across it.
+  const gp_Pnt p0 = e0;
+  const gp_Pnt ctr = ElCLib::Value(ElCLib::Parameter(gp_Lin(cyl.Axis()), p0), gp_Lin(cyl.Axis()));
+  const double R = cyl.Radius();
+  if (std::fabs(ctr.Distance(p0) - R) > 1e-7) return false;
+  // The round's centre: r off the plane on its open side, R + r from the axis where the
+  // cylinder's open side is away from it, R - r where it is towards it.
+  const bool open_out = gp_Vec(ctr, p0).Dot(gp_Vec(nc)) > 0;
+  const double rc = open_out ? R + r : R - r;
+  if (!(rc > 0)) return false;
+  const gp_Vec u = gp_Vec(np).Crossed(gp_Vec(along));  // along the plane, across the edge
+  const gp_Pnt q = p0.Translated(gp_Vec(np) * r);
+  // |q + t u - ctr| = rc
+  const gp_Vec w(ctr, q);
+  const double bq = 2 * w.Dot(u), cq = w.Dot(w) - rc * rc;
+  const double disc = bq * bq - 4 * cq;
+  if (disc < 0) return false;
+  // The root whose touching point on the plane lies on the plane face, nearest the edge.
+  gp_Pnt o;
+  bool found = false;
+  for (double tt : {(-bq + std::sqrt(disc)) / 2, (-bq - std::sqrt(disc)) / 2}) {
+    gp_Pnt oo = q.Translated(u * tt);
+    // At a concave edge the plane face goes the way the cylinder face looks out.
+    gp_Pnt touch = oo.Translated(-gp_Vec(np) * r);
+    if (gp_Vec(p0, touch).Dot(gp_Vec(nc)) <= 1e-9) continue;
+    if (found && oo.Distance(p0) >= o.Distance(p0)) continue;
+    o = oo;
+    found = true;
+  }
+  if (!found) return false;
+  const gp_Pnt T1 = o.Translated(-gp_Vec(np) * r);
+  gp_Vec oc(ctr, o);
+  oc.Normalize();
+  const gp_Pnt T2 = ctr.Translated(oc * R);
+  auto arc_mid = [](const gp_Pnt& centre, double rad, const gp_Pnt& a, const gp_Pnt& b) {
+    gp_Vec m = gp_Vec(centre, a).Normalized() + gp_Vec(centre, b).Normalized();
+    if (m.Magnitude() < 1e-9) throw Standard_Failure("could not build the corner");
+    return centre.Translated(m.Normalized() * rad);
+  };
+  GC_MakeArcOfCircle round(T1, arc_mid(o, r, T1, T2), T2);
+  GC_MakeArcOfCircle wall(T2, arc_mid(ctr, R, T2, p0), p0);
+  if (!round.IsDone() || !wall.IsDone()) throw Standard_Failure("could not build the corner");
+  TopoDS_Edge blend = BRepBuilderAPI_MakeEdge(round.Value()).Edge();
+  BRepBuilderAPI_MakeWire mw;
+  mw.Add(blend);
+  mw.Add(BRepBuilderAPI_MakeEdge(wall.Value()).Edge());
+  mw.Add(BRepBuilderAPI_MakeEdge(p0, T1).Edge());
+  if (!mw.IsDone()) throw Standard_Failure("could not build the corner");
+  BRepBuilderAPI_MakeFace mf(mw.Wire(), true);
+  if (!mf.IsDone()) throw Standard_Failure("could not build the corner");
+  BRepPrimAPI_MakePrism mk(mf.Face(), gp_Vec(e0, e1));
+  mk.Build();
+  if (!mk.IsDone()) throw Standard_Failure("could not build the corner");
+  out.cutter = mk.Shape();
+  const ShapeList& g = mk.Generated(blend);
+  if (!g.IsEmpty()) out.face = g.First();
+  if (signed_volume(out.cutter) < 0) out.cutter.Reverse();
+  out.ideal = std::fabs(signed_volume(out.cutter));
+  out.concave = true;
+  return !out.face.IsNull() && out.ideal > 0;
+}
+
 // The corner of a convex edge between two perpendicular faces whose section is the same all
 // along it: a straight edge between two planes (the corner is a prism) or a circle between a
 // plane across its axis and a cylinder about it (the corner is revolved; an arc's corner ends
@@ -1909,6 +2000,8 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   gp_Pnt p0 = c.Value(line ? t0 : 0.5 * (t0 + t1));
   gp_Dir n1, n2;
   if (!outward_normal(fs[0], p0, n1) || !outward_normal(fs[1], p0, n2)) return false;
+  if (line && fillet && (s0.GetType() == GeomAbs_Cylinder || s1.GetType() == GeomAbs_Cylinder))
+    return plane_cylinder_corner(body, fs, a, c, out);
   if (std::fabs(n1.Dot(n2)) > 1e-9) return false;
   // Concave: the material is on the outer side of both faces' corner (512: the top corners of
   // a window cut through a wall, rounded to a half circle). Only straight edges.
