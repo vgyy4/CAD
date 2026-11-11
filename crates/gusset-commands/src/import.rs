@@ -2150,12 +2150,20 @@ fn fusion_explain_placed(
     let mut joined: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let adds = |k: usize| vols.get(k).zip(k.checked_sub(1).and_then(|p| vols.get(p))).is_some_and(|(a, b)| a > b);
     let mut explained: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    // A cut of several loops stores a tool per loop: one tool times its loops explains it only
+    // where the file stores that many tools of that volume (4313: 43 times its 1.2331 mm3 header
+    // hole is within the tolerance of the 53.0222 mm3 that its 11 header holes, 4 mounting holes
+    // and 28 vias remove together).
+    let stored_alike = |t: f64| tool_volumes.iter().filter(|u| same(**u, t)).count() as u64;
+    let per_loop = |t: f64, k: usize| {
+        !loose.get(k - 1).copied().unwrap_or(false) || copies(k).is_some_and(|m| stored_alike(t) >= m)
+    };
     for k in 1..vols.len() {
         if delta(k) <= 1e-9 {
             continue;
         }
         for (i, t) in tool_volumes.iter().enumerate() {
-            if explains(*t, k) {
+            if explains(*t, k) && per_loop(*t, k) {
                 covered.insert(i);
                 if adds(k) {
                     joined.insert(i);
@@ -3954,6 +3962,34 @@ mod fusion_steps_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn one_tool_times_the_loops_needs_that_many_tools_stored() {
+        // A cut of three loops removes 3 = 1 + 0.5 + 1.5, which is also three times its 1 tool.
+        let t = vec![
+            json!({"type": "extrude", "name": "Board", "operation": "new"}),
+            json!({"type": "extrude", "name": "Cut", "operation": "cut", "profiles": [{}, {}, {}]}),
+        ];
+        let per_body = vec![vec![], vec![100.0], vec![97.0]];
+        let vols = [0.0, 100.0, 97.0];
+        let explain = |stored: &[f64]| {
+            fusion_explain_steps(
+                &vols,
+                &per_body,
+                stored,
+                &fusion_instances(&t),
+                &fusion_loose(&t),
+                &names(&t),
+                &mut none,
+            )
+        };
+        // The three tools are the cut's, as their sum: none is left over.
+        assert_eq!(explain(&[100.0, 1.0, 0.5, 1.5]), Ok((1, 3)));
+        // Three tools of 1: one tool times the loops.
+        assert_eq!(explain(&[100.0, 1.0, 1.0, 1.0]), Ok((1, 3)));
+        // One tool of 1 and nothing else stored: the file lacks the other two loops' tools.
+        assert!(explain(&[100.0, 1.0]).is_err());
     }
 
     #[test]
