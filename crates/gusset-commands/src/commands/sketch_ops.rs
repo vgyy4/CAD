@@ -63,6 +63,9 @@ pub(super) fn explode(doc: &mut Document, sk: &str, pattern: &str, fresh: bool) 
             SkGeom::Circle { center, radius } => SkGeom::Circle { center: r(&center), radius },
             SkGeom::Arc { center, start, end } => SkGeom::Arc { center: r(&center), start: r(&start), end: r(&end) },
             SkGeom::Spline { points, closed } => SkGeom::Spline { points: points.iter().map(r).collect(), closed },
+            SkGeom::BSpline { degree, poles, knots, weights, periodic } => {
+                SkGeom::BSpline { degree, poles: poles.iter().map(r).collect(), knots, weights, periodic }
+            }
             SkGeom::Ellipse { center, angle, a, b } => SkGeom::Ellipse { center: r(&center), angle, a, b },
             SkGeom::EllipseArc { center, angle, a, b, start, end } => {
                 SkGeom::EllipseArc { center: r(&center), angle, a, b, start: r(&start), end: r(&end) }
@@ -96,7 +99,7 @@ fn rename_entity(d: &mut SketchDef, from: &str, to: &str) {
                 r(start);
                 r(end);
             }
-            SkGeom::Spline { points, .. } => points.iter_mut().for_each(r),
+            SkGeom::Spline { points, .. } | SkGeom::BSpline { poles: points, .. } => points.iter_mut().for_each(r),
         }
     }
     for c in &mut d.constraints {
@@ -449,6 +452,10 @@ fn apply_trim(d: &mut SketchDef, id: &str, plan: &TrimPlan) -> Result<Value, Com
     let construction = d.entities.iter().find(|e| e.id == id).is_some_and(|e| e.construction);
     match (&geom, &plan.lo, &plan.hi) {
         (SkGeom::Point { .. }, _, _) => return Err(CommandError::args(format!("'{id}' is a point, not a curve"))),
+        (SkGeom::BSpline { .. }, _, _) => {
+            return Err(CommandError::args("B-splines cannot be trimmed yet")
+                .hint("move its poles instead, or delete it and draw the part you want"));
+        }
         (SkGeom::Ellipse { .. } | SkGeom::EllipseArc { .. }, _, _) => {
             return Err(CommandError::args("ellipses cannot be trimmed yet")
                 .hint("delete it and draw an elliptical arc between the crossings"));

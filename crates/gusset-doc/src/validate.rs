@@ -1106,6 +1106,34 @@ fn validate_sketch(n: &str, s: &SketchDef, out: &mut Vec<Issue>) {
         {
             out.push(issue(n, format!("line '{}' starts and ends at the same point", e.id)));
         }
+        if let SkGeom::BSpline { degree, poles, knots, weights, periodic } = &e.geom {
+            let (p, np) = (*degree as usize, poles.len());
+            let want = if *periodic { np + 1 } else { np + p + 1 };
+            let bad = if !(1..=MAX_BSPLINE_DEGREE).contains(degree) {
+                Some(format!("a degree of 1 to {MAX_BSPLINE_DEGREE}, not {degree}"))
+            } else if np < p + 1 {
+                Some(format!("at least {} poles for degree {degree}", p + 1))
+            } else if np > MAX_BSPLINE_POLES {
+                Some(format!("at most {MAX_BSPLINE_POLES} poles"))
+            } else if knots.len() != want {
+                Some(format!(
+                    "{want} knots ({}), not {}",
+                    if *periodic { "poles + 1 when periodic" } else { "poles + degree + 1" },
+                    knots.len()
+                ))
+            } else if knots.iter().any(|k| !k.is_finite()) || knots.windows(2).any(|w| matches!(w, [a, b] if b < a)) {
+                Some("finite knots that do not decrease".to_string())
+            } else if !weights.is_empty() && weights.len() != np {
+                Some(format!("one weight per pole ({np}), or none, not {}", weights.len()))
+            } else if weights.iter().any(|w| !(w.is_finite() && *w > 0.0)) {
+                Some("positive finite weights".to_string())
+            } else {
+                None
+            };
+            if let Some(why) = bad {
+                out.push(issue(n, format!("B-spline '{}' needs {why}", e.id)));
+            }
+        }
         if let SkGeom::Spline { points, closed } = &e.geom {
             if points.len() < 3 {
                 out.push(issue_h(n, format!("spline '{}' needs at least 3 points", e.id), "use a line for two points"));
@@ -1154,7 +1182,7 @@ fn validate_sketch(n: &str, s: &SketchDef, out: &mut Vec<Issue>) {
                 ));
             }
             match kinds.get(o.as_str()) {
-                Some('l' | 'c' | 'a' | 's') => {
+                Some('l' | 'c' | 'a' | 's' | 'b') => {
                     if !sourced.insert(o.as_str()) {
                         out.push(issue_h(
                             n,
@@ -1163,9 +1191,10 @@ fn validate_sketch(n: &str, s: &SketchDef, out: &mut Vec<Issue>) {
                         ));
                     }
                 }
-                Some(_) => {
-                    out.push(issue(n, format!("pattern '{}': '{o}' is not a line, circle, arc or spline", p.id)))
-                }
+                Some(_) => out.push(issue(
+                    n,
+                    format!("pattern '{}': '{o}' is not a line, circle, arc, spline or B-spline", p.id),
+                )),
                 None => out.push(issue(n, format!("pattern '{}' refers to unknown entity '{o}'", p.id))),
             }
         }

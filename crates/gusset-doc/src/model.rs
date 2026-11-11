@@ -714,10 +714,25 @@ pub enum SkGeom {
         points: Vec<String>,
         closed: bool,
     },
+    /// Exact (rational) B-spline: `poles` are ordinary sketch points, `knots` the flat knot
+    /// vector (`poles + degree + 1` values, or `poles + 1` when `periodic`), `weights` one per
+    /// pole or empty for a polynomial curve (all 1). Conventions: ADR 0016 amendment
+    /// "exact B-splines".
+    BSpline {
+        degree: u32,
+        poles: Vec<String>,
+        knots: Vec<f64>,
+        weights: Vec<f64>,
+        periodic: bool,
+    },
 }
 
 /// Most fit points one spline may have.
 pub const MAX_SPLINE_POINTS: usize = 1000;
+/// Most poles one B-spline may have.
+pub const MAX_BSPLINE_POLES: usize = 1000;
+/// Highest degree of a B-spline.
+pub const MAX_BSPLINE_DEGREE: u32 = 9;
 
 impl SkGeom {
     pub fn keyword(&self) -> &'static str {
@@ -729,6 +744,7 @@ impl SkGeom {
             SkGeom::Ellipse { .. } => "ellipse",
             SkGeom::EllipseArc { .. } => "ellipse_arc",
             SkGeom::Spline { .. } => "spline",
+            SkGeom::BSpline { .. } => "bspline",
         }
     }
     pub fn id_prefix(&self) -> char {
@@ -740,6 +756,7 @@ impl SkGeom {
             SkGeom::Ellipse { .. } => 'o',
             SkGeom::EllipseArc { .. } => 'q',
             SkGeom::Spline { .. } => 's',
+            SkGeom::BSpline { .. } => 'b',
         }
     }
     /// Entity ids this geometry refers to.
@@ -752,6 +769,7 @@ impl SkGeom {
             SkGeom::Ellipse { center, .. } => vec![center],
             SkGeom::EllipseArc { center, start, end, .. } => vec![center, start, end],
             SkGeom::Spline { points, .. } => points.iter().map(String::as_str).collect(),
+            SkGeom::BSpline { poles, .. } => poles.iter().map(String::as_str).collect(),
         }
     }
 }

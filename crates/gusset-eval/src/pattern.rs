@@ -214,6 +214,15 @@ pub(crate) fn derive(
                         let v = ps.iter().map(|p| point(p)).collect::<Result<Vec<_>, _>>()?;
                         SkGeom::Spline { points: v, closed: *closed }
                     }
+                    // Translations and rotations map a B-spline's poles and keep its knots and
+                    // weights: the copy is exact.
+                    SkGeom::BSpline { degree, poles, knots, weights, periodic } => SkGeom::BSpline {
+                        degree: *degree,
+                        poles: poles.iter().map(|p| point(p)).collect::<Result<Vec<_>, _>>()?,
+                        knots: knots.clone(),
+                        weights: weights.clone(),
+                        periodic: *periodic,
+                    },
                 };
                 out.curves.push(DerivedCurve { id: copy_id(src, j), geom, construction: e.construction });
                 if out.curves.len() > MAX_DERIVED_CURVES {

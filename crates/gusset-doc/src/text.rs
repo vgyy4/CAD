@@ -357,6 +357,17 @@ fn print_feature(out: &mut String, f: &Feature) {
                     SkGeom::Spline { points, closed } => {
                         format!("spline({}){}", points.join(", "), if *closed { " closed" } else { "" })
                     }
+                    SkGeom::BSpline { degree, poles, knots, weights, periodic } => {
+                        let nums = |v: &[f64]| v.iter().map(|x| format_exact(*x)).collect::<Vec<_>>().join(", ");
+                        let w =
+                            if weights.is_empty() { String::new() } else { format!(", weights: [{}]", nums(weights)) };
+                        format!(
+                            "bspline(degree: {degree}, poles: [{}], knots: [{}]{w}){}",
+                            poles.join(", "),
+                            nums(knots),
+                            if *periodic { " periodic" } else { "" }
+                        )
+                    }
                 };
                 let _ = writeln!(out, "  {} = {}{}", e.id, body, if e.construction { " construction" } else { "" });
             }
@@ -2432,6 +2443,15 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
             def.patterns.push(pattern);
             continue;
         }
+        if kind == "bspline" {
+            let geom = parse_bspline(&mut lc)?;
+            let construction = lc.eat_kw("construction");
+            if !lc.at_end() {
+                return Err(lc.err("unexpected text after sketch entity"));
+            }
+            def.entities.push(SkEntity { id, geom, construction });
+            continue;
+        }
         lc.expect('(')?;
         match kind {
             "point" | "line" | "circle" | "arc" | "spline" | "ellipse" | "ellipse_arc" => {
@@ -2509,7 +2529,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
                 let Some(ck) = SkConstraintKind::from_keyword(other) else {
                     return Err(lc.err_hint(
                         format!("unknown sketch item '{other}'"),
-                        "entities: point, line, circle, arc, ellipse, ellipse_arc, spline; patterns: pattern_linear, pattern_circular; constraints: coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel, perpendicular, tangent, equal, distance, h_distance, v_distance, at_x, at_y, angle, radius, diameter, semi_major, semi_minor, fixed, symmetric",
+                        "entities: point, line, circle, arc, ellipse, ellipse_arc, spline, bspline; patterns: pattern_linear, pattern_circular; constraints: coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel, perpendicular, tangent, equal, distance, h_distance, v_distance, at_x, at_y, angle, radius, diameter, semi_major, semi_minor, fixed, symmetric",
                     ));
                 };
                 let (n, has_value) = ck.arity();
@@ -2547,6 +2567,60 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
         def.next_id = max.filter_map(suffix).max().map_or(1, |m| m.saturating_add(1));
     }
     Ok((Feature { name, label, note: None, group, suppressed, kind: FeatureKind::Sketch(def) }, i))
+}
+
+/// Parses `bspline(degree: n, poles: [...], knots: [...], weights: [...]) [periodic]` (the
+/// cursor is at `(`; `weights` is optional).
+fn parse_bspline(c: &mut Cursor<'_>) -> Result<SkGeom, ParseError> {
+    let (mut degree, mut poles, mut knots, mut weights) = (None, None, None, Vec::new());
+    let list_end = |c: &mut Cursor<'_>, n: usize| -> Result<bool, ParseError> {
+        if n > MAX_BSPLINE_POLES + MAX_BSPLINE_DEGREE as usize + 1 {
+            return Err(c.err(format!("a B-spline has at most {MAX_BSPLINE_POLES} poles")));
+        }
+        if c.eat(']') {
+            return Ok(true);
+        }
+        c.expect(',')?;
+        Ok(false)
+    };
+    let numbers = |c: &mut Cursor<'_>| -> Result<Vec<f64>, ParseError> {
+        c.expect('[')?;
+        let mut v = Vec::new();
+        if c.eat(']') {
+            return Ok(v);
+        }
+        loop {
+            v.push(c.number()?);
+            if list_end(c, v.len())? {
+                return Ok(v);
+            }
+        }
+    };
+    parse_args(c, |key, c| {
+        match key {
+            "degree" => degree = Some(c.uint()?),
+            "poles" => {
+                c.expect('[')?;
+                let mut v = Vec::new();
+                loop {
+                    v.push(c.ident()?.to_string());
+                    if list_end(c, v.len())? {
+                        break;
+                    }
+                }
+                poles = Some(v);
+            }
+            "knots" => knots = Some(numbers(c)?),
+            "weights" => weights = numbers(c)?,
+            other => return Err(unknown_arg(c, "bspline", other, "degree, poles, knots, weights (optional)")),
+        }
+        Ok(())
+    })?;
+    let degree = degree.ok_or_else(|| missing(c, "bspline", "degree"))?;
+    let poles = poles.ok_or_else(|| missing(c, "bspline", "poles"))?;
+    let knots = knots.ok_or_else(|| missing(c, "bspline", "knots"))?;
+    let periodic = c.eat_kw("periodic");
+    Ok(SkGeom::BSpline { degree, poles, knots, weights, periodic })
 }
 
 /// Parses the arguments of `pattern_linear(...)` / `pattern_circular(...)` (the cursor is at `(`).

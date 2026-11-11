@@ -101,6 +101,20 @@ struct Built<'a> {
     cback: BTreeMap<sk::ConstraintId, &'a str>,
 }
 
+/// The weights of a document B-spline: its own, or all 1 when it lists none.
+fn unit_weights(weights: &[f64], poles: usize) -> Vec<f64> {
+    if weights.is_empty() { vec![1.0; poles] } else { weights.to_vec() }
+}
+
+/// Points along a document B-spline whose poles are solved, for drawing.
+fn bspline_drawing(g: &SkGeom, points: &BTreeMap<String, [f64; 2]>) -> Option<Vec<[f64; 2]>> {
+    let SkGeom::BSpline { degree, poles, knots, weights, periodic } = g else { return None };
+    let ps: Vec<[f64; 2]> = poles.iter().map(|p| points.get(p).copied()).collect::<Option<_>>()?;
+    let w = unit_weights(weights, ps.len());
+    let data = sk::BSplineData { degree: *degree as usize, knots, poles: &ps, weights: &w, periodic: *periodic };
+    Some(sk::bspline::polyline(&data, 16))
+}
+
 fn build<'a>(name: &str, def: &'a SketchDef, params: &ParamValues, units: LengthUnit) -> Result<Built<'a>, EvalError> {
     let err = |code, msg: String| EvalError::new(name, code, msg);
     let mut s = sk::Sketch::new();
@@ -126,6 +140,10 @@ fn build<'a>(name: &str, def: &'a SketchDef, params: &ParamValues, units: Length
             SkGeom::Spline { points, closed } => {
                 let fit = points.iter().map(|p| get(&ids, p)).collect::<Result<Vec<_>, _>>()?;
                 s.add_spline(&fit, *closed)
+            }
+            SkGeom::BSpline { degree, poles, knots, weights, periodic } => {
+                let ps = poles.iter().map(|p| get(&ids, p)).collect::<Result<Vec<_>, _>>()?;
+                s.add_bspline(*degree as usize, &ps, knots, &unit_weights(weights, ps.len()), *periodic)
             }
         }
         .map_err(|e2| err(ErrorCode::InvalidSketch, format!("entity '{}': {e2}", e.id)))?;
@@ -295,6 +313,7 @@ pub(crate) fn solve_sketch(
                 let fit: Option<Vec<[f64; 2]>> = points.iter().map(|p| result.points.get(p).copied()).collect();
                 fit.map(|f| (e.id.clone(), sk::spline_polyline(&f, *closed, 16)))
             }
+            g @ SkGeom::BSpline { .. } => bspline_drawing(g, &result.points).map(|p| (e.id.clone(), p)),
             _ => None,
         })
         .collect();
@@ -358,6 +377,13 @@ pub(crate) fn solve_sketch(
                 let pts: Vec<[f64; 2]> = points.iter().filter_map(|p| result.points.get(p).copied()).collect();
                 result.splines.push((c.id.clone(), sk::spline_polyline(&pts, *closed, 16)));
                 arr_sketch.add_spline(&fit, *closed)
+            }
+            g @ SkGeom::BSpline { degree, poles, knots, weights, periodic } => {
+                let ps = poles.iter().map(|p| get(&dids, p)).collect::<Result<Vec<_>, _>>()?;
+                if let Some(pts) = bspline_drawing(g, &result.points) {
+                    result.splines.push((c.id.clone(), pts));
+                }
+                arr_sketch.add_bspline(*degree as usize, &ps, knots, &unit_weights(weights, ps.len()), *periodic)
             }
             SkGeom::Point { .. } | SkGeom::Ellipse { .. } | SkGeom::EllipseArc { .. } => continue,
         }
@@ -485,6 +511,7 @@ fn hole_sites(
             g @ (SkGeom::Line { .. }
             | SkGeom::Arc { .. }
             | SkGeom::Spline { .. }
+            | SkGeom::BSpline { .. }
             | SkGeom::Ellipse { .. }
             | SkGeom::EllipseArc { .. }) => on_curve.extend(g.refs()),
             SkGeom::Point { .. } => {}
@@ -728,6 +755,13 @@ pub fn trim_plan(
     }
     match solved.sketch.entity(eid).map(|e| e.geom) {
         Some(sk::Geom::Line { .. } | sk::Geom::Arc { .. } | sk::Geom::Circle { .. } | sk::Geom::Spline { .. }) => {}
+        Some(sk::Geom::BSpline { .. }) => {
+            return Err(err(
+                ErrorCode::InvalidReference,
+                format!("'{entity}' is a B-spline; those cannot be trimmed yet"),
+            )
+            .with_hint("move its poles or knots instead, or delete it and draw the part you want"));
+        }
         _ => return Err(wrong()),
     }
     if solved.sketch.entity(eid).is_some_and(|e| e.construction) {

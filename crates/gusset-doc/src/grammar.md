@@ -59,7 +59,7 @@ sketch Sketch1 (plane: XY, next_id: 12) {
   point (u, v) maps to world `origin + u * x_axis + v * y_axis`; `sketch_create` and
   `query_sketch` report that frame.
 - Entity and constraint ids share ONE counter per sketch and start at 1: points `p`,
-  lines `l`, circles `c`, arcs `a`, ellipses `o`, elliptical arcs `q`, constraints `k`, followed by the number (`p1`, `l5`,
+  lines `l`, circles `c`, arcs `a`, ellipses `o`, elliptical arcs `q`, splines `s`, B-splines `b`, constraints `k`, followed by the number (`p1`, `l5`,
   `c7`, `a9`, `k10`). `next_id` is the next unused number; it is optional in hand-written
   text and derived from the largest id when left out. Ids must be unique.
 - An entity can be followed by `construction` (solved but never part of a profile):
@@ -111,6 +111,40 @@ sketch Sketch1 (plane: XY) {
 }
 
 extrude Extrude1 (profile: Sketch1, distance: 4 mm, op: new)
+```
+
+### B-splines
+
+`b9 = bspline(degree: 2, poles: [p1, p2, ...], knots: [...], weights: [...])` is an exact
+(rational) B-spline, the curve other CAD systems store (Fusion, STEP, Parasolid): `degree` 1 to 9,
+`poles` ordinary sketch points (constraints move them like any point; the curve itself takes no
+constraints), `knots` the flat knot vector of `poles + degree + 1` numbers that do not decrease
+(the curve runs from knot `degree` to knot `poles`), `weights` one positive number per pole
+(leave it out for a polynomial curve, all weights 1). A pole may be used twice: a clamped curve
+whose last pole is its first is closed. Add `periodic` after the `)` for a periodic curve: then
+`knots` has `poles + 1` numbers, the period is last minus first, and pole `i` belongs to the
+basis function that starts `degree` knots before knot `i` (OCCT's convention). A closed B-spline
+is a region; an open one cuts regions like any other curve. Each knot span is one edge of a
+solid (one lateral face per span when extruded). Trimming does not apply to B-splines yet. The
+example is a circle of radius 10 (the nine-pole rational quadratic, weights 1 and √2/2):
+
+```gusset
+gusset 1
+units mm
+
+sketch Sketch1 (plane: XY, next_id: 10) {
+  p1 = point(10, 0)
+  p2 = point(10, 10)
+  p3 = point(0, 10)
+  p4 = point(-10, 10)
+  p5 = point(-10, 0)
+  p6 = point(-10, -10)
+  p7 = point(0, -10)
+  p8 = point(10, -10)
+  b9 = bspline(degree: 2, poles: [p1, p2, p3, p4, p5, p6, p7, p8, p1], knots: [0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4], weights: [1, 0.7071067811865476, 1, 0.7071067811865476, 1, 0.7071067811865476, 1, 0.7071067811865476, 1])
+}
+
+extrude Extrude1 (profile: Sketch1, distance: 5 mm, op: new)
 ```
 
 ### Ellipses

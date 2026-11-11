@@ -362,3 +362,43 @@ extrude E (profile: S, distance: 5 mm, op: new)
     assert!(e.message.contains("s5") && e.message.contains("same place"), "{e}");
     assert!(r.bodies.is_empty());
 }
+
+/// An exact B-spline (the nine-pole NURBS circle) is a region of area π r², drawn as a
+/// polyline on the circle; a sketch pattern copies it exactly; trimming refuses it by kind.
+#[test]
+fn a_bspline_circle_is_a_region_and_patterns_copy_it() {
+    let h = std::f64::consts::FRAC_1_SQRT_2;
+    let text = format!(
+        "gusset 1
+units mm
+
+sketch S (plane: XY, next_id: 11) {{
+  p1 = point(10, 0)
+  p2 = point(10, 10)
+  p3 = point(0, 10)
+  p4 = point(-10, 10)
+  p5 = point(-10, 0)
+  p6 = point(-10, -10)
+  p7 = point(0, -10)
+  p8 = point(10, -10)
+  b9 = bspline(degree: 2, poles: [p1, p2, p3, p4, p5, p6, p7, p8, p1], knots: [0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4], weights: [1, {h}, 1, {h}, 1, {h}, 1, {h}, 1])
+  g10 = pattern_linear(of: [b9], count: 2, dx: 30 mm, dy: 0 mm)
+}}
+"
+    );
+    let (_, r) = eval(&text);
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let s = &r.sketches["S"];
+    let regions = s.regions.as_ref().unwrap();
+    assert_eq!(regions.len(), 2, "{regions:?}");
+    for g in regions {
+        assert!((g.area - std::f64::consts::PI * 100.0).abs() < 1e-9, "{g:?}");
+    }
+    let (_, pts) = s.splines.iter().find(|(id, _)| id == "b9").unwrap();
+    assert!(pts.len() > 16 && pts.iter().all(|p| (p[0].hypot(p[1]) - 10.0).abs() < 1e-9));
+    let doc = Document::from_text(&text).unwrap();
+    let FeatureKind::Sketch(def) = &doc.features[0].kind else { panic!() };
+    let e =
+        crate::sketch::trim_plan("S", def, &Default::default(), LengthUnit::Millimetre, "b9", [10.0, 0.0]).unwrap_err();
+    assert!(e.message.contains("cannot be trimmed"), "{e}");
+}

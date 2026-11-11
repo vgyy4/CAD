@@ -242,6 +242,7 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             "pattern_linear ",
             "spline(",
             "ellipse(",
+            "bspline(degree:",
             "pattern_linear(of:",
             "sweep Sweep1 ",
             "loft Loft1 ",
@@ -605,6 +606,51 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             let d = text::parse(&bad).unwrap();
             let issues = validate::validate(&d);
             assert!(issues.iter().any(|i| i.to_string().contains(why)), "{why}: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn bsplines_round_trip_and_are_validated() {
+        let ok = "gusset 1\nunits mm\n\nsketch S (plane: XY, next_id: 8) {\n  p1 = point(0, 0)\n  p2 = point(5, 8)\n  p3 = point(10, 0)\n  p4 = point(15, -4.5)\n  b5 = bspline(degree: 3, poles: [p1, p2, p3, p4], knots: [0, 0, 0, 0, 1, 1, 1, 1])\n  b6 = bspline(degree: 2, poles: [p1, p2, p3], knots: [0, 0, 0, 2.5, 2.5, 2.5], weights: [1, 0.5, 1]) construction\n  b7 = bspline(degree: 2, poles: [p1, p2, p3, p4], knots: [-1, 0, 1, 2, 3]) periodic\n}\n";
+        let doc = Document::from_text(ok).unwrap();
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Sketch(s) = &doc.features[0].kind else { panic!() };
+        assert_eq!(
+            s.entities[5].geom,
+            SkGeom::BSpline {
+                degree: 2,
+                poles: vec!["p1".into(), "p2".into(), "p3".into()],
+                knots: vec![0.0, 0.0, 0.0, 2.5, 2.5, 2.5],
+                weights: vec![1.0, 0.5, 1.0],
+                periodic: false
+            }
+        );
+        assert!(s.entities[5].construction);
+        assert!(matches!(&s.entities[6].geom, SkGeom::BSpline { periodic: true, weights, .. } if weights.is_empty()));
+        assert!(validate::validate(&doc).is_empty());
+        for (bad, why) in [
+            (ok.replace("degree: 3,", "degree: 0,"), "degree of 1 to 9"),
+            (ok.replace("degree: 3,", "degree: 4,"), "at least 5 poles"),
+            (ok.replace("0, 0, 0, 0, 1, 1, 1, 1]", "0, 0, 0, 1, 1, 1, 1]"), "8 knots"),
+            (ok.replace("0, 0, 0, 0, 1, 1, 1, 1]", "0, 0, 0, 0, 1, 1, 1, 0]"), "do not decrease"),
+            (ok.replace("weights: [1, 0.5, 1]", "weights: [1, 0.5]"), "one weight per pole"),
+            (ok.replace("weights: [1, 0.5, 1]", "weights: [1, -0.5, 1]"), "positive"),
+            (ok.replace("[-1, 0, 1, 2, 3]", "[-1, 0, 1, 2, 3, 4]"), "5 knots"),
+            (ok.replace("poles: [p1, p2, p3, p4], knots: [0", "poles: [p1, p2, p9, p4], knots: [0"), "p9"),
+            (ok.replace("b5 = bspline", "s5 = bspline"), "s5"),
+        ] {
+            let d = text::parse(&bad).unwrap();
+            let issues = validate::validate(&d);
+            assert!(issues.iter().any(|i| i.to_string().contains(why)), "{why}: {issues:?}");
+        }
+        for bad in [
+            ok.replace("degree: 3, ", ""),
+            ok.replace(", knots: [0, 0, 0, 0, 1, 1, 1, 1]", ""),
+            ok.replace("poles: [p1, p2, p3, p4], knots: [0", "poles: [], knots: [0"),
+            ok.replace("degree: 3,", "degree: 3, colour: 2,"),
+            ok.replace("[-1, 0, 1, 2, 3]) periodic", "[-1, 0, 1, 2, 3]) periodic closed"),
+        ] {
+            assert!(text::parse(&bad).is_err(), "{bad}");
         }
     }
 
