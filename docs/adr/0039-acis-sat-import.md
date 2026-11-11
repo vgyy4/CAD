@@ -625,3 +625,48 @@ board's PCBExtrude, the BoxPrimitive's sizes and placement, the state lists of t
 bodies). Not solved: the unresolved blend edges (their faces are in no stored plane), the
 to-object extents behind other blockers, Split, joints. Details:
 `docs/formats/fusion-design-stream.md` section 22.
+
+## Amendment (2026-11-10, round 15): PCB features, the step check per solid and per tool copy
+
+- **The PCB features of 2025 files are converted.** `BoxPrimitive` is a rectangle sketch on the
+  box's stored corner frame and an extrude, accepted when the box of its parameters is the box of
+  the body stored for it (which also tells the side of the frame it lies on). `PCBExtrude` is
+  read by its kind: the **drill** is a cut through the cylinders of the drill tools the
+  component stores (the record's table lists the pad holes only; the vias are in the board
+  file, so the holes come from the tool and every table entry must be one of them); a
+  **soldermask** is the board's outline extruded by the thickness of its stored body, which
+  the layer record must hold, then drilled with the tool its own component stores; the
+  **copper** and the **plated holes** come from the board file and are the bodies of the
+  feature's state list. The masks and the drilled board are thereby features checked against
+  the stored solids, not stored bodies.
+- **Stored bodies of several lumps** (copper: a lump per pad and track) are one stored body of
+  the tree per lump; a state list's bodies are the blob's bodies that are not flat sheets, in
+  order (ADR 0042 amendment).
+- **A component's own timeline is the first it names**; the root of two files also names the
+  timeline of the component being edited, whose Base Feature was read as the root's.
+- **Step check.** (1) A tool stored once for every body it goes through (the board's drill:
+  board and two masks, each copy at its own height) is one tool per feature: a tool that is
+  another over again within the bodies a feature changes is left to the features that cut the
+  other bodies. Each cut must still remove exactly what its tools hold of its body. (2) The
+  solids of a model body that is several solids apart are states one by one, as the file's
+  solids are compared one by one (a new-body extrude of two regions apart is two bodies in
+  Fusion). (3) The model is compared with the box of the stored states and of the tools of
+  joins; the tools of cuts are left out, because a tool may reach out of the body it cuts.
+  (1) and (2) compare what was compared before at a finer grain; (3) replaces "the box of
+  every stored solid", which a correct model cannot meet when a cut's tool is longer than its
+  body.
+- **Regions that share an edge are one region** (`gusset-eval`): a feature that takes two
+  regions side by side built two solids that touch, and a later cut changed only one of them
+  (805: 2 of 20 mm3). Found through the importer, fixed in the evaluator for every document.
+- **Sketch splines are B-splines in the file** (degree, knots, weights, control points; cubic
+  and quadratic Bezier pieces and degree-5 curves in the set). Gusset's sketch spline is an
+  interpolating Catmull-Rom curve and cannot hold them exactly; they are not approximated. An
+  exact B-spline curve in the tree format and the sketch model is the open requirement.
+
+Result: 90 of 150 designs as history (78 before; twelve gained, none lost: the six 2025 PCB
+designs, 805, 2900 and 4367 by this round, 1606, 723 and 5753 by the other session's limits and
+speed), 11 of 18 unchanged. Not done: names for the copies of a body pattern (the tree's
+pattern of a body unites the copies, so a copy cannot be a Combine's tool or carry a blend; it
+needs a pattern that keeps its copies as bodies in the tree importer and the document), exact
+B-spline sketch curves, bodies that no body link names (3211), joints. Details:
+`docs/formats/fusion-design-stream.md` section 23.

@@ -993,3 +993,100 @@ Measured for at most 64 unexplained tools. Tools in voids of a cut the placed to
   body as a stored body **before** its drill (the layer outline comes from the board file) followed by a cut of the
   hole table (circles with the stored tools' radii), so that the pre-drill solids and the drill tools in the blobs are
   states and tools of the model. Not done: the blobs' own order of states and tools has not been read.
+
+## 23. Round 15: the PCB features of 2025 files, the step check per solid and per tool copy (2026-11-10)
+Reader: `fusion_tree/pcb.rs`, `body_shapes` in `fusion_tree/acis.rs`, `Graph::new` in `fusion_tree/mod.rs`; importer:
+`fusion_stored_bodies`, `fusion_explain_placed`, `fusion_states_check` in gusset-commands `import.rs`; evaluator:
+`gusset-eval` `merge.rs`.
+
+### PCB features: what is converted and from which bytes (six designs: 6067, 6250, 6494, 6501, 6522, 6538)
+* The compute-list walk now takes `F193B033` (BoxPrimitive), `94B9F77E` and `2BB91A84` (both named PCBExtrude).
+* **`94B9F77E`, its kind.** Behind the record's `C46D3EEB` reference: a zero byte, `u32 kind`, `u32 n`. Kind 0 is the
+  drill (the board's PCBExtrude1, no body link), 1 the plated holes (`CopperHoles`, one body link), 2 and 3 the two
+  soldermasks (one body link each). The same in all six files.
+* **The drill's table (correction of section 22).** `n` entries of **40 bytes**: a zero `u32`, x, y (cm) and twenty
+  zero bytes; the next reference follows the last entry directly (6067: n = 10, 6494: n = 20, the other four: n = 0).
+  Section 22 read a `u64` count and five doubles, which runs four bytes over the record's next reference.
+* **The table is the pad holes only.** 6067's drill tools have 26 cylinders: the 10 of the table (four mounting holes,
+  six header pads) and 16 vias, whose coordinates (e.g. 3.5786, 8.4046 mm) occur nowhere in the design stream, only in
+  the stored bodies: they come from the board file. So the holes are read off the tool; every table entry must be a
+  hole of a tool, or the drill is refused.
+* **The drill tools.** A component's `.smb` holds them next to its bodies: a body that is nothing but whole cylinders
+  along z, one per lump (z from -200 to 200 mm). The board's `.smb` holds the board **before** the drill and its tool,
+  each soldermask's `.smb` the mask **after** the drill and its own copy of the tool; the drilled board is only in the
+  `.smbh`. 6250 stores a second, short tool per body (two r = 0.7 mm holes of its jack, 3.18 mm long, at another height
+  in every component). Each tool becomes a sketch of circles on the plane through its middle and a symmetric cut of its
+  length: of the board's extrude for the drill record, of the mask's own extrude for a mask.
+* **A soldermask** is the board's outline (the sketch and picks of the extrude the layer record `369DDC0A` names)
+  extruded from the component's z = 0 by the thickness its stored body has, towards the side the body lies on, then
+  drilled. The thickness must be a double of the layer record (6067: 0.00804 cm twice, 6538: 0.00711188); the record's
+  layout shifts between files, so the value is looked for, not read at an offset. Check: (board area - hole area) x
+  thickness is the stored mask to all printed digits (6067: 446.0739 - 27.4085 mm2, x 0.0804 = 33.6607 mm3).
+* **Copper and plated holes** come from the board file (tracks, pads, barrels): they are the bodies of the feature's
+  state list, as for a Base Feature. A copper side is four bodies (`<n>_copper`, `_copper_polygon`,
+  `_top_copper`/`_bottom_copper`, `_smd_copper`) of many lumps each; a lump becomes one stored body of the tree.
+* **Which blob body is which state-list body.** The board's `.smbh` of 6067 holds four bodies for a state list of two
+  (the board, `CopperHoles`): two are flat sheets (all vertices in z = 0) that no list names. The list's bodies are
+  the blob's bodies that are not flat, in order; another count is refused. (A Base Feature keeps its rule of section
+  13.)
+* **BoxPrimitive.** Parameters `DistanceX`, `DistanceY`, `DistanceZ` (and two offsets, 0 in every sample); the 4x4
+  (row-major, cm) stands two bytes behind the fifth `D91D429C` holder reference and is the frame of the box's corner
+  (6067: translation (-0.2, -0.2, 0) for a 4 x 4 mm box, (-0.76962, -0.3175, 0) for a 14.935 x 5.987 one: the corner,
+  not minus half the size). On which side of the frame's xy plane the box lies is taken from the body stored for it:
+  the box of the eight corners must be the box of that body's vertices for +DistanceZ or for -DistanceZ, else the
+  feature is refused (which also covers offsets that are not 0). It becomes a rectangle sketch and an extrude.
+
+### A component's own timeline is the first it names
+The root component of 6501 and 6522 references two `C3423E04` timelines: its own and that of the component being
+edited when the file was saved (`TMF880X`). The reader gave a timeline to the first component in stream order that
+names it, so that component's Base Feature was read as the root's and stood at the origin, 1.2 mm from its stored
+body. Counted over the 150 designs: 12 of 2347 components name more than one timeline, and every extra one is the
+first timeline of exactly one other component.
+
+### Step check: one copy of a tool per body, solids of a body, the box
+* **A tool stored once per body.** The drill tools are stored three times (board, two masks), each copy at its own
+  component's height, and are far longer than the bodies are thick, so every copy holds the same material of every
+  body: the placed-tool rule of section 22 gave all 78 to the board's drill (26 loops). Now, for a feature, a tool
+  that is another tool over again within the box of the bodies the feature changes (the same volume, its box there
+  equal to the other's or inside it: the short tool of 6250 reaches only part of the way through the board from a
+  mask's height) is left for the features that cut the other bodies. Each cut must still remove exactly what its tools
+  hold of its body; the same holds for the tools in voids (6250: two r = 0.3 holes where the outline has none).
+* **Solids of one body.** The file's solids are compared one by one. A new-body extrude of two regions apart is two
+  bodies in Fusion and one body of two solids here (2900: header strips of 250 and 193.75 mm3 from Extrude5): the
+  solids of such a body are states too.
+* **The box.** The model must lie in the box of the stored states and of the tools of its joins; the tools of cuts are
+  left out (a drill tool reaches 200 mm past its board; before, the check compared with every stored solid).
+
+### Two regions that share an edge (805 slide switch: Extrude4 removed 2 of 20 mm3)
+805's block is an extrude of three picked regions that lie side by side. The kernel swept each region into its own
+solid: one body of three solids that touch along walls, with the right volume. The slot of Extrude4 (10 x 4 x 0.5 mm
+across the bottom, stored as a 20 mm3 tool) was then cut out of one of the three only (2 x 2 x 0.5). Not a reading
+error: `gusset-eval` now unites the regions a feature takes when they share whole edges, before the sweep.
+
+### Sketch splines `D82E012F`: the stored curve is a B-spline (read, not converted)
+* After the record's references: `01 00`, `u32 degree`, a tolerance double (1e-9), then three arrays, each led by its
+  count twice and an element size of 8: the knots (doubles), the weights (doubles) and the control points (x, y, z
+  doubles, cm). 69 of the set's 79 spline records read this way with knots = control points + degree + 1 (8 designs:
+  5981 has 60, 6114 and 6124 five each, 1501 four). 44 are cubic with 4 control points, 20 quadratic with 3, 5 of
+  degree 5 with 10; all are clamped, planar and have unit weights; the control points are single-precision values
+  (-0.640000153: an imported outline). 10 records have another layout (not read).
+* Gusset's sketch spline is a centripetal Catmull-Rom curve through its points (ADR 0016): its segments are cubics
+  whose tangents follow from the neighbouring points. A quadratic or cubic Bezier segment with free inner control
+  points is not such a curve, and a degree-5 curve of ten control points still less: none of the 69 can be written
+  exactly. Converting them needs an exact B-spline curve in the tree format and in the sketch model (degree, knots,
+  control points, optional weights). Until then a profile with such an edge stays refused ("curve unknown"); it is
+  not approximated.
+
+### State-check refusals looked at and left (causes, as far as found)
+* 4313: Extrude2 (43 loops) is explained exactly by 43 stored tools (53.0222 mm3); one more stored solid of
+  182.1189 mm3 belongs to no feature of the tree. 5021: the same with 22 tools (46.0391 mm3) and three solids of
+  0.0280 mm3 left over. Whose bodies these are is not found.
+* 3211: a stored solid of -0.0063 mm3 (the body converter reads this lead of a chip LED inside out; the same solid
+  is in 6067, where the package's Base Feature makes it and the signs agree). In 3211 the component
+  `CHIPLED_0805_NOOUTLINE` has three bodies (`D3937028`) in the state list of its `.smb` that **no `D26351F0` body
+  link names**: no feature of the stream makes them, and the component's one Base Feature makes another body (body 1
+  of 2 of its `.smbh`). The tree therefore lacks them. Bringing such bodies in as stored bodies needs the pairing of
+  the list's bodies with the blob's (the `.smb` holds four solids and two sheets for the three); not read.
+* 4800 MagTag now passes the tool rules and stops at the box (a jointed part stands 1.2 mm from its stored body, like
+  3957 and 4200: joints). 4367 TFT Gizmo, which stored the same 22.2724 mm3 solid, comes in as history.
+* 2219, 4745, 5420: a stored solid no feature explains (0.0791, 0.0101, 144.4789 mm3); not examined further.

@@ -422,3 +422,18 @@ The importer's bounds limit work on untrusted trees; the 150-design Fusion corpu
   (kernel, keyed by the bytes' hash, at most 16384 names): a Fusion import reads each stored
   body about six times. Terminal Block FeatherWing: 1219 volume/box computations for 181
   bodies became 448, its import 257 s to 87 s. What is checked is unchanged.
+
+## Amendment (2026-11-10): stored bodies of several lumps
+
+A stored body can be several solids apart (the copper of a board from a Fusion PCB design: one
+lump per pad and track). A native importer hands such a body over as one stored body per
+solid, and the reader's tree says which: `{"type": "stored_body", ..., "lump": 3, "lumps": 57}`
+next to the body's place in its blob. Like `body`, the keys mean something only to the native
+importer that wrote them (Fusion: `fusion_stored_bodies` converts the blob body once, refuses
+it when it does not come in as `lumps` solids, and gives lump `lump` its solid); the tree
+importer itself sees an ordinary stored body.
+
+The evaluator unites the regions an extrude, revolve or sheet feature takes when they share
+whole edges (`gusset-eval` `merge.rs`): a tree feature with several profile picks that lie side
+by side builds one solid, as the source application does, where it built one solid per pick
+before. Picks apart from each other still give one body of several solids.

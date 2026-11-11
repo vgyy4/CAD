@@ -169,3 +169,36 @@ ElectronicsPackageGenerator x2), profile decoding 5 and the pick limit 2, Base F
 limits 4 (two to-object extents, a taper, a cut of several bodies), revolve axis 2, draft 2, shell 2, and one each
 of sweep path, mirror count, chamfer without distance, an extrusion that does not build, a pattern that makes a
 new body.
+
+## Re-run after round 15 (2026-11-10)
+
+Same set and command, after the changes of ADR 0039's round 15 amendment
+(`docs/formats/fusion-design-stream.md` section 23) and, from another session committed since the
+round 14 run, the importer's wider limits and faster trial builds (ADR 0042 amendment).
+
+| outcome | round 14 | round 15 |
+|---|---|---|
+| as history | 78 | 90 (60 %) |
+| as bodies only | 71 | 60 |
+| failed (300 s timeout) | 1 | 0 |
+
+Designs gained (12), none lost:
+
+| design | by |
+|---|---|
+| 6067 LPS28, 6250 PCM510x, 6494 ADS7128, 6501 TMF8806, 6522 TMF8801, 6538 RV-8803 | the PCB features (BoxPrimitive, PCBExtrude: drill, masks, copper, plated holes), stored bodies per lump, one copy of a stored tool per body; 6501 and 6522 also the component of the edited timeline |
+| 805 slide switch | regions that share an edge are swept as one (its last cut removed 2 of 20 mm3) and join tools count for the box |
+| 2900 Feather OLED Wing | the solids of a body that is several solids apart are states |
+| 4367 TFT Gizmo | the same two step-check changes |
+| 1606 Perma-Proto FullSize, 723 Minty Perma-Proto | the other session's limit of profile picks |
+| 5753 PC Joystick Adapter | the other session's import speed (it timed out before) |
+
+The 18-design set stays at 11.
+
+Still open, by first blocker (60 designs as bodies): reader refusals 36 (unresolved blend edges, unsupported types
+such as Split, Thread, MirrorComponent, OffsetFaces, Derived Base Feature and ElectronicsPackageGenerator, extrude
+extents to an object, profiles with a spline or an unread curve, Base Feature state lists, revolve axes, drafts,
+shells), state check 11 (stored solids no feature of the tree makes: 2219, 3211, 4313, 4745, 5021, 5420; a part
+that a joint moved: 3957, 4200, 4800; blends after the last stored state: 2011, 931), no history stored 7, rebuild
+failures 6 (blend edges not found on the model, a shell and an extrusion that do not build, a pattern that makes a
+new body).
