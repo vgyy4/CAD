@@ -1690,3 +1690,81 @@ Reader: `apply_with` in `gusset-commands/src/tree_import.rs`; check: `fusion_sta
 * The imported volume now counts the copies of the import's own patterns (`gusset_doc::pattern_copy_of`; the same
   fix round 20 G made for 4863, 977d0fe, which this round takes). 4862 and 5967 come in as history:
   4862 with 64 states and 88 cut tools, 5967 with 114 states and 543 tools.
+
+
+## 33. Round 20 I: mirrored components, thin extrudes, the sheet-metal Bend (2026-11-11)
+Reader: `fusion_tree/mirrorcomp.rs`, `fusion_tree/thin.rs`; importer: `fusion_stored_bodies` in
+`gusset-commands/src/import.rs`.
+
+### MirrorComponent `71BBEDD5` with its DerivedInstance `66E375EA` (4343, 5905)
+* The record names the occurrence it mirrors (`CE2913AA`, whose first `E03784ED` is the source component; the record
+  names that component too), the mirror plane (a `5A1BF548` selection -> `CC54ECAD`, a construction plane of the
+  component that holds both occurrences: 5905's root WorkPlane1, y = 0; 4343's plane x = 0 of `PCB Component`), the
+  new component's `CreateComponent` (-> `5D15E992` -> the new `E03784ED`) and the DerivedInstance. The DerivedInstance
+  names a `2D6E13A1` holder of the new occurrence (`CE2913AA`) and stores the occurrence's 4 x 4 matrix (cm) again,
+  as the occurrence record does (a rigid matrix at byte 48 of the DerivedInstance, 213 of the occurrence). Both
+  occurrences sit in the same `904F885E` list (their parent's).
+* The new occurrence's matrix is proper (5905: diag(1, -1, -1), move (-24.12, 8.9, 1.54) mm; the header's own is the
+  identity, move (-24.12, -8.9, 1.54) mm), so the reflection is in the new component's own bodies: in its coordinates
+  they are the source's moved by `T_new^-1 . M . T_source` (the parent's own placement cancels out). For 5905 that is
+  the reflection in z = 0 of the component's frame, and the stored blob of the new component (`10b22090`: the
+  header body z -3.8..-0.92 mm, pins z -1.15..0) is the header's (body z 0.92..3.8, pins 0..1.15) reflected in it.
+* The tree writes one body mirror (`merge: false`) per body the source component has at that point, in the new
+  component, with the plane of that map; `json::place` computes it again where the importer puts the two components'
+  bodies (a map that is not a reflection in a plane is refused). The DerivedInstance is skipped with its mirror.
+* 5905's new blob holds 60 pins where the header builds 40 (at every second pitch one pin is stored twice); the step
+  check takes each duplicate as the same state.
+* **4343** now comes in as history: the mirror copies `FPC-22FLZ-SM2-TB v1`'s two Base Feature bodies. Two importer
+  rules needed care, neither a looser check:
+  * A mirror into a new body leaves its target as it is, so it no longer counts as "a feature that changes a stored
+    body that is already a finished body" (the copy is what the step check holds against the stored solids).
+  * `Base Feature1 (24)` of `4UCONN_18510` is one ACIS lump of five shells (the outside listed last): the outside
+    (183.819 mm3 alone), cavities of 0.365 (a sphere), 0.464 and 0.113 mm3, and a 0.009 mm3 lens (a sphere cap) that
+    OCCT's STEP reader does not take for a cavity of the outside and makes a solid of its own: the body comes in as
+    two solids (182.876 and 0.009 mm3; the file's `.smb` gives the same two). A stored body that comes in as several
+    solids and that no other feature names is now that many stored bodies of the tree (`<name> piece <i>`).
+  The step check: 270 stored solids are states of the rebuilt model, 155 are cut tools, 2 are dropped inputs.
+* **5905** builds the mirror (the features' volume rises by the mirrored header, 739.27 mm3) and then stops where 5967
+  does: the board's `Extrude2` changes the volume by 283.2097 mm3, its 180 stored tools hold 258.4962 mm3 (section 30,
+  not this round's). A wrong plane gives the same message, so 5905 does not confirm the mirror on its own; 4343 does.
+
+### Thin extrude (5981, 6299, 6126)
+* An extrude with a `Side1WallThickness` holder (`D91D429C`) has no `4BD53E5A` profile: it selects sketch curves
+  (`5A1BF548` -> `E2CEFD18`, sketch and primary id in the last 16 bytes, as a sweep path) and each selection also names
+  the curve's own geometry in component coordinates (`50AEE8B4` a line: point and vector, cm; `B0B3FA59` an arc: centre,
+  normal, reference direction, radius, sweep). Just before the reference to the thickness holder: `u8 1` (thin) and
+  `u32` the wall's location (5981 Extrude3: 2, 0.6 mm; 6299 Extrude7/10: 2; 6299 Extrude14 and 6126 Extrude5: 1).
+  Normal extrudes have zeros there.
+* Location 2: the wall lies to the left of the chain, run the way the first selected curve runs (a line start to end),
+  about the sketch normal. 5981's stored edges show it: the wall's faces meet at the chain's own points (the arc's
+  ends) and 0.6 mm outside the arc (radius 1.4 -> 2.0 mm). Location 1 is read as the other side by symmetry but not
+  confirmed (refused, "not confirmed by a rebuild yet").
+* The tree writes the wall's outline as a sketch of its own (`<name> wall`: the chain offset by 0 and by the wall,
+  closed by two caps; tangent joins, corners only between lines, mitred) and the extrude extrudes its region. No new
+  operation of the document language.
+* The wall's faces are named by generator: `10 + k` the two sides along the k-th selected curve, `10 + n` the cap at
+  the chain's start, `10 + n + 1` at its end (5981 and 6299, three curves each). The extrude is two operations (5981:
+  363 and 364); the side on the chain carries both, the other side only the first. The caps and straight sides are now
+  modelled, so blends of their edges resolve before the faces are cut away (5981's Fillet3 rounds the slot's four end
+  corners, r 0.3 = half the wall: the stored states have no face 13 or 14 left).
+* 5981 then stops at `Chamfer2` (0.4 mm): its edge joins Extrude4's face `-1` (a cap of the post below the slot) and
+  the wall's arc side merged with the post's cylinder (`("11", [363, 364]), ("3", [367])`); neither the face `-1` nor
+  a wall side along an arc is modelled, and the stored states no longer hold the edge. After it `Chamfer6` names faces
+  `-3`, `-6`, `-8` of the wall (not decoded) and `Combine1` (value 1) follows; Combine1 is therefore neither confirmed
+  nor refuted by a rebuild.
+* 6126's `Extrude5 (2)` is a thin extrude of three separate lines (two collinear, one crossing): not one chain, refused.
+  6299 stops at `Chamfer1 (2)` first, as before.
+
+### Bend `1CF7B9E3` (3502): read, not converted
+* A sheet-metal bend of the flex body (a Derived Base Feature body) along a sketch line: the record names a face
+  selection (`2CA5A1CD` -> `5662F619`, the face the line is on), the line (`5A1BF548` -> `E2CEFD18` -> `50AEE8B4`), a
+  `69EE2FA7` with a second face (the side that stays), an `88277bc9` holding `BendAngle` (-90 deg) and a selection, the
+  `BendRadius` holder (0.45 mm), and an `E75C86D6` that names the sheet-metal rule (`B42ED662`, `Thickness` 0.05 mm).
+  Bend1 and Bend2 each follow a sketch of their own.
+* Gusset has no bend (cutting a body along a line and turning one side about an axis through a cylindrical zone that
+  keeps the neutral length); adding one is a kernel operation of its own with its golden test, beyond this round.
+  3502 stays at Bend1.
+
+### Result
+* adafruit-more: 117 of 150 as history (4343 gained, none lost); adafruit: 11 (none lost). The thin extrude reading
+  touches only extrudes with a wall thickness (5981, 6299, 6126, checked one by one after it).
