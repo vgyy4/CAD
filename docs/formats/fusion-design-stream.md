@@ -1465,3 +1465,38 @@ sides) does not give.
   thread (the run-out at the offset and at the face's end) is not established, and each of the three designs
   stops at another feature as well (with the threads left out: 1145 Fillet1, "its edges are on several bodies";
   3350 Revolve1, "the revolve axis is not a line of its sketch"; 324 Fillet1, edges not resolved, and Split3).
+
+### Split Body `65CA3206` (3651, 324, 4632): read, not converted
+* Body: `u8 1, u8 1`, `u32 0`, `u8 0`, `u32` (0x264, 0x16b: not understood), `u32 0`, `u16 0`, then `u32 1` and the
+  selection of the body to split (`2CA5A1CD` -> a `9716F783` body recipe), `u32 n` and the n body links the split
+  makes (`D26351F0`: 3651 Split1 one, 324 Split3 two), `u32 1` and the selection of the splitting tool
+  (`2CA5A1CD` -> `5A1BF548`, a construction plane, in 3651: WorkPlane2; `5662F619`, a face, in 324). The feature's
+  input list repeats them: body selection, tool, body recipe.
+* Gusset has no operation that cuts one body into several that stay bodies (a cut or an intersection keeps one
+  side), so the tree cannot say it; adding one is a document-language change (an operation of its own in
+  `gusset-doc`, `gusset-eval` and the tree importer), left for when a design needs it. Neither design gains from it
+  now: 324 stops at its modeled thread first, and 3651 with the split left out stops at the box check (the
+  features reach z = -4.0 mm, the stored solids -3.7 mm), which a split (it keeps the volume and the box) does not
+  change.
+
+### CoilPrimitive `DB2E4EDC` (3722): parameters read, the stored coil does not convert
+* Parameters (holder index, role): 0 `Diameter`, 1 `SectionSize`, 2 `TaperAngle`, 3 `Revolutions`, 4 `Height`. 3722
+  has two coils, one per component: d = 67 mm and 71 mm (the second an expression of a user parameter), 1.5 turns,
+  6.5 mm, section 2 mm, taper 0. Body: `u8 0`, `u32 4` (the operation, new body, as an extrude's), `u32 1`, the
+  `Diameter` and `Height` holders, `u8 1, u8 0`, a `DA1231DE` (an entity by its uuid: the axis or base point), a
+  `7B6C3C2D` frame, `u8 1`, then `Revolutions`, `u32` (3 / 1), `SectionSize`, `u32` (3 / 4), `TaperAngle`, `u32 1`,
+  and the body link. Read as section position (3 outside, 1 inside) and section type (3 and 4: the two triangles):
+  both coils' solids lie between r = 33.5 and 35.5 mm (outside of d 67, inside of d 71), and z from -1.1547 to
+  7.6547 mm, which is 6.5 mm of travel plus half of 4 / sqrt 3 each side: an equilateral triangle 2 mm high.
+  That reading is not confirmed: the first coil's stored solid converts to a negative volume (-13877 mm3, the same
+  after Move1), the second's to 501.18 mm3, while a 2 mm triangle swept 1.5 turns gives 744 to 758 mm3 (Pappus).
+  The coil's faces are helical splines; their conversion, not the coil, is in doubt. Left unsupported. 3722 also
+  stops before the coil: OCCT fails on Shell3, and Chamfer1's edges are not resolved.
+
+### MirrorComponent `71BBEDD5` and DerivedInstance `66E375EA` (4343): read, not converted
+* The mirror names the occurrence it mirrors (`CE2913AA` -> component `E03784ED`), the mirror plane (`5A1BF548` ->
+  `CC54ECAD`), the `CreateComponent` of the new component and its `DerivedInstance`. The DerivedInstance stores a
+  4 x 4 matrix (rows (1, 0, 0, 3.94), (0, 0, -1, -1.30897), (0, 1, 0, 0.494966) cm, (0, 0, 0, 1)): a proper rotation
+  (determinant +1) and a move, so the reflection is in the new component's own bodies, not in its placement. With
+  both left out the design stops at a stored body of its Base Feature that does not come in as one body, so the
+  mirror alone gains nothing; left unsupported.
