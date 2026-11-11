@@ -210,7 +210,7 @@ pub(crate) fn merge_touching(regions: Vec<Region2>, ids: Vec<String>) -> (Vec<Re
             continue;
         }
         let members: Vec<usize> = (0..regions.len()).filter(|j| group.get(*j) == Some(&i)).collect();
-        let merged = if members.len() > 1 { unite(&members, &edges) } else { None };
+        let merged = if members.len() > 1 { unite(&members, &edges, &regions) } else { None };
         match merged {
             Some(one) => {
                 out_regions.push(one);
@@ -281,7 +281,7 @@ fn join_pieces(l: &mut Loop2) {
 }
 
 /// One region from the edges of several: every edge two of them have drops out.
-fn unite(members: &[usize], edges: &[Vec<ProfileEdge>]) -> Option<Region2> {
+fn unite(members: &[usize], edges: &[Vec<ProfileEdge>], regions: &[Region2]) -> Option<Region2> {
     let mut left: Vec<ProfileEdge> = Vec::new();
     let mut total = 0.0;
     for (n, m) in members.iter().enumerate() {
@@ -294,11 +294,11 @@ fn unite(members: &[usize], edges: &[Vec<ProfileEdge>]) -> Option<Region2> {
                 left.push(*e);
             }
         }
-        // The member's own area: its outline less its holes.
-        let mut loops = edges.get(*m)?.clone();
-        let own = chain(std::mem::take(&mut loops))?;
-        let biggest = own.iter().map(loop_area).fold(0.0, f64::max);
-        total += 2.0 * biggest - own.iter().map(loop_area).sum::<f64>();
+        // The member's own area: its outline less its holes (taken from its loops as they are: an
+        // outline that touches itself at a point, 858's tab around a circle tangent to it, does
+        // not chain again one way).
+        let r = regions.get(*m)?;
+        total += loop_area(&r.outer) - r.holes.iter().map(loop_area).sum::<f64>();
     }
     let mut loops = chain(left)?;
     for l in &mut loops {
@@ -410,6 +410,37 @@ mod tests {
         assert_eq!(regions[1], far);
         assert_eq!(regions[0].outer.edges.len(), 4);
         assert_eq!(regions[0].holes.len(), 1);
+    }
+
+    #[test]
+    fn a_region_whose_outline_touches_itself_unites_with_what_fills_the_notch() {
+        // A 4 x 4 square whose outline runs round a triangle hanging from the middle of its top
+        // edge (the triangle's apex on that edge: the outline passes the point twice), and the
+        // triangle itself.
+        let (t0, t1, t2) = ([2.0, 4.0], [1.0, 2.0], [3.0, 2.0]);
+        let pinched = Region2 {
+            outer: Loop2 {
+                edges: vec![
+                    line([0.0, 0.0], [4.0, 0.0], 1),
+                    line([4.0, 0.0], [4.0, 4.0], 2),
+                    line([4.0, 4.0], t0, 3),
+                    line(t0, t2, 5),
+                    line(t2, t1, 6),
+                    line(t1, t0, 7),
+                    line(t0, [0.0, 4.0], 3),
+                    line([0.0, 4.0], [0.0, 0.0], 4),
+                ],
+            },
+            holes: Vec::new(),
+        };
+        let tri = Region2 {
+            outer: Loop2 { edges: vec![line(t0, t1, 7), line(t1, t2, 6), line(t2, t0, 5)] },
+            holes: Vec::new(),
+        };
+        let (regions, _) = merge_touching(vec![pinched, tri], names(2));
+        let [one] = regions.as_slice() else { panic!("one region") };
+        assert_eq!(one.outer.edges.len(), 4);
+        assert!((loop_area(&one.outer) - 16.0).abs() < 1e-12);
     }
 
     #[test]
