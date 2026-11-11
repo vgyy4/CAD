@@ -1113,6 +1113,33 @@ fn a_drafted_side_face_leans_inward() {
 }
 
 #[test]
+fn a_draft_pulls_along_its_plane_normal_whichever_way_the_base_plane_faces() {
+    // Neutral plane y = 0 pulled along +y (the XZ base plane's normal is -y): the +x wall
+    // narrows towards +y, losing the same wedge as an upward pull from z = 0.
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "draft", "name": "Taper", "faces": [{"point": [10, 5, 5], "normal": [1, 0, 0]}],
+                  "plane": {"origin": [0, 0, 0], "normal": [0, 1, 0]}, "angle": 5}));
+    let (mut s, _) = import_v2_session(f);
+    let b = body_of(&mut s, None);
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 1000.0 - 500.0 * libm::tan(5.0_f64.to_radians()));
+    // A negative angle leans the wall outward along the pull: the wedge is added.
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "draft", "name": "Taper", "faces": [{"point": [10, 5, 5], "normal": [1, 0, 0]}],
+                  "plane": {"origin": [0, 0, 0], "normal": [0, 1, 0]}, "angle": -5}));
+    let (mut s, _) = import_v2_session(f);
+    let b = body_of(&mut s, None);
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 1000.0 + 500.0 * libm::tan(5.0_f64.to_radians()));
+    // An offset datum plane (y = 2) pulled along +y: 0.5 * 8 * 8 tan 5 * 10 lost above it,
+    // 0.5 * 2 * 2 tan 5 * 10 gained below.
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "draft", "name": "Taper", "faces": [{"point": [10, 5, 5], "normal": [1, 0, 0]}],
+                  "plane": {"origin": [0, 2, 0], "normal": [0, 1, 0]}, "angle": 5}));
+    let (mut s, _) = import_v2_session(f);
+    let b = body_of(&mut s, None);
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 1000.0 - 300.0 * libm::tan(5.0_f64.to_radians()));
+}
+
+#[test]
 fn a_flipped_draft_on_an_offset_plane_leans_the_other_way() {
     // Neutral plane at z = 10 (the top), pulled the other way (down): the wall narrows
     // towards the foot, the mirror image of the first case, so the same volume is lost.

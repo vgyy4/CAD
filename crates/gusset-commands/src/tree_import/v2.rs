@@ -1394,8 +1394,20 @@ pub(super) fn draft(g: &mut Gen, s: &Session, d: &DraftF) -> Result<(), String> 
     }
     let body = body.ok_or("no faces")?;
     let name = g.fresh(&d.name, "Draft");
-    let plane = datum_plane(g, &name, o, n)?;
-    let flip = if d.flip { ", flip: true" } else { "" };
+    // The pull is the plane's normal as the document evaluates it: a base plane's fixed normal
+    // (XY +z, XZ +y, YZ +x), a datum plane's frame normal (x cross y, -y for one on XZ). Where
+    // that faces against the tree's normal the draft is flipped.
+    let (plane, mut against) = datum_plane_facing(g, &name, o, n)?;
+    let base_normal = match plane.as_str() {
+        "XY" => Some([0.0, 0.0, 1.0]),
+        "XZ" => Some([0.0, 1.0, 0.0]),
+        "YZ" => Some([1.0, 0.0, 0.0]),
+        _ => None,
+    };
+    if let Some(bn) = base_normal {
+        against = dot(n, bn) < 0.0;
+    }
+    let flip = if d.flip != against { ", flip: true" } else { "" };
     let _ = writeln!(
         g.text,
         "\ndraft {name} (body: {body}, faces: [{}], plane: {plane}, angle: {} deg{flip})",
