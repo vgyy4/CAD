@@ -6310,7 +6310,7 @@ Used by:
 - [ref-cast 1.0.27](https://github.com/dtolnay/ref-cast)
 - [rustc-hash 1.1.0](https://github.com/rust-lang-nursery/rustc-hash)
 - [rustix 0.38.44](https://github.com/bytecodealliance/rustix)
-- [rustix 1.1.5](https://github.com/bytecodealliance/rustix)
+- [rustix 1.1.6](https://github.com/bytecodealliance/rustix)
 - [semver 1.0.28](https://github.com/dtolnay/semver)
 - [serde 1.0.229](https://github.com/serde-rs/serde)
 - [serde_core 1.0.229](https://github.com/serde-rs/serde)
