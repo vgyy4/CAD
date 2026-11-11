@@ -2030,6 +2030,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         }
         tag_feats(&mut feats, nbefore, comp.map(|c| (c, comp_name.as_deref())), extra.contains(&fid));
     }
+    joins_that_make_bodies(&mut feats);
     joins_of_several_bodies(&mut feats);
     let comp_json: Vec<Value> = comps.iter().map(|(c, n, b)| json!({"name": n, "source_id": c, "bodies": b})).collect();
     let with_bodies = comps.iter().filter(|c| !c.2.is_empty()).count();
@@ -2040,6 +2041,42 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         "single_component": distinct.len() <= 1 && with_bodies <= 1,
         "component_records": d.ids.iter().filter(|i| d.is(**i, "E03784ED")).count(),
     })
+}
+
+/// A join whose tool has parts that touch no body of its target makes those parts new bodies in
+/// the file (610: Extrude5 joins to Extrude1's body and makes two bodies; Extrude6 then joins to
+/// the bodies of Extrude1 and Extrude5). The tree's join leaves them in the target's body, as
+/// solids of their own: a later join or cut that names the target's body and those bodies names
+/// one body here. Only lists that name the target's own body are merged; any other is left as it
+/// is (refused).
+pub(super) fn joins_that_make_bodies(feats: &mut [Value]) {
+    let mut lives_in: HashMap<String, String> = HashMap::new();
+    for f in feats.iter_mut() {
+        let Some(o) = f.as_object_mut() else { continue };
+        if let Some(Value::Array(a)) = o.get("target") {
+            let named: Vec<&str> = a.iter().filter_map(Value::as_str).collect();
+            let mut to: Vec<&str> = named.iter().map(|n| lives_in.get(*n).map_or(*n, String::as_str)).collect();
+            to.sort_unstable();
+            to.dedup();
+            if named.len() == a.len()
+                && let [one] = to.as_slice()
+                && named.contains(one)
+            {
+                let one = (*one).to_string();
+                o.insert("target".into(), one.into());
+            }
+        }
+        let joins_new = matches!(o.get("type").and_then(Value::as_str), Some("extrude" | "sweep" | "revolve"))
+            && o.get("operation").and_then(Value::as_str) == Some("join")
+            && o.get("creates_bodies").and_then(Value::as_u64).is_some_and(|n| n > 0);
+        if joins_new
+            && let (Some(name), Some(t)) =
+                (o.get("name").and_then(Value::as_str), o.get("target").and_then(Value::as_str))
+        {
+            let t = lives_in.get(t).cloned().unwrap_or_else(|| t.to_string());
+            lives_in.insert(name.to_string(), t);
+        }
+    }
 }
 
 /// An extrude or sweep that joins its tool to several bodies and makes none leaves one body:
