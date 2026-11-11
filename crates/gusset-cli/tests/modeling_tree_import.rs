@@ -207,6 +207,47 @@ fn a_shelled_box_with_the_top_face_removed() {
     assert_vol(v, 30.0 * 20.0 * 10.0 - 26.0 * 16.0 * 8.0);
 }
 
+#[test]
+fn faces_picked_by_their_boundary_points_and_surface() {
+    // The box's top by its corners on the plane z = 10 (ADR 0042 amendment 2026-11-11).
+    let corners = json!([[0, 0, 10], [30, 0, 10], [30, 20, 10], [0, 20, 10]]);
+    let (_, v) = import_v2(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 30.0, 20.0),
+        extrude("Box", "Sketch1", 10.0, "new"),
+        json!({"type": "shell", "name": "Shell1", "thickness": 2, "side": "inside",
+               "faces": [{"point": [0, 0, 10], "points": corners,
+                          "surface": {"type": "plane", "origin": [0, 0, 10], "normal": [0, 0, 1]}}]}),
+    ]);
+    assert_vol(v, 30.0 * 20.0 * 10.0 - 26.0 * 16.0 * 8.0);
+    // A disc's side by points of its two circles on the cylinder r = 5, pushed out by 1 mm.
+    let ring: Vec<Value> =
+        [0.0, 10.0].iter().flat_map(|z| [json!([5, 0, z]), json!([0, 5, z]), json!([-5, 0, z])]).collect();
+    let (_, v) = import_v2(vec![
+        disc("Sketch1", plane_at(0.0), 0.0, 0.0, 5.0),
+        extrude("Rod", "Sketch1", 10.0, "new"),
+        json!({"type": "offset_face", "name": "Fatter", "distance": 1,
+               "faces": [{"point": [5, 0, 0], "points": ring,
+                          "surface": {"type": "cylinder", "origin": [0, 0, 0], "axis": [0, 0, 1], "radius": 5}}]}),
+    ]);
+    assert_vol(v, std::f64::consts::PI * 36.0 * 10.0);
+}
+
+#[test]
+fn a_face_pick_two_faces_hold_alike_is_refused() {
+    // The ends of the top front edge lie on the top and on the front: no surface to tell them
+    // apart, so the shell is skipped.
+    let tree = json!({"format": "gusset-feature-tree", "version": 2, "source": {"app": "test"}, "features": [
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 30.0, 20.0),
+        extrude("Box", "Sketch1", 10.0, "new"),
+        {"type": "shell", "name": "Shell1", "thickness": 2,
+         "faces": [{"point": [0, 0, 10], "points": [[0, 0, 10], [30, 0, 10]], "surface": {"type": "other"}}]}]});
+    let mut s = session();
+    std::fs::write(s.project_dir.clone().unwrap().join("t.gtree.json"), serde_json::to_vec(&tree).unwrap()).unwrap();
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap();
+    let sk = r["skipped_user_text"].as_array().unwrap();
+    assert!(sk.iter().any(|x| x["feature"] == "Shell1" && x["reason"].as_str().unwrap().contains("ambiguous")), "{r}");
+}
+
 /// Like `import_v2` but keeps the session, for tests that look into the model.
 fn import_v2_session(features: Vec<Value>) -> (Session, Value) {
     let tree = json!({"format": "gusset-feature-tree", "version": 2, "source": {"app": "test"}, "features": features});

@@ -11,12 +11,65 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-/// A face picked by a point on it (world mm) and optionally its outward normal.
+/// A face picked by a point on it (world mm) and optionally its outward normal; or, with
+/// `points`, by points of its boundary and optionally the surface it lies on (any surface
+/// type: the face the model holds them on, which must be the only best one).
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct FacePick {
     point: [f64; 3],
     #[serde(default)]
     normal: Option<[f64; 3]>,
+    #[serde(default)]
+    points: Vec<[f64; 3]>,
+    #[serde(default)]
+    surface: Option<SurfaceF>,
+}
+
+/// The surface a picked face lies on (mm). A cone's radius at height `h` along the axis from
+/// `origin` is `radius + h * sin / cos`; `other` names no surface (the points decide alone).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+enum SurfaceF {
+    Plane { origin: V3, normal: V3 },
+    Cylinder { origin: V3, axis: V3, radius: f64 },
+    Cone { origin: V3, axis: V3, radius: f64, sin: f64, cos: f64 },
+    Other,
+}
+
+impl SurfaceF {
+    /// Distance (mm) of `x` from the surface, `None` for `other`.
+    fn distance(&self, x: V3) -> Option<f64> {
+        let along = |o: V3, a: V3| -> Option<(f64, f64)> {
+            let a = unit(a)?;
+            let w = sub(x, o);
+            Some((dot(w, a), norm(cross(w, a))))
+        };
+        match self {
+            SurfaceF::Plane { origin, normal } => Some(dot(sub(x, *origin), unit(*normal)?).abs()),
+            SurfaceF::Cylinder { origin, axis, radius } => along(*origin, *axis).map(|(_, rho)| (rho - radius).abs()),
+            SurfaceF::Cone { origin, axis, radius, sin, cos } => {
+                let (h, rho) = along(*origin, *axis)?;
+                let l = (sin * sin + cos * cos).sqrt();
+                (l > 1e-12).then(|| ((rho - radius) * cos - h * sin).abs() / l)
+            }
+            SurfaceF::Other => None,
+        }
+    }
+
+    fn check(&self) -> Result<(), String> {
+        let vals: Vec<f64> = match self {
+            SurfaceF::Plane { origin, normal } => origin.iter().chain(normal).copied().collect(),
+            SurfaceF::Cylinder { origin, axis, radius } => origin.iter().chain(axis).chain([radius]).copied().collect(),
+            SurfaceF::Cone { origin, axis, radius, sin, cos } => {
+                origin.iter().chain(axis).chain([radius, sin, cos]).copied().collect()
+            }
+            SurfaceF::Other => Vec::new(),
+        };
+        for v in vals {
+            finite(v, "a face surface")?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -358,6 +411,98 @@ fn find_face(
     best.map(|x| x.2).ok_or_else(|| format!("no planar or cylindrical face of the model holds the point {point:?}"))
 }
 
+/// Most boundary points one pick may carry.
+const MAX_FACE_POINTS: usize = 256;
+
+/// The face a pick names: by its point (and normal), or by its boundary points and surface.
+fn find_pick(
+    kernel: &dyn gusset_kernel::Kernel,
+    ev: &gusset_eval::Evaluation,
+    meshes: &mut Meshes,
+    pick: &FacePick,
+) -> Result<FaceHit, String> {
+    if pick.points.is_empty() {
+        return find_face(kernel, ev, meshes, finite3(pick.point, "a face point")?, pick.normal);
+    }
+    find_face_by_points(kernel, ev, meshes, pick)
+}
+
+/// The face of the model that lies on the pick's surface (every node of its tessellation within
+/// 0.001 mm of it; any face for `other`) and holds the most of the pick's points (within the
+/// tessellation's deflection). Exactly one face must hold the most, and at least one point.
+fn find_face_by_points(
+    kernel: &dyn gusset_kernel::Kernel,
+    ev: &gusset_eval::Evaluation,
+    meshes: &mut Meshes,
+    pick: &FacePick,
+) -> Result<FaceHit, String> {
+    if pick.points.len() > MAX_FACE_POINTS {
+        return Err(format!("a face pick has more than {MAX_FACE_POINTS} points"));
+    }
+    let pts: Vec<V3> = pick.points.iter().map(|p| finite3(*p, "a face point")).collect::<Result<_, _>>()?;
+    let surface = pick.surface.clone().unwrap_or(SurfaceF::Other);
+    surface.check()?;
+    let flat = matches!(surface, SurfaceF::Plane { .. });
+    let defl = gusset_kernel::TessellationParams::default().linear_deflection;
+    let tol = if flat { 0.01 } else { defl + 0.01 };
+    meshes.resize_with(ev.bodies.len(), || None);
+    // (points held, face hit); ties are kept to refuse them.
+    let mut best: Vec<(usize, FaceHit)> = Vec::new();
+    for (bi, b) in ev.bodies.iter().enumerate() {
+        if meshes.get(bi).is_some_and(Option::is_none) {
+            let m = kernel.tessellate(&b.shape, &gusset_kernel::TessellationParams::default()).ok();
+            if let Some(slot) = meshes.get_mut(bi) {
+                *slot = m;
+            }
+        }
+        let Some(mesh) = meshes.get(bi).and_then(Option::as_ref) else { continue };
+        for (i, f) in b.topology.faces.iter().enumerate() {
+            let Some(name) = b.names.faces.get(i) else { continue };
+            let Some(range) = mesh.face_ranges.get(i) else { continue };
+            if range.start >= range.end {
+                continue;
+            }
+            let on_surface = (range.start..range.end).all(|t| {
+                let k = t as usize * 3;
+                mesh.indices.get(k..k + 3).is_some_and(|idx| {
+                    idx.iter().all(|j| {
+                        let x = v3f(mesh.positions.get(*j as usize));
+                        surface.distance(x).is_none_or(|d| d <= 1e-3)
+                    })
+                })
+            });
+            if !on_surface {
+                continue;
+            }
+            let held = pts.iter().filter(|p| mesh_face_holds(mesh, i, **p, tol)).count();
+            if held == 0 || best.first().is_some_and(|(h, _)| held < *h) {
+                continue;
+            }
+            if best.first().is_some_and(|(h, _)| held > *h) {
+                best.clear();
+            }
+            best.push((
+                held,
+                FaceHit {
+                    body: b.feature.clone(),
+                    name: name.to_string(),
+                    planar: f.kind == gusset_kernel::SurfaceKind::Plane,
+                    normal: unit(f.normal).unwrap_or([0.0, 0.0, 1.0]),
+                    centroid: f.centroid,
+                    fallback: false,
+                },
+            ));
+        }
+    }
+    match best.as_slice() {
+        [(_, one)] => Ok(one.clone()),
+        [] => Err(format!("no face of the model holds the points of a face pick (first {:?})", pts.first())),
+        [(_, a), (_, b), ..] => {
+            Err(format!("the face pick is ambiguous: {} and {} hold as many of its points", a.name, b.name))
+        }
+    }
+}
+
 /// The persistent name (and body feature) of the face a pick names, for a chamfer's
 /// reference face; the same search as holes use.
 pub(super) fn pick_face_name(
@@ -368,7 +513,7 @@ pub(super) fn pick_face_name(
 ) -> Result<(String, String), String> {
     let fp = finite3(pick.point, "the face point")?;
     let mut meshes: Meshes = Vec::new();
-    let f = find_face(s.kernel().as_ref(), ev, &mut meshes, fp, pick.normal)?;
+    let f = find_pick(s.kernel().as_ref(), ev, &mut meshes, pick)?;
     warn_fallback(g, &f, fp);
     Ok((f.body, f.name))
 }
@@ -592,7 +737,7 @@ pub(super) fn shell(g: &mut Gen, s: &Session, d: &ShellF) -> Result<(), String> 
     let mut meshes: Meshes = Vec::new();
     for pick in &d.faces {
         let fp = finite3(pick.point, "a face point")?;
-        let f = find_face(s.kernel().as_ref(), &ev, &mut meshes, fp, pick.normal)?;
+        let f = find_pick(s.kernel().as_ref(), &ev, &mut meshes, pick)?;
         warn_fallback(g, &f, fp);
         if body.as_ref().is_some_and(|b| *b != f.body) {
             return Err("its faces are on several bodies".into());

@@ -526,3 +526,25 @@ names no edge, the model's edges lying on the path stand for it, or the one edge
 circle's arc) that holds the midpoint and both ends of the path: a source that merges edges
 Gusset keeps apart (FreeCAD's refine), or a whole circle whose seam, and so whose middle, lies
 elsewhere in the source than in the model (Fusion).
+
+## Amendment (2026-11-11): faces picked by their boundary points and surface
+
+A face pick (shell, draft, offset_face, hole, chamfer reference) may carry `points`, points of
+the face's boundary (mm, at most 256), and `surface`, the surface the face lies on:
+
+```json
+{ "point": [33.5, 0, 0], "points": [[33.5, 0, 0], [0, 33.5, 0]],
+  "surface": { "type": "plane", "origin": [33.5, 0, 0], "normal": [0, 0, -1] } }
+```
+
+- `surface` is `{"type": "plane", "origin", "normal"}`, `{"type": "cylinder", "origin", "axis",
+  "radius"}`, `{"type": "cone", "origin", "axis", "radius", "sin", "cos"}` (the radius at height
+  `h` along the axis from `origin` is `radius + h * sin / cos`) or `{"type": "other"}`; absent is
+  `other`. `point` stays required (the first of `points`) and is not used when `points` is given.
+- The importer takes, over all bodies, the faces that lie on the surface (every node of the
+  face's tessellation within 0.001 mm of it; any face for `other`) and of them the face whose
+  region holds the most of the points (by the tessellation, within 0.01 mm on a plane and the
+  tessellation's deflection plus 0.01 mm otherwise). Exactly one face must hold the most and at
+  least one point: none, or a tie, skips the feature with the reason. Faces of any surface type
+  (revolves, blends, splines) are picked this way; a face the source moved without renaming it
+  is picked by the points of all its states, of which the model holds the right ones.
