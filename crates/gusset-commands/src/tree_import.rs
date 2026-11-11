@@ -879,8 +879,12 @@ pub fn apply_with(
     // Compare with the source's bodies.
     let ev = committed?;
     let k = s.kernel().clone();
-    // Only the bodies the import made (the document may hold others: F7-6).
-    let made_bodies: Vec<_> = ev.bodies.iter().filter(|b| made.contains(&b.feature)).collect();
+    // Only the bodies the import made (the document may hold others: F7-6), the copies its
+    // patterns keep apart included (their feature is the copy's name).
+    let made_by = |f: &str| {
+        made.iter().any(|m| m == f) || gusset_doc::pattern_copy_of(f).is_some_and(|(p, _)| made.iter().any(|m| m == p))
+    };
+    let made_bodies: Vec<_> = ev.bodies.iter().filter(|b| made_by(&b.feature)).collect();
     let ours: f64 = made_bodies.iter().filter_map(|b| k.mass_properties(&b.shape).ok()).map(|m| m.volume).sum();
     // A join the source did not apply (or the other way round) changes the count (F9-10).
     if !tree.bodies.is_empty() && made_bodies.len() != tree.bodies.len() {

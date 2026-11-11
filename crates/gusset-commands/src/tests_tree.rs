@@ -298,6 +298,20 @@ fn bad_version_2_features_are_skipped_with_reasons_and_rolled_back() {
 }
 
 #[test]
+fn the_copies_a_body_pattern_keeps_apart_count_as_made() {
+    let mut s = session();
+    let mut fs = box_features(10.0, 10.0, 5.0);
+    fs.push(json!({"type": "pattern_linear", "name": "P", "target": "Block", "merge": false,
+                   "direction": [1, 0, 0], "count": 3, "spacing": 20}));
+    let mut t = tree2(json!(fs));
+    t["bodies"] = json!([{"name": "B", "volume_mm3": 1500.0}]);
+    let r = import(&mut s, "pat.gtree.json", &t).unwrap();
+    assert_eq!(skipped(&r), vec![], "{r}");
+    assert_eq!(r["volume_mm3"]["imported"], json!(1500.0), "{r}");
+    assert!(r["warnings_user_text"].to_string().contains("the import made 3 bodies"), "{r}");
+}
+
+#[test]
 fn a_mirrored_body_and_mirrored_features_import() {
     let mut s = session();
     let mut fs = box_features(10.0, 10.0, 5.0);
