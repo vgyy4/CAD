@@ -657,7 +657,7 @@ fn damaged_input_is_refused_without_panics() {
         let n = (next() % 400) as usize;
         let mut b = b"ASM BinaryFile4tY\x0d\x09asmheader\x11".to_vec();
         b.extend((0..n).map(|_| [0x0c, 0x0d, 0x11, 0x13, 0x07, 0x0e, next() as u8][(next() % 7) as usize]));
-        let _ = (acis::body_edges(&b), acis::tagged_faces(&b), acis::named_edges(&b), round);
+        let _ = (acis::body_edges(&b), acis::tagged_faces(&b), acis::named_edges(&b), acis::helices(&b), round);
     }
     // Profile, recipe and operation-table readers on noise.
     for _ in 0..200 {
@@ -1992,4 +1992,51 @@ fn the_inputs_a_base_feature_drops_are_the_pm_bodies_it_names_once() {
     let (m, bulk) = base_feature(&[21, 22, 23], &[24]);
     let d = Design::new(&m, &bulk).unwrap();
     assert_eq!(json::base_feature_inputs(&d, &super::Graph::new(&d), 10), None);
+}
+
+#[test]
+fn a_thread_is_modeled_when_a_stored_body_holds_its_helix() {
+    use Tok::{Pos, Vec as V};
+    // 1145's Thread1: 60 degrees, external M16x1 6g (cm: major 1.5884, minor 1.4741, pitch 0.1).
+    let mut body = 60f64.to_le_bytes().to_vec();
+    body.push(1);
+    for t in ["6g", "M16x1", "16.0", "ISO Metric profile"] {
+        body.extend(ws(t));
+    }
+    body.push(0);
+    body.extend(le32(2));
+    for v in [1.5884f64, 1.4741] {
+        body.extend(v.to_le_bytes());
+    }
+    body.push(1);
+    for v in [0.1f64, 1.52655] {
+        body.extend(v.to_le_bytes());
+    }
+    body.extend([0u8; 16]);
+    let rec = record(256, 5, &body);
+    let m = meta(&[(5, 0)], &|_| 0);
+    let d = Design::new(&m, &rec).unwrap();
+    let t = super::thread::read(&super::Ctx::new(&d, &[]), 5).unwrap();
+    assert_eq!((t.designation.as_str(), t.class.as_str(), t.internal), ("M16x1", "6g", false));
+    assert_eq!((t.angle, t.major, t.minor, t.pitch, t.length), (60.0, 1.5884, 1.4741, 0.1, None));
+    let blob = |pitch: f64| {
+        let mut b = b"ASM BinaryFile4tY".to_vec();
+        b.extend(sab_tokens(&["asmheader"], &[]));
+        let r = 1.5884 / 2.0 / 2f64.sqrt();
+        b.extend(sab_tokens(
+            &["intcurve", "curve", "helix_int_cur"],
+            &[Pos([0.0, 0.0, 0.4]), V([r, r, 0.0]), V([-r, r, 0.0]), V([0.0, 0.0, pitch]), V([0.0, 0.0, 1.0])],
+        ));
+        b
+    };
+    // No helix of its pitch on its radii: cosmetic, left out with a note.
+    let other = blob(0.2);
+    let files = [("BREP.a.smbh", &other[..])];
+    let note = super::thread::json(&super::Ctx::new(&d, &files), 5, "Thread1", "Thread", G1).unwrap();
+    assert!(note.starts_with("a cosmetic thread (M16x1 6g, external"), "{note}");
+    let own = blob(0.1);
+    let files = [("BREP.a.smbh", &own[..])];
+    let j = super::thread::json(&super::Ctx::new(&d, &files), 5, "Thread1", "Thread", G1).unwrap_err();
+    assert_eq!(j["type"], "unsupported");
+    assert!(j["error"].as_str().unwrap().starts_with("a modeled thread (M16x1 6g, external, major 15.884 mm"), "{j}");
 }

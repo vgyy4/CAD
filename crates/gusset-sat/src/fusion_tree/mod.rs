@@ -29,6 +29,7 @@ mod patdir;
 mod pcb;
 mod sketch;
 mod stream;
+mod thread;
 
 use feature::feature_name;
 use sketch::{RegionCache, Sketch};

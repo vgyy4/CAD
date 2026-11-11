@@ -690,3 +690,34 @@ pub(super) fn named_faces(b: &[u8]) -> Option<Vec<NamedFace>> {
     }
     Some(out)
 }
+
+/// A helix curve of a blob (an `intcurve` of subtype `helix_int_cur`, cm): its
+/// radius (the length of its two perpendicular radius vectors) and its axial travel per turn.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Helix {
+    pub radius: f64,
+    pub pitch: V3,
+}
+
+/// Every helix curve of a blob (the edges of a modeled thread or of a coil).
+pub(super) fn helices(b: &[u8]) -> Option<Vec<Helix>> {
+    let recs = records(b)?;
+    let dot = |a: V3, c: V3| a[0] * c[0] + a[1] * c[1] + a[2] * c[2];
+    let mut out = Vec::new();
+    for r in recs.iter().filter(|r| r.ty.contains("helix_int_cur")) {
+        // Root, then two radius vectors of one length, perpendicular to each other and to the
+        // pitch vector that follows them.
+        let found = r.vecs.windows(4).find_map(|w| {
+            let [_root, a, c, p] = w else { return None };
+            let (la, lc) = (dot(*a, *a).sqrt(), dot(*c, *c).sqrt());
+            let ok = la > 1e-9
+                && (la - lc).abs() <= 1e-9 * la.max(1.0)
+                && dot(*a, *c).abs() <= 1e-9 * la * lc
+                && dot(*a, *p).abs() <= 1e-9 * la.max(1.0)
+                && dot(*p, *p) > 1e-18;
+            ok.then_some(Helix { radius: la, pitch: *p })
+        });
+        out.extend(found);
+    }
+    Some(out)
+}

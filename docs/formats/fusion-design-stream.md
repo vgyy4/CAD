@@ -1439,3 +1439,29 @@ sides) does not give.
   7071.7657 mm3 (the 2.9542 mm3 of the wedge outside the wall). 2232 now comes in as history.
 * A mirror of faces whose makers are only extrudes stays a mirror of those features (one or several); with blends,
   cuts are not converted (a blended cut tool is no sample's).
+
+### Thread `584D9526` (1145, 3350, 324): all four in the corpus are modeled
+* Record body (after the header): `f64` flank angle in degrees (60), `u8` (1 on the external threads, 0 on the
+  internal ones), four `wstr`: class (`6g`, `6H`), designation (`M16x1`, `M3x0.35`), size (`16.0`), form
+  (`ISO Metric profile`); `u8` internal (0 external, 1 internal); `u32` (2, 1, 2, 2: not understood); `f64` major and
+  minor diameter (cm); `u8` 1; `f64` pitch and pitch diameter (cm). Then the parameter holders `ThreadLength` and
+  `ThreadOffset` when the thread does not run the whole face (1145: 9 mm from 4 mm; 3350 Thread1: 12 mm from 5 mm),
+  a `u8` 1, `u32` count and the face selection (`2CA5A1CD`). No byte was found that tells a modeled thread from a
+  cosmetic one: every one of the four is modeled.
+* Modeled or cosmetic is told by the stored bodies: a modeled thread leaves helix curves (`intcurve` of subtype
+  `helix_int_cur`: root, two perpendicular radius vectors, the pitch vector, then the axis) whose travel per turn is
+  the thread's pitch and whose radius is half its major or minor diameter. 1145's `.smbh` holds two of radius
+  0.7942 cm (major 1.5884 / 2), pitch 0.1 cm, from z = 0.4 cm over 9 turns (the 9 mm from 4 mm); 3350's holds radii
+  0.7942 and 0.73705 (Thread1, external) and 0.80761 (Thread2, internal: major 1.61522 / 2); 324's `.smb` and
+  `.smbh` hold radius 0.15352 cm, pitch 0.035 (Thread2, M3x0.35 internal). The faces also carry a
+  `thread_face_data` attribute.
+* The form, from 3350 Thread1's edges at angle 0: crest edges at z = 0.0125 and 0 cm modulo the pitch (a crest flat
+  of P/8 on the major radius), root edges at 0.067 and 0.0455 (the root flat on the minor radius takes the rest),
+  flanks across 0.033 cm axially for 0.05715 radially (tan 30 degrees).
+* The reader now says which: a thread with no such helix in any stored body is cosmetic and left out of the tree
+  (`skipped`, "a cosmetic thread (...): no helical face of it is stored, it changes no geometry"; the state check
+  then confirms that the stored states have no thread); a modeled one is refused with its designation, class,
+  side, diameters, pitch and extent. Building the form with the helical sweep was not tried: how Fusion ends the
+  thread (the run-out at the offset and at the face's end) is not established, and each of the three designs
+  stops at another feature as well (with the threads left out: 1145 Fillet1, "its edges are on several bodies";
+  3350 Revolve1, "the revolve axis is not a line of its sketch"; 324 Fillet1, edges not resolved, and Split3).

@@ -1400,6 +1400,14 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 o.insert("direction".into(), json!([round9(dir[0]), round9(dir[1]), round9(dir[2])]));
             }
             feats.push(j);
+        } else if c8 == "584D9526" {
+            match super::thread::json(cx, fid, &nm, &fusion_type, class) {
+                Ok(note) => {
+                    skipped.push(json!({"name": name, "fusion_type": fusion_type, "reason": note, "source_id": fid}));
+                    continue;
+                }
+                Err(j) => feats.push(j),
+            }
         } else if c8 == "E8063467" {
             feats.push(shell_json(cx, fid, &nm, &fusion_type, class));
         } else if c8 == "D087EFE5" {
