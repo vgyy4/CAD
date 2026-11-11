@@ -957,6 +957,29 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                     }
                 }
             }
+            // A path drawn in another component's sketch is taken in the sweep's own component
+            // as it lies there (the stored body: the path's coordinates in that sketch's own
+            // component frame, with whatever the occurrences did later). Placed with the
+            // component of the sweep, a copy of the path sketch.
+            if let Some(pid) = j.get("path_source_id").and_then(Value::as_u64) {
+                let path = feats
+                    .iter()
+                    .find(|f| {
+                        f.get("type").and_then(Value::as_str) == Some("sketch")
+                            && f.get("source_id").and_then(Value::as_u64) == Some(pid)
+                    })
+                    .cloned();
+                if let Some(Value::Object(mut c)) = path
+                    && let (Some(theirs), Some(ours)) = (c.get("_component").and_then(Value::as_u64), comp)
+                    && theirs != ours
+                {
+                    let copy = format!("{nm} path");
+                    c.insert("name".into(), copy.clone().into());
+                    c.insert("plane_note".into(), "a sweep path of another component, in the sweep's".into());
+                    j.insert("path".into(), copy.into());
+                    feats.push(Value::Object(c));
+                }
+            }
             let made = op_target(&mut j, &g, d, fid, &names);
             j.insert("creates_bodies".into(), made.into());
             feats.push(Value::Object(j));
