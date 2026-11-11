@@ -1111,3 +1111,131 @@ fn the_whole_body_edits_need_a_version_2_file() {
     let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap();
     assert!(r["skipped_user_text"].to_string().contains("version 2"), "{r}");
 }
+
+// ---- Exact B-spline sketch curves (ADR 0042 amendment) ----
+
+/// The circle of radius `r` around (x, y) as the tree's clamped rational quadratic: nine
+/// poles (the last is the first point again), knots 0 0 0 1 1 2 2 3 3 4 4 4, weights 1, √2/2.
+fn nurbs_circle_sketch(name: &str, plane: Value, x: f64, y: f64, r: f64) -> Value {
+    let q = [[r, 0.0], [r, r], [0.0, r], [-r, r], [-r, 0.0], [-r, -r], [0.0, -r], [r, -r]];
+    let points: Vec<Value> =
+        q.iter().enumerate().map(|(i, p)| json!({"id": format!("q{i}"), "x": x + p[0], "y": y + p[1]})).collect();
+    let h = std::f64::consts::FRAC_1_SQRT_2;
+    json!({
+        "type": "sketch", "name": name, "plane": plane, "points": points,
+        "curves": [{"id": "n", "type": "bspline", "degree": 2,
+                    "knots": [0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4],
+                    "poles": ["q0", "q1", "q2", "q3", "q4", "q5", "q6", "q7", "q0"],
+                    "weights": [1, h, 1, h, 1, h, 1, h, 1], "periodic": false}]
+    })
+}
+
+#[test]
+fn a_nurbs_circle_extrudes_to_a_cylinder() {
+    let (r, v) =
+        import_v2(vec![nurbs_circle_sketch("C", plane_at(0.0), 3.0, -2.0, 5.0), extrude("X", "C", 8.0, "new")]);
+    assert_vol(v, std::f64::consts::PI * 25.0 * 8.0);
+    let _ = r;
+}
+
+#[test]
+fn a_periodic_quadratic_bspline_on_a_flipped_plane_has_its_analytic_area() {
+    // Uniform periodic quadratic over the square of corners (±6, ±6): area 10 a² / 3. On a
+    // plane whose y axis is reversed the poles are mirrored; the region is the same.
+    let a = 6.0;
+    for y_axis in [[0, 1, 0], [0, -1, 0]] {
+        let plane = json!({"origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": y_axis});
+        let sk = json!({
+            "type": "sketch", "name": "P", "plane": plane,
+            "points": [{"id": "a", "x": a, "y": a}, {"id": "b", "x": -a, "y": a},
+                       {"id": "c", "x": -a, "y": -a}, {"id": "d", "x": a, "y": -a}],
+            "curves": [{"id": "s", "type": "bspline", "degree": 2, "knots": [0, 1, 2, 3, 4],
+                        "poles": ["a", "b", "c", "d"], "periodic": true}]
+        });
+        let (_, v) = import_v2(vec![sk, extrude("X", "P", 3.0, "new")]);
+        assert_vol(v, 10.0 * a * a / 3.0 * 3.0);
+    }
+}
+
+#[test]
+fn a_clamped_cubic_closed_by_a_line_extrudes_to_its_area() {
+    // Fusion's typical record: degree 3, four poles, knots 0 0 0 0 1 1 1 1, unit weights.
+    let p = [[0.0, 0.0], [2.0, 6.0], [8.0, 6.0], [10.0, 0.0]];
+    let sk = json!({
+        "type": "sketch", "name": "D", "plane": plane_at(0.0),
+        "points": [{"id": "a", "x": p[0][0], "y": p[0][1]}, {"id": "b", "x": p[1][0], "y": p[1][1]},
+                   {"id": "c", "x": p[2][0], "y": p[2][1]}, {"id": "d", "x": p[3][0], "y": p[3][1]}],
+        "curves": [{"id": "s", "type": "bspline", "degree": 3, "knots": [0, 0, 0, 0, 1, 1, 1, 1],
+                    "poles": ["a", "b", "c", "d"], "weights": [1, 1, 1, 1]},
+                   {"id": "l", "type": "line", "start": "d", "end": "a"}]
+    });
+    // Area under the Bézier y(t) dx(t) from x = 0 to 10: by Simpson on a fine grid.
+    let n = 20000;
+    let bez = |t: f64| {
+        let u = 1.0 - t;
+        let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+        let dw = [-3.0 * u * u, 3.0 * u * u - 6.0 * u * t, 6.0 * u * t - 3.0 * t * t, 3.0 * t * t];
+        let y: f64 = (0..4).map(|i| w[i] * p[i][1]).sum();
+        let dx: f64 = (0..4).map(|i| dw[i] * p[i][0]).sum();
+        y * dx
+    };
+    let h = 1.0 / f64::from(n);
+    let area: f64 = (0..=n)
+        .map(|k| {
+            let c = if k == 0 || k == n {
+                1.0
+            } else if k % 2 == 1 {
+                4.0
+            } else {
+                2.0
+            };
+            c * bez(f64::from(k) * h)
+        })
+        .sum::<f64>()
+        * h
+        / 3.0;
+    let (_, v) = import_v2(vec![sk, extrude("X", "D", 2.0, "new")]);
+    assert_vol(v, area * 2.0);
+}
+
+#[test]
+fn a_shelled_nurbs_cylinder_names_its_span_faces() {
+    // Open at the top: pi r^2 h - pi (r - t)^2 (h - t).
+    let (r, h, t) = (5.0, 8.0, 1.0);
+    let f = vec![
+        nurbs_circle_sketch("C", plane_at(0.0), 0.0, 0.0, r),
+        extrude("X", "C", h, "new"),
+        json!({"type": "shell", "name": "Cup", "faces": [{"point": [0, 0, h], "normal": [0, 0, 1]}],
+               "thickness": t, "side": "inside"}),
+    ];
+    let (mut s, _) = import_v2_session(f);
+    let pi = std::f64::consts::PI;
+    let b = body_of(&mut s, None);
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), pi * r * r * h - pi * (r - t) * (r - t) * (h - t));
+    // One lateral face per knot span, named by the B-spline and the span (`b9_g0` .. `b9_g3`);
+    // the shell's inner faces are named after them.
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("bspline(degree: 2, poles: [p1, p2, p3, p4, p5, p6, p7, p8, p1]"), "{text}");
+    let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({"names": true})).unwrap();
+    let names = b["face_names"].to_string();
+    for g in 0..4 {
+        assert!(names.contains(&format!("/side(C/b9_g{g})\"")), "{names}");
+        assert!(names.contains(&format!("Cup/inner(X_2/side(C/b9_g{g}))")), "{names}");
+    }
+}
+
+#[test]
+fn bad_bsplines_are_skipped_with_a_reason() {
+    for (key, bad) in [
+        ("degree", json!(0)),
+        ("knots", json!([0, 0, 0, 1, 1])),
+        ("weights", json!([1, -1, 1, 1, 1, 1, 1, 1, 1])),
+        ("poles", json!(["q0", "q1", "zz"])),
+        ("knots", json!([0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, "x"])),
+    ] {
+        let mut sk = nurbs_circle_sketch("C", plane_at(0.0), 0.0, 0.0, 5.0);
+        sk["curves"][0][key] = bad.clone();
+        let (_, r) = import_into_session(vec![sk, extrude("X", "C", 1.0, "new")]);
+        assert!(!r["skipped_user_text"].as_array().unwrap().is_empty(), "{key} {bad}: {r}");
+    }
+}

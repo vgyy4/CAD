@@ -113,6 +113,18 @@ struct SkCurve {
     a: Option<f64>,
     #[serde(default)]
     b: Option<f64>,
+    /// B-splines (`type: bspline`): degree, flat knot vector, pole point ids, weights (one per
+    /// pole, or none for a polynomial curve) and periodicity (ADR 0042 amendment).
+    #[serde(default)]
+    degree: Option<u32>,
+    #[serde(default)]
+    knots: Option<Vec<f64>>,
+    #[serde(default)]
+    poles: Option<Vec<String>>,
+    #[serde(default)]
+    weights: Vec<f64>,
+    #[serde(default)]
+    periodic: bool,
     #[serde(default)]
     construction: bool,
 }
@@ -910,13 +922,15 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
     let mut points: HashSet<String> = HashSet::new();
     // Points that an arc runs through keep more digits (see `coord`).
     let fine = if d.coarse { num } else { coord };
-    let on_arc: HashSet<&str> = d
+    let mut on_arc: HashSet<&str> = d
         .curves
         .iter()
         .filter(|c| matches!(c.kind.as_str(), "arc" | "ellipse_arc"))
         .flat_map(|c| [&c.start, &c.end, &c.center])
         .filter_map(|p| p.as_deref())
         .collect();
+    // So do the poles of B-splines (they define an exact curve).
+    on_arc.extend(d.curves.iter().filter_map(|c| c.poles.as_ref()).flatten().map(String::as_str));
     for p in &d.points {
         let id = next("p");
         let [u, v] = map.map(finite(p.x, "a point")?, finite(p.y, "a point")?);
@@ -986,6 +1000,39 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
                     );
                     (id, s)
                 }
+            }
+            "bspline" => {
+                let (Some(degree), Some(knots), Some(poles)) = (c.degree, &c.knots, &c.poles) else {
+                    return Err("a B-spline needs degree, knots and poles".into());
+                };
+                if poles.is_empty() || poles.len() > gusset_doc::MAX_BSPLINE_POLES {
+                    return Err(format!("a B-spline needs 1 to {} poles", gusset_doc::MAX_BSPLINE_POLES));
+                }
+                if knots.len() > poles.len() + gusset_doc::MAX_BSPLINE_DEGREE as usize + 1
+                    || c.weights.len() > poles.len()
+                {
+                    return Err("a B-spline has more knots or weights than its poles allow".into());
+                }
+                for v in knots.iter().chain(&c.weights) {
+                    finite(*v, "a B-spline's knots or weights")?;
+                }
+                let ones = vec![1.0; poles.len()];
+                let w = if c.weights.is_empty() { &ones } else { &c.weights };
+                gusset_sketch::bspline::check(degree as usize, poles.len(), knots, w, c.periodic)?;
+                // Mirrored planes map the poles; knots and weights stay (the curve's direction
+                // of travel does not matter to a region).
+                let ps = poles.iter().map(|q| pid(&map, &Some(q.clone()))).collect::<Result<Vec<_>, _>>()?;
+                let exact = |v: &[f64]| v.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(", ");
+                let w =
+                    if c.weights.is_empty() { String::new() } else { format!(", weights: [{}]", exact(&c.weights)) };
+                let id = next("b");
+                let s = format!(
+                    "  {id} = bspline(degree: {degree}, poles: [{}], knots: [{}]{w}){}",
+                    ps.join(", "),
+                    exact(knots),
+                    if c.periodic { " periodic" } else { "" }
+                );
+                (id, s)
             }
             other => return Err(format!("sketch curve type '{}' is not imported", short(other))),
         };
