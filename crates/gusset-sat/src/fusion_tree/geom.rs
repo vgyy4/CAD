@@ -701,5 +701,30 @@ pub(super) fn interior_point(outer: &[P2], holes: &[&[P2]]) -> Option<P2> {
             break;
         }
     }
+    if best.is_none() {
+        // A region narrower than the grid (a frame 0.4 mm wide around a 121 mm panel): beside
+        // the middle of each edge, at steps inward and outward.
+        let size = (x1 - x0).max(y1 - y0);
+        for (a, b) in &edges {
+            let l = dist(*a, *b);
+            if l <= 0.0 {
+                continue;
+            }
+            let (m, n) = ([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0], [(b[1] - a[1]) / l, (a[0] - b[0]) / l]);
+            for k in 1..=12 {
+                for side in [1.0, -1.0] {
+                    let off = side * size * libm::ldexp(1.0, -k);
+                    let p = [m[0] + n[0] * off, m[1] + n[1] * off];
+                    if !inside(p, outer) || holes.iter().any(|h| inside(p, h)) {
+                        continue;
+                    }
+                    let dmin = edges.iter().map(|(a, b)| seg_dist(p, *a, *b)).fold(f64::INFINITY, f64::min);
+                    if best.is_none_or(|b| dmin > b.0) {
+                        best = Some((dmin, p));
+                    }
+                }
+            }
+        }
+    }
     best.map(|b| b.1)
 }

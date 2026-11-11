@@ -1629,3 +1629,15 @@ fn a_join_of_several_bodies_is_a_join_and_a_combine() {
     super::json::joins_of_several_bodies(&mut feats);
     assert_eq!(feats.len(), 1);
 }
+
+#[test]
+fn a_frame_narrower_than_the_grid_has_an_interior_point() {
+    // 2232 Extrude8: a 121.5 x 76.6 mm rectangle with a hole 0.4 mm inside it.
+    let outer: Vec<geom::P2> = vec![[6.075, -3.83], [6.075, 3.83], [-6.075, 3.83], [-6.075, -3.83]];
+    let hole: Vec<geom::P2> = vec![[-6.035, -3.79], [6.035, -3.79], [6.035, 3.79], [-6.035, 3.79]];
+    let p = geom::interior_point(&outer, &[&hole]).unwrap();
+    assert!(geom::inside(p, &outer) && !geom::inside(p, &hole));
+    // In the middle of the frame's width.
+    let d = (6.075 - p[0].abs()).min(3.83 - p[1].abs());
+    assert!(d > 0.01 && d < 0.03, "{p:?}");
+}
