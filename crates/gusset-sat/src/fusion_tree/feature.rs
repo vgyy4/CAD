@@ -114,6 +114,9 @@ pub(super) struct ExtRaw {
     pub op: u8,
     pub extent: u8,
     pub vec: Option<V3>,
+    /// A symmetric extent's measurement: `Some(true)` where its distance is each side's,
+    /// `Some(false)` where it is the whole length, `None` where it was not found.
+    pub half_length: Option<bool>,
     pub sketch: Option<u64>,
     pub params: Params,
 }
@@ -184,15 +187,52 @@ pub(super) fn extrude_raw(d: &Design, fid: u64) -> Option<ExtRaw> {
     cover::field(rec, s + 4, 4, "extrude.extent");
     cover::skip(rec, s + 8, 6, "extrude.kind-flags");
     let end = s + 14;
-    let vec = (end..end + 40).find_map(|o| {
+    let dir = (end..end + 40).find_map(|o| {
         let v = dbl3(rec, o)?;
         let n = super::geom::norm(v);
         ((n - 1.0).abs() < 1e-6 && v.iter().any(|x| x.abs() > 0.5)).then(|| {
             cover::field(rec, o, 24, "extrude.direction");
-            v
+            (o, v)
         })
     });
-    Some(ExtRaw { op, extent, vec, sketch: profile_sketch_of(d, rec), params: params_of(d, fid) })
+    let half_length = match dir {
+        Some((o, _)) if extent == 3 => symmetric_measure(rec, o + 24),
+        _ => None,
+    };
+    Some(ExtRaw {
+        op,
+        extent,
+        vec: dir.map(|(_, v)| v),
+        half_length,
+        sketch: profile_sketch_of(d, rec),
+        params: params_of(d, fid),
+    })
+}
+
+/// A symmetric extrude's measurement, read after its direction (`from`): a `u32`, 1 for the
+/// whole length and 2 for each side's, followed by zeros (11 bytes in the records with plain
+/// references, none in those with typed ones) and the feature's selection list (`u32 1` and a
+/// reference). Each side's: 6299 Extrude2 (2) (11 mm, its stored tool 22 mm long), 324
+/// Extrude1 and Extrude11 (16.5 and 6 mm, bodies 33 and 12 mm long); the whole length:
+/// 4632 Extrude1 (12.4 mm, its body 12.4 mm long) and the L-Bracket's 110 mm.
+pub(super) fn symmetric_measure(rec: &[u8], from: usize) -> Option<bool> {
+    let tail = rec.get(from..)?;
+    // The selection list: `01 00 00 00`, then a reference `01 <u32 id> 00 00 00 00`.
+    let list = (0..tail.len().min(200)).find(|i| {
+        tail.get(*i..i + 5) == Some(&[1, 0, 0, 0, 1][..]) && tail.get(i + 9..i + 13) == Some(&[0, 0, 0, 0][..])
+    })?;
+    // The zeros before it: the measure's three high bytes and the gap.
+    let zeros = tail.get(..list)?.iter().rev().take_while(|b| **b == 0).count();
+    if !matches!(zeros, 3 | 14) {
+        return None;
+    }
+    let at = list.checked_sub(zeros + 1)?;
+    cover::field(rec, from + at, 4, "extrude.symmetric-measure");
+    match tail.get(at)? {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    }
 }
 
 impl Ctx<'_> {
@@ -288,7 +328,8 @@ impl Ctx<'_> {
             let a = a * sign;
             let s0 = self.extrude_start(fid, &e, &pl, sign).ok()?;
             if e.extent == 3 {
-                (t0, t1) = (Some(s0 - a / 2.0), Some(s0 + a / 2.0));
+                let side = if e.half_length? { a } else { a / 2.0 };
+                (t0, t1) = (Some(s0 - side), Some(s0 + side));
             } else if let (2, Some(ag)) = (e.extent, pget(&e.params, "AgainstDistance").and_then(|p| p.value)) {
                 (t0, t1) = (Some(s0 - ag * sign), Some(s0 + a));
             } else {

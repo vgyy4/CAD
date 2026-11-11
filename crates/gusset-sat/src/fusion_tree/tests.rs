@@ -1265,6 +1265,25 @@ fn an_extrude_that_names_its_target_by_a_typed_reference_is_still_recognised() {
     assert_eq!((e.op, e.extent, e.vec), (2, 1, Some([0.0, 0.0, 1.0])));
 }
 
+#[test]
+fn a_symmetric_extrude_says_whether_its_distance_is_each_sides() {
+    // After the direction: references, the measure (u32), zeros, then the selection list.
+    let rec = |measure: u32, gap: usize| {
+        let mut v = vec![0u8, 1, 0x3c, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        v.extend(le32(measure));
+        v.extend(vec![0; gap]);
+        v.extend([1, 0, 0, 0, 1, 0x35, 1, 0, 0, 0, 0, 0, 0]);
+        v
+    };
+    assert_eq!(feature::symmetric_measure(&rec(1, 11), 0), Some(false));
+    assert_eq!(feature::symmetric_measure(&rec(2, 11), 0), Some(true));
+    assert_eq!(feature::symmetric_measure(&rec(2, 0), 0), Some(true));
+    // Another value, another gap, or no selection list: not read.
+    assert_eq!(feature::symmetric_measure(&rec(3, 0), 0), None);
+    assert_eq!(feature::symmetric_measure(&rec(2, 5), 0), None);
+    assert_eq!(feature::symmetric_measure(&[0; 40], 0), None);
+}
+
 /// A Combine of the body of feature 101 (the tool) into the body of feature 100 (the target),
 /// with the given operation value.
 fn combine_stream(op: u32) -> (Vec<u8>, Vec<u8>) {

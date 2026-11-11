@@ -328,6 +328,20 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         j.insert("distance_expr".into(), a.expr.as_str().into());
     }
     j.insert("symmetric".into(), (e.extent == 3).into());
+    // A symmetric distance is the whole length here: Fusion's may be each side's.
+    match (e.extent, e.half_length) {
+        (3, Some(true)) => {
+            distance = distance.map(|t| 2.0 * t);
+            j.insert("symmetric_measure".into(), "each side's distance, doubled".into());
+        }
+        (3, None) => {
+            j.insert(
+                "error".into(),
+                "whether its symmetric distance is the whole length or each side's is not read".into(),
+            );
+        }
+        _ => {}
+    }
     if let (2, Some(ag)) = (e.extent, against) {
         j.insert("two_sided".into(), true.into());
         j.insert("distance2".into(), ag.value.map_or(Value::Null, |v| (mm(v) * -sign).into()));
