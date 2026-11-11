@@ -55,6 +55,30 @@ fn extrude_box_golden() {
     assert!(close(bb.size()[0], 40.0, 1e-6));
 }
 
+/// A loop that touches itself at a point (a notch whose corner meets the outline, as on a board of
+/// 2348) makes an edge four side faces share: closed and valid, so it builds.
+#[test]
+fn an_outline_touching_itself_at_a_point_extrudes() {
+    let pts = [
+        [0.0, 0.0],
+        [10.0, 0.0],
+        [10.0, 10.0],
+        [0.0, 10.0],
+        [0.0, 7.0],
+        [4.0, 7.0],
+        [4.0, 3.0],
+        [0.1, 3.0],
+        [0.0, 7.0],
+    ];
+    let edges = (0..pts.len())
+        .map(|i| ProfileEdge { seg: Seg2::Line { a: pts[i], b: pts[(i + 1) % pts.len()] }, tag: i as u64 })
+        .collect();
+    let p = Profile { frame: Frame::XY, regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }] };
+    let r = k().extrude(&p, &ExtrudeSpec { distance: 1.5, symmetric: false }).unwrap();
+    let m = k().mass_properties(&r.shape).unwrap();
+    assert!(close(m.volume, (100.0 - 15.8) * 1.5, 1e-9), "{}", m.volume);
+}
+
 #[test]
 fn extrude_with_hole_and_arcs() {
     let mut region = Region2 { outer: rect(40.0, 40.0, 1), holes: vec![] };

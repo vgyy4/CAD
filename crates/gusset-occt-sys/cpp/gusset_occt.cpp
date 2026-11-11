@@ -469,7 +469,18 @@ void check_closed(const TopoDS_Shape& s, const char* what) {
     }
   }
   bool closed = any_solid && !uses.empty();
-  for (int n : uses) closed = closed && n == 2;
+  bool even = closed;
+  for (int n : uses) {
+    closed = closed && n == 2;
+    even = even && n % 2 == 0;
+  }
+  // A loop that touches itself at a point (a notch whose corner meets the outline, 2348's board)
+  // makes an edge four faces share: closed, but not two sides per edge. Such a shape is judged
+  // by the full analyzer instead.
+  if (!closed && even) {
+    check_valid(s, what);
+    return;
+  }
   if (!closed) throw Standard_Failure((std::string(what) + " produced an open or invalid solid").c_str());
 }
 
