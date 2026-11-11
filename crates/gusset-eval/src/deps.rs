@@ -141,7 +141,12 @@ pub(crate) fn graph(doc: &Document) -> Graph {
         } else {
             d.extend(barrier);
             for n in referenced.iter().chain(&a.bodies).chain(std::iter::once(&f.name)) {
-                if let Some(&w) = last_writer.get(n.as_str()) {
+                // A copy of a pattern with `merge: false` (`P_copy2`) that no feature has
+                // changed yet was written by its pattern.
+                let w = last_writer
+                    .get(n.as_str())
+                    .or_else(|| gusset_doc::pattern_copy_of(n).and_then(|(base, _)| last_writer.get(base)));
+                if let Some(&w) = w {
                     d.insert(w);
                 }
             }

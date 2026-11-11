@@ -1239,3 +1239,46 @@ fn bad_bsplines_are_skipped_with_a_reason() {
         assert!(!r["skipped_user_text"].as_array().unwrap().is_empty(), "{key} {bad}: {r}");
     }
 }
+
+// ---- Body patterns that keep their copies apart (ADR 0042 amendment) ----
+
+#[test]
+fn an_unmerged_pattern_leaves_copies_that_later_features_target() {
+    // Three 10 mm cubes 20 mm apart, kept as three bodies: copy 2 is lifted 5 mm, a boss
+    // joined on its new top, copy 1 removed; the original stays where it was.
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "pattern_linear", "name": "Row", "target": "Box", "direction": [1, 0, 0],
+                  "spacing": 20, "count": 3, "merge": false}));
+    f.push(json!({"type": "move_body", "name": "Lift", "target": "Row[2]", "translate": [0, 0, 5]}));
+    f.push(disc("Top", plane_at(15.0), 45.0, 5.0, 2.0));
+    f.push(json!({"type": "extrude", "name": "Boss", "sketch": "Top", "profiles": "all", "distance": 3.0,
+                  "operation": "join", "target": "Row[2]"}));
+    f.push(json!({"type": "remove_body", "name": "Drop", "target": "Row[1]"}));
+    let (mut s, _) = import_v2_session(f);
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("count: 3, spacing: 20 mm, merge: false)"), "{text}");
+    assert!(text.contains("move Lift (body: Row_copy2,") && text.contains("remove Drop (body: Row_copy1)"), "{text}");
+    let orig = body_of(&mut s, Some("Box"));
+    assert_vol(orig["volume_mm3"].as_f64().unwrap(), 1000.0);
+    close3(&orig["centroid_mm"], [5.0, 5.0, 5.0]);
+    let copy = body_of(&mut s, Some("Row_copy2"));
+    assert_vol(copy["volume_mm3"].as_f64().unwrap(), 1000.0 + std::f64::consts::PI * 4.0 * 3.0);
+    assert!((copy["bbox_min_mm"][0].as_f64().unwrap() - 40.0).abs() < 1e-6, "{copy}");
+    assert!((copy["bbox_min_mm"][2].as_f64().unwrap() - 5.0).abs() < 1e-6, "{copy}");
+    let gone = execute(&mut s, &CmdCtx::user(1), "query.body", json!({"body": "Row_copy1"}));
+    assert!(gone.is_err(), "{gone:?}");
+    // A circular one too, and an unmerged pattern of features is refused.
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "pattern_circular", "name": "Ring", "target": "Box",
+                  "axis": {"origin": [-20, 5, 0], "direction": [0, 0, 1]}, "angle": 360, "count": 4, "merge": false}));
+    f.push(json!({"type": "remove_body", "name": "Drop", "target": "Ring[3]"}));
+    let (mut s, _) = import_v2_session(f);
+    for b in ["Box", "Ring_copy1", "Ring_copy2"] {
+        assert_vol(body_of(&mut s, Some(b))["volume_mm3"].as_f64().unwrap(), 1000.0);
+    }
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "pattern_linear", "name": "Row", "features": ["Box"], "direction": [1, 0, 0],
+                  "spacing": 20, "count": 2, "merge": false}));
+    let (_, r) = import_into_session(f);
+    assert!(r["skipped_user_text"].to_string().contains("merge: false"), "{r}");
+}

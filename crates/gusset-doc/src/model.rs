@@ -1496,6 +1496,25 @@ pub struct PatternLinearDef {
     pub features: Vec<String>,
     /// Unify the united copies (the default); `false` keeps the split faces (ADR 0004).
     pub refine: bool,
+    /// Unite the copies with the body (the default); `false` keeps each copy a body of its
+    /// own, named [`pattern_copy_name`] (`Pattern1_copy1` ..), which later features can
+    /// target. Body patterns only.
+    pub merge: bool,
+}
+
+/// The body name of copy `i` (1 to count - 1; the original keeps its name) of a pattern
+/// with `merge: false`.
+pub fn pattern_copy_name(pattern: &str, i: u32) -> String {
+    format!("{pattern}_copy{i}")
+}
+
+/// The pattern and copy number a body name of [`pattern_copy_name`]'s form stands for.
+pub fn pattern_copy_of(body: &str) -> Option<(&str, u32)> {
+    let (base, n) = body.rsplit_once("_copy")?;
+    if base.is_empty() || n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) || n.starts_with('0') {
+        return None;
+    }
+    Some((base, n.parse().ok()?))
 }
 
 /// Repeats a body around an axis and unites the copies with it.
@@ -1514,6 +1533,8 @@ pub struct PatternCircularDef {
     pub features: Vec<String>,
     /// Unify the united copies (the default); `false` keeps the split faces (ADR 0004).
     pub refine: bool,
+    /// See [`PatternLinearDef::merge`].
+    pub merge: bool,
 }
 
 // ------------------------------------------------------------------ datum planes, move, combine

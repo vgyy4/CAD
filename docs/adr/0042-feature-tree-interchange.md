@@ -484,3 +484,22 @@ the sketch's frame, as for every other point), then
 (all 69 decoded records are clamped with `knots = poles + degree + 1`, so `periodic` is false;
 a record whose first and last control points coincide is a closed curve and should reuse the
 first point's id as its last pole so the region closes exactly).
+
+## Amendment (2026-11-11): body patterns whose copies stay separate bodies
+
+`pattern_linear` and `pattern_circular` of a body take `"merge": false` (default `true`):
+Fusion's and Onshape's patterns of bodies make one new body per copy. Copy `i` (1 to
+`count - 1`, in the order of the pattern's instances; the original is instance 0 and keeps
+its own name) is then the body `"<pattern name>[i]"` for every later `target` (extrude
+join/cut, `combine` target and tools, `move_body`, `scale_body`, `remove_body`, patterns,
+mirrors):
+
+```json
+{ "type": "pattern_linear", "name": "Row", "target": "Box", "direction": [1, 0, 0],
+  "spacing": 20, "count": 3, "merge": false },
+{ "type": "move_body", "name": "Lift", "target": "Row[2]", "translate": [0, 0, 5] }
+```
+
+Gusset writes `merge: false` and names the copies `Row_copy1`, `Row_copy2` (ADR 0004
+amendment of the same date). `"merge": false` on a pattern of `features` skips it with the
+reason.

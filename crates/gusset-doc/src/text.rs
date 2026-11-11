@@ -648,6 +648,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             if !d.refine {
                 args.push("refine: false".into());
             }
+            if !d.merge {
+                args.push("merge: false".into());
+            }
         }
         FeatureKind::PatternCircular(d) => {
             push_body(&mut args, &d.body);
@@ -660,6 +663,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             push_features(&mut args, &d.features);
             if !d.refine {
                 args.push("refine: false".into());
+            }
+            if !d.merge {
+                args.push("merge: false".into());
             }
         }
         FeatureKind::CamJob(d) => {
@@ -1376,6 +1382,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
     let mut thickness = None;
     let mut plane = None;
     let mut merge = false;
+    let mut pattern_merge = true;
     let mut refine = true;
     let mut flip = false;
     let mut rules = true;
@@ -1391,8 +1398,8 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
         "offset_face" => "body, faces, distance, rules, label, group, suppressed",
         "delete_face" => "body, faces, label, group, suppressed",
         "mirror" => "body, plane, merge, refine, label, group, suppressed",
-        "pattern_linear" => "body, direction, count, spacing, features, refine, label, group, suppressed",
-        _ => "body, axis, through, count, angle, features, refine, label, group, suppressed",
+        "pattern_linear" => "body, direction, count, spacing, features, refine, merge, label, group, suppressed",
+        _ => "body, axis, through, count, angle, features, refine, merge, label, group, suppressed",
     };
     parse_args(c, |key, c| {
         match (kw, key) {
@@ -1406,6 +1413,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             ("draft", "flip") => flip = parse_bool(c)?,
             ("offset_face", "rules") => rules = parse_bool(c)?,
             ("mirror", "merge") => merge = parse_bool(c)?,
+            ("pattern_linear" | "pattern_circular", "merge") => pattern_merge = parse_bool(c)?,
             ("mirror" | "pattern_linear" | "pattern_circular", "refine") => refine = parse_bool(c)?,
             ("pattern_linear", "direction") | ("pattern_circular", "axis") => dir = Some(parse_dir(c)?),
             ("pattern_circular", "through") => {
@@ -1461,6 +1469,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             spacing: spacing.ok_or_else(|| missing(c, kw, "spacing"))?,
             features: std::mem::take(&mut features),
             refine,
+            merge: pattern_merge,
         }),
         _ => FeatureKind::PatternCircular(PatternCircularDef {
             body,
@@ -1470,6 +1479,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             angle: angle.ok_or_else(|| missing(c, kw, "angle"))?,
             features,
             refine,
+            merge: pattern_merge,
         }),
     };
     Ok(Feature { name, label, note: None, group, suppressed, kind })

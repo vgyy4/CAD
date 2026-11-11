@@ -62,6 +62,10 @@ pub(super) struct PatternF {
     /// `false` keeps the united copies' split faces (FreeCAD's `Refine = false`, ADR 0042).
     #[serde(default = "refine_default")]
     refine: bool,
+    /// `false` keeps every copy a body of its own; copy `i` (1 to count - 1) is then the
+    /// body `<name>[i]` for later features (ADR 0042 amendment).
+    #[serde(default = "refine_default")]
+    merge: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -545,14 +549,28 @@ pub(super) fn pattern(g: &mut Gen, s: &Session, d: &PatternF, circular: bool) ->
         }
         args.push(format!("features: [{}]", names.join(", ")));
     }
+    if !d.merge && !d.features.is_empty() {
+        return Err("merge: false applies to a pattern of a body, not of features".into());
+    }
     let name = g.fresh(&d.name, "Pattern");
     if !d.refine {
         args.push("refine: false".into());
+    }
+    if !d.merge {
+        args.push("merge: false".into());
     }
     let kw = if circular { "pattern_circular" } else { "pattern_linear" };
     let _ = writeln!(g.text, "\n{kw} {name} ({})", args.join(", "));
     builds(g, s, &name)?;
     g.made.push(name.clone());
+    if !d.merge {
+        // The copies' bodies, by the tree's names `<name>[i]`; their Gusset names are taken.
+        for i in 1..d.count {
+            let copy = gusset_doc::pattern_copy_name(&name, i);
+            g.taken.insert(copy.to_ascii_lowercase());
+            g.features.insert(format!("{}[{i}]", d.name), copy);
+        }
+    }
     g.features.insert(d.name.clone(), name);
     Ok(())
 }

@@ -9,6 +9,9 @@ refuses tag pushes); the tag triggers the release workflow after the milestone r
 Phase 3 has started (see Next).
 
 ## Done
+- Body patterns that keep their copies apart (2026-11-11): `merge: false` on
+  `pattern_linear` / `pattern_circular` makes copy `i` a body `<pattern>_copy<i>` that later
+  features target; tree import `"merge": false` with copies `<name>[i]` (ADRs 0004, 0042).
 - Exact (rational) B-spline sketch curves (2026-11-11), end to end: `Geom::BSpline` (degree
   1 to 9, flat knots, poles that are sketch points, weights, periodic) cut by blossoming into
   rational Bézier spans that the spline machinery (crossings, areas, windings) runs on;

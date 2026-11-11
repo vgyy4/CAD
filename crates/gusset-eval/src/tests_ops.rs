@@ -211,3 +211,57 @@ fn failures_block_dependents() {
     assert!(matches!(r.status("Extrude1"), Some(FeatureStatus::Failed(_))));
     assert!(matches!(r.status("P"), Some(FeatureStatus::Failed(_) | FeatureStatus::Blocked { .. })));
 }
+
+/// `merge: false` keeps each copy a body of its own (`P_copy1`, `P_copy2`) that later features
+/// target by name; the original body is untouched; edits re-run what depends on a copy.
+#[test]
+fn an_unmerged_pattern_keeps_its_copies_as_bodies() {
+    let (ev, r) = run("pattern_linear P (direction: X, count: n, spacing: pitch, merge: false)\n\
+                       move M (body: P_copy2, translate: [0 mm, 0 mm, 5 mm])\n\
+                       remove R (body: P_copy1)");
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let names: Vec<&str> = r.bodies.iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(names, ["Extrude1", "P_copy2"]);
+    assert!((volume(&ev, &r, "Extrude1") - 8000.0).abs() < 1e-9);
+    assert!((volume(&ev, &r, "P_copy2") - 8000.0).abs() < 1e-9);
+    let b = ev.kernel().bbox(&r.body("P_copy2").unwrap().shape).unwrap();
+    assert!((b.min[0] - 120.0).abs() < 1e-9 && (b.min[2] - 5.0).abs() < 1e-9, "{b:?}");
+    // The copy's faces are named as pattern instances, apart from the original's.
+    let (orig, copy) = (face_names(&r, "Extrude1"), face_names(&r, "P_copy2"));
+    assert!(copy.iter().all(|c| !orig.contains(c)), "{copy:?}");
+    // The dependency graph sends a change of the pattern to the features using its copies.
+    let doc = Document::from_text(&format!(
+        "{BASE}\npattern_linear P (direction: X, count: n, spacing: pitch, merge: false)\n\
+         move M (body: P_copy2, translate: [0 mm, 0 mm, 5 mm])\n"
+    ))
+    .unwrap();
+    let g = crate::deps::graph(&doc);
+    let (p, m) = (doc.features.iter().position(|f| f.name == "P").unwrap(), doc.features.len() - 1);
+    assert!(g.deps[m].contains(&p), "{:?}", g.deps);
+    // Too high a copy number is an unknown body; a copy is not a feature name; a pattern of
+    // features cannot leave copies apart.
+    let (_, r) = run("pattern_linear P (direction: X, count: 2, spacing: pitch, merge: false)\n\
+                      move M (body: P_copy2, translate: [0 mm, 0 mm, 5 mm])");
+    assert!(r.errors().iter().any(|e| e.feature == "M" && e.message.contains("P_copy2")), "{:?}", r.errors());
+    for (extra, why) in [
+        (
+            "pattern_linear P (direction: X, count: 2, spacing: pitch, merge: false)\n\
+             move P_copy1 (translate: [1 mm, 0 mm, 0 mm])",
+            "copy of pattern 'P'",
+        ),
+        (
+            "pattern_linear P (direction: X, count: 2, spacing: pitch, features: [Extrude1], merge: false)",
+            "merge: false",
+        ),
+        ("move M (body: Q_copy1, translate: [1 mm, 0 mm, 0 mm])", "Q_copy1"),
+    ] {
+        let doc = gusset_doc::text::parse(&format!("{BASE}\n{extra}\n")).unwrap();
+        let issues = gusset_doc::validate::validate(&doc);
+        assert!(issues.iter().any(|i| i.to_string().contains(why)), "{why}: {issues:?}");
+    }
+    let doc =
+        Document::from_text(&format!("{BASE}\npattern_circular P (axis: Z, count: 4, angle: 360 deg, merge: false)\n"))
+            .unwrap();
+    assert_eq!(Document::from_text(&doc.to_text()).unwrap(), doc);
+    assert!(doc.to_text().contains("angle: 360 deg, merge: false)"), "{}", doc.to_text());
+}

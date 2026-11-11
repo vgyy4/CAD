@@ -306,3 +306,17 @@ per-segment tags of splines: each knot span is one profile edge tagged
 `with_segment(tag, span)`, so the lateral faces of an extruded B-spline are named
 `Extrude1/side(Sketch1/b9_g0)`, `..._g1`, ... (ADR 0003). No `sketch.add_bspline` command and
 no GUI tool yet: B-splines come from importers and the code view.
+
+## Amendment (2026-11-11): body patterns that keep their copies apart
+`pattern_linear` and `pattern_circular` take `merge: false` (default `true`, printed only when
+false): the body is not changed and copy `i` (1 to count - 1) becomes a body of its own whose
+name and feature are `<pattern>_copy<i>` (`gusset_doc::pattern_copy_name`; parsed back by
+`pattern_copy_of`). Later features target it like any body (`body: Pattern1_copy2`, also
+`combine` tools and `remove`); its faces keep the instance names of patterned faces (ADR
+0003 `OpContext::Instance`), so they differ from the original's. Validation: a body reference
+`<P>_copy<i>` is known when `P` is an earlier pattern with `merge: false` (a copy number past
+the count is reported at evaluation: "body 'P_copy5' does not exist"); no feature may be named
+like a copy of such a pattern; `merge: false` with `features:` is refused. Dependencies
+(gusset-eval `deps.rs`): a copy no feature has changed yet was written by its pattern. The
+`pattern_linear` / `pattern_circular` commands keep merging (no new parameter: MCP tool
+budget); the code view and tree import write `merge: false`.

@@ -189,10 +189,22 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
         if seen.contains_key(n) {
             out.push(issue_h(n, "feature name is used twice", "feature names must be unique"));
         }
+        // A copy of a pattern with `merge: false` is a body of its own (`Pattern1_copy2`).
+        let unmerged = |f: &Feature| match &f.kind {
+            FeatureKind::PatternLinear(d) => !d.merge,
+            FeatureKind::PatternCircular(d) => !d.merge,
+            _ => false,
+        };
+        if let Some((base, _)) = pattern_copy_of(n)
+            && doc.features.iter().any(|g| g.name == base && unmerged(g))
+        {
+            out.push(issue_h(n, format!("the name is that of a copy of pattern '{base}'"), "rename the feature"));
+        }
         for dep in f.kind.dependencies() {
+            let copy_of = pattern_copy_of(&dep).and_then(|(base, _)| seen.get(base)).is_some_and(|g| unmerged(g));
             if dep == n {
                 out.push(issue(n, "feature refers to itself"));
-            } else if !seen.contains_key(dep.as_str()) {
+            } else if !seen.contains_key(dep.as_str()) && !copy_of {
                 let later = doc.features.iter().any(|g| g.name == dep);
                 out.push(if later {
                     issue_h(
@@ -318,9 +330,11 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
             }
             FeatureKind::PatternLinear(d) => {
                 check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
+                check_pattern_merge(n, d.merge, &d.features, &mut out);
             }
             FeatureKind::PatternCircular(d) => {
                 check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
+                check_pattern_merge(n, d.merge, &d.features, &mut out);
             }
             FeatureKind::CamJob(d) => {
                 match seen.get(d.sketch.as_str()) {
@@ -917,6 +931,17 @@ fn check_body_target(
             out.push(issue_h(n, "there is no body to work on", "create a body first, for example with extrude"));
         }
         None => {}
+    }
+}
+
+/// `merge: false` keeps the copies of a body apart; a feature pattern has no copies to keep.
+fn check_pattern_merge(n: &str, merge: bool, features: &[String], out: &mut Vec<Issue>) {
+    if !merge && !features.is_empty() {
+        out.push(issue_h(
+            n,
+            "merge: false applies to a pattern of a body, not of features",
+            "remove merge: false, or pattern the body instead of its features",
+        ));
     }
 }
 

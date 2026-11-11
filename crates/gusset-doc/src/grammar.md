@@ -555,7 +555,10 @@ text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length
   `features: [<feature>, ...]` repeats only those features instead: what each one added to or
   cut from its body is copied and applied to that body (a row of holes, a ring of bosses).
   `mirror` (with `merge`), `pattern_linear` and `pattern_circular` take `refine: false` like
-  extrude: the united copies keep their seams (see "Features").
+  extrude: the united copies keep their seams (see "Features"). A body pattern with
+  `merge: false` leaves the copies apart: copy `i` (1 to count - 1; the original keeps its
+  name) is a body of its own named `<Pattern>_copy<i>`, which later features take as
+  `body: Pattern1_copy2` (no feature may have such a name).
 - `draft (faces: [<face>], plane: <plane>, angle: <angle>, [flip: true])` tapers faces for
   molding: each face turns by `angle` about its line on the neutral `plane`, leaning inward
   along the pull direction (the part narrows that way; a negative angle leans it outward).

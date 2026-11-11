@@ -690,6 +690,7 @@ impl Command for PatternLinear {
                         spacing,
                         features,
                         refine: true,
+                        merge: true,
                     }),
                 ),
             );
@@ -754,6 +755,7 @@ impl Command for PatternCircular {
                         angle,
                         features,
                         refine: true,
+                        merge: true,
                     }),
                 ),
             );

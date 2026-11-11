@@ -343,7 +343,7 @@ impl Evaluator {
         if !d.features.is_empty() {
             return self.run_feature_pattern(s, name, &d.features, &moves, d.refine);
         }
-        self.run_pattern(s, name, d.body.as_deref(), &moves, d.refine)
+        self.run_pattern(s, name, d.body.as_deref(), &moves, d.refine, d.merge)
     }
 
     pub(crate) fn run_pattern_circular(
@@ -371,7 +371,7 @@ impl Evaluator {
         if !d.features.is_empty() {
             return self.run_feature_pattern(s, name, &d.features, &turns, d.refine);
         }
-        self.run_pattern(s, name, d.body.as_deref(), &turns, d.refine)
+        self.run_pattern(s, name, d.body.as_deref(), &turns, d.refine, d.merge)
     }
 
     /// Repeats features instead of a body: what each one removed from its body (before minus
@@ -478,7 +478,8 @@ impl Evaluator {
         Ok(())
     }
 
-    /// Copies the target body once per transform and unites all copies with it.
+    /// Copies the target body once per transform and unites all copies with it, or, without
+    /// `merge`, adds each copy as a body of its own named `<pattern>_copy<i>`.
     fn run_pattern(
         &self,
         s: &mut State,
@@ -486,6 +487,7 @@ impl Evaluator {
         body: Option<&str>,
         transforms: &[Transform],
         refine: bool,
+        merge: bool,
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
         let (bi, body) = target_body(s, name, body)?;
@@ -503,7 +505,23 @@ impl Evaluator {
                 &ctopo,
             )
             .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
+            if !merge {
+                let copy_name = gusset_doc::pattern_copy_name(name, inst_no);
+                s.bodies.push(Arc::new(Body {
+                    name: copy_name.clone(),
+                    feature: copy_name,
+                    shape: copy.shape,
+                    names: cnames,
+                    topology: ctopo,
+                    holes: Vec::new(),
+                    sheet: None,
+                }));
+                continue;
+            }
             copies.push(Tool { shape: copy.shape, names: cnames });
+        }
+        if !merge {
+            return Ok(());
         }
         let (shape, names, topo) =
             self.unite(name, &body.shape, &body.names, &copies, |i| format!("instance {}: ", i + 1), refine)?;
