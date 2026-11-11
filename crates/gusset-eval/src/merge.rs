@@ -231,6 +231,61 @@ pub(crate) fn merge_touching(regions: Vec<Region2>, ids: Vec<String>) -> (Vec<Re
 }
 
 /// One region from the edges of several: every edge two of them have drops out.
+/// The one segment two consecutive pieces of an entity make: a line on through a cut, or an
+/// arc on around the same centre. `None` when they bend there.
+fn joined(x: &ProfileEdge, y: &ProfileEdge) -> Option<ProfileEdge> {
+    if x.tag != y.tag {
+        return None;
+    }
+    let seg = match (x.seg, y.seg) {
+        (Seg2::Line { a, b }, Seg2::Line { a: c, b: d }) if near(b, c) => {
+            let (u, v) = ([b[0] - a[0], b[1] - a[1]], [d[0] - c[0], d[1] - c[1]]);
+            let (lu, lv) = (libm::hypot(u[0], u[1]), libm::hypot(v[0], v[1]));
+            let cross = (u[0] * v[1] - u[1] * v[0]) / (lu * lv);
+            let dot = u[0] * v[0] + u[1] * v[1];
+            (lu > EPS && lv > EPS && cross.abs() <= EPS && dot > 0.0).then_some(Seg2::Line { a, b: d })?
+        }
+        (Seg2::Arc { center, start, end, ccw }, Seg2::Arc { center: c, start: s, end: e, ccw: w })
+            if near(center, c) && near(end, s) && ccw == w && !near(start, e) =>
+        {
+            Seg2::Arc { center, start, end: e, ccw }
+        }
+        _ => return None,
+    };
+    Some(ProfileEdge { seg, tag: x.tag })
+}
+
+/// Joins the pieces of one entity that follow each other in a united outline: the curve that
+/// cut them there was a shared edge and dropped out, so they are one edge again (one wall when
+/// swept, as in the source; two walls left the edge between them split).
+fn join_pieces(l: &mut Loop2) {
+    let mut k = 0;
+    while l.edges.len() > 1 && k < l.edges.len() {
+        let next = (k + 1) % l.edges.len();
+        let one = match (l.edges.get(k), l.edges.get(next)) {
+            (Some(x), Some(y)) => joined(x, y),
+            _ => None,
+        };
+        match one {
+            Some(e) if next > k => {
+                if let Some(slot) = l.edges.get_mut(k) {
+                    *slot = e;
+                }
+                l.edges.remove(next);
+            }
+            Some(e) => {
+                // The last piece runs on into the first: the loop starts at the joined edge.
+                l.edges.remove(k);
+                if let Some(slot) = l.edges.get_mut(0) {
+                    *slot = e;
+                }
+                break;
+            }
+            None => k += 1,
+        }
+    }
+}
+
 fn unite(members: &[usize], edges: &[Vec<ProfileEdge>]) -> Option<Region2> {
     let mut left: Vec<ProfileEdge> = Vec::new();
     let mut total = 0.0;
@@ -251,6 +306,9 @@ fn unite(members: &[usize], edges: &[Vec<ProfileEdge>]) -> Option<Region2> {
         total += 2.0 * biggest - own.iter().map(loop_area).sum::<f64>();
     }
     let mut loops = chain(left)?;
+    for l in &mut loops {
+        join_pieces(l);
+    }
     // The outline is the largest loop; the others are holes in it.
     let at = (0..loops.len()).max_by(|a, b| {
         let (x, y) = (loops.get(*a).map_or(0.0, loop_area), loops.get(*b).map_or(0.0, loop_area));
@@ -297,12 +355,19 @@ mod tests {
         assert_eq!(ids, vec!["r0"]);
         let [one] = regions.as_slice() else { panic!("one region") };
         assert!(one.holes.is_empty());
-        assert_eq!(one.outer.edges.len(), 6);
+        // The two pieces of curve 1 (and of curve 3) are one edge again: the wall that cut them
+        // dropped out.
+        assert_eq!(one.outer.edges.len(), 4);
         assert!(one.outer.edges.iter().all(|e| e.tag != 9));
+        for tag in [1, 3] {
+            let e = one.outer.edges.iter().find(|e| e.tag == tag).unwrap();
+            let (a, b) = ends(&e.seg).unwrap();
+            assert!((a[0] - b[0]).abs() > 4.0 - 1e-12, "{a:?} {b:?}");
+        }
         assert!((loop_area(&one.outer) - 8.0).abs() < 1e-12);
         // The loop is closed and ordered: each edge starts where the one before ends.
         for (k, e) in one.outer.edges.iter().enumerate() {
-            let next = &one.outer.edges[(k + 1) % 6];
+            let next = &one.outer.edges[(k + 1) % 4];
             assert!(near(ends(&e.seg).unwrap().1, ends(&next.seg).unwrap().0));
         }
     }
@@ -338,7 +403,7 @@ mod tests {
     #[test]
     fn three_in_a_row_and_one_apart_give_two_regions_and_a_hole_survives() {
         // Three cells in a row (walls 8 and 9) around nothing, a fourth far away; the middle cell
-        // has a hole of its own.
+        // has a hole of its own. The pieces of curves 1 and 3 are joined: the outline has four edges.
         let a = rect((0.0, 1.0), (0.0, 1.0), [1, 8, 3, 4]);
         let mut b = rect((1.0, 2.0), (0.0, 1.0), [1, 9, 3, 8]);
         b.holes
@@ -348,7 +413,7 @@ mod tests {
         let (regions, ids) = merge_touching(vec![a, far.clone(), b, c], names(4));
         assert_eq!(ids, vec!["r0", "r1"]);
         assert_eq!(regions[1], far);
-        assert_eq!(regions[0].outer.edges.len(), 8);
+        assert_eq!(regions[0].outer.edges.len(), 4);
         assert_eq!(regions[0].holes.len(), 1);
     }
 
