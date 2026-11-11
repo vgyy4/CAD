@@ -286,7 +286,13 @@ impl Ctx<'_> {
     /// The value (cm) and edge recipes of each radius/distance set of a fillet/chamfer.
     fn blend_groups(&self, fid: u64, names: &[&str]) -> Vec<(Option<f64>, Vec<u64>)> {
         let d = self.d;
-        let sets: Vec<u64> = ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "4A557CE2")).collect();
+        // A set names a selection that names the feature back. (The edge numbers of a 2025
+        // chamfer, `01 00` and a `u64`, read like references to the objects 512, 768, ...: a
+        // set of another feature among them is not this one's.)
+        let own = |q: &u64| {
+            ref_ids(d, d.rec(*q)).into_iter().any(|s| d.is(s, "2CA5A1CD") && ref_ids(d, d.rec(s)).contains(&fid))
+        };
+        let sets: Vec<u64> = ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "4A557CE2") && own(q)).collect();
         if sets.is_empty() {
             vec![(param_values(d, fid, names).first().copied(), self.input_recipes(fid))]
         } else {
