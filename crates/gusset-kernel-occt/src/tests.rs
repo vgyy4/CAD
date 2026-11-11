@@ -1799,6 +1799,19 @@ fn fillet_of_an_arc_that_takes_its_whole_face() {
 }
 
 #[test]
+fn chamfer_around_a_block_as_high_as_the_chamfer() {
+    // A 1 mm chamfer around the top of a 10 x 4 x 1 block: a frustum (prismatoid volume).
+    let b = plain_box(10.0, 4.0, 1.0);
+    let t = k().topology(&b.shape).unwrap();
+    let top: Vec<u32> =
+        (0..t.edges.len()).filter(|&i| (t.edges[i].midpoint[2] - 1.0).abs() < 1e-9).map(|i| i as u32).collect();
+    assert_eq!(top.len(), 4);
+    let c = k().chamfer(&b.shape, &top, 1.0).unwrap();
+    let m = k().mass_properties(&c.shape).unwrap();
+    assert!(close(m.volume, (40.0 + 16.0 + 4.0 * 27.0) / 6.0, 1e-7), "{}", m.volume);
+}
+
+#[test]
 fn chamfer_that_takes_a_whole_face() {
     // A 1 mm disc: a 1 mm chamfer of its bottom rim leaves no cylinder below the top rim.
     let disc = Profile {

@@ -1826,6 +1826,8 @@ bool outward_normal(const TopoDS_Face& f, const gp_Pnt& p, gp_Dir& n) {
 struct Corner {
   TopoDS_Shape cutter;
   double ideal = 0;
+  // The corner alone, as a solid (`ideal` is its volume).
+  TopoDS_Shape exact;
   TopoDS_Shape face;
   // A concave edge: the blend fills the corner (the tool is added, not cut).
   bool concave = false;
@@ -1962,6 +1964,7 @@ bool plane_cylinder_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Fa
   const ShapeList& g = mk.Generated(blend);
   if (!g.IsEmpty()) out.face = g.First();
   if (signed_volume(out.cutter) < 0) out.cutter.Reverse();
+  out.exact = out.cutter;
   out.ideal = std::fabs(signed_volume(out.cutter));
   out.concave = true;
   return !out.face.IsNull() && out.ideal > 0;
@@ -2117,6 +2120,8 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
       exact = cm.Shape();
     }
   }
+  if (signed_volume(exact) < 0) exact.Reverse();
+  out.exact = exact;
   out.ideal = std::fabs(signed_volume(exact));
   auto [fc, bc] = section(true);
   out.cutter = solid_of(fc, bc, out.face);
@@ -2146,6 +2151,25 @@ int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const s
   const bool concave = !cs.empty() && cs.front().concave;
   for (const auto& c : cs)
     if (c.concave != concave) return fail("convex and concave corners");
+  // Chamfers of edges that meet at a corner of the body overlap there (258 Chamfer1 around the
+  // top of a block): the material removed must be the union's volume, and corners of edges
+  // that do not meet must not overlap at all (a blend wider than its face is refused).
+  if (!fillet && cs.size() > 1 && cs.size() <= 32) {
+    for (size_t i = 0; i < cs.size(); ++i)
+      for (size_t j = i + 1; j < cs.size(); ++j) {
+        TopoDS_Vertex v;
+        if (TopExp::CommonVertex(es[i].e, es[j].e, v)) continue;
+        BRepAlgoAPI_Common cm(cs[i].exact, cs[j].exact);
+        if (!cm.IsDone() || std::fabs(signed_volume(cm.Shape())) > 1e-9 * std::max(1.0, ideal))
+          return fail("the corners of edges that do not meet overlap");
+      }
+    ShapeList first, rest;
+    first.Append(cs.front().exact);
+    for (size_t i = 1; i < cs.size(); ++i) rest.Append(cs[i].exact);
+    auto u = run_boolean_checked(GS_BOOL_UNION, first, rest);
+    if (u->Shape().IsNull()) return fail("no union of the corners");
+    ideal = std::fabs(signed_volume(u->Shape()));
+  }
   auto b = run_boolean_checked(concave ? GS_BOOL_UNION : GS_BOOL_CUT, args, tools);
   TopoDS_Shape result = b->Shape();
   if (result.IsNull()) return fail("no result");
