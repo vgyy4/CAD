@@ -2297,6 +2297,20 @@ fn fusion_explain_placed(
     let mut joined: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let adds = |k: usize| vols.get(k).zip(k.checked_sub(1).and_then(|p| vols.get(p))).is_some_and(|(a, b)| a > b);
     let mut explained: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    // The volume of the bodies feature `k` leaves different, as they are after it.
+    let changed_after = |k: usize| -> f64 {
+        let mut before: Vec<f64> = k.checked_sub(1).and_then(|p| per_body.get(p)).cloned().unwrap_or_default();
+        let mut sum = 0.0;
+        for b in per_body.get(k).map_or(&[][..], Vec::as_slice) {
+            match before.iter().position(|x| same(*x, *b)) {
+                Some(at) => {
+                    before.swap_remove(at);
+                }
+                None => sum += *b,
+            }
+        }
+        sum
+    };
     // A cut of several loops stores a tool per loop: one tool times its loops explains it only
     // where the file stores that many tools of that volume (4313: 43 times its 1.2331 mm3 header
     // hole is within the tolerance of the 53.0222 mm3 that its 11 header holes, 4 mounting holes
@@ -2397,6 +2411,29 @@ fn fusion_explain_placed(
             let all: Vec<usize> = (0..tool_volumes.len()).filter(|i| !covered.contains(i)).collect();
             if all.is_empty() {
                 break;
+            }
+            if copies(k).is_none() && delta(k) > 1e-9 && !explained.contains(&k) {
+                // A feature that keeps only what lies in its tool (an intersect, 610's Revolve1):
+                // the one tool that holds of the bodies it changes, before and after, exactly
+                // what they are after it.
+                let kept = changed_after(k);
+                let removes = vols.get(k).zip(vols.get(k - 1)).is_some_and(|(a, b)| a < b);
+                let all_at: Vec<usize> = all.iter().filter_map(|i| tool_at.get(*i).copied()).collect();
+                if removes && kept > 1e-9 && all.len() <= MAX_FUSION_PLACED_TOOLS {
+                    if let Some(parts) = inside(k, &all_at)?.filter(|parts| parts.len() == all_at.len()) {
+                        let mine: Vec<usize> = all
+                            .iter()
+                            .zip(&parts)
+                            .filter(|(_, [before, after])| same(*before, kept) && same(*after, kept))
+                            .map(|(i, _)| *i)
+                            .collect();
+                        if let [one] = mine.as_slice() {
+                            covered.insert(*one);
+                            explained.insert(k);
+                        }
+                    }
+                }
+                continue;
             }
             let Some(m) = copies(k) else { continue };
             if delta(k) <= 1e-9 || explained.contains(&k) {
@@ -4334,6 +4371,42 @@ mod fusion_steps_tests {
             finished: &[],
         };
         assert!(fusion_explain_placed(&bad, &mut inside, &mut firsts).is_err());
+    }
+
+    #[test]
+    fn an_intersects_tool_holds_what_the_body_keeps() {
+        // A plate, a part, and a revolve that keeps the part's 12 mm3 inside its 30 mm3 tool.
+        let t = vec![
+            json!({"type": "extrude", "name": "Plate", "operation": "new"}),
+            json!({"type": "extrude", "name": "Part", "operation": "new"}),
+            json!({"type": "revolve", "name": "Revolve1", "operation": "intersect"}),
+        ];
+        let per_body = vec![vec![], vec![100.0], vec![100.0, 20.0], vec![100.0, 12.0]];
+        let vols = [0.0, 100.0, 120.0, 112.0];
+        let stored = [100.0, 20.0, 30.0];
+        let (insts, loose, names_) = (fusion_instances(&t), fusion_loose(&t), names(&t));
+        let steps = FusionSteps {
+            vols: &vols,
+            per_body: &per_body,
+            per_solid: &[],
+            stored: &stored,
+            insts: &insts,
+            loose: &loose,
+            names: &names_,
+            ends: &[100.0, 12.0],
+            finished: &[],
+        };
+        let check = |part: [f64; 2]| {
+            let mut inside = |k: usize, tools: &[usize]| -> Result<Option<Vec<[f64; 2]>>, String> {
+                Ok(Some(tools.iter().map(|_| if k == 3 { part } else { [0.0, 0.0] }).collect()))
+            };
+            fusion_explain_placed(&steps, &mut inside, &mut |_, tools| Ok(tools.to_vec())).map(|(states, _)| states)
+        };
+        // The tool holds the 12 mm3 the part keeps, before and after: explained.
+        assert_eq!(check([12.0, 12.0]), Ok(2));
+        // A tool that holds more of the part than it keeps, or not all of what it keeps: not.
+        assert!(check([14.0, 12.0]).unwrap_err().contains("neither a state"));
+        assert!(check([12.0, 11.0]).unwrap_err().contains("neither a state"));
     }
 
     #[test]
