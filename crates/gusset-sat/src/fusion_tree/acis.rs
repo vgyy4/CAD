@@ -204,13 +204,15 @@ pub(super) fn body_edges(b: &[u8]) -> Option<Vec<Vec<Edge>>> {
 #[derive(Debug)]
 pub(super) struct TaggedFace {
     pub tag: String,
+    /// The face's whole name (generators and their operation ids), where the attribute has one.
+    pub name: Option<Name>,
     pub verts: Vec<V3>,
 }
 
 pub(super) fn tagged_faces(b: &[u8]) -> Option<Vec<TaggedFace>> {
     let recs = records(b)?;
     let vpt = vertex_points(&recs);
-    let mut tag: HashMap<usize, String> = HashMap::new();
+    let mut tag: HashMap<usize, (String, Option<Name>)> = HashMap::new();
     for r in &recs {
         if !r.ty.contains("attrib") || r.strs.first().map(String::as_str) != Some("generic_tag_attrib_def") {
             continue;
@@ -223,7 +225,7 @@ pub(super) fn tagged_faces(b: &[u8]) -> Option<Vec<TaggedFace>> {
         if let (Some(o), Some(t)) = (owner, r.strs.last())
             && recs.get(o).is_some_and(|o| o.ty.ends_with("face"))
         {
-            tag.insert(o, t.clone());
+            tag.insert(o, (t.clone(), tag_name(r)));
         }
     }
     let mut ce_loop: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -271,8 +273,8 @@ pub(super) fn tagged_faces(b: &[u8]) -> Option<Vec<TaggedFace>> {
                     }
                 }
             }
-            if let Some(t) = tag.get(&f) {
-                out.push(TaggedFace { tag: t.clone(), verts });
+            if let Some((t, name)) = tag.get(&f) {
+                out.push(TaggedFace { tag: t.clone(), name: name.clone(), verts });
             }
         }
     }

@@ -354,6 +354,18 @@ fn on_sweep(g: &ExtGeom, sg: &Seg, pts: &[V3], tol: f64) -> bool {
     false
 }
 
+/// Whether the points (flattened onto the sketch plane) all lie along the profile piece `sg`,
+/// between its ends: on its polyline within the sag of an arc's chords.
+fn spans(g: &ExtGeom, sg: &Seg, pts: &[V3]) -> bool {
+    let pl = &g.pl;
+    let sag = g.sketch.arcs.get(&sg.curve).map_or(0.0, |a| 0.002 * a.radius);
+    pts.iter().all(|p| {
+        let w = sub(*p, pl.origin);
+        let q = [dot(w, pl.x), dot(w, pl.y)];
+        sg.poly.windows(2).any(|s| matches!(s, [a, b] if geom::seg_dist(q, *a, *b) < 2e-5 + sag))
+    })
+}
+
 /// The line where two planes meet: a point on it and its unit direction.
 pub(super) fn plane_plane(n0: V3, p0: V3, n1: V3, p1: V3) -> Option<(V3, V3)> {
     let u = cross(n0, n1);
@@ -547,18 +559,57 @@ impl Ctx<'_> {
         })
     }
 
-    /// The profile curve whose swept surface carries the ACIS face tagged `g`, when exactly one does.
-    fn truth(&mut self, g: &ExtGeom, gen_text: &str) -> Option<u64> {
-        let mut cands: Vec<u64> = Vec::new();
+    /// The profile piece whose swept surface carries the stored face `gen_text` of the operation
+    /// `op` (a face whose name is read must have that generator under that operation; one with
+    /// a tag only counts by the tag). An extrude of regions side by side lists a curve's pieces
+    /// once per region, and several pieces of one line lie on one plane: of the pieces the
+    /// face's vertices lie on, the ones that span them are taken, and pieces with the same ends
+    /// count once. Exactly one piece must remain, over all such faces. A face that runs over
+    /// several pieces of one straight line (regions side by side, swept as one) is the plane of
+    /// any of them: the piece comes with the middle of the face's own vertices then.
+    fn truth(&mut self, g: &ExtGeom, gen_text: &str, op: i32) -> Option<(usize, Option<V3>)> {
+        let same = |i: usize, j: usize| {
+            let (Some(a), Some(b)) = (g.segs.get(i), g.segs.get(j)) else { return false };
+            let ends = |s: &Seg| Some((*s.poly.first()?, *s.poly.last()?));
+            let (Some((a0, a1)), Some((b0, b1))) = (ends(a), ends(b)) else { return false };
+            let near = |p: P2, q: P2| geom::dist(p, q) < 1e-6;
+            a.curve == b.curve && ((near(a0, b0) && near(a1, b1)) || (near(a0, b1) && near(a1, b0)))
+        };
+        let mut cands: Vec<(usize, Option<V3>)> = Vec::new();
         for f in self.tagged() {
             if f.tag != gen_text || f.verts.len() < 2 {
                 continue;
             }
-            let hit: Vec<u64> = g.segs.iter().filter(|sg| on_sweep(g, sg, &f.verts, 2e-5)).map(|sg| sg.curve).collect();
-            if let [one] = hit.as_slice()
-                && !cands.contains(one)
+            if f.name.as_ref().is_some_and(|n| !n.iter().any(|(g2, ops)| g2 == gen_text && ops.first() == Some(&op))) {
+                continue;
+            }
+            let on: Vec<usize> = (0..g.segs.len())
+                .filter(|i| g.segs.get(*i).is_some_and(|sg| on_sweep(g, sg, &f.verts, 2e-5)))
+                .collect();
+            let spanning: Vec<usize> =
+                on.iter().copied().filter(|i| g.segs.get(*i).is_some_and(|sg| spans(g, sg, &f.verts))).collect();
+            let mut hit: Vec<usize> = Vec::new();
+            for i in if spanning.is_empty() { on } else { spanning } {
+                if !hit.iter().any(|j| same(i, *j)) {
+                    hit.push(i);
+                }
+            }
+            let found = match hit.as_slice() {
+                [one] => Some((*one, None)),
+                [first, ..]
+                    if hit.iter().all(|i| g.segs.get(*i).is_some_and(|sg| g.sketch.lines.contains_key(&sg.curve))) =>
+                {
+                    let k = f.verts.len() as f64;
+                    let sum = f.verts.iter().fold([0.0; 3], |a, v| add(a, *v));
+                    Some((*first, Some(mul(sum, 1.0 / k))))
+                }
+                _ => None,
+            };
+            // Two faces count once when they lead to the same piece, or to pieces of one line.
+            if let Some((i, mid)) = found
+                && !cands.iter().any(|(j, m)| same(i, *j) || (mid.is_some() && m.is_some()))
             {
-                cands.push(*one);
+                cands.push((i, mid));
             }
         }
         if let [one] = cands.as_slice() { Some(*one) } else { None }
@@ -702,8 +753,12 @@ impl Ctx<'_> {
             let p = world(&pl, [0.0, 0.0], t);
             return Some(FaceG::Plane { n: z, p, cap: true, mid: p });
         }
-        let sg: Rc<Seg> = match self.truth(&eg, g) {
-            Some(c) => eg.segs.iter().find(|x| x.curve == c)?.clone(),
+        let mut face_mid: Option<V3> = None;
+        let sg: Rc<Seg> = match self.truth(&eg, g, *ops.first()?) {
+            Some((i, mid)) => {
+                face_mid = mid;
+                eg.segs.get(i)?.clone()
+            }
             None => {
                 if eg.segs.iter().any(|x| x.flag != 1) {
                     return None;
@@ -719,7 +774,10 @@ impl Ctx<'_> {
             let pa = world(&pl, a, 0.0);
             let pb = world(&pl, b, 0.0);
             let n = unit(cross(z, sub(pb, pa)))?;
-            let mid = world(&pl, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0], (eg.t0? + eg.t1?) / 2.0);
+            let mid = match face_mid {
+                Some(m) => m,
+                None => world(&pl, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0], (eg.t0? + eg.t1?) / 2.0),
+            };
             return Some(FaceG::Plane { n, p: pa, cap: false, mid });
         }
         if eg.sketch.arcs.contains_key(&q) {

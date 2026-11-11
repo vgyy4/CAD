@@ -521,7 +521,7 @@ pub(super) fn inside(pt: P2, ring: &[P2]) -> bool {
     c
 }
 
-fn seg_dist(p: P2, a: P2, b: P2) -> f64 {
+pub(super) fn seg_dist(p: P2, a: P2, b: P2) -> f64 {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let l = dx * dx + dy * dy;
     let t = if l == 0.0 { 0.0 } else { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l).clamp(0.0, 1.0) };
