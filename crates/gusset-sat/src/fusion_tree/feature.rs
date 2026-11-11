@@ -242,6 +242,24 @@ impl Ctx<'_> {
                     _ => Err("its start face is not a plane parallel to the sketch"),
                 }
             }
+            // From a face to a face, both offsets 0 and no taper (5358's pad and its clearance):
+            // the solid is the slab between the two planes whichever is the start. The first
+            // face recipe is taken for the start (its selection stands before the
+            // `ProfileOffset` holder in the record, the other before `Side1Offset`'s) and the
+            // to-object end reads the second.
+            ([first, _], true)
+                if off == 0.0
+                    && pget(&e.params, "Side1Offset").and_then(|p| p.value) == Some(0.0)
+                    && pget(&e.params, "TaperAngle").and_then(|p| p.value).is_none_or(|t| t == 0.0) =>
+            {
+                let (g, ops) = first.first().and_then(|f| f.first()).ok_or("the start face has no name")?;
+                match self.face(g, ops) {
+                    Some(naming::FaceG::Plane { n, p, .. }) if (dot(n, pl.z).abs() - 1.0).abs() < 1e-9 => {
+                        Ok(dot(n, super::geom::sub(p, pl.origin)) / dot(n, pl.z))
+                    }
+                    _ => Err("its start face is not a plane parallel to the sketch"),
+                }
+            }
             _ => Err("its start and end are both faces"),
         }
     }

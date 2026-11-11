@@ -1571,3 +1571,29 @@ Reader: `timeline` in `fusion_tree/mod.rs`, `carry_moved_bodies` in `fusion_tree
   bodies (the source design is not in the file, so there is nothing to rebuild them from). Two of the seven make no
   body and are skipped.
 * 3502 then stops at `Bend1` (`1CF7B9E3`, a bend of the flex body in Component7, each bend right after a sketch of its own): not decoded.
+
+### The magnetic connector (5358, 5360): faces as profiles and extents
+* **Sweep path records of 45 bytes.** The path's `E2CEFD18` records hold `u64 sketch data id`, `u64 crv_primary_id`
+  as their last 16 bytes: at 0x21 in the 49-byte records, at 0x1d in the 45-byte ones (tag of three decimal places)
+  of 5358, as the revolve axis reads them. The sweep read 0x21 always.
+* **A face as a sweep profile.** `Sweep - Pin Right Angle` has no `4BD53E5A` profile but a `5662F619` face selection:
+  the end cap (generator `2`, one operation) of `Extrude - Pin Bottom`. Such a face is that extrude's profile on the
+  cap's plane: the tree gets a copy of the extrude's sketch with the curves of the extrude's regions, moved along
+  its normal to the plane through the path's free end nearest the cap (as a sketch profile off the path is swept
+  from the path's start plane). A face another feature renamed, a side face or more than one face is refused.
+* **From a face to a face.** `Extrude - Pad Clearance` and `Extrude - Pad` start at a face (`ProfileOffset` 0 with a
+  bounded-face recipe) and end at one (`Side1Offset` 0, a second recipe): z 4.0 mm (Housing's top, `2 [302, 311]`)
+  and z 3.6 mm (`2 [334]` / `2 [365]`). The first recipe's selection stands before the `ProfileOffset` holder in the
+  record, the second's before `Side1Offset`'s; with both offsets 0 and no taper the solid is the slab between the
+  two planes whichever is the start, so the first is read as the start and the second as the end.
+* **An empty fillet.** 5358's off-timeline `Fillet1` in Housing (`7063`) references only the design root: no set, no
+  value, no edge. It changes no body and is skipped.
+* **Edges of two bodies on one another.** `Fillet - Magnets` rounds a magnet's top circle, which lies on the rim of
+  the magnet's pocket in the housing: the edge's points match an edge of both bodies. A fillet or chamfer now names
+  the body its edge selections' body links lead to (`body`, ADR 0042 amendment), which decides there.
+* 5358 and 5360 then stop at `Fillet - Pin`, which does not build: the sweep runs along `Sketch3` of the root
+  component (plane origin x = -1.27 mm on `WorkPlane1`) taken at its own coordinates in the Pins component (the rule
+  of 4863, `in_own_component`), while the stored blend edge at the sweep's end lies at x = -3.81 mm, the first pin:
+  2.54 mm (one pitch) apart. Which frame the path is in at the sweep (before the joints `Assemble2`/`Assemble3` move
+  the occurrences) is not established.
+

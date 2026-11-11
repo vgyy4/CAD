@@ -266,6 +266,10 @@ struct EdgeF {
     /// `face`). Edges it does not border take the default rule, with a warning.
     #[serde(default)]
     face: Option<v2::FacePick>,
+    /// Fillet, chamfer: the body the edges are on (the tree name of the feature that made it),
+    /// for edges that lie on edges of another body.
+    #[serde(default)]
+    body: Option<String>,
 }
 
 /// Tier note for feature-tree imports.
@@ -1623,39 +1627,55 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         return Err("too many edges".into());
     }
     let ev = g.evaluate(s).map_err(|e| e.message)?;
-    // Each edge: the nearest one of the model as built so far, within 0.01 mm.
-    let mut by_body: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for pick in &d.edges {
-        let mut best: Option<(f64, String, String)> = None;
-        for b in &ev.bodies {
-            for (i, e) in b.topology.edges.iter().enumerate() {
-                let dd = norm(sub(e.midpoint, pick.midpoint));
-                if best.as_ref().is_none_or(|x| dd < x.0)
-                    && let Some(n) = b.names.edges.get(i)
-                {
-                    best = Some((dd, b.feature.clone(), n.to_string()));
+    // Each edge: the nearest one of the model as built so far, within 0.01 mm; of the bodies
+    // `only` names alone, if given.
+    let collect = |only: Option<&str>| -> Result<BTreeMap<String, Vec<String>>, String> {
+        let mut by_body: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mine = |body: &str| only.is_none_or(|o| o == body);
+        for pick in &d.edges {
+            let mut best: Option<(f64, String, String)> = None;
+            for b in ev.bodies.iter().filter(|b| mine(&b.feature)) {
+                for (i, e) in b.topology.edges.iter().enumerate() {
+                    let dd = norm(sub(e.midpoint, pick.midpoint));
+                    if best.as_ref().is_none_or(|x| dd < x.0)
+                        && let Some(n) = b.names.edges.get(i)
+                    {
+                        best = Some((dd, b.feature.clone(), n.to_string()));
+                    }
+                }
+            }
+            match best {
+                Some((dd, body, n)) if dd <= 0.01 => by_body.entry(body).or_default().push(n),
+                _ => {
+                    let mut on_path = on_path_edges(&ev, &pick.path);
+                    if on_path.is_empty() {
+                        on_path = containing_edges(&ev, pick);
+                    }
+                    if on_path.is_empty() {
+                        on_path = spline_edges_at_ends(&ev, pick);
+                    }
+                    on_path.retain(|(body, _)| mine(body));
+                    if on_path.is_empty() {
+                        let near =
+                            best.as_ref().map_or(String::new(), |b| format!(" (the nearest is {:.3} mm away)", b.0));
+                        return Err(format!("no edge of the model has its midpoint at {:?}{near}", pick.midpoint));
+                    }
+                    for (body, n) in on_path {
+                        by_body.entry(body).or_default().push(n);
+                    }
                 }
             }
         }
-        match best {
-            Some((dd, body, n)) if dd <= 0.01 => by_body.entry(body).or_default().push(n),
-            _ => {
-                let mut on_path = on_path_edges(&ev, &pick.path);
-                if on_path.is_empty() {
-                    on_path = containing_edges(&ev, pick);
-                }
-                if on_path.is_empty() {
-                    on_path = spline_edges_at_ends(&ev, pick);
-                }
-                if on_path.is_empty() {
-                    let near = best.as_ref().map_or(String::new(), |b| format!(" (the nearest is {:.3} mm away)", b.0));
-                    return Err(format!("no edge of the model has its midpoint at {:?}{near}", pick.midpoint));
-                }
-                for (body, n) in on_path {
-                    by_body.entry(body).or_default().push(n);
-                }
-            }
-        }
+        Ok(by_body)
+    };
+    let mut by_body = collect(None)?;
+    // Edges of several bodies that lie on one another (a magnet in its pocket): the body the
+    // source names decides.
+    if by_body.len() > 1
+        && let Some(t) = &d.body
+    {
+        let tb = g.body_named(t, "body")?;
+        by_body = collect(Some(&tb))?;
     }
     if by_body.len() != 1 {
         return Err("its edges are on several bodies".into());

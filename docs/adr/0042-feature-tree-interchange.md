@@ -564,3 +564,7 @@ the face's boundary (mm, at most 256), and `surface`, the surface the face lies 
   a tapered extrude repeats what the combine removed or added.
 - A chamfer's `face` (the reference face of `distance2`) may be a stored-face pick (`points`,
   `surface`); for a component placed by its occurrence the pick moves with the component.
+- A `fillet` or `chamfer` may name `body`: the tree name of the feature that made the body its
+  edges are on. The importer looks at that body alone only where the edges' points match edges
+  of several bodies (two bodies touching along the edge: a magnet in its pocket); otherwise it is
+  not used.

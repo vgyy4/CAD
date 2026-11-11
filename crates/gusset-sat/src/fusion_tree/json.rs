@@ -337,9 +337,21 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         // To-object: the first face of the extrude's bounded-face or face recipe, when it is a
         // plane parallel to the sketch.
         let off = pget(ps, "Side1Offset").and_then(|p| p.value).unwrap_or(0.0);
+        // From a face to a face: the first face is the start ([`Ctx::extrude_start`]).
+        let n_faces = cx
+            .edge_recipes_of(fid)
+            .into_iter()
+            .filter(|r| matches!(naming::recipe(d, *r).0, Some(RecipeKind::BoundedFace | RecipeKind::Face)))
+            .count();
+        let from_face = pget(ps, "ProfileOffset").is_some() && n_faces == 2 && !j.contains_key("start_error");
+        let mut skip = usize::from(from_face);
         for rid in cx.edge_recipes_of(fid) {
             let (kind, faces) = naming::recipe(d, rid);
             let (Some(RecipeKind::BoundedFace | RecipeKind::Face), Some(faces)) = (kind, faces) else { continue };
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
             let f = faces.first().and_then(|f| f.first()).and_then(|(g, ops)| cx.face(g, ops));
             if let (Some(naming::FaceG::Plane { n, p, .. }), Some(pl)) = (f, &plane)
                 && (dot(n, pl.z).abs() - 1.0).abs() < 1e-9
@@ -650,13 +662,16 @@ fn sweep_json(
             if !d.is(c, "E2CEFD18") {
                 continue;
             }
+            // The record's last 16 bytes (at 0x21 in the 49-byte records, at 0x1d in the 45-byte
+            // ones of 5358), as a revolve axis reads them.
             let r = d.rec(c);
             let word = |o: usize| r.get(o..o + 8).and_then(|b| b.try_into().ok()).map(u64::from_le_bytes);
-            let (Some(sk), Some(prim)) = (word(0x21), word(0x29)) else {
+            let at = r.len().saturating_sub(16);
+            let (Some(sk), Some(prim)) = (word(at), word(at + 8)) else {
                 ok = false;
                 continue;
             };
-            cover::field(r, 0x21, 16, "sweep-path.sketch-curve");
+            cover::field(r, at, 16, "sweep-path.sketch-curve");
             if path_sketch.is_some_and(|p| p != sk) {
                 ok = false;
             }
@@ -682,6 +697,100 @@ fn sweep_json(
     j.insert("target".into(), Value::Null);
     let shift = profile.filter(|_| ok).and_then(|p| path_start_offset(cx, p, path_sketch?, &curve_ids));
     (j, shift)
+}
+
+/// A sweep whose profile is a face (5358's `Sweep - Pin Right Angle`: a `5662F619` face
+/// selection, no `4BD53E5A` profile): where the face is the end cap of an extrude that no later
+/// feature renamed (one operation in its name), the face is that extrude's profile on the cap's
+/// plane. The sketch of the extrude, its curves cut down to the profile's, moved along its normal
+/// to the plane through the path's end nearest to the cap (Fusion sweeps a profile from the
+/// plane through the path's start, as for a sketch profile). `Ok(None)`: no face selection.
+fn face_profile_sketch(
+    cx: &mut Ctx,
+    fid: u64,
+    feats: &[Value],
+    j: &Map<String, Value>,
+) -> Result<Option<Map<String, Value>>, String> {
+    let d = cx.d;
+    let mut faces: Vec<(String, Vec<i32>)> = Vec::new();
+    for q in ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "2CA5A1CD")) {
+        for s in ref_ids(d, d.rec(q)).into_iter().filter(|s| d.is(*s, "5662F619")) {
+            for r in ref_ids(d, d.rec(s)).into_iter().filter(|r| d.is(*r, "7ACC2A03") || d.is(*r, "71D91267")) {
+                if let (Some(naming::RecipeKind::Face | naming::RecipeKind::BoundedFace), Some(names)) =
+                    naming::recipe(d, r)
+                    && let Some(f) = names.first().and_then(|f| f.first())
+                    && !faces.contains(f)
+                {
+                    faces.push(f.clone());
+                }
+            }
+        }
+    }
+    let [(g, ops)] = faces.as_slice() else {
+        return if faces.is_empty() { Ok(None) } else { Err(format!("{} faces, not one", faces.len())) };
+    };
+    let [op] = ops.as_slice() else { return Err("a face a later feature changed".into()) };
+    if g != "1" && g != "2" {
+        return Err("not the end cap of an extrude".into());
+    }
+    let efid = u64::try_from(*op).ok().and_then(|o| cx.opmap.get(&o).copied()).ok_or("its feature is unknown")?;
+    if !d.is(efid, EXTRUDE) {
+        return Err("not a face of an extrude".into());
+    }
+    let sid = extrude_raw(d, efid).and_then(|e| e.sketch).ok_or("its extrude has no sketch")?;
+    let sk = cx.sketch(sid);
+    let pl = sk.plane.ok_or("its extrude's sketch has no plane")?;
+    let Some(naming::FaceG::Plane { n, p, .. }) = cx.face(g, ops) else { return Err("the cap is not modelled".into()) };
+    if (dot(n, pl.z).abs() - 1.0).abs() > 1e-9 {
+        return Err("the cap does not lie parallel to its sketch".into());
+    }
+    let t_face = dot(pl.z, geom::sub(p, pl.origin));
+    // The free ends of the path's chain, as heights along the profile's normal.
+    let path = j.get("path_source_id").and_then(Value::as_u64).ok_or("its path is not read")?;
+    let ps = cx.sketch(path);
+    let ppl = ps.plane.ok_or("its path sketch has no plane")?;
+    let mut ends: Vec<(u64, V3)> = Vec::new();
+    for c in j.get("path_curves").and_then(Value::as_array).into_iter().flatten() {
+        let q: u64 = c.as_str().and_then(|c| c.strip_prefix('c')).and_then(|c| c.parse().ok()).ok_or("a path curve")?;
+        let refs: Vec<u64> = if let Some(l) = ps.lines.get(&q) {
+            [l.start_ref, l.end_ref].into_iter().flatten().collect()
+        } else {
+            ps.arcs.get(&q).ok_or("a path curve is neither line nor arc")?.refs.iter().skip(1).copied().collect()
+        };
+        for r in refs {
+            let p = *ps.points.get(&r).ok_or("a path point")?;
+            ends.push((r, geom::world(&ppl, [p[0], p[1]], 0.0)));
+        }
+    }
+    let t = ends
+        .iter()
+        .filter(|(r, _)| ends.iter().filter(|(x, _)| x == r).count() == 1)
+        .map(|(_, q)| dot(pl.z, geom::sub(*q, pl.origin)))
+        .min_by(|a, b| (a - t_face).abs().total_cmp(&(b - t_face).abs()))
+        .ok_or("its path has no free end")?;
+    let used: HashSet<String> = cx
+        .rc
+        .regions(d, efid, &sk)?
+        .iter()
+        .flat_map(|r| r.segments.iter().map(|sg| format!("c{}", sg.curve)))
+        .collect();
+    // The sketch as read, else a copy of it (its plane is set below; the curves are all there).
+    let of_sid = |f: &&Value| {
+        f.get("type").and_then(Value::as_str) == Some("sketch")
+            && f.get("source_id").and_then(Value::as_u64) == Some(sid)
+    };
+    let found =
+        feats.iter().filter(of_sid).find(|f| f.get("plane_note").is_none()).or_else(|| feats.iter().find(of_sid));
+    let Some(Value::Object(mut c)) = found.cloned() else {
+        return Err("its extrude's sketch is not in the tree".into());
+    };
+    if let Some(cs) = c.get_mut("curves").and_then(Value::as_array_mut) {
+        cs.retain(|x| x.get("id").and_then(Value::as_str).is_some_and(|i| used.contains(i)));
+    }
+    let o = geom::add(pl.origin, geom::mul(pl.z, t));
+    c.insert("plane".into(), json!({"origin": v3mm(o), "x_axis": pl.x, "y_axis": pl.y}));
+    c.insert("plane_note".into(), "an extrude's profile, the face a sweep takes, on the path's start plane".into());
+    Ok(Some(c))
 }
 
 /// How far (cm, along the profile's normal) the plane through the start of the path lies from the
@@ -1214,11 +1323,39 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                     }
                 }
             }
+            if j.get("sketch_source_id").is_none_or(Value::is_null) {
+                match face_profile_sketch(cx, fid, &feats, &j) {
+                    Ok(Some(mut c)) => {
+                        let copy = format!("{nm} profile");
+                        c.insert("name".into(), copy.clone().into());
+                        j.insert("sketch".into(), copy.into());
+                        j.insert(
+                            "profile_from".into(),
+                            "the cap face of an extrude: its profile, on the path's start plane".into(),
+                        );
+                        feats.push(Value::Object(c));
+                    }
+                    Ok(None) => {}
+                    Err(why) => {
+                        j.insert("error".into(), format!("its profile is a face: {why}").into());
+                    }
+                }
+            }
             in_own_component(&mut j, "sketch", comp, &mut feats, nbefore, format!("{nm} sketch"));
             in_own_component(&mut j, "path", comp, &mut feats, nbefore, format!("{nm} path"));
             let made = op_target(&mut j, &g, d, fid, &names);
             j.insert("creates_bodies".into(), made.into());
             feats.push(Value::Object(j));
+        } else if (d.is(fid, "A07D5F17") || d.is(fid, "F757D611"))
+            && ref_ids(d, d.rec(fid))
+                .iter()
+                .all(|q| !["4A557CE2", "D91D429C", "0D383DB2", "5662F619", "2CA5A1CD"].iter().any(|c| d.is(*q, c)))
+        {
+            // A fillet or chamfer that names no edge, set or value (5358's off-timeline Fillet1 in
+            // Housing references nothing but the design root): it changes no body.
+            skipped.push(json!({"name": name, "fusion_type": fusion_type, "source_id": fid,
+                "reason": "a fillet or chamfer with no edges and no value: it changes nothing"}));
+            continue;
         } else if d.is(fid, "A07D5F17") || d.is(fid, "F757D611") {
             let fil = d.is(fid, "A07D5F17");
             let key = if fil { "radius" } else { "distance" };
@@ -1239,8 +1376,23 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 (false, Some(_)) => &["Distance 1"],
                 (false, None) => &["Distance", "leftDistance"],
             };
+            // The body its edges are on, by the feature that made it, where that is one: the
+            // importer needs it where edges of two bodies lie on one another (5358's magnet in
+            // its pocket).
+            let mut on: Vec<String> = g
+                .body_links(d, fid, 2)
+                .iter()
+                .filter_map(|l| g.creator.get(l).copied())
+                .filter(|c| *c != fid)
+                .filter_map(|c| names.get(&c).cloned())
+                .collect();
+            on.sort();
+            on.dedup();
             for (k, (v, es, bad)) in cx.blend_sets(fid, role).into_iter().enumerate() {
                 let mut j = Map::new();
+                if let [one] = on.as_slice() {
+                    j.insert("body".into(), one.as_str().into());
+                }
                 match &two {
                     Some(Ok((d2, face))) => {
                         j.insert("distance2".into(), mm(*d2).into());
