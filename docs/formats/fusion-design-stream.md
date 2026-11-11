@@ -1272,6 +1272,83 @@ changed.
   changes 2441, 2232 (Extrude7, the same pattern) and the pad extrudes of 5358 and 5360 (both stop earlier, at
   features the reader cannot read).
 
+## 27. Round 18 C: features that are read but did not build (2026-11-11)
+Seven designs stopped at a feature the reader reads in full: a sweep, two shells, two chamfers, a fillet and a
+PCB board extrude. For each, the input was compared with the stored solids (volume, box) to tell a reading error
+from a kernel failure.
+
+### A sketch of another component is taken at its own coordinates in the feature's component (4863)
+* Sweep1/Sweep2 (component `Pins`) sweep along curves of Sketch1 (component `header`); Extrude1 of `Header Female`
+  extrudes the same Sketch1; Extrude2 of `Header Female` cuts with the Pins' profile sketch. Round 16 places the
+  occurrences where the joints left them, and `header`, `Pins` and `Header Female` end up apart (all turned 30
+  degrees about x; `Pins` stands at (1.27, -2.22, -5.77) mm in the header's frame). Placed with its own component
+  the path started 4.588 mm off the profile plane; Extrude1 stood 1.9 mm off the edges Chamfer2 names.
+* The stored bodies settle it: the pin body of the `Pins` blob is the sweep with the path at Sketch1's own
+  coordinates in the Pins frame (section 12.5), and Chamfer2's edges (Header Female frame) lie on Extrude1 built
+  from Sketch1's own coordinates. Fusion took the sketch while the occurrences still coincided; the joints that moved
+  them came later and do not carry the feature along. Rule: a feature of component A that uses a sketch of
+  component B gets a copy of that sketch in A (`plane_note` "a sketch of another component, taken in this
+  feature's"), placed with A's occurrence. Applies to extrudes, revolves and sweeps (profile and path). Not checked
+  against a design where the occurrences already stood apart when the feature was made; the step check would refuse
+  such a design (the bodies would not match), not pass it wrongly.
+* 4863 now builds every feature; the step check stops at the board's drill cut Extrude2 (3) (261.56 mm3 removed,
+  the 86 stored tools hold 92.72 mm3) and a stored 0.9988 mm3 solid it cannot place.
+
+### Shell: the opened face is named by a point of the face (2756, 3422)
+* The shell wrote `FaceG::Plane.p` (any point of the plane: for an extrude side, the start of its sketch segment
+  in the sketch plane, a corner). 2756's Shell1 opens the front face of the USB connector (Extrude2, z 1.6..4.1):
+  its corner (0, 4.89, 1.6) also lies on the board's top edge, and the importer shelled the board (Extrude1). It now
+  writes `mid` (the chord middle at mid height, (0, 8.89, 2.85)): the connector.
+* 3422's Shell1 opens one side of each of six boxes (Extrude2 makes six bodies; the Gusset body is one of six
+  solids): OCCT's thick solid fails on the compound. The shim now shells solid by solid (a solid with no opened
+  face stays as it is, as Fusion's shell acts on the bodies of its faces): 1890 -> 630 mm3, the cavities 6 x 7 x 5 mm
+  (open on y). The step check cannot confirm it: the file stores the six boxes before the shell (315 mm3 each) and
+  the Extrude3 tools (6 x 7 mm3), nothing after; Shell1 follows the last stored state. Refused as before.
+* 2756's connector (chamfered, then filleted on 12 edges) is shelled by OCCT only with every pair of offset faces
+  intersected (`MakeThickSolidByJoin(..., intersection = true, ..., GeomAbs_Intersection)`): the shim retries so
+  when the default fails. 94.839 -> 41.232 mm3; the step check confirms the design (now history).
+
+### Blends OCCT refuses (1463, 3632, 2232, 4863)
+* A chamfer as deep as the face it runs into: 1463 Chamfer1 (the bottom rim r = 25.5 of a 1 mm ring, 1 mm), 3632
+  Chamfer2 (the rim of a 0.6 mm deep round pocket, 0.6 mm). A fillet pair that uses up a face: 2232 Fillet1
+  (radius 4 on both corners of 8 mm wide ends: a full round). Inputs as read are right (distances, edges, the face
+  widths equal the blend), OCCT's `BRepFilletAPI` fails on all three.
+* 4863 Fillet2: radius 1 on the two bend edges of a bent pin (0.64 mm long, inner and outer). OCCT fails on the pair
+  and blends each edge alone.
+* Shim fallbacks, in order, after the plain blend fails: (1) edges that share no vertex and no face, blended one
+  after another (the history of the passes merged with `BRepTools_History`; an edge the fillet rebuilt is found by
+  its ends and middle); (2) the corner of each convex edge between perpendicular faces whose section is constant
+  along it (a line between planes: a prism; a whole circle between a plane across its axis and a coaxial cylinder:
+  a revolution) cut away by a tool reaching past both faces, taken only when the removed volume equals the corners'
+  own to 1e-7 (each corner wholly in the body, nothing else taken).
+* Results: 3632 is now history. 1463 builds; its step check cannot confirm Chamfer1: the stored solids are the
+  states before it (4100.2236 mm3; the chamfer ring is 79.0633 mm3), so it is refused as before. 2232's Fillet1 and
+  the chamfers build.
+
+### United regions keep a split edge whole (2232)
+* Extrude3 (the HDMI connector) takes the two regions of a rectangle that the board outline crosses. `gusset-eval`
+  unites them (section 23), but the rectangle's top and bottom lines stayed cut where the outline crossed them: the
+  body had two walls and two edges there, and Chamfer1's edge midpoints (the middle of the whole edge) were 0.6 mm
+  from either piece. The united outline now joins consecutive pieces of one line that run on straight. Arcs are
+  not joined: joining a circle's pieces made 3464's next boolean (Extrude2) invalid.
+* 2232 then stops at Mirror2: its record names WorkPlane2 (a construction plane, the mirror plane by its position
+  x = 60.04) as its only input feature, selects no body, and links Extrude8's body. Probably a mirror of that body
+  joined into it (the features give 44305.6 mm3, the stored shapes 59417.4); not read.
+
+### A board whose cut-out touches its outline at one point (2348)
+* 2348's board sketch has a notch (x 0.1..5, y 18.23..35.23) whose left side runs from (0, 35.23), on the
+  outline, to (0.1, 18.23): the region is the board minus the notch, its boundary through (0, 35.23) twice, with a
+  0.1 mm sliver along the left edge. Read right: built with the notch as a hole touching the outline, the board is
+  5570.222 mm3 and 7593.788 mm2, the stored board exactly.
+* OCCT cannot hold that solid as one valid solid: as one loop the prism's edge at the point bounds four faces, as
+  outline and touching hole the face's wires touch, and every later boolean (the drill cut Extrude2) is refused as
+  invalid. Left: no result-preserving form was found (two solids would change the body's solid count).
+
+### Result
+* adafruit-more: 113 of 150 as history in the corpus run (2756 and 3632 gained; 3464 was lost to the arc joins,
+  which were then dropped, and comes in as history again on a single run), so 114 with the final code. adafruit: 12
+  of 18, unchanged.
+
 ## 28. Round 18 D: faces and edges picked by the stored bodies (2026-11-11)
 Faces a shell removes, a draft tapers or an offset moves, and blend edges, that the extrude model (caps and
 sides) does not give.
