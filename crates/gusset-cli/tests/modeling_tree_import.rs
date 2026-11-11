@@ -670,6 +670,27 @@ fn bad_unequal_chamfers_are_skipped_with_a_reason() {
     }
 }
 
+#[test]
+fn a_chamfer_of_edges_on_two_bodies_becomes_one_per_body() {
+    // Two 10 mm cubes apart, one top edge of each chamfered by 2 mm.
+    let features = vec![
+        rect("A", plane_at(0.0), 0.0, 0.0, 10.0, 10.0),
+        extrude("BoxA", "A", 10.0, "new"),
+        rect("B", plane_at(0.0), 20.0, 0.0, 10.0, 10.0),
+        extrude("BoxB", "B", 10.0, "new"),
+        json!({"type": "chamfer", "name": "C", "distance": 2,
+               "edges": [{"midpoint": [5, 0, 10]}, {"midpoint": [25, 0, 10]}]}),
+    ];
+    let (mut s, r) = import_into_session(features);
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("chamfer C (") && text.contains("chamfer C_2 ("), "{text}");
+    for body in ["BoxA", "BoxB"] {
+        let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({"body": body})).unwrap();
+        assert_vol(b["volume_mm3"].as_f64().unwrap(), 1000.0 - 0.5 * 2.0 * 2.0 * 10.0);
+    }
+}
+
 // ---- Full-round fillets (ADR 0042 amendment) ----
 
 fn slab_tree(round: Value) -> Vec<Value> {
