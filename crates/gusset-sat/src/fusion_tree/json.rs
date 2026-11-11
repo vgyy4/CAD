@@ -1444,8 +1444,10 @@ fn shell_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, class: &str
             return fail("a removed face has no name");
         };
         match cx.face_with_middle(g, ops) {
-            // No normal: the cap and side normals the names give are not oriented outward.
-            Some(naming::FaceG::Plane { p, .. }) => faces.push(json!({"point": v3mm(p)})),
+            // No normal: the cap and side normals the names give are not oriented outward. A
+            // point of the face itself (`mid`), not any point of its plane: a side's corner lies
+            // on the faces around it too, and on the bodies it touches.
+            Some(naming::FaceG::Plane { mid, .. }) => faces.push(json!({"point": v3mm(mid)})),
             _ => match cx.general_face(g, ops) {
                 Some(pick) => faces.push(pick.json()),
                 None => return fail("a removed face is neither modelled nor on one stored surface"),
