@@ -118,9 +118,10 @@ fn compare(ours: &Imported, theirs: &Imported) -> (f64, f64) {
 
 /// Pairs known to be different revisions of the model (the STEP was exported before the
 /// part was last saved, or from another configuration): reported, not asserted.
-/// (`top cover 2`: both STEP files agree with each other and differ from the part by 4e-3;
-/// `Top motor plate`: 1.5 mm3 of 61109, the area differs by 0.8 mm2, the box is identical.)
-const REVISION_PAIRS: &[&str] = &["top cover 2", "Top motor plate"];
+/// (`top cover 2`: within 9e-8 of its `.STEP` and 3e-6 of its `.stp`, the two STEP files
+/// 3e-6 apart. It and `Top motor plate`, now within 1e-12, differed by 4e-3 and 1.5 mm3
+/// while ShapeManager's B-spline surfaces were read transposed: ADR 0039, 2026-11-11.)
+const REVISION_PAIRS: &[&str] = &["top cover 2"];
 
 #[test]
 fn solid_edge_and_inventor_parts_import() {
