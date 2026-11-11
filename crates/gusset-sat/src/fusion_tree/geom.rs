@@ -123,14 +123,23 @@ pub(super) fn split_params_ex(poly: &[P2], others: &[&[P2]], collinear: bool) ->
         _ => 1.0,
     };
     let mut out = Vec::new();
-    // A curve lying wholly on a curved `poly` (a duplicate circle) touches it everywhere: its
-    // ends cut it instead (324's shaft flat: a circle drawn twice, each cut by the chord's two
-    // ends and the other's seam, gives 3 pieces).
+    // A curve lying wholly on a curved `poly` touches it everywhere: an open one (an arc on a
+    // circle) cuts it at its ends; a closed one (a circle drawn twice) at the point half way
+    // round from its seam. 324's shaft flat (a circle drawn twice and a chord: 3 pieces, the cap
+    // piece 2) fits either; 858's double flat (the circle drawn twice between two lines tangent
+    // at its seam and opposite it, crossed by two more: 5 pieces, the region 1, 3 and 4) fits
+    // only the half-way point, and not a cut at either tangent point.
     let scale = poly.iter().fold(0.0f64, |m, p| m.max(p[0].abs()).max(p[1].abs())).max(1e-6);
     for o in others {
         if poly.len() > 2 && o.len() > 2 && covered_by(o, poly, scale) {
-            for e in [o.first(), o.last()].into_iter().flatten() {
-                if let Some(f) = point_param(poly, &l, tot, *e) {
+            let closed_o = matches!((o.first(), o.last()), (Some(a), Some(b)) if dist(*a, *b) < 1e-9);
+            let cut_at: Vec<P2> = if closed_o {
+                sub_poly(o, 0.5, 0.5).first().copied().into_iter().collect()
+            } else {
+                [o.first(), o.last()].into_iter().flatten().copied().collect()
+            };
+            for e in cut_at {
+                if let Some(f) = point_param(poly, &l, tot, e) {
                     out.push(f);
                 }
             }
