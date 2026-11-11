@@ -1769,6 +1769,75 @@ Reader: `fusion_tree/mirrorcomp.rs`, `fusion_tree/thin.rs`; importer: `fusion_st
 * adafruit-more: 117 of 150 as history (4343 gained, none lost); adafruit: 11 (none lost). The thin extrude reading
   touches only extrudes with a wall thickness (5981, 6299, 6126, checked one by one after it).
 
+## 34. Round 21 J: body patterns of new bodies, multi-solid mirrors, suppressed copies, corner blends (2026-11-11)
+Readers: `fusion_tree/json.rs` (patterns, mirrors, shells, extrudes); blends: `blend_by_corners` in the shim.
+
+### A pattern of a new-body feature is a body pattern (2190)
+* 2190 R-Pattern1 repeats Extrude4, an extrude that made a body of its own, four times and makes three bodies. The
+  tree's feature pattern repeats what a feature added to or cut from a body, so it refused ("Extrude4 made a new
+  body"). A pattern of one extrude, revolve or sweep with operation new that made one body, written just after it
+  (no feature between has changed its body) and making one body per copy, is now a pattern of that body
+  (`merge: false`), as for a mirrored body (5905). 2190 comes in as history.
+
+### A mirror of a body of several solids (3101)
+* 3101 Sweep1 makes two bodies (the two legs) and Mirror1 selects both and makes two. The tree has Sweep1 as one body
+  of two solids, so the mirror "of 1 body making 2" was refused. Where the selected bodies of each feature are all the
+  bodies it made (a new-body extrude, sweep or revolve) and the mirror makes one copy per selected body, the tree
+  mirrors that feature's body once (`creates_bodies` = its solids).
+* Its Fillet2 (radius 0.2 on the top arcs of a 0.2 mm high ring cut by four slots) takes the ring's whole outer
+  wall; OCCT's blend fails. The corner fallback now takes arcs as well as whole circles: the corner section is revolved
+  past the arc's ends and trimmed by the plane that ends the arc at each end (a plane face that crosses the arc, with
+  the material on the arc's side, within 60 degrees of the plane through the axis); the removed volume must be the
+  trimmed corner's. With a radius of 0.1999 OCCT's own blend builds and the states agree, which showed the result
+  wanted before the fallback was written. 3101 comes in as history.
+
+### Suppressed copies of a pattern (512)
+* The instance list `7493A99D` of a pattern ends with `u32 n` and n `u32` instance numbers (1 is the original), the
+  instances left out: 512 C-Pattern1 (4 instances about Z) ends `02 00 00 00 03 00 00 00 04 00 00 00` (copies 3 and 4
+  left out; it makes one body), the Crickit's 12-instance pattern `02 .. 04 .. 0A` (9 bodies, section 13). All other
+  patterns of the two sets end with `n` = 0 and make count - 1 bodies. A full-circle body pattern with copies left out
+  is written as one pattern of two per kept copy, turned by (k - 1) / count of a turn (512: one copy at 90 degrees).
+* 512 Shell1 removed the cap at the sketch origin's projection (0, 0, 1.6), a point of the board's top: the board
+  was shelled. A shell's cap is now picked by the stored cap's points, as a draft's (section 28).
+* 512 Fillet1 rounds the top of a window through a 0.4 mm wall to a half circle (two concave edges, radius = half the
+  width) and Fillet3 rounds the ends of a 0.6 mm groove that arms cross (16 concave edges between the arms' planes and
+  the groove's cylinders, radius 0.3). OCCT fails on both. The corner fallback now fills the corners of concave edges
+  (straight edges between perpendicular planes, and straight edges between a plane and a cylinder about an axis along
+  the edge: the round touching the line and the circle on the open side, in section), the added volume checked
+  against the corners'. 512 comes in as history.
+
+### Chamfers whose corners meet (258)
+* 258 Chamfer1 chamfers the four top edges of a 1 mm step by 1 mm: OCCT fails and the corner fallback refused,
+  because the corners of two edges meeting at a vertex overlap there and their volumes were summed. For chamfers the
+  removed volume is now checked against the corners' union, and corners of edges that do not meet must not overlap
+  (a blend wider than its face stays refused, as the existing test of radius 4.5 on an 8 mm end shows).
+* 258 then stops at Draft1: the face drafted is the pin's start cap, which lies on the neutral plane (the chamfer face
+  the pin was sketched on), so the reader's pick is ambiguous and how Fusion tilts a face in its own neutral plane is
+  not known. Not converted.
+
+### Joins that make bodies, and an extrude of a face (610)
+* 610 Extrude5 joins to Extrude1 and makes two bodies (parts of its tool that touch no body); Extrude6 then joins to
+  the bodies of Extrude1 and Extrude5 and makes one, Extrude7 and Extrude8 act on all of them. The tree's join keeps
+  such parts in the target's body as solids of their own: a later list that names the target's body and bodies such
+  joins made now names that one body (lists without the target's own body are left as they are).
+* 610 Extrude8's profile is a face: a bounded-face recipe naming Extrude1's end cap `2` bounded by Extrude2's side
+  `4`. Extrude1 extrudes two regions of Sketch1 by 1 mm and Extrude2 joins one of them by 2 mm, so the cap left open
+  is the other region. An extrude whose profile is an extrude's cap (one operation), with later joins from the same
+  sketch reaching past it whose sides bound the face, is now the regions those joins leave open, started at the cap
+  (moved sketch, as for offset starts). 610 Extrude8 reads; it then stops at Fillet3 (one edge between Extrude1/2's
+  merged side `5`+`3` and Extrude2's cap is not resolved).
+
+### Not reached
+* 4431: both Base Features have their DM bodies in a later state of the component (JST-PH3's five bodies, one of them
+  joined to another by Combine1, so the `.smbh` list has four; the switch's body is followed by two later extrudes'
+  and is cut later). Each DM body and its PM body name each other and the PM list names a `.smb`, but that blob holds
+  more bodies than the PM list (6 for 5 and 12 for 1, the component's other bodies among them), so the place of a PM
+  body in it is not known without pairing by geometry (as `fusion_dropped_inputs` does). Not converted.
+
+### Result
+* adafruit-more: 124 of 150 as history (2190, 3101 and 512 gained; none lost; 121 before). 610 now stops at its
+  Fillet3, 258 at Draft1, 4431 at its Base Features. adafruit: 13 of 18 (unchanged).
+
 ## 35. Round 21 K: outlines that touch themselves, circles drawn twice, cuts of several bodies (2026-11-11)
 
 ### A notch whose corner meets the outline (2348)
@@ -1842,72 +1911,3 @@ Reader: `fusion_tree/mirrorcomp.rs`, `fusion_tree/thin.rs`; importer: `fusion_st
 * adafruit-more: 122 of 150 as history (2348 gained; none lost; 121 before). adafruit: 13 of 18 (unchanged).
 * First blockers now: 858 `Fillet3` (tool faces Fusion keeps apart), 6299 `Extrude17` (a body face as profile),
   5358 `Chamfer2`, 5360 the step check.
-
-## 34. Round 21 J: body patterns of new bodies, multi-solid mirrors, suppressed copies, corner blends (2026-11-11)
-Readers: `fusion_tree/json.rs` (patterns, mirrors, shells, extrudes); blends: `blend_by_corners` in the shim.
-
-### A pattern of a new-body feature is a body pattern (2190)
-* 2190 R-Pattern1 repeats Extrude4, an extrude that made a body of its own, four times and makes three bodies. The
-  tree's feature pattern repeats what a feature added to or cut from a body, so it refused ("Extrude4 made a new
-  body"). A pattern of one extrude, revolve or sweep with operation new that made one body, written just after it
-  (no feature between has changed its body) and making one body per copy, is now a pattern of that body
-  (`merge: false`), as for a mirrored body (5905). 2190 comes in as history.
-
-### A mirror of a body of several solids (3101)
-* 3101 Sweep1 makes two bodies (the two legs) and Mirror1 selects both and makes two. The tree has Sweep1 as one body
-  of two solids, so the mirror "of 1 body making 2" was refused. Where the selected bodies of each feature are all the
-  bodies it made (a new-body extrude, sweep or revolve) and the mirror makes one copy per selected body, the tree
-  mirrors that feature's body once (`creates_bodies` = its solids).
-* Its Fillet2 (radius 0.2 on the top arcs of a 0.2 mm high ring cut by four slots) takes the ring's whole outer
-  wall; OCCT's blend fails. The corner fallback now takes arcs as well as whole circles: the corner section is revolved
-  past the arc's ends and trimmed by the plane that ends the arc at each end (a plane face that crosses the arc, with
-  the material on the arc's side, within 60 degrees of the plane through the axis); the removed volume must be the
-  trimmed corner's. With a radius of 0.1999 OCCT's own blend builds and the states agree, which showed the result
-  wanted before the fallback was written. 3101 comes in as history.
-
-### Suppressed copies of a pattern (512)
-* The instance list `7493A99D` of a pattern ends with `u32 n` and n `u32` instance numbers (1 is the original), the
-  instances left out: 512 C-Pattern1 (4 instances about Z) ends `02 00 00 00 03 00 00 00 04 00 00 00` (copies 3 and 4
-  left out; it makes one body), the Crickit's 12-instance pattern `02 .. 04 .. 0A` (9 bodies, section 13). All other
-  patterns of the two sets end with `n` = 0 and make count - 1 bodies. A full-circle body pattern with copies left out
-  is written as one pattern of two per kept copy, turned by (k - 1) / count of a turn (512: one copy at 90 degrees).
-* 512 Shell1 removed the cap at the sketch origin's projection (0, 0, 1.6), a point of the board's top: the board
-  was shelled. A shell's cap is now picked by the stored cap's points, as a draft's (section 28).
-* 512 Fillet1 rounds the top of a window through a 0.4 mm wall to a half circle (two concave edges, radius = half the
-  width) and Fillet3 rounds the ends of a 0.6 mm groove that arms cross (16 concave edges between the arms' planes and
-  the groove's cylinders, radius 0.3). OCCT fails on both. The corner fallback now fills the corners of concave edges
-  (straight edges between perpendicular planes, and straight edges between a plane and a cylinder about an axis along
-  the edge: the round touching the line and the circle on the open side, in section), the added volume checked
-  against the corners'. 512 comes in as history.
-
-### Chamfers whose corners meet (258)
-* 258 Chamfer1 chamfers the four top edges of a 1 mm step by 1 mm: OCCT fails and the corner fallback refused,
-  because the corners of two edges meeting at a vertex overlap there and their volumes were summed. For chamfers the
-  removed volume is now checked against the corners' union, and corners of edges that do not meet must not overlap
-  (a blend wider than its face stays refused, as the existing test of radius 4.5 on an 8 mm end shows).
-* 258 then stops at Draft1: the face drafted is the pin's start cap, which lies on the neutral plane (the chamfer face
-  the pin was sketched on), so the reader's pick is ambiguous and how Fusion tilts a face in its own neutral plane is
-  not known. Not converted.
-
-### Joins that make bodies, and an extrude of a face (610)
-* 610 Extrude5 joins to Extrude1 and makes two bodies (parts of its tool that touch no body); Extrude6 then joins to
-  the bodies of Extrude1 and Extrude5 and makes one, Extrude7 and Extrude8 act on all of them. The tree's join keeps
-  such parts in the target's body as solids of their own: a later list that names the target's body and bodies such
-  joins made now names that one body (lists without the target's own body are left as they are).
-* 610 Extrude8's profile is a face: a bounded-face recipe naming Extrude1's end cap `2` bounded by Extrude2's side
-  `4`. Extrude1 extrudes two regions of Sketch1 by 1 mm and Extrude2 joins one of them by 2 mm, so the cap left open
-  is the other region. An extrude whose profile is an extrude's cap (one operation), with later joins from the same
-  sketch reaching past it whose sides bound the face, is now the regions those joins leave open, started at the cap
-  (moved sketch, as for offset starts). 610 Extrude8 reads; it then stops at Fillet3 (one edge between Extrude1/2's
-  merged side `5`+`3` and Extrude2's cap is not resolved).
-
-### Not reached
-* 4431: both Base Features have their DM bodies in a later state of the component (JST-PH3's five bodies, one of them
-  joined to another by Combine1, so the `.smbh` list has four; the switch's body is followed by two later extrudes'
-  and is cut later). Each DM body and its PM body name each other and the PM list names a `.smb`, but that blob holds
-  more bodies than the PM list (6 for 5 and 12 for 1, the component's other bodies among them), so the place of a PM
-  body in it is not known without pairing by geometry (as `fusion_dropped_inputs` does). Not converted.
-
-### Result
-* adafruit-more: 124 of 150 as history (2190, 3101 and 512 gained; none lost; 121 before). 610 now stops at its
-  Fillet3, 258 at Draft1, 4431 at its Base Features. adafruit: 13 of 18 (unchanged).
