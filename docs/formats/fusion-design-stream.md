@@ -1560,9 +1560,14 @@ Reader: `timeline` in `fusion_tree/mod.rs`, `carry_moved_bodies` in `fusion_tree
   A, and not the other way round; all edges must agree on one face, which becomes the chamfer's `face` (a stored-face
   pick, moved with the component's placement). 5905's pin tip: the end face takes 0.115 mm, the sides 0.3067 mm
   (the other way round, 2 x 0.3067 mm would not fit the 0.46 mm pin).
+* 5905 then stops at `MirrorComponent1` (`71BBEDD5`): it names an occurrence (`CE2913AA`) of the header component,
+  a mirror plane (a `5A1BF548` selection), a CreateComponent and a `DerivedInstance` (`66E375EA`, an occurrence
+  `2D6E13A1` of a new `CE2913AA`): a mirrored copy of the whole component. Not converted.
 * 5967 then builds every header (the stored pin states 0.6504 and 0.6774 mm3 and the socket tool 0.7493 mm3 are
   explained) and stops at the board: `Extrude2` (the board's PCB cut) changes the volume by 835.9874 mm3 while the
-  537 stored tools no other feature explains hold 687.7067 mm3.
+  537 stored tools no other feature explains hold 687.7067 mm3. The 537 tools are exactly the 537 circles of the
+  board's Sketch2 (sum of pi r^2 x 1.57 mm = 687.7067 mm3; no two overlap); where the other 148.2807 mm3 come from is
+  not found.
 
 ### Derived Base Feature `B1E5B971` (3502)
 * The bodies of another design derived into this one (3502: the display's glass, polarizers and flex of a separate
@@ -1577,7 +1582,7 @@ Reader: `timeline` in `fusion_tree/mod.rs`, `carry_moved_bodies` in `fusion_tree
   as their last 16 bytes: at 0x21 in the 49-byte records, at 0x1d in the 45-byte ones (tag of three decimal places)
   of 5358, as the revolve axis reads them. The sweep read 0x21 always.
 * **A face as a sweep profile.** `Sweep - Pin Right Angle` has no `4BD53E5A` profile but a `5662F619` face selection:
-  the end cap (generator `2`, one operation) of `Extrude - Pin Bottom`. Such a face is that extrude's profile on the
+  an end cap (generator `1` or `2`, one operation) of an extrude of the pin. Such a face is that extrude's profile on the
   cap's plane: the tree gets a copy of the extrude's sketch with the curves of the extrude's regions, moved along
   its normal to the plane through the path's free end nearest the cap (as a sketch profile off the path is swept
   from the path's start plane). A face another feature renamed, a side face or more than one face is refused.
