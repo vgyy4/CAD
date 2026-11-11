@@ -283,18 +283,23 @@ pub(super) fn tagged_faces(b: &[u8]) -> Option<Vec<TaggedFace>> {
 pub(super) type Name = Vec<(String, Vec<i32>)>;
 
 /// The name a `generic_tag_attrib_def` attribute gives its owner: after the attribute's second
-/// name string come `1`, the entry count, then per entry the generator text, a number, the
-/// count of operation ids, the ids and `0` (the layout of a face name in a recipe record).
+/// name string comes the entry count, then per entry the length of the generator text, the
+/// text, a number, the count of operation ids, the ids and `0` (the layout of a face name in a
+/// recipe record).
 fn tag_name(r: &ARec) -> Option<Name> {
     let k = r.strs.iter().rposition(|x| x.starts_with("generic_tag_attrib_def"))?;
     if k == 0 {
         return None;
     }
-    let count = usize::try_from(*r.ints.get(r.str_at.get(k)? + 1)?).ok().filter(|c| *c <= 256)?;
+    let count = usize::try_from(*r.ints.get(*r.str_at.get(k)?)?).ok().filter(|c| *c <= 256)?;
     let mut out = Name::new();
     for j in 0..count {
         let g = r.strs.get(k + 1 + j)?;
         let at = *r.str_at.get(k + 1 + j)?;
+        // The text's length stands before it.
+        if usize::try_from(*r.ints.get(at.checked_sub(1)?)?).ok() != Some(g.len()) {
+            return None;
+        }
         let n = usize::try_from(*r.ints.get(at + 1)?).ok().filter(|n| *n <= 4096)?;
         let ops: Option<Vec<i32>> =
             (0..n).map(|i| r.ints.get(at + 2 + i).and_then(|v| i32::try_from(*v).ok())).collect();

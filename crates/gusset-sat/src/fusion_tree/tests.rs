@@ -1060,9 +1060,12 @@ fn named_edge_blob(t1: f64) -> Vec<u8> {
     use Tok::{D, I, P, Pos, S, Vec as V};
     let tag = |face: i32, entries: &[(&'static str, &[i32])]| {
         let mut t = vec![P(-1), I(-1), P(-1), P(-1), P(face), S("generic_tag_attrib_def"), I(3), I(3), I(-1)];
-        t.extend([S("generic_tag_attrib_def "), I(1), I(entries.len() as i32)]);
+        // As the files have it: the entry count, then per entry the length of its text first
+        // (858's `14`: `1, 2, "14", 0, 1, 321, 0`; a face of two entries: `2, 1, "1", 0, 1, 301,
+        // 0, 1, "1", 0, 1, 304, 0`).
+        t.extend([S("generic_tag_attrib_def "), I(entries.len() as i32)]);
         for (g, ops) in entries {
-            t.extend([S(g), I(0), I(ops.len() as i32)]);
+            t.extend([I(g.len() as i32), S(g), I(0), I(ops.len() as i32)]);
             t.extend(ops.iter().map(|o| I(*o)));
             t.push(I(0));
         }
@@ -1082,7 +1085,7 @@ fn named_edge_blob(t1: f64) -> Vec<u8> {
     b.extend(sab_tokens(&["point"], &[Pos([1.0, 0.0, 0.0])]));
     b.extend(sab_tokens(&["point"], &[Pos([3.0, 0.0, 0.0])]));
     b.extend(sab_tokens(&["straight", "curve"], &[Pos([1.0, 0.0, 0.0]), V([1.0, 0.0, 0.0])]));
-    b.extend(tag(1, &[("5", &[313])]));
+    b.extend(tag(1, &[("15", &[313])]));
     b.extend(tag(2, &[("3", &[313, 320]), ("4", &[313])]));
     b
 }
@@ -1091,7 +1094,8 @@ fn named_edge_blob(t1: f64) -> Vec<u8> {
 fn a_stored_edge_is_known_by_the_names_of_its_two_faces() {
     let edges = acis::named_edges(&named_edge_blob(2.0)).unwrap();
     let [e] = edges.as_slice() else { panic!("one edge, got {}", edges.len()) };
-    assert_eq!(e.faces[0], vec![("5".to_string(), vec![313])]);
+    // A generator of two digits and a name of two entries.
+    assert_eq!(e.faces[0], vec![("15".to_string(), vec![313])]);
     assert_eq!(e.faces[1], vec![("3".to_string(), vec![313, 320]), ("4".to_string(), vec![313])]);
     assert_eq!((e.a, e.b, e.mid), ([1.0, 0.0, 0.0], [3.0, 0.0, 0.0], [2.0, 0.0, 0.0]));
     assert!(e.around.is_empty());
