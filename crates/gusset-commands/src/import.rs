@@ -1654,14 +1654,15 @@ fn fusion_history(
         Err(why) if why.contains("mm3") => {
             // One stored solid cannot be told into states and tools; with the file's end bodies
             // it is the state the end bodies follow.
-            let (ends, end_box) = fusion_end_bodies(&tree, &entries, kernel, importer, cancel);
+            let ends = fusion_end_bodies(&tree, &entries, kernel, importer, cancel);
+            let moved = fusion_moves_bodies(&tree);
             if bodies.len() <= 1 && ends.is_empty() {
                 return Err(why);
             }
             let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
             t.stored_bodies = stored;
             let dropped = fusion_dropped_inputs(&tree, &entries, &t.stored_bodies, kernel, importer, cancel);
-            let note = fusion_states_check(&mut t, bodies, (&ends, end_box), &dropped, kernel, file_name)
+            let note = fusion_states_check(&mut t, bodies, (&ends, moved), &dropped, kernel, file_name)
                 .map_err(|states| format!("{why}; checked step by step: {states}"))?;
             Ok((t, Some(note)))
         }
@@ -1991,48 +1992,51 @@ fn fusion_placement(p: &Value) -> Option<gusset_sat::fusion::Placement> {
 /// bodies after the last chamfer, where the `.smb` holds the states before the blends and the cut
 /// tools; 2011 and 931: the one filleted body). Empty, so that nothing is concluded from them,
 /// where the tree has a stored body (a Base Feature's blob holds its own bodies), where a blob or
-/// one of its solid bodies cannot be read, or where there are too many. Also the box of all of
-/// them.
+/// one of its solid bodies cannot be read, or where there are too many. Per blob: the volumes of
+/// its bodies and the box of all of them.
 fn fusion_end_bodies(
     tree: &Value,
     entries: &[(String, Vec<u8>)],
     kernel: &Arc<dyn gusset_kernel::Kernel>,
     importer: &dyn Importer,
     cancel: &CancelFlag,
-) -> (Vec<f64>, Option<gusset_kernel::BBox>) {
+) -> Vec<EndBlob> {
     let feats = tree.get("features").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
     if feats.iter().any(|f| f.get("type").and_then(Value::as_str) == Some("stored_body")) {
-        return (Vec::new(), None);
+        return Vec::new();
     }
     let limits = gusset_sat::Limits::default();
-    let mut out = Vec::new();
-    let mut bbox: Option<gusset_kernel::BBox> = None;
+    let mut blobs: Vec<EndBlob> = Vec::new();
+    let mut total = 0;
     for (_, blob) in
         entries.iter().filter(|(n, _)| n.contains("Breps.BlobParts/") && n.to_ascii_lowercase().ends_with(".smbh"))
     {
-        let Ok(count) = gusset_sat::body_count(blob, &limits) else { return (Vec::new(), None) };
-        if out.len() + count > MAX_F3D_BODIES {
-            return (Vec::new(), None);
+        let Ok(count) = gusset_sat::body_count(blob, &limits) else { return Vec::new() };
+        total += count;
+        if total > MAX_F3D_BODIES {
+            return Vec::new();
         }
+        let mut out = Vec::new();
+        let mut bbox: Option<gusset_kernel::BBox> = None;
         for nth in 0..count {
             if cancel.load(Ordering::Relaxed) {
-                return (Vec::new(), None);
+                return Vec::new();
             }
             let step = match gusset_sat::to_step_nth(blob, "end body", &limits, None, nth, count) {
                 Ok(c) => c.step,
                 // A sheet body is no body of the rebuilt model either.
                 Err(gusset_sat::SatError::Unsupported(why)) if why.ends_with("is not a solid") => continue,
-                Err(_) => return (Vec::new(), None),
+                Err(_) => return Vec::new(),
             };
-            let Ok(solids) = importer.import("step", step.as_bytes(), cancel) else { return (Vec::new(), None) };
+            let Ok(solids) = importer.import("step", step.as_bytes(), cancel) else { return Vec::new() };
             let mut volume = 0.0;
             for (_, solid) in &solids {
                 let Some(v) = kernel.read_native(solid).ok().and_then(|s| kernel.mass_properties(&s).ok()) else {
-                    return (Vec::new(), None);
+                    return Vec::new();
                 };
                 volume += v.volume;
                 let Some(b) = kernel.read_native(solid).ok().and_then(|s| kernel.bbox(&s).ok()) else {
-                    return (Vec::new(), None);
+                    return Vec::new();
                 };
                 bbox = Some(bbox.map_or(b, |a| gusset_kernel::BBox {
                     min: [a.min[0].min(b.min[0]), a.min[1].min(b.min[1]), a.min[2].min(b.min[2])],
@@ -2040,12 +2044,80 @@ fn fusion_end_bodies(
                 }));
             }
             if solids.is_empty() {
-                return (Vec::new(), None);
+                return Vec::new();
             }
             out.push(volume);
         }
+        if let Some(b) = bbox {
+            blobs.push((out, b));
+        }
+    }
+    blobs
+}
+
+/// The bodies of one history blob ([`fusion_end_bodies`]): their volumes and the box of all of them.
+type EndBlob = (Vec<f64>, gusset_kernel::BBox);
+
+/// The volumes of end blobs together, and the box of all of them.
+fn fusion_ends_flat(blobs: &[EndBlob]) -> (Vec<f64>, Option<gusset_kernel::BBox>) {
+    let mut out = Vec::new();
+    let mut bbox: Option<gusset_kernel::BBox> = None;
+    for (vols, b) in blobs {
+        out.extend_from_slice(vols);
+        bbox = Some(bbox.map_or(*b, |a| gusset_kernel::BBox {
+            min: [a.min[0].min(b.min[0]), a.min[1].min(b.min[1]), a.min[2].min(b.min[2])],
+            max: [a.max[0].max(b.max[0]), a.max[1].max(b.max[1]), a.max[2].max(b.max[2])],
+        }));
     }
     (out, bbox)
+}
+
+/// Whether the tree moved a body into another component (`Body->Comp`, `CutPasteBodies`): the
+/// reader carries the body on and lists the move as skipped.
+fn fusion_moves_bodies(tree: &Value) -> bool {
+    tree.get("skipped").and_then(Value::as_array).is_some_and(|s| {
+        s.iter().any(|x| matches!(x.get("fusion_type").and_then(Value::as_str), Some("Body->Comp" | "CutPasteBodies")))
+    })
+}
+
+/// Of the end blobs of a design that moved bodies into other components, the ones that are not a
+/// snapshot left by a move: a blob whose bodies are, one for one, the bodies (or the solids of the
+/// bodies) of the model after some step `k` before the last, and together its whole volume, holds
+/// the moved bodies as the component they left had them (5360: the root's blob holds the housing
+/// and both magnets as they were before the housing went to its component, after
+/// `Fillet - Magnets`, while the components' blobs hold the finished bodies). Such a blob confirms
+/// that state rather than the end; the other blobs still have to be the finished bodies. Where no
+/// body was moved, or only one blob is stored, all blobs are kept.
+fn fusion_end_blobs_kept(
+    blobs: &[EndBlob],
+    moved: bool,
+    vols: &[f64],
+    per_body: &[Vec<f64>],
+    per_solid: &[Vec<f64>],
+) -> Vec<EndBlob> {
+    if !moved || blobs.len() < 2 {
+        return blobs.to_vec();
+    }
+    let same = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
+    let last = vols.len().saturating_sub(1);
+    let snapshot = |bodies: &[f64]| {
+        (1..last).any(|k| {
+            let total: f64 = bodies.iter().sum();
+            if !vols.get(k).is_some_and(|v| same(*v, total)) {
+                return false;
+            }
+            let mut pool: Vec<f64> = per_body.get(k).into_iter().chain(per_solid.get(k)).flatten().copied().collect();
+            bodies.iter().all(|b| match pool.iter().position(|p| same(*p, *b)) {
+                Some(at) => {
+                    pool.swap_remove(at);
+                    true
+                }
+                None => false,
+            })
+        })
+    };
+    let kept: Vec<EndBlob> = blobs.iter().filter(|(b, _)| !snapshot(b)).cloned().collect();
+    if kept.is_empty() { blobs.to_vec() } else { kept }
 }
 
 /// How many copies of its cut tool (or added body) each feature makes, from the tree: a cut or
@@ -2071,6 +2143,9 @@ fn fusion_instances(features: &[Value]) -> Vec<Option<u64>> {
             Some("extrude") if matches!(get("operation"), Some("cut" | "join")) => {
                 Some(f.get("profiles").and_then(Value::as_array).map_or(1, |p| p.len().max(1)) as u64)
             }
+            // A sweep's one profile makes one tool (5360: the pin's sweep joins the pin over its
+            // bottom disc, and its stored tool holds that disc as well).
+            Some("sweep") if matches!(get("operation"), Some("cut" | "join")) => Some(1),
             Some("pattern_linear") => {
                 let count = f.get("count").and_then(Value::as_u64).filter(|c| *c >= 2);
                 count.and_then(|c| inputs()?.checked_mul(c - 1))
@@ -2431,7 +2506,8 @@ fn fusion_explain_placed(
 /// ([`fusion_instances`]: a hole's positions, the counts of the patterns that repeat it). Every
 /// feature after the last stored state must be explained that way, so a wrong pattern count is
 /// refused; one whose copies cannot be derived is refused too, unless the file stores the design's
-/// end bodies (`ends`, [`fusion_end_bodies`]) and the finished bodies are those, volume for volume
+/// end bodies (`ends`, [`fusion_end_bodies`], less the snapshots of [`fusion_end_blobs_kept`]) and
+/// the finished bodies are those, volume for volume
 /// ([`fusion_ends_agree`]): then the end result itself is what confirms the last features, as it
 /// does for a file whose `.smb` holds the end result. The finished model must also lie
 /// in the box of the stored solids that are states or tools of joins (a cut's tool may reach out
@@ -2440,7 +2516,7 @@ fn fusion_explain_placed(
 fn fusion_states_check(
     tree: &mut crate::tree_import::Tree,
     bodies: &[PreparedBody],
-    (ends, end_box): (&[f64], Option<gusset_kernel::BBox>),
+    (end_blobs, moved): (&[EndBlob], bool),
     dropped: &[(f64, gusset_kernel::BBox)],
     kernel: &Arc<dyn gusset_kernel::Kernel>,
     file_name: &str,
@@ -2616,6 +2692,8 @@ fn fusion_states_check(
         })
         .collect();
     let (final_vol, final_box, _, _) = build(n, true)?;
+    let (ends, end_box) = fusion_ends_flat(&fusion_end_blobs_kept(end_blobs, moved, &vols, &per_body, &per_solid));
+    let ends = &ends[..];
     let names: Vec<String> =
         tree.features.iter().map(|f| f.get("name").and_then(Value::as_str).unwrap_or("?").to_string()).collect();
     let insts = fusion_instances(&tree.features);
@@ -4290,6 +4368,38 @@ mod fusion_steps_tests {
         assert_eq!(check(&[]), Ok(3));
         assert_eq!(check(&[100.0, 6.5, 3.0]), Ok(3));
         assert!(check(&[100.0, 6.0, 3.0]).unwrap_err().contains("not the end bodies"));
+    }
+
+    #[test]
+    fn a_sweep_that_joins_or_cuts_makes_one_tool() {
+        let t = vec![
+            json!({"type": "sweep", "name": "S1", "operation": "join"}),
+            json!({"type": "sweep", "name": "S2", "operation": "cut"}),
+            json!({"type": "sweep", "name": "S3", "operation": "new"}),
+        ];
+        assert_eq!(fusion_instances(&t), vec![Some(1), Some(1), None]);
+    }
+
+    #[test]
+    fn an_end_blob_that_is_an_earlier_state_is_a_moves_snapshot() {
+        let b = gusset_kernel::BBox { min: [0.0; 3], max: [1.0; 3] };
+        // Steps: housing; magnets as one body of two solids; a pin; the housing cut.
+        let vols = [0.0, 175.0, 226.0, 233.0, 232.0];
+        let per_body = vec![vec![], vec![175.0], vec![175.0, 51.0], vec![175.0, 51.0, 7.0], vec![174.0, 51.0, 7.0]];
+        let per_solid = vec![vec![], vec![], vec![25.0, 26.0], vec![25.0, 26.0], vec![25.0, 26.0]];
+        let root = (vec![175.0, 26.0, 25.0], b);
+        let comps = vec![(vec![174.0], b), (vec![25.0, 26.0], b), (vec![7.0], b)];
+        let mut all = vec![root.clone()];
+        all.extend(comps.iter().cloned());
+        // With a move, the root's blob (the state after step 2) is left out.
+        assert_eq!(fusion_end_blobs_kept(&all, true, &vols, &per_body, &per_solid), comps);
+        // Without one, every blob is kept.
+        assert_eq!(fusion_end_blobs_kept(&all, false, &vols, &per_body, &per_solid), all);
+        // A blob of the last state, or one whose volume is no state's whole, is kept.
+        let last = vec![(vec![174.0, 51.0, 7.0], b), (vec![1.0], b)];
+        assert_eq!(fusion_end_blobs_kept(&last, true, &vols, &per_body, &per_solid), last);
+        let part = vec![(vec![175.0, 26.0], b), (vec![1.0], b)];
+        assert_eq!(fusion_end_blobs_kept(&part, true, &vols, &per_body, &per_solid), part);
     }
 
     #[test]
