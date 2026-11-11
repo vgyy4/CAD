@@ -300,8 +300,8 @@ fn helix_surface(r: &Rec, from: usize) -> Result<Bs3Surface, SatError> {
 }
 
 /// A B-spline surface (`exactsur`): `[full] nubs|nurbs <du> <dv> <words> <nu> <nv>`, the u
-/// then v knot vectors as for curves, then the control points, u major (each u row lists
-/// its points along v).
+/// then v knot vectors as for curves, then the control points: v fastest in ACIS's own files
+/// (each u row lists its points along v), u fastest in ShapeManager's ([`SHAPE_MANAGER`]).
 struct Bs3Surface {
     degree: [usize; 2],
     knots: [Vec<f64>; 2],
@@ -345,7 +345,7 @@ fn step_ends(mults: &mut [usize], degree: usize) {
     }
 }
 
-fn bs3_surface(r: &Rec, from: usize) -> Result<Bs3Surface, SatError> {
+fn bs3_surface(r: &Rec, from: usize, u_fastest: bool) -> Result<Bs3Surface, SatError> {
     let bad = |m: &str| SatError::Malformed(format!("{}: {m}", r.ty));
     let mut k = from;
     let mut rational = None;
@@ -383,12 +383,12 @@ fn bs3_surface(r: &Rec, from: usize) -> Result<Bs3Surface, SatError> {
         && (k..k + 4).all(|i| r.num(i).is_some_and(|v| (0.0..=3.0).contains(&v) && v.fract().abs() < 1e-12))
     {
         let mut kb = k + 4;
-        if let Ok(sf) = bs3_surface_rest(r, &mut kb, du, dv, rational) {
+        if let Ok(sf) = bs3_surface_rest(r, &mut kb, du, dv, rational, u_fastest) {
             return Ok(sf);
         }
     }
     let mut k1 = k;
-    let first = bs3_surface_rest(r, &mut k1, du, dv, rational);
+    let first = bs3_surface_rest(r, &mut k1, du, dv, rational, u_fastest);
     // A rational surface of the 2025 layout (Fusion's `exact_spl_sur` inside a `pcurve`):
     // `both` and four enumeration values stand before the counts.
     if first.is_err()
@@ -396,7 +396,7 @@ fn bs3_surface(r: &Rec, from: usize) -> Result<Bs3Surface, SatError> {
         && (k..k + 4).all(|i| r.num(i).is_some_and(|v| (0.0..=3.0).contains(&v) && v.fract().abs() < 1e-12))
     {
         let mut kb = k + 4;
-        if let Ok(sf) = bs3_surface_rest(r, &mut kb, du, dv, rational) {
+        if let Ok(sf) = bs3_surface_rest(r, &mut kb, du, dv, rational, u_fastest) {
             return Ok(sf);
         }
     }
@@ -404,7 +404,14 @@ fn bs3_surface(r: &Rec, from: usize) -> Result<Bs3Surface, SatError> {
 }
 
 /// A B-spline surface from its knot counts on (`k` at the u count).
-fn bs3_surface_rest(r: &Rec, k: &mut usize, du: usize, dv: usize, rational: bool) -> Result<Bs3Surface, SatError> {
+fn bs3_surface_rest(
+    r: &Rec,
+    k: &mut usize,
+    du: usize,
+    dv: usize,
+    rational: bool,
+    u_fastest: bool,
+) -> Result<Bs3Surface, SatError> {
     let bad = |m: &str| SatError::Malformed(format!("{}: {m}", r.ty));
     let count = |i: usize| r.num(i).filter(|n| *n >= 2.0 && *n <= 1e6).map(|n| n as usize);
     let (nu, nv) = (count(*k).ok_or_else(|| bad("u knot count"))?, count(*k + 1).ok_or_else(|| bad("v knot count"))?);
@@ -418,27 +425,33 @@ fn bs3_surface_rest(r: &Rec, k: &mut usize, du: usize, dv: usize, rational: bool
         return Err(SatError::TooLarge("a spline surface has too many control points".into()));
     }
     let dim = if rational { 4 } else { 3 };
-    let mut points = Vec::with_capacity(cu);
-    let mut weights = rational.then(|| Vec::with_capacity(cu));
-    for _ in 0..cu {
-        let mut row = Vec::with_capacity(cv);
-        let mut wrow = Vec::with_capacity(cv);
-        for _ in 0..cv {
-            row.push(r.vec3(k).ok_or_else(|| bad("control point"))?);
-            if rational {
-                wrow.push(r.num(k + 3).filter(|w| *w > 0.0).ok_or_else(|| bad("weight"))?);
-            }
-            k += dim;
+    let n = cu * cv;
+    let mut flat = Vec::with_capacity(n);
+    let mut wflat = Vec::with_capacity(if rational { n } else { 0 });
+    for _ in 0..n {
+        flat.push(r.vec3(k).ok_or_else(|| bad("control point"))?);
+        if rational {
+            wflat.push(r.num(k + 3).filter(|w| *w > 0.0).ok_or_else(|| bad("weight"))?);
         }
-        points.push(row);
-        if let Some(w) = weights.as_mut() {
-            w.push(wrow);
-        }
+        k += dim;
     }
+    // Where point (iu, iv) is in the list.
+    let at = |iu: usize, iv: usize| if u_fastest { iv * cu + iu } else { iu * cv + iv };
+    let points: Vec<Vec<V3>> =
+        (0..cu).map(|iu| (0..cv).filter_map(|iv| flat.get(at(iu, iv)).copied()).collect()).collect();
+    let weights: Option<Vec<Vec<f64>>> =
+        rational.then(|| (0..cu).map(|iu| (0..cv).filter_map(|iv| wflat.get(at(iu, iv)).copied()).collect()).collect());
     step_ends(&mut mu, du);
     step_ends(&mut mv, dv);
     Ok(Bs3Surface { degree: [du, dv], knots: [ku, kv], mults: [mu, mv], points, weights })
 }
+
+/// The first ShapeManager version (Autodesk's ACIS, in Fusion's and Inventor's files: 222.0 and
+/// on are read). Its B-spline surfaces list their control points u fastest (each v row along
+/// u): only in that order do the faces' vertices, and the parameter-space curves stored for
+/// their coedges, lie on the surface (ADR 0039 amendment). ACIS's own files (NIST's, versions 1
+/// to 7) list them v fastest.
+const SHAPE_MANAGER: u32 = 20_000;
 
 /// Most entries walked along one chain (faces of a shell, coedges of a loop, ...).
 const MAX_CHAIN: usize = 10_000_000;
@@ -492,6 +505,8 @@ struct Writer<'a> {
     failed: BTreeMap<i64, String>,
     /// B-spline surfaces by their definition block (`{ ref n }` shares one).
     defs: BTreeMap<(usize, usize), usize>,
+    /// B-spline surfaces list their control points u fastest ([`SHAPE_MANAGER`]).
+    u_fastest: bool,
     /// The output passed [`MAX_OUTPUT`].
     full: bool,
     /// Material colours, the colour of the body being written, and the faces written with
@@ -811,7 +826,7 @@ impl<'a> Writer<'a> {
                 }
                 let name = def.word(at + 1).unwrap_or("").to_string();
                 let b = if name == "exactsur" || name == "exact_spl_sur" {
-                    bs3_surface(def, at + 2)?
+                    bs3_surface(def, at + 2, self.u_fastest)?
                 } else if name == "helix_spl_line" {
                     let note =
                         "'helix_spl_line' surfaces (threads) are fitted as B-splines within 0.001 mm".to_string();
@@ -829,7 +844,7 @@ impl<'a> Writer<'a> {
                         .filter(|i| matches!(def.word(*i), Some("nubs" | "nurbs")) && is_int(i + 1) && is_int(i + 2));
                     let mut found: Option<Result<Bs3Surface, SatError>> = None;
                     for start in starts.by_ref().take(MAX_SURFACE_CANDIDATES) {
-                        let r = bs3_surface(def, start);
+                        let r = bs3_surface(def, start, self.u_fastest);
                         let done = r.is_ok();
                         if done || found.is_none() {
                             found = Some(r);
@@ -1076,6 +1091,7 @@ pub(crate) fn write(
         lumps: std::collections::BTreeSet::new(),
         failed: BTreeMap::new(),
         defs: BTreeMap::new(),
+        u_fastest: sat.version >= SHAPE_MANAGER,
         full: false,
         colours,
         body_colour: None,
@@ -1265,13 +1281,13 @@ mod surface_layout_tests {
         let pts = "0 0 0 1 0 0 0 1 0 1 1 1";
         let text = rec(&format!("nubs 1 1 open open none none 2 2 0 1 1 1 0 1 1 1 {pts}"));
         let bin = rec(&format!("nubs 1 1 0 0 0 0 2 2 0 1 1 1 0 1 1 1 {pts}"));
-        let (a, b) = (bs3_surface(&text, 0).unwrap(), bs3_surface(&bin, 0).unwrap());
+        let (a, b) = (bs3_surface(&text, 0, false).unwrap(), bs3_surface(&bin, 0, false).unwrap());
         assert_eq!(a.points, b.points);
         assert_eq!(a.knots, b.knots);
         assert_eq!(a.points.len(), 2);
         // Without descriptors at all, the counts come right after the degrees.
         let bare = rec(&format!("nubs 1 1 2 2 0 1 1 1 0 1 1 1 {pts}"));
-        assert_eq!(bs3_surface(&bare, 0).unwrap().points, a.points);
+        assert_eq!(bs3_surface(&bare, 0, false).unwrap().points, a.points);
     }
 
     #[test]
@@ -1303,16 +1319,30 @@ mod surface_layout_tests {
     }
 
     #[test]
+    fn shape_managers_control_points_are_listed_u_fastest() {
+        // Two by three points: (iu, iv) is (10 iu, iv, 0), listed v fastest then u fastest.
+        let v_fast = "nubs 1 2 open open none none 2 2 0 1 1 1 0 2 1 2 0 0 0 0 1 0 0 2 0 10 0 0 10 1 0 10 2 0";
+        let u_fast = "nubs 1 2 open open none none 2 2 0 1 1 1 0 2 1 2 0 0 0 10 0 0 0 1 0 10 1 0 0 2 0 10 2 0";
+        let a = bs3_surface(&rec(v_fast), 0, false).unwrap();
+        let b = bs3_surface(&rec(u_fast), 0, true).unwrap();
+        assert_eq!(a.points, b.points);
+        assert!(a.points[1][2].iter().zip([10.0, 2.0, 0.0]).all(|(p, q)| (p - q).abs() < 1e-12));
+        assert_ne!(bs3_surface(&rec(u_fast), 0, false).unwrap().points, a.points);
+    }
+
+    #[test]
     fn a_curves_nubs_is_not_read_as_a_surface_and_the_next_candidate_is() {
         // A procedural surface can hold a path curve (`nubs <degree> <closure> <count> ...`)
         // before its own approximation: the curve fails as a surface, cleanly.
         let curve = rec("nubs 5 2 3 0.0 5 0.5 1 1.0 5 0 0 0 1 1 1");
-        assert!(bs3_surface(&curve, 0).is_err());
+        assert!(bs3_surface(&curve, 0, false).is_err());
         let pts = "0 0 0 1 0 0 0 1 0 1 1 1";
         let both = format!("{} nubs 1 1 open open none none 2 2 0 1 1 1 0 1 1 1 {pts}", "nubs 5 2 3 0.0 5 0.5 1 1.0 5");
         let r = rec(&both);
-        let start =
-            (0..r.f.len()).filter(|i| r.word(*i) == Some("nubs")).map(|i| bs3_surface(&r, i)).find(Result::is_ok);
+        let start = (0..r.f.len())
+            .filter(|i| r.word(*i) == Some("nubs"))
+            .map(|i| bs3_surface(&r, i, false))
+            .find(Result::is_ok);
         assert!(start.is_some());
     }
 
@@ -1322,11 +1352,11 @@ mod surface_layout_tests {
         let pts = "0 0 0 1 1 0 0 1 0 1 0 1 1 1 0 1";
         let plain = rec(&format!("nurbs 1 1 2 2 0 1 1 1 0 1 1 1 {pts}"));
         let both = rec(&format!("nurbs 1 1 both 2 0 0 0 2 2 0 1 1 1 0 1 1 1 {pts}"));
-        let (a, b) = (bs3_surface(&plain, 0).unwrap(), bs3_surface(&both, 0).unwrap());
+        let (a, b) = (bs3_surface(&plain, 0, false).unwrap(), bs3_surface(&both, 0, false).unwrap());
         assert_eq!(a.points, b.points);
         assert_eq!(a.knots, b.knots);
         assert_eq!(b.weights, a.weights);
         // Damaged counts are an error, not a panic.
-        assert!(bs3_surface(&rec("nurbs 1 1 both 2 0 0 0 2"), 0).is_err());
+        assert!(bs3_surface(&rec("nurbs 1 1 both 2 0 0 0 2"), 0, false).is_err());
     }
 }

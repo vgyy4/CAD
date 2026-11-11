@@ -314,3 +314,33 @@ fn a_history_blobs_header_unit_is_not_a_length_unit() {
     // And it is centimetres: a 1 x 2 x 3 box is 10 x 20 x 30 mm.
     assert!(a.step.contains("30."), "{}", a.step.lines().find(|l| l.contains("CARTESIAN_POINT")).unwrap_or(""));
 }
+
+/// The box of [`box_sat`] (10 x 20 x 30) with its top face (z = 30) on the bilinear B-spline
+/// surface `(u, v) -> (u, v, 30)`, its four control points listed u fastest or v fastest.
+fn spline_top_box(version: u32, u_fastest: bool) -> String {
+    let sat = box_sat(version, [10.0, 20.0, 30.0]);
+    let pts = if u_fastest { "0 0 30 10 0 30 0 20 30 10 20 30" } else { "0 0 30 0 20 30 10 0 30 10 20 30" };
+    // The top face's plane is the second surface record.
+    let top = sat.lines().filter(|l| l.starts_with("plane-surface")).nth(1).unwrap().to_string();
+    sat.replacen(
+        &top,
+        &format!(
+            "spline-surface $-1 -1 $-1 forward {{ exactsur nubs 1 1 open open none none 2 2 0 1 10 1 0 1 20 1 {pts} 0 }} I I I I #"
+        ),
+        1,
+    )
+}
+
+#[test]
+fn shape_manager_files_list_surface_points_u_fastest() {
+    let step = |version, u_fastest| {
+        let c = to_step(spline_top_box(version, u_fastest).as_bytes(), "b", &Limits::default()).unwrap();
+        c.step.lines().filter(|l| !l.starts_with("FILE_NAME")).collect::<Vec<_>>().join("\n")
+    };
+    // Version 7 (ACIS) lists them v fastest, ShapeManager (Fusion, Inventor) u fastest: both
+    // give the surface the box's top edges lie on.
+    let acis = step(700, false);
+    assert!(acis.contains("B_SPLINE_SURFACE_WITH_KNOTS"));
+    assert_eq!(step(22300, true), acis);
+    assert_ne!(step(22300, false), acis);
+}
