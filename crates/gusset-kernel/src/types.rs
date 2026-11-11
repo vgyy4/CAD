@@ -114,6 +114,46 @@ pub enum Seg2 {
         end: P2,
         ccw: bool,
     },
+    /// One rational Bézier segment of degree 1 to [`MAX_SEG_DEGREE`] from `poles[0]` to
+    /// `poles[degree]`, with positive weights (entries past `degree` are unused): one knot
+    /// span of an exact B-spline sketch curve. Like [`Seg2::Bezier`], every span is its own
+    /// profile edge (exact mass properties, one lateral face per span).
+    RationalBezier {
+        degree: u8,
+        poles: [P2; MAX_SEG_DEGREE + 1],
+        weights: [f64; MAX_SEG_DEGREE + 1],
+    },
+}
+
+/// Highest degree of a [`Seg2::RationalBezier`] (OCCT allows 25; sketch B-splines stop at 9).
+pub const MAX_SEG_DEGREE: usize = 9;
+
+impl Seg2 {
+    /// Points along a rational Bézier segment: `n` points from its start, the end excluded.
+    /// Empty for other segments.
+    pub fn rational_points(&self, n: usize) -> Vec<P2> {
+        let Seg2::RationalBezier { degree, poles, weights } = self else { return Vec::new() };
+        let d = usize::from(*degree).min(MAX_SEG_DEGREE);
+        (0..n)
+            .map(|k| {
+                let t = k as f64 / n.max(1) as f64;
+                let mut h: Vec<[f64; 3]> =
+                    poles.iter().zip(weights).take(d + 1).map(|(p, w)| [p[0] * w, p[1] * w, *w]).collect();
+                for level in 1..=d {
+                    for i in 0..=(d - level) {
+                        if let (Some(&a), Some(&b)) = (h.get(i), h.get(i + 1))
+                            && let Some(x) = h.get_mut(i)
+                        {
+                            *x =
+                                [(1.0 - t) * a[0] + t * b[0], (1.0 - t) * a[1] + t * b[1], (1.0 - t) * a[2] + t * b[2]];
+                        }
+                    }
+                }
+                let q = h.first().copied().unwrap_or([0.0, 0.0, 1.0]);
+                [q[0] / q[2], q[1] / q[2]]
+            })
+            .collect()
+    }
 }
 
 impl Seg2 {

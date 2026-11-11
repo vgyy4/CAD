@@ -329,6 +329,11 @@ fn polyline(l: &Loop2) -> Polyline<f64> {
                     p.add(q[0], q[1], 0.0);
                 }
             }
+            Seg2::RationalBezier { .. } => {
+                for q in e.seg.rational_points(32) {
+                    p.add(q[0], q[1], 0.0);
+                }
+            }
             Seg2::Bezier { p: c } => {
                 let n = bezier_steps(&c);
                 for i in 0..n {

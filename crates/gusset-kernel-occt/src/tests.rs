@@ -1545,3 +1545,85 @@ fn extrude_to_cylinder_face() {
     // A cylinder face takes no offset.
     assert!(k().extrude_to_face(&boxp(10.0, 10.0), &cyl, side, 1.0, false).is_err());
 }
+
+/// A rational Bézier kernel segment from its control points and weights.
+fn rational(poles: &[P2], weights: &[f64]) -> Seg2 {
+    let mut p = [[0.0; 2]; gusset_kernel::MAX_SEG_DEGREE + 1];
+    let mut w = [0.0; gusset_kernel::MAX_SEG_DEGREE + 1];
+    p[..poles.len()].copy_from_slice(poles);
+    w[..weights.len()].copy_from_slice(weights);
+    Seg2::RationalBezier { degree: u8::try_from(poles.len() - 1).unwrap(), poles: p, weights: w }
+}
+
+/// The circle of radius `r` around `c` as four rational quadratics (the spans of the
+/// nine-pole NURBS circle), counter-clockwise from (c + r, c).
+fn nurbs_circle(c: P2, r: f64, tag: u64) -> Loop2 {
+    let h = std::f64::consts::FRAC_1_SQRT_2;
+    let q = [[r, 0.0], [r, r], [0.0, r], [-r, r], [-r, 0.0], [-r, -r], [0.0, -r], [r, -r], [r, 0.0]]
+        .map(|p| [c[0] + p[0], c[1] + p[1]]);
+    Loop2 {
+        edges: (0..4)
+            .map(|k| ProfileEdge { seg: rational(&q[2 * k..2 * k + 3], &[1.0, h, 1.0]), tag: tag + k as u64 })
+            .collect(),
+    }
+}
+
+#[test]
+fn an_extruded_nurbs_circle_has_the_volume_of_a_cylinder() {
+    let p = Profile {
+        frame: Frame::XY,
+        regions: vec![Region2 { outer: nurbs_circle([2.0, -1.0], 5.0, 10), holes: vec![] }],
+    };
+    let r = k().extrude(&p, &ExtrudeSpec { distance: 7.0, symmetric: false }).unwrap();
+    let want = std::f64::consts::PI * 25.0 * 7.0;
+    let m = k().mass_properties(&r.shape).unwrap();
+    assert!(close(m.volume, want, 1e-9), "{} vs {want}", m.volume);
+    // One lateral face per span, named by its tag; two caps.
+    let t = k().topology(&r.shape).unwrap();
+    assert_eq!((t.faces.len(), t.solids), (6, 1));
+    for tag in 10..14 {
+        assert!(r.face_origins.iter().flatten().any(|o| matches!(o, FaceOrigin::Lateral { tag: t } if *t == tag)));
+    }
+}
+
+#[test]
+fn a_revolved_nurbs_circle_is_a_torus() {
+    let (rr, r) = (12.0, 3.0);
+    let p =
+        Profile { frame: Frame::XZ, regions: vec![Region2 { outer: nurbs_circle([rr, 0.0], r, 1), holes: vec![] }] };
+    let rv = k()
+        .revolve(&p, &RevolveSpec { axis_origin: [0.0, 0.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::TAU })
+        .unwrap();
+    let want = 2.0 * std::f64::consts::PI * rr * std::f64::consts::PI * r * r;
+    let m = k().mass_properties(&rv.shape).unwrap();
+    assert!(close(m.volume, want, 1e-8), "{} vs {want}", m.volume);
+}
+
+#[test]
+fn a_periodic_quadratic_bspline_and_a_quintic_edge_have_exact_areas() {
+    // The uniform periodic quadratic over the square of corners (±a, ±a): from edge
+    // midpoint to edge midpoint with the corner as middle pole; area 10 a² / 3.
+    let a = 6.0;
+    let mids = [[a, 0.0], [0.0, a], [-a, 0.0], [0.0, -a]];
+    let corners = [[a, a], [-a, a], [-a, -a], [a, -a]];
+    let edges = (0..4)
+        .map(|k| ProfileEdge { seg: rational(&[mids[k], corners[k], mids[(k + 1) % 4]], &[1.0; 3]), tag: k as u64 })
+        .collect();
+    let p = Profile { frame: Frame::XY, regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }] };
+    let r = k().extrude(&p, &ExtrudeSpec { distance: 2.0, symmetric: false }).unwrap();
+    let want = 10.0 * a * a / 3.0 * 2.0;
+    let m = k().mass_properties(&r.shape).unwrap();
+    assert!(close(m.volume, want, 1e-9), "{} vs {want}", m.volume);
+    // A degree-5 segment whose poles lie evenly on a straight edge closes a 4 x 3 rectangle.
+    let quintic = rational(&(0..6).map(|i| [4.0 - 0.8 * f64::from(i), 3.0]).collect::<Vec<_>>(), &[1.0; 6]);
+    let edges = vec![
+        ProfileEdge { seg: Seg2::Line { a: [0.0, 0.0], b: [4.0, 0.0] }, tag: 1 },
+        ProfileEdge { seg: Seg2::Line { a: [4.0, 0.0], b: [4.0, 3.0] }, tag: 2 },
+        ProfileEdge { seg: quintic, tag: 3 },
+        ProfileEdge { seg: Seg2::Line { a: [0.0, 3.0], b: [0.0, 0.0] }, tag: 4 },
+    ];
+    let p = Profile { frame: Frame::XY, regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }] };
+    let r = k().extrude(&p, &ExtrudeSpec { distance: 1.0, symmetric: false }).unwrap();
+    let m = k().mass_properties(&r.shape).unwrap();
+    assert!(close(m.volume, 12.0, 1e-9), "{}", m.volume);
+}

@@ -475,6 +475,15 @@ impl Wire for Seg2 {
                 w.bool(*ccw);
                 Ok(())
             }
+            Seg2::RationalBezier { degree, poles, weights } => {
+                w.u8(6);
+                w.u8(*degree);
+                for (p, wt) in poles.iter().zip(weights).take(usize::from(*degree) + 1) {
+                    p.put(w, s)?;
+                    w.f64(*wt);
+                }
+                Ok(())
+            }
         }
     }
     fn get(r: &mut Reader<'_>, s: &dyn ShapeRefs) -> Result<Self, WireError> {
@@ -498,6 +507,19 @@ impl Wire for Seg2 {
                 end: Wire::get(r, s)?,
                 ccw: r.bool()?,
             }),
+            6 => {
+                let degree = r.u8()?;
+                if !(1..=crate::types::MAX_SEG_DEGREE).contains(&usize::from(degree)) {
+                    return Err(WireError::bad_tag("Seg2 degree", degree));
+                }
+                let mut poles = [[0.0; 2]; crate::types::MAX_SEG_DEGREE + 1];
+                let mut weights = [0.0; crate::types::MAX_SEG_DEGREE + 1];
+                for (p, wt) in poles.iter_mut().zip(weights.iter_mut()).take(usize::from(degree) + 1) {
+                    *p = Wire::get(r, s)?;
+                    *wt = r.f64()?;
+                }
+                Ok(Seg2::RationalBezier { degree, poles, weights })
+            }
             t => Err(WireError::bad_tag("Seg2", t)),
         }
     }
@@ -1135,7 +1157,39 @@ mod tests {
                 end: [1.0, 4.0],
                 ccw: true,
             },
+            Seg2::RationalBezier {
+                degree: 2,
+                poles: {
+                    let mut p = [[0.0; 2]; crate::types::MAX_SEG_DEGREE + 1];
+                    p[..3].copy_from_slice(&[[10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]);
+                    p
+                },
+                weights: {
+                    let mut w = [0.0; crate::types::MAX_SEG_DEGREE + 1];
+                    w[..3].copy_from_slice(&[1.0, core::f64::consts::FRAC_1_SQRT_2, 1.0]);
+                    w
+                },
+            },
+            Seg2::RationalBezier {
+                degree: 9,
+                poles: core::array::from_fn(|i| [i as f64, -(i as f64)]),
+                weights: [1.0; crate::types::MAX_SEG_DEGREE + 1],
+            },
         ]
+    }
+
+    #[test]
+    fn rational_bezier_degrees_are_checked() {
+        for degree in [0u8, 10, 255] {
+            let mut bytes = vec![6, degree];
+            bytes.extend(std::iter::repeat_n(0u8, 24 * 11));
+            assert!(decode::<Seg2>(&bytes, &NoShapes).is_err(), "{degree}");
+        }
+        // A quarter circle sampled through `rational_points` stays on the circle.
+        let q = &all_segs()[all_segs().len() - 2];
+        for p in q.rational_points(16) {
+            assert!((libm::hypot(p[0], p[1]) - 10.0).abs() < 1e-12);
+        }
     }
 
     fn profile() -> Profile {

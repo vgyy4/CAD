@@ -229,83 +229,108 @@ mod imp {
         let mut segs = Vec::new();
         let mut loops = Vec::new();
         let mut poles: Vec<f64> = Vec::new();
-        let mut add_loop =
-            |l: &Loop2, region: u32, outer: bool, segs: &mut Vec<sys::GsSeg>, poles: &mut Vec<f64>| -> KResult<()> {
-                let first = u32::try_from(segs.len()).map_err(|_| invalid("profile is too large"))?;
-                for e in &l.edges {
-                    let mut s = sys::GsSeg { tag: e.tag, ..Default::default() };
-                    match e.seg {
-                        Seg2::Line { a, b } => {
-                            s.kind = sys::GS_SEG_LINE;
-                            s.a = a;
-                            s.b = b;
-                        }
-                        Seg2::Arc { center, start, end, ccw } => {
-                            s.kind = sys::GS_SEG_ARC;
-                            s.c = center;
-                            s.a = start;
-                            s.b = end;
-                            s.ccw = i32::from(ccw);
-                        }
-                        Seg2::Circle { center, radius } => {
-                            s.kind = sys::GS_SEG_CIRCLE;
-                            s.c = center;
-                            s.r = radius;
-                        }
-                        Seg2::Ellipse { center, major, a, b } => {
-                            s.kind = sys::GS_SEG_ELLIPSE;
-                            s.c = center;
-                            s.major = major;
-                            s.r = a;
-                            s.rb = b;
-                        }
-                        Seg2::EllipseArc { center, major, a, b, start, end, ccw } => {
-                            s.kind = sys::GS_SEG_ELLIPSE_ARC;
-                            s.c = center;
-                            s.major = major;
-                            s.r = a;
-                            s.rb = b;
-                            s.a = start;
-                            s.b = end;
-                            s.ccw = i32::from(ccw);
-                        }
-                        Seg2::Bezier { p: pts } => {
-                            s.kind = sys::GS_SEG_BEZIER;
-                            s.pole_first =
-                                u32::try_from(poles.len() / 2).map_err(|_| invalid("profile is too large"))?;
-                            s.pole_count = 4;
-                            for q in pts {
-                                if !(q[0].is_finite() && q[1].is_finite()) {
-                                    return Err(invalid("profile contains non-finite coordinates"));
-                                }
-                                poles.extend_from_slice(&q);
+        let mut weights: Vec<f64> = Vec::new();
+        let mut add_loop = |l: &Loop2,
+                            region: u32,
+                            outer: bool,
+                            segs: &mut Vec<sys::GsSeg>,
+                            poles: &mut Vec<f64>,
+                            weights: &mut Vec<f64>|
+         -> KResult<()> {
+            let first = u32::try_from(segs.len()).map_err(|_| invalid("profile is too large"))?;
+            for e in &l.edges {
+                let mut s = sys::GsSeg { tag: e.tag, ..Default::default() };
+                match e.seg {
+                    Seg2::Line { a, b } => {
+                        s.kind = sys::GS_SEG_LINE;
+                        s.a = a;
+                        s.b = b;
+                    }
+                    Seg2::Arc { center, start, end, ccw } => {
+                        s.kind = sys::GS_SEG_ARC;
+                        s.c = center;
+                        s.a = start;
+                        s.b = end;
+                        s.ccw = i32::from(ccw);
+                    }
+                    Seg2::Circle { center, radius } => {
+                        s.kind = sys::GS_SEG_CIRCLE;
+                        s.c = center;
+                        s.r = radius;
+                    }
+                    Seg2::Ellipse { center, major, a, b } => {
+                        s.kind = sys::GS_SEG_ELLIPSE;
+                        s.c = center;
+                        s.major = major;
+                        s.r = a;
+                        s.rb = b;
+                    }
+                    Seg2::EllipseArc { center, major, a, b, start, end, ccw } => {
+                        s.kind = sys::GS_SEG_ELLIPSE_ARC;
+                        s.c = center;
+                        s.major = major;
+                        s.r = a;
+                        s.rb = b;
+                        s.a = start;
+                        s.b = end;
+                        s.ccw = i32::from(ccw);
+                    }
+                    Seg2::Bezier { p: pts } => {
+                        s.kind = sys::GS_SEG_BEZIER;
+                        s.pole_first = u32::try_from(poles.len() / 2).map_err(|_| invalid("profile is too large"))?;
+                        s.pole_count = 4;
+                        for q in pts {
+                            if !(q[0].is_finite() && q[1].is_finite()) {
+                                return Err(invalid("profile contains non-finite coordinates"));
                             }
+                            poles.extend_from_slice(&q);
+                            weights.push(1.0);
                         }
                     }
-                    let finite = [s.a, s.b, s.c, s.major].iter().flatten().chain([&s.r, &s.rb]).all(|v| v.is_finite());
-                    if !finite {
-                        return Err(invalid("profile contains non-finite coordinates"));
+                    Seg2::RationalBezier { degree, poles: pts, weights: ws } => {
+                        let n = usize::from(degree) + 1;
+                        if !(2..=gusset_kernel::MAX_SEG_DEGREE + 1).contains(&n) {
+                            return Err(invalid("profile segment has an unsupported degree"));
+                        }
+                        s.kind = sys::GS_SEG_BEZIER;
+                        s.pole_first = u32::try_from(poles.len() / 2).map_err(|_| invalid("profile is too large"))?;
+                        s.pole_count = u32::from(degree) + 1;
+                        for (q, w) in pts.iter().zip(ws).take(n) {
+                            if !(q[0].is_finite() && q[1].is_finite()) {
+                                return Err(invalid("profile contains non-finite coordinates"));
+                            }
+                            if !(w.is_finite() && w > 0.0) {
+                                return Err(invalid("profile segment has a weight that is not positive"));
+                            }
+                            poles.extend_from_slice(q);
+                            weights.push(w);
+                        }
                     }
-                    segs.push(s);
                 }
-                let count = u32::try_from(l.edges.len()).map_err(|_| invalid("profile is too large"))?;
-                if count == 0 {
-                    return Err(invalid("profile has an empty loop"));
+                let finite = [s.a, s.b, s.c, s.major].iter().flatten().chain([&s.r, &s.rb]).all(|v| v.is_finite());
+                if !finite {
+                    return Err(invalid("profile contains non-finite coordinates"));
                 }
-                loops.push(sys::GsLoop { first, count, region, outer: u32::from(outer) });
-                Ok(())
-            };
+                segs.push(s);
+            }
+            let count = u32::try_from(l.edges.len()).map_err(|_| invalid("profile is too large"))?;
+            if count == 0 {
+                return Err(invalid("profile has an empty loop"));
+            }
+            loops.push(sys::GsLoop { first, count, region, outer: u32::from(outer) });
+            Ok(())
+        };
         for (ri, r) in p.regions.iter().enumerate() {
             let region = u32::try_from(ri).map_err(|_| invalid("too many regions"))?;
-            add_loop(&r.outer, region, true, &mut segs, &mut poles)?;
+            add_loop(&r.outer, region, true, &mut segs, &mut poles, &mut weights)?;
             for h in &r.holes {
-                add_loop(h, region, false, &mut segs, &mut poles)?;
+                add_loop(h, region, false, &mut segs, &mut poles, &mut weights)?;
             }
         }
         if loops.is_empty() {
             return Err(invalid("profile has no regions").with_hint("close the sketch profile"));
         }
-        Ok(ffi::ProfileData { origin: p.frame.origin, x: p.frame.x, y: p.frame.y, segs, loops, poles })
+        Ok(ffi::ProfileData { origin: p.frame.origin, x: p.frame.x, y: p.frame.y, segs, loops, poles, weights })
     }
 
     fn u32_of(v: i64) -> u32 {

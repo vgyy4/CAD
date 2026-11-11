@@ -117,6 +117,7 @@
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
 #include <Geom_BezierCurve.hxx>
+#include <TColStd_Array1OfReal.hxx>
 #include <gp_Elips.hxx>
 #include <Geom_Ellipse.hxx>
 #include <Geom_SurfaceOfLinearExtrusion.hxx>
@@ -272,12 +273,24 @@ double loop_area(const GsProfile* p, const GsLoop& l) {
         pts.emplace_back(s.c[0] + s.major[0] * x - s.major[1] * y, s.c[1] + s.major[1] * x + s.major[0] * y);
       }
     } else if (s.kind == GS_SEG_BEZIER) {
-      if (s.pole_count == 4 && p->poles && size_t(s.pole_first) + 4 <= p->npoles) {
+      size_t n = s.pole_count;
+      if (n >= 2 && n <= 26 && p->poles && size_t(s.pole_first) + n <= p->npoles) {
         const double* q = p->poles + 2 * size_t(s.pole_first);
+        const double* w = p->weights ? p->weights + size_t(s.pole_first) : nullptr;
+        // De Casteljau in homogeneous coordinates.
+        double h[26][3];
         for (int j = 0; j < 12; ++j) {
-          double t = j / 12.0, u = 1.0 - t;
-          double w0 = u * u * u, w1 = 3 * u * u * t, w2 = 3 * u * t * t, w3 = t * t * t;
-          pts.emplace_back(w0 * q[0] + w1 * q[2] + w2 * q[4] + w3 * q[6], w0 * q[1] + w1 * q[3] + w2 * q[5] + w3 * q[7]);
+          double t = j / 12.0;
+          for (size_t i = 0; i < n; ++i) {
+            double wi = w ? w[i] : 1.0;
+            h[i][0] = q[2 * i] * wi;
+            h[i][1] = q[2 * i + 1] * wi;
+            h[i][2] = wi;
+          }
+          for (size_t level = 1; level < n; ++level)
+            for (size_t i = 0; i + level < n; ++i)
+              for (int c = 0; c < 3; ++c) h[i][c] = (1 - t) * h[i][c] + t * h[i + 1][c];
+          pts.emplace_back(h[0][0] / h[0][2], h[0][1] / h[0][2]);
         }
       }
     } else {
@@ -306,13 +319,21 @@ double loop_area(const GsProfile* p, const GsLoop& l) {
 }
 
 Handle(Geom_BezierCurve) bezier_curve(const GsProfile* p, const GsSeg& s, const Frame& f) {
-  if (s.pole_count != 4 || !p->poles || size_t(s.pole_first) + 4 > p->npoles)
+  const int n = int(s.pole_count);
+  if (n < 2 || n > 26 || !p->poles || size_t(s.pole_first) + size_t(n) > p->npoles)
     throw Standard_Failure("Bezier segment has an invalid control polygon");
-  TColgp_Array1OfPnt poles(1, 4);
-  for (int i = 0; i < 4; ++i) {
+  TColgp_Array1OfPnt poles(1, n);
+  TColStd_Array1OfReal weights(1, n);
+  bool rational = false;
+  for (int i = 0; i < n; ++i) {
     const double* q = p->poles + 2 * (size_t(s.pole_first) + size_t(i));
     poles.SetValue(i + 1, f.at(q[0], q[1]));
+    const double w = p->weights ? p->weights[size_t(s.pole_first) + size_t(i)] : 1.0;
+    if (!(w > 0) || !std::isfinite(w)) throw Standard_Failure("Bezier segment has a weight that is not positive");
+    weights.SetValue(i + 1, w);
+    rational = rational || w != 1.0;
   }
+  if (rational) return new Geom_BezierCurve(poles, weights);
   return new Geom_BezierCurve(poles);
 }
 
@@ -622,6 +643,8 @@ bool has_torus_face(const TopoDS_Shape& s) {
   return false;
 }
 
+// Faces swept from an ellipse or from a rational curve (the spans of an exact B-spline
+// sketch curve): the default adaptive tolerance leaves relative errors of 1e-7 to 1e-5.
 bool has_elliptic_face(const TopoDS_Shape& s) {
   for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
     Handle(Geom_Surface) g = BRep_Tool::Surface(TopoDS::Face(ex.Current()));
@@ -633,6 +656,10 @@ bool has_elliptic_face(const TopoDS_Shape& s) {
     if (basis.IsNull()) continue;
     if (Handle(Geom_TrimmedCurve) t = Handle(Geom_TrimmedCurve)::DownCast(basis)) basis = t->BasisCurve();
     if (!Handle(Geom_Ellipse)::DownCast(basis).IsNull()) return true;
+    Handle(Geom_BezierCurve) bz = Handle(Geom_BezierCurve)::DownCast(basis);
+    if (!bz.IsNull() && bz->IsRational()) return true;
+    Handle(Geom_BSplineCurve) bs = Handle(Geom_BSplineCurve)::DownCast(basis);
+    if (!bs.IsNull() && bs->IsRational()) return true;
   }
   return false;
 }

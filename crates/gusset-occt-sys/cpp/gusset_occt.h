@@ -35,7 +35,7 @@ typedef struct {
 #define GS_SEG_LINE 0
 #define GS_SEG_ARC 1    /* center c, from a to b; ccw != 0 for counter-clockwise */
 #define GS_SEG_CIRCLE 2 /* center c, radius r */
-#define GS_SEG_BEZIER 3 /* cubic Bezier: the 4 points GsProfile.poles[pole_first ..] */
+#define GS_SEG_BEZIER 3 /* Bezier of pole_count (2 to 26) points GsProfile.poles[pole_first ..], weights alike */
 #define GS_SEG_ELLIPSE 4     /* center c, unit major direction, semi-axes r (major) and rb */
 #define GS_SEG_ELLIPSE_ARC 5 /* as ELLIPSE, from point a to point b; ccw != 0 for counter-clockwise */
 
@@ -47,7 +47,7 @@ typedef struct {
   double c[2];
   double r;
   uint64_t tag;
-  uint32_t pole_first; /* Bezier only: index into GsProfile.poles (points, not doubles) */
+  uint32_t pole_first; /* Bezier only: index into GsProfile.poles and .weights (points, not doubles) */
   uint32_t pole_count;
   double major[2]; /* ellipses only */
   double rb;       /* ellipses only: the semi-axis across `major` */
@@ -71,6 +71,7 @@ typedef struct {
   size_t nloops;
   const double* poles; /* x, y pairs of all Bezier segments */
   size_t npoles;       /* number of points */
+  const double* weights; /* one per pole (npoles); null: all 1 (polynomial Beziers) */
 } GsProfile;
 
 /* Face-origin records: GsBuf of int64 quads (face, kind, a, b). */

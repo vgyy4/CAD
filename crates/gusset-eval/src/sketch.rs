@@ -381,7 +381,7 @@ pub(crate) fn solve_sketch(
             result.open_ends = dnames(&arr.open_ends);
             let seg_of = |seg: &sk::Segment| -> ProfileEdge {
                 let tag = dback.get(&seg.entity).and_then(|d| entity_tag(d)).unwrap_or(u64::MAX);
-                let tag = if matches!(seg.curve, sk::Curve::Bezier { .. }) {
+                let tag = if matches!(seg.curve, sk::Curve::Bezier { .. } | sk::Curve::RationalBezier { .. }) {
                     gusset_naming::with_segment(tag, seg.sub)
                 } else {
                     tag
@@ -391,6 +391,7 @@ pub(crate) fn solve_sketch(
                     sk::Curve::Arc { center, start, end, ccw, .. } => Seg2::Arc { center, start, end, ccw },
                     sk::Curve::Circle { center, radius, .. } => Seg2::Circle { center, radius },
                     sk::Curve::Bezier { p } => Seg2::Bezier { p },
+                    sk::Curve::RationalBezier { b } => rational_seg(&b),
                     sk::Curve::Ellipse { center, major, a, b, .. } => Seg2::Ellipse { center, major, a, b },
                     sk::Curve::EllipseArc { center, major, a, b, start, end, ccw } => {
                         Seg2::EllipseArc { center, major, a, b, start, end, ccw }
@@ -569,7 +570,7 @@ pub(crate) fn path_chain(
         .map(|seg| {
             let doc_id = solved.ids.get(&seg.entity);
             let tag = doc_id.and_then(|d| entity_tag(d)).unwrap_or(u64::MAX);
-            let tag = if matches!(seg.curve, sk::Curve::Bezier { .. }) {
+            let tag = if matches!(seg.curve, sk::Curve::Bezier { .. } | sk::Curve::RationalBezier { .. }) {
                 gusset_naming::with_segment(tag, seg.sub)
             } else {
                 tag
@@ -579,6 +580,7 @@ pub(crate) fn path_chain(
                 sk::Curve::Arc { center, start, end, ccw, .. } => Seg2::Arc { center, start, end, ccw },
                 sk::Curve::Circle { center, radius, .. } => Seg2::Circle { center, radius },
                 sk::Curve::Bezier { p } => Seg2::Bezier { p },
+                sk::Curve::RationalBezier { b } => rational_seg(&b),
                 sk::Curve::Ellipse { center, major, a, b, .. } => Seg2::Ellipse { center, major, a, b },
                 sk::Curve::EllipseArc { center, major, a, b, start, end, ccw } => {
                     Seg2::EllipseArc { center, major, a, b, start, end, ccw }
@@ -588,6 +590,12 @@ pub(crate) fn path_chain(
         })
         .collect();
     Ok(gusset_kernel::Path2 { frame: solved.frame, edges })
+}
+
+/// The kernel segment of one rational Bézier span of a sketch B-spline.
+fn rational_seg(b: &sk::RationalBezier) -> Seg2 {
+    const _: () = assert!(sk::MAX_BEZIER_DEGREE == gusset_kernel::MAX_SEG_DEGREE);
+    Seg2::RationalBezier { degree: u8::try_from(b.degree).unwrap_or(u8::MAX), poles: b.poles, weights: b.weights }
 }
 
 /// Builds the kernel profile for the selected regions (empty selection = all).

@@ -22,6 +22,9 @@ fn ends(s: &Seg2) -> Option<(P2, P2)> {
         Seg2::Line { a, b } => Some((a, b)),
         Seg2::Arc { start, end, .. } | Seg2::EllipseArc { start, end, .. } => Some((start, end)),
         Seg2::Bezier { p } => Some((p[0], p[3])),
+        Seg2::RationalBezier { degree, poles, .. } => {
+            Some((poles[0], poles.get(usize::from(degree)).copied().unwrap_or(poles[0])))
+        }
         Seg2::Circle { .. } | Seg2::Ellipse { .. } => None,
     }
 }
@@ -32,6 +35,14 @@ fn reversed(s: &Seg2) -> Seg2 {
         Seg2::Line { a, b } => Seg2::Line { a: b, b: a },
         Seg2::Arc { center, start, end, ccw } => Seg2::Arc { center, start: end, end: start, ccw: !ccw },
         Seg2::Bezier { p } => Seg2::Bezier { p: [p[3], p[2], p[1], p[0]] },
+        Seg2::RationalBezier { degree, mut poles, mut weights } => {
+            let n = usize::from(degree) + 1;
+            if let (Some(p), Some(w)) = (poles.get_mut(..n), weights.get_mut(..n)) {
+                p.reverse();
+                w.reverse();
+            }
+            Seg2::RationalBezier { degree, poles, weights }
+        }
         Seg2::EllipseArc { center, major, a, b, start, end, ccw } => {
             Seg2::EllipseArc { center, major, a, b, start: end, end: start, ccw: !ccw }
         }
@@ -50,6 +61,14 @@ fn same_piece(x: &ProfileEdge, y: &ProfileEdge) -> bool {
             near(center, c) && near(start, s) && near(end, e) && ccw == w
         }
         (Seg2::Bezier { p }, Seg2::Bezier { p: q }) => p.iter().zip(q).all(|(a, b)| near(*a, b)),
+        (
+            Seg2::RationalBezier { degree, poles, weights },
+            Seg2::RationalBezier { degree: d2, poles: p2, weights: w2 },
+        ) => {
+            degree == d2
+                && poles.iter().zip(p2).all(|(a, b)| near(*a, b))
+                && weights.iter().zip(w2).all(|(a, b)| (a - b).abs() <= EPS)
+        }
         (Seg2::Circle { center, radius }, Seg2::Circle { center: c, radius: r }) => {
             near(center, c) && (radius - r).abs() <= EPS
         }
@@ -78,6 +97,7 @@ fn samples(s: &Seg2) -> Vec<P2> {
     match *s {
         Seg2::Line { a, b } => vec![a, b],
         Seg2::Bezier { p } => p.to_vec(),
+        Seg2::RationalBezier { .. } => s.rational_points(8),
         Seg2::Arc { center, start, end, ccw } => {
             let r = libm::hypot(start[0] - center[0], start[1] - center[1]);
             let (t0, t1) = (

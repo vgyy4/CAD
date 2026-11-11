@@ -71,8 +71,9 @@ pub struct GsSeg {
     pub c: [f64; 2],
     pub r: f64,
     pub tag: u64,
-    /// Bézier only: the four control points are `poles[pole_first .. pole_first + pole_count]`
-    /// of the profile (x, y pairs; `pole_count` is 4).
+    /// Bézier only: the control points are `poles[pole_first .. pole_first + pole_count]`
+    /// of the profile (x, y pairs; `pole_count` is 2 to 26, the degree plus one), their
+    /// weights the same entries of `weights`.
     pub pole_first: u32,
     pub pole_count: u32,
     /// Ellipses: `c` is the centre, `major` the unit direction of the semi-axis `r`, `rb`
@@ -103,6 +104,8 @@ pub struct GsProfile {
     /// Control points of all spline segments, as x, y pairs; `npoles` counts points.
     pub poles: *const f64,
     pub npoles: usize,
+    /// One weight per control point (`npoles` values), or null for all 1.
+    pub weights: *const f64,
 }
 
 #[cfg(gusset_occt)]

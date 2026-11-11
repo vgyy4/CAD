@@ -155,6 +155,8 @@ pub struct ProfileData {
     pub loops: Vec<GsLoop>,
     /// Spline control points (x, y pairs) referenced by `GsSeg::pole_first`.
     pub poles: Vec<f64>,
+    /// One weight per control point (empty: all 1).
+    pub weights: Vec<f64>,
 }
 
 impl ProfileData {
@@ -169,6 +171,11 @@ impl ProfileData {
             nloops: self.loops.len(),
             poles: self.poles.as_ptr(),
             npoles: self.poles.len() / 2,
+            weights: if self.weights.len() * 2 == self.poles.len() && !self.weights.is_empty() {
+                self.weights.as_ptr()
+            } else {
+                core::ptr::null()
+            },
         }
     }
 }
