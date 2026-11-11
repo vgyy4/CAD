@@ -755,19 +755,9 @@ fn sweep_json(
     (j, shift)
 }
 
-/// A sweep whose profile is a face (5358's `Sweep - Pin Right Angle`: a `5662F619` face
-/// selection, no `4BD53E5A` profile): where the face is the end cap of an extrude that no later
-/// feature renamed (one operation in its name), the face is that extrude's profile on the cap's
-/// plane. The sketch of the extrude, its curves cut down to the profile's, moved along its normal
-/// to the plane through the path's end nearest to the cap (Fusion sweeps a profile from the
-/// plane through the path's start, as for a sketch profile). `Ok(None)`: no face selection.
-fn face_profile_sketch(
-    cx: &mut Ctx,
-    fid: u64,
-    feats: &[Value],
-    j: &Map<String, Value>,
-) -> Result<Option<Map<String, Value>>, String> {
-    let d = cx.d;
+/// The faces a feature's profile selection names (`2CA5A1CD` -> `5662F619` -> face recipes), by
+/// their first (generator, operations) name.
+fn profile_faces(d: &Design, fid: u64) -> Vec<(String, Vec<i32>)> {
     let mut faces: Vec<(String, Vec<i32>)> = Vec::new();
     for q in ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "2CA5A1CD")) {
         for s in ref_ids(d, d.rec(q)).into_iter().filter(|s| d.is(*s, "5662F619")) {
@@ -782,6 +772,23 @@ fn face_profile_sketch(
             }
         }
     }
+    faces
+}
+
+/// A sweep whose profile is a face (5358's `Sweep - Pin Right Angle`: a `5662F619` face
+/// selection, no `4BD53E5A` profile): where the face is the end cap of an extrude that no later
+/// feature renamed (one operation in its name), the face is that extrude's profile on the cap's
+/// plane. The sketch of the extrude, its curves cut down to the profile's, moved along its normal
+/// to the plane through the path's end nearest to the cap (Fusion sweeps a profile from the
+/// plane through the path's start, as for a sketch profile). `Ok(None)`: no face selection.
+fn face_profile_sketch(
+    cx: &mut Ctx,
+    fid: u64,
+    feats: &[Value],
+    j: &Map<String, Value>,
+) -> Result<Option<Map<String, Value>>, String> {
+    let d = cx.d;
+    let faces = profile_faces(d, fid);
     let [(g, ops)] = faces.as_slice() else {
         return if faces.is_empty() { Ok(None) } else { Err(format!("{} faces, not one", faces.len())) };
     };
@@ -824,11 +831,28 @@ fn face_profile_sketch(
         .map(|(_, q)| dot(pl.z, geom::sub(*q, pl.origin)))
         .min_by(|a, b| (a - t_face).abs().total_cmp(&(b - t_face).abs()))
         .ok_or("its path has no free end")?;
-    let used: HashSet<String> = cx
-        .rc
-        .regions(d, efid, &sk)?
-        .iter()
-        .flat_map(|r| r.segments.iter().map(|sg| format!("c{}", sg.curve)))
+    // The cap is one face: the extrude's regions united. A curve every piece of which bounds two
+    // of the regions lies inside that face and is left out (5358's pin: the disc of r 0.45 and the
+    // ring out to 0.5 are one cap, a disc of 0.5; swept as two regions, the 0.1 mm blend of the
+    // end's rim ran into the circle between them).
+    let regions = cx.rc.regions(d, efid, &sk)?;
+    let key = |sg: &sketch::Seg| {
+        let r = |v: f64| (v * 1e6).round() as i64;
+        let (a, b) = (sg.poly.first().copied().unwrap_or_default(), sg.poly.last().copied().unwrap_or_default());
+        let (a, b) = ([r(a[0]), r(a[1])], [r(b[0]), r(b[1])]);
+        (sg.curve, a.min(b), a.max(b))
+    };
+    let mut uses: HashMap<(u64, [i64; 2], [i64; 2]), HashSet<usize>> = HashMap::new();
+    for (k, r) in regions.iter().enumerate() {
+        for sg in &r.segments {
+            uses.entry(key(sg)).or_default().insert(k);
+        }
+    }
+    let used: HashSet<String> = uses
+        .keys()
+        .map(|(c, _, _)| *c)
+        .filter(|c| uses.iter().any(|((q, _, _), rs)| q == c && rs.len() < 2))
+        .map(|c| format!("c{c}"))
         .collect();
     // The sketch as read, else a copy of it (its plane is set below; the curves are all there).
     let of_sid = |f: &&Value| {
