@@ -850,6 +850,22 @@ bool has_elliptic_face(const TopoDS_Shape& s) {
   return false;
 }
 
+// A face that winds more than once around a periodic surface: a thread's root or crest, a
+// strip of a cylinder between two helices of many turns (a Fusion modeled thread). The
+// adaptive quadrature integrates its domain as if it were one period: 1145's root, nine turns,
+// put the solid 1.1 mm3 off (4.5e-4), while Gauss-Kronrod agrees with the mesh to 1e-6.
+bool has_wound_face(const TopoDS_Shape& s) {
+  for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
+    const TopoDS_Face& f = TopoDS::Face(ex.Current());
+    BRepAdaptor_Surface sa(f, false);
+    double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+    BRepTools::UVBounds(f, u0, u1, v0, v1);
+    if (sa.IsUPeriodic() && u1 - u0 > sa.UPeriod() * (1.0 + 1e-9)) return true;
+    if (sa.IsVPeriodic() && v1 - v0 > sa.VPeriod() * (1.0 + 1e-9)) return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------- sweep and loft helpers
 
 // How far a path may start from the profile plane (mm).
@@ -3292,7 +3308,10 @@ int gs_mass(const GsShape* s, GsBuf* mass) {
   GS_GUARD_BEGIN
   if (!s || !mass) return fail("null argument");
   GProp_GProps vol, area;
-  if (has_freeform_face(s->s) || has_torus_face(s->s)) {
+  if (has_wound_face(s->s)) {
+    BRepGProp::VolumePropertiesGK(s->s, vol, 1e-9);
+    BRepGProp::SurfaceProperties(s->s, area);
+  } else if (has_freeform_face(s->s) || has_torus_face(s->s)) {
     // Swept, lofted and spline faces: the default quadrature is off by a few tenths of a
     // percent on twisted surfaces, so integrate adaptively.
     BRepGProp::VolumeProperties(s->s, vol, has_elliptic_face(s->s) ? 1e-10 : 1e-7);
