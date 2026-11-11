@@ -670,3 +670,79 @@ pattern of a body unites the copies, so a copy cannot be a Combine's tool or car
 needs a pattern that keeps its copies as bodies in the tree importer and the document), exact
 B-spline sketch curves, bodies that no body link names (3211), joints. Details:
 `docs/formats/fusion-design-stream.md` section 23.
+
+## Amendment (2026-11-11): ShapeManager's B-spline control points; pcurves measured, not written
+
+Slow STEP reads of Fusion bodies (PC Joystick Adapter's body blob: 253 s; OCCT patch 0003's
+self-intersecting projected pcurves, ADR 0002) were taken for a lack of pcurves in the
+converted STEP. Reading the coedges' own pcurves showed the cause instead: **ShapeManager
+(Fusion's and Inventor's ACIS, versions 222.0 to 232.0 in the samples) lists a B-spline
+surface's control points u fastest** (each v row along u); the reader took them v fastest, as
+NIST's ACIS 7 text files have them (Decision above). Every such surface was written
+scrambled, the faces' edges did not lie on it, and OCCT's healing projected them onto the
+wrong surface. `gusset-sat` now reads files of version 20000 on u fastest, older ones as before.
+
+Evidence (clean room, from the sample bytes): a coedge points at a `pcurve` record (the first
+pointer after its loop; ShapeManager writes an integer before it). Kind `0`: a sense word and
+its own block `{ exp_par_cur nubs|nurbs <degree> <closure> <n> <knot> <mult>... <u v [w]>...
+<fit tolerance> <surface> }`; kinds `±1`, `±2`: a pointer to an `intcurve` whose block holds,
+at its own brace depth, the 3D B-spline, the fit tolerance, its two surfaces and then one
+parameter-space curve per surface (`nubs ...`, or `nullbs`), the kind's magnitude naming the
+slot. A pcurve's parameter is the edge's along the coedge (negated on a reversed coedge; a
+straight line's ACIS parameter runs `|direction|` model units per unit, so STEP's millimetre
+parameter is a multiple of it; arcs keep negative angles). Evaluated on the face's surface at
+nine points, a pcurve lies on the edge's 3D curve within 1 µm for 8,148 of 9,174 coedges on
+B-spline faces in the Fusion and Inventor corpora with the u-fastest order, and for none with
+the old one (Gusset's own helix fits aside); the misses are arcs whose pcurve runs at another
+speed than the angle (6.7 µm off mid-span) and intcurve pcurves outside the 3D curve's range.
+The faces' vertices lie on the surfaces only in the new order too.
+
+**Effect of the order**, on every distinct body blob of the two Fusion corpora and the 47
+Inventor parts (4,716 blobs, each converted and read by OCCT in process):
+
+- STEP reading takes 344 s instead of 841 s. PC Joystick Adapter's 33 blobs read in 4.9 s
+  instead of 361 s (its body blob 2.0 s instead of 253 s), Crickit CPX Assembly's 14 in 5.5 s
+  instead of 40 s, Terminal Block FeatherWing's 21 in 2.5 s instead of 4.5 s. Whole imports
+  (`f3d_history.rs`, debug build, other work on the machine): PC Joystick Adapter 40 to 43 s,
+  as history, instead of failing at the import worker's 300 s limit (305 s); Terminal Block
+  FeatherWing 65 to 72 s instead of 103 s; Crickit CPX Assembly 173 to 199 s instead of
+  1,559 s. The slowest blobs left are NEMA-17 Stepper Motor's four
+  (16 to 18 s each), which have no ShapeManager B-spline faces: another cause.
+- 278 blobs change, all with B-spline faces (286 have some; the other eight hold only helix
+  fits or nets the swap leaves alike); the other 4,438 read to identical bodies. Of the
+  changed bodies, 215 solids go from a volume of zero or less (or more than their box) to a
+  plausible one; 383 solids that were plausible change by a median of 1.7 % (90th percentile
+  34 %, 168 of them in topology: the faces OCCT's healing split on a wrong surface come back as
+  ACIS has them); 30 sheets change. Solids with a volume of zero or less: 219 before, 4 after
+  (Snow Globe's, unchanged by this).
+- Inventor's two "revision" pairs of `ole_samples.rs` were this bug: `top cover 2` (138,131 to
+  138,722 mm3, the 4e-3 noted there) and `Top motor plate` (61,109.5 to 61,108.1 mm3, area
+  +0.81 mm2: the 1.5 mm3 and 0.8 mm2 noted) now match their authors' STEP. Coverage after the
+  fix (with the other session's work of the day): Inventor 25 of 47 parts as history (as
+  before), Fusion 11 of 18 and 93 of 150 designs (90 at round 15), none failed; PC Joystick
+  Adapter is one of the 93 only with the fix (it timed out without it).
+- Not resolved: one case body (BQ25185 3V and 5V Buck Case, USB Solar Charger Case: the same
+  body thrice), seven faces with five sides on rational `cyl_spl_sur` approximations marked `u`
+  (`nurbs 5 1 u 0 0 0 0 19 2`), comes in as ACIS has it (7 faces, 15 edges; was 13 faces) but
+  with a volume of 74,172 mm3 in a box of 38,109 mm3 (1,824 mm3 before, also wrong). Its
+  pcurves lie on the surfaces; turning the sides or the planes round makes OCCT drop the solid.
+
+**Pcurves are not written.** They were written as a trial (`SURFACE_CURVE` of the 3D curve and
+a `PCURVE` with a `DEFINITIONAL_REPRESENTATION` per coedge on a B-spline face whose stored
+pcurve passed the check above; seams left to OCCT) and measured on the same blobs: with the
+surfaces right they buy nothing, and they cannot keep the bodies within 1e-9.
+
+- Per blob: on the 276 blobs where they apply, reading takes 67.5 s instead of 63.9 s (all
+  4,716: 353 s instead of 344 s). Topology is unchanged; 97 blobs move by up to 2.2e-6 in area
+  and 2.6e-7 in volume (relative), because ACIS's pcurves are fits within its fit tolerance
+  where OCCT projects the edge itself.
+- Whole imports, worker time from the processes' start and exit (same build otherwise): PC
+  Joystick Adapter 15.5 s with pcurves, 14.9 s without, of 43 s; Terminal Block FeatherWing
+  54.9 s and 53.1 s of 93 s; Crickit CPX Assembly 108.6 s and 114.8 s of 199 s. OCCT still
+  heals (`ShapeFix_Wire::FixSelfIntersectingEdge`, `FixAddPCurve` on the edges of other faces)
+  either way.
+- What the time is instead: **the same blobs are read again and again**. Crickit CPX Assembly
+  starts 602 import workers for its 14 distinct blobs (each placed copy is converted with its
+  placement baked in and healed anew), Terminal Block FeatherWing 752 for 21, PC Joystick
+  Adapter 226 for 33. Reading each blob once and placing the shapes it gives is the
+  remaining speed-up; the record layouts above are kept for a later need of pcurves.
