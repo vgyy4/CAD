@@ -302,12 +302,12 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         j.insert("distance2_expr".into(), ag.expr.as_str().into());
     }
     if distance.is_none() && pget(ps, "Side1Offset").is_some() {
-        // To-object: the first face of the extrude's bounded-face recipe, when it is a plane
-        // parallel to the sketch.
+        // To-object: the first face of the extrude's bounded-face or face recipe, when it is a
+        // plane parallel to the sketch.
         let off = pget(ps, "Side1Offset").and_then(|p| p.value).unwrap_or(0.0);
         for rid in cx.edge_recipes_of(fid) {
             let (kind, faces) = naming::recipe(d, rid);
-            let (Some(RecipeKind::BoundedFace), Some(faces)) = (kind, faces) else { continue };
+            let (Some(RecipeKind::BoundedFace | RecipeKind::Face), Some(faces)) = (kind, faces) else { continue };
             let f = faces.first().and_then(|f| f.first()).and_then(|(g, ops)| cx.face(g, ops));
             if let (Some(naming::FaceG::Plane { n, p, .. }), Some(pl)) = (f, &plane)
                 && (dot(n, pl.z).abs() - 1.0).abs() < 1e-9
