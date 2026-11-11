@@ -318,3 +318,13 @@ hole cuts looked too large (section 32).
 Round 20 I (MirrorComponent as body mirrors into the new component, stored bodies of several solids, thin extrudes
 of an open chain) on top of G and H: adafruit-more 123 of 150 as history (4343 and 5905 added; 5905's board cut
 passes with G's body-pattern fix; none lost), adafruit 13 of 18.
+
+## Combined re-run after round 21 (2026-11-11)
+
+Round 21 K (outlines that touch themselves at a point, circles drawn twice, cuts of several bodies) and J (body
+patterns of new-body features, mirrors of multi-solid bodies, circular patterns that leave out copies, corner
+blends of arcs and concave edges): adafruit-more 127 of 150 as history (124 after K: 2348; then 2190, 3101, 512;
+none lost), adafruit 13 of 18. Of the 23 left, 7 have no feature history; modeled threads (324, 1145, 3350),
+Split 3651, CoilPrimitive 3722, Bend 3502, a shell with no removed face 4632 and the font-bound 6124/6126 need
+new operations or data the file lacks; 858, 6299, 5358, 5360, 610, 258, 4431 and 5981 read further and stop at
+the blockers in sections 34 and 35.
