@@ -312,3 +312,9 @@ Round 20 G on top of round 19 E and F: adafruit-more 121 of 150 as history (116 
 and 5967 added; none lost), adafruit 13 of 18 (4862 and 4863 added). 4862 and 5967 came in with G's body-pattern
 fix: the step check counted pattern copies in a run of new bodies but not after a single feature, so the board
 hole cuts looked too large (section 32).
+
+## Combined re-run after round 20 I (2026-11-11)
+
+Round 20 I (MirrorComponent as body mirrors into the new component, stored bodies of several solids, thin extrudes
+of an open chain) on top of G and H: adafruit-more 123 of 150 as history (4343 and 5905 added; 5905's board cut
+passes with G's body-pattern fix; none lost), adafruit 13 of 18.
