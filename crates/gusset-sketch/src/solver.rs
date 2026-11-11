@@ -485,7 +485,7 @@ pub fn solve_drag(sketch: &Sketch, opts: &SolveOptions, drags: &[Drag]) -> Solve
                     error = Some(SolveError::NonPositiveRadius(e.id));
                 }
             }
-            Geom::Line { .. } | Geom::Arc { .. } | Geom::Spline { .. } => {}
+            Geom::Line { .. } | Geom::Arc { .. } | Geom::Spline { .. } | Geom::BSpline { .. } => {}
         }
     }
     let free_entities = free_entities(sketch, &lay, &free_param, &ids);

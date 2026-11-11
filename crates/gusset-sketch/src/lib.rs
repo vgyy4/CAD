@@ -19,6 +19,8 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
 mod arrange;
+pub mod bezier;
+pub mod bspline;
 mod curves;
 mod dual;
 pub mod ellipse;
@@ -31,6 +33,8 @@ pub mod solver;
 pub mod spline;
 
 pub use arrange::{Cut, Cuts, cuts};
+pub use bezier::{MAX_BEZIER_DEGREE, RationalBezier};
+pub use bspline::BSplineData;
 pub use profile::{
     Arrangement, Chain, ChainError, Curve, Loop, Profile, ProfileError, Segment, arrange, chain, profiles,
 };

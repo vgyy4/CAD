@@ -307,6 +307,7 @@ fn random_mixed_curves_never_panic_and_give_closed_loops() {
                         Curve::Line { end, .. } | Curve::Arc { end, .. } => Some(end),
                         Curve::Circle { .. }
                         | Curve::Bezier { .. }
+                        | Curve::RationalBezier { .. }
                         | Curve::Ellipse { .. }
                         | Curve::EllipseArc { .. } => None,
                     };
@@ -314,6 +315,7 @@ fn random_mixed_curves_never_panic_and_give_closed_loops() {
                         Curve::Line { start, .. } | Curve::Arc { start, .. } => Some(start),
                         Curve::Circle { .. }
                         | Curve::Bezier { .. }
+                        | Curve::RationalBezier { .. }
                         | Curve::Ellipse { .. }
                         | Curve::EllipseArc { .. } => None,
                     };

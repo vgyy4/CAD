@@ -459,10 +459,12 @@ fn piece_of(cv: &Cv, v: [usize; 2], u: [f64; 2], verts: &Verts, piece: u32) -> C
             let seg0 = (*first as usize + libm::floor(u[0]).max(0.0) as usize) % (*total as usize).max(1);
             // Make the piece end exactly on the vertices it joins.
             if let Some(first) = sub_chain.first_mut() {
-                first[0] = p[0];
+                first.poles[0] = p[0];
             }
-            if let Some(last) = sub_chain.last_mut() {
-                last[3] = p[1];
+            if let Some(last) = sub_chain.last_mut()
+                && let Some(q) = last.poles.get_mut(last.degree)
+            {
+                *q = p[1];
             }
             Shape::Spline { chain: sub_chain, first: u32::try_from(seg0).unwrap_or(0), total: *total, closed: false }
         }

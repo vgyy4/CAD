@@ -70,6 +70,12 @@ pub enum Curve {
     Bezier {
         p: [[f64; 2]; 4],
     },
+    /// One knot span of an exact B-spline that is not a polynomial cubic: a rational Bézier
+    /// of the B-spline's degree (see [`Segment::sub`]). Travelled from its first control
+    /// point to its last.
+    RationalBezier {
+        b: crate::bezier::RationalBezier,
+    },
 }
 
 /// One segment of a loop, referring to the sketch entity it comes from.
@@ -284,7 +290,7 @@ pub(crate) fn bbox_of(shape: &Shape, p: [V2; 2]) -> [f64; 4] {
         }
         Shape::Spline { chain, .. } => {
             let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-            for q in chain.iter().flatten() {
+            for q in chain.iter().flat_map(|z| z.control_points()) {
                 b = [b[0].min(q[0]), b[1].min(q[1]), b[2].max(q[0]), b[3].max(q[1])];
             }
             b
@@ -380,9 +386,40 @@ pub(crate) fn collect_with(
                 }
                 let chain = spline::chain(&fit, closed);
                 let ends = match (chain.first(), chain.last()) {
-                    (Some(f), Some(l)) => [f[0], l[3]],
+                    (Some(f), Some(l)) => [f.first(), l.last()],
                     _ => return Err(deg),
                 };
+                let total = u32::try_from(chain.len()).unwrap_or(u32::MAX);
+                (Shape::Spline { chain, first: 0, total, closed }, ends)
+            }
+            Geom::BSpline { periodic, .. } => {
+                let b = s.bspline(e.id).ok_or(ProfileError::Invalid(SketchError::UnknownEntity(e.id)))?;
+                let poles: Vec<V2> = b.poles.iter().map(|&q| pt_of(s, q)).collect::<Result<Vec<_>, _>>()?;
+                let data = crate::bspline::BSplineData {
+                    degree: b.degree,
+                    knots: b.knots,
+                    poles: &poles,
+                    weights: b.weights,
+                    periodic,
+                };
+                let mut chain: Vec<Bez> = crate::bspline::spans(&data).into_iter().map(|(z, _)| z).collect();
+                // A span whose control points all coincide is a point, not a curve.
+                if chain.is_empty() || chain.iter().any(|z| not_gt(crate::bspline::hull_length(z), tol)) {
+                    return Err(deg);
+                }
+                let ends = match (chain.first(), chain.last()) {
+                    (Some(f), Some(l)) => [f.first(), l.last()],
+                    _ => return Err(deg),
+                };
+                // A clamped curve that ends where it starts (how other systems store closed
+                // B-splines) is a closed curve like a periodic one; its seam is made exact.
+                let closed = periodic || not_gt(dist(ends[0], ends[1]), tol);
+                if closed
+                    && let Some(l) = chain.last_mut()
+                    && let Some(q) = l.poles.get_mut(l.degree)
+                {
+                    *q = ends[0];
+                }
                 let total = u32::try_from(chain.len()).unwrap_or(u32::MAX);
                 (Shape::Spline { chain, first: 0, total, closed }, ends)
             }
@@ -410,15 +447,18 @@ fn make_segments(cvs: &[Cv], verts: &[V2], u: Use) -> Option<Vec<Segment>> {
     let cv = cvs.get(u.cv)?;
     if let Shape::Spline { chain, first, total, .. } = &cv.shape {
         let n = chain.len();
-        let make = |j: usize, p: [V2; 4]| Segment {
+        let make = |j: usize, b: Bez| Segment {
             entity: cv.id,
             piece: cv.piece,
             sub: ((*first as usize + j) % (*total as usize).max(1)) as u32,
             reversed: u.rev,
-            curve: Curve::Bezier { p },
+            curve: match b.as_cubic() {
+                Some(p) => Curve::Bezier { p },
+                None => Curve::RationalBezier { b },
+            },
         };
         return Some(if u.rev {
-            chain.iter().enumerate().rev().map(|(j, b)| make(j, [b[3], b[2], b[1], b[0]])).collect()
+            chain.iter().enumerate().rev().map(|(j, b)| make(j, b.reversed())).collect()
         } else {
             let _ = n;
             chain.iter().enumerate().map(|(j, b)| make(j, *b)).collect()
@@ -480,7 +520,8 @@ fn seg_area(s: &Segment) -> f64 {
             let a = PI * radius * radius;
             if *ccw { a } else { -a }
         }
-        Curve::Bezier { p } => spline::area_term(p),
+        Curve::Bezier { p } => spline::area_term(&Bez::cubic(*p)),
+        Curve::RationalBezier { b } => b.area_term(),
         Curve::Ellipse { a, b, ccw, .. } => {
             let v = PI * a * b;
             if *ccw { v } else { -v }
@@ -528,6 +569,10 @@ fn seg_winding(s: &Segment, p: V2) -> f64 {
     match &s.curve {
         Curve::Line { start, end } => line_angle(p, *start, *end),
         Curve::Bezier { p: bez } => {
+            let pts = spline::flatten(&[Bez::cubic(*bez)], 32);
+            pts.windows(2).map(|w| if let &[a, b] = w { line_angle(p, a, b) } else { 0.0 }).sum()
+        }
+        Curve::RationalBezier { b: bez } => {
             let pts = spline::flatten(std::slice::from_ref(bez), 32);
             pts.windows(2).map(|w| if let &[a, b] = w { line_angle(p, a, b) } else { 0.0 }).sum()
         }
@@ -584,6 +629,7 @@ fn loop_bbox(l: &Loop) -> [f64; 4] {
             }
             Curve::Arc { center, radius, .. } | Curve::Circle { center, radius, .. } => grow(*center, *radius, *radius),
             Curve::Bezier { p } => p.iter().for_each(|q| grow(*q, 0.0, 0.0)),
+            Curve::RationalBezier { b } => b.control_points().iter().for_each(|q| grow(*q, 0.0, 0.0)),
             Curve::Ellipse { center, major, a, b, .. } | Curve::EllipseArc { center, major, a, b, .. } => {
                 let h = crate::ellipse::half_extents(angle(*major), *a, *b);
                 grow(*center, h[0], h[1]);
@@ -735,7 +781,12 @@ fn polygon(l: &Loop) -> Vec<V2> {
         match &s.curve {
             Curve::Line { start, .. } => pts.push(*start),
             Curve::Bezier { p } => {
-                let mut f = spline::flatten(std::slice::from_ref(p), 12);
+                let mut f = spline::flatten(&[Bez::cubic(*p)], 12);
+                f.pop();
+                pts.extend(f);
+            }
+            Curve::RationalBezier { b } => {
+                let mut f = spline::flatten(std::slice::from_ref(b), 12);
                 f.pop();
                 pts.extend(f);
             }
@@ -818,6 +869,7 @@ fn interior_point(outer: &Loop, holes: &[Loop]) -> V2 {
                 Curve::Circle { center, radius, .. } => [center[0] + radius, center[1]],
                 Curve::Ellipse { center, major, a, .. } => [center[0] + a * major[0], center[1] + a * major[1]],
                 Curve::Bezier { p } => p[0],
+                Curve::RationalBezier { b } => b.first(),
             })
         },
         |(_, p)| p,
@@ -999,7 +1051,7 @@ pub fn arrange(sketch: &Sketch, tol: f64) -> Result<Arrangement, ProfileError> {
             Shape::Circle { c, r } => ([c[0] + r, c[1]], true),
             Shape::Ellipse { c, ang, a, b } => (crate::ellipse::point(*c, *ang, *a, *b, 0.0), true),
             Shape::Spline { chain, .. } => {
-                (chain.first().map_or([0.0, 0.0], |b| b[0]), chain.iter().map(spline::area_term).sum::<f64>() > 0.0)
+                (chain.first().map_or([0.0, 0.0], Bez::first), chain.iter().map(spline::area_term).sum::<f64>() > 0.0)
             }
             _ => continue,
         };
@@ -1235,6 +1287,7 @@ mod tests {
         match s.curve {
             Curve::Line { start, end } | Curve::Arc { start, end, .. } => (start, end),
             Curve::Bezier { p } => (p[0], p[3]),
+            Curve::RationalBezier { b } => (b.first(), b.last()),
             Curve::EllipseArc { start, end, .. } => (start, end),
             Curve::Ellipse { center, major, a, .. } => {
                 let p = [center[0] + a * major[0], center[1] + a * major[1]];

@@ -120,7 +120,7 @@ impl Layout {
                     first.push(Some(x0.len()));
                     x0.extend_from_slice(&[angle, a, b]);
                 }
-                Geom::Line { .. } | Geom::Arc { .. } | Geom::Spline { .. } => first.push(None),
+                Geom::Line { .. } | Geom::Arc { .. } | Geom::Spline { .. } | Geom::BSpline { .. } => first.push(None),
             }
         }
         Layout { x0, first }
@@ -476,7 +476,7 @@ fn constraint_eqs(
                     push_point(start)?;
                     push_point(end)?;
                 }
-                Geom::Spline { .. } => {
+                Geom::Spline { .. } | Geom::BSpline { .. } => {
                     for p in s.spline_points(e)? {
                         push_point(*p)?;
                     }

@@ -18,7 +18,11 @@ fn approx(a: f64, b: f64) -> bool {
 fn assert_closed(p: &Profile) {
     let ends = |c: &Curve| match *c {
         Curve::Line { start, end } | Curve::Arc { start, end, .. } => Some((start, end)),
-        Curve::Circle { .. } | Curve::Bezier { .. } | Curve::Ellipse { .. } | Curve::EllipseArc { .. } => None,
+        Curve::Circle { .. }
+        | Curve::Bezier { .. }
+        | Curve::RationalBezier { .. }
+        | Curve::Ellipse { .. }
+        | Curve::EllipseArc { .. } => None,
     };
     for l in std::iter::once(&p.outer).chain(&p.holes) {
         let n = l.segments.len();

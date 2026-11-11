@@ -68,6 +68,18 @@ pub enum Geom {
         count: u32,
         closed: bool,
     },
+    /// Exact (rational) B-spline of `degree` whose poles are the `count` points of the spline
+    /// point table starting at `first` (ordinary points: constraints move them). Its knots
+    /// and then one weight per pole are in the sketch's B-spline number table from `data`
+    /// (see [`Sketch::bspline`] and [`crate::bspline`] for the conventions). Adds no solver
+    /// equations.
+    BSpline {
+        first: u32,
+        count: u32,
+        data: u32,
+        degree: u8,
+        periodic: bool,
+    },
     /// Full ellipse around `center`. `angle` (radians) is the direction of the `a` axis and
     /// `a`, `b` the semi-axes along and across it (`a` may be smaller than `b`; profiles
     /// normalise). All three are solver unknowns, like a circle's radius.
@@ -99,6 +111,7 @@ pub enum EntityKind {
     Spline,
     Ellipse,
     EllipseArc,
+    BSpline,
 }
 
 impl Geom {
@@ -109,20 +122,21 @@ impl Geom {
             Geom::Circle { .. } => EntityKind::Circle,
             Geom::Arc { .. } => EntityKind::Arc,
             Geom::Spline { .. } => EntityKind::Spline,
+            Geom::BSpline { .. } => EntityKind::BSpline,
             Geom::Ellipse { .. } => EntityKind::Ellipse,
             Geom::EllipseArc { .. } => EntityKind::EllipseArc,
         }
     }
 
     /// The point entities this geometry refers to (empty for a point). A spline's fit
-    /// points are in [`Sketch::spline_points`] instead.
+    /// points and a B-spline's poles are in [`Sketch::spline_points`] instead.
     pub fn referenced_points(&self) -> Vec<EntityId> {
         match *self {
             Geom::Point { .. } => Vec::new(),
             Geom::Line { a, b } => vec![a, b],
             Geom::Circle { center, .. } => vec![center],
             Geom::Arc { center, start, end } => vec![center, start, end],
-            Geom::Spline { .. } => Vec::new(),
+            Geom::Spline { .. } | Geom::BSpline { .. } => Vec::new(),
             Geom::Ellipse { center, .. } => vec![center],
             Geom::EllipseArc { center, start, end, .. } => vec![center, start, end],
         }
@@ -242,6 +256,8 @@ pub enum SketchError {
     TooManyEntities,
     /// The sketch already holds [`MAX_CONSTRAINTS`] constraints.
     TooManyConstraints,
+    /// The degree, knots or weights of a B-spline do not fit its poles (the message says how).
+    BadBSpline(String),
 }
 
 impl fmt::Display for SketchError {
@@ -257,6 +273,7 @@ impl fmt::Display for SketchError {
             SketchError::InvalidValue { what } => write!(f, "invalid value: {what}"),
             SketchError::TooManyEntities => write!(f, "too many entities (limit {MAX_ENTITIES})"),
             SketchError::TooManyConstraints => write!(f, "too many constraints (limit {MAX_CONSTRAINTS})"),
+            SketchError::BadBSpline(what) => write!(f, "{what}"),
         }
     }
 }
@@ -277,6 +294,18 @@ pub struct Sketch {
     /// Fit points of all splines, appended when a spline is added (slots of removed splines
     /// stay behind, unused).
     spline_pts: Vec<EntityId>,
+    /// Knots and weights of all exact B-splines, appended when one is added.
+    bspline_data: Vec<f64>,
+}
+
+/// The data of an exact B-spline entity (see [`crate::bspline`] for the conventions).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BSplineRef<'a> {
+    pub degree: usize,
+    pub poles: &'a [EntityId],
+    pub knots: &'a [f64],
+    pub weights: &'a [f64],
+    pub periodic: bool,
 }
 
 impl Sketch {
@@ -323,10 +352,10 @@ impl Sketch {
         }
     }
 
-    /// Fit points of a spline entity, in order.
+    /// Fit points of a spline entity, or the poles of a B-spline, in order.
     pub fn spline_points(&self, id: EntityId) -> Option<&[EntityId]> {
         match self.entity(id)?.geom {
-            Geom::Spline { first, count, .. } => {
+            Geom::Spline { first, count, .. } | Geom::BSpline { first, count, .. } => {
                 let (a, b) = (first as usize, (first as usize).checked_add(count as usize)?);
                 self.spline_pts.get(a..b)
             }
@@ -338,10 +367,27 @@ impl Sketch {
     pub fn referenced_points(&self, id: EntityId) -> Vec<EntityId> {
         match self.entity(id) {
             Some(e) => match e.geom {
-                Geom::Spline { .. } => self.spline_points(id).map(<[EntityId]>::to_vec).unwrap_or_default(),
+                Geom::Spline { .. } | Geom::BSpline { .. } => {
+                    self.spline_points(id).map(<[EntityId]>::to_vec).unwrap_or_default()
+                }
                 g => g.referenced_points(),
             },
             None => Vec::new(),
+        }
+    }
+
+    /// Degree, poles, knots, weights and periodicity of a B-spline entity.
+    pub fn bspline(&self, id: EntityId) -> Option<BSplineRef<'_>> {
+        match self.entity(id)?.geom {
+            Geom::BSpline { first, count, data, degree, periodic } => {
+                let poles = self.spline_pts.get(first as usize..(first as usize).checked_add(count as usize)?)?;
+                let nk = crate::bspline::knot_count(count as usize, usize::from(degree), periodic);
+                let d = data as usize;
+                let knots = self.bspline_data.get(d..d.checked_add(nk)?)?;
+                let weights = self.bspline_data.get(d + nk..(d + nk).checked_add(count as usize)?)?;
+                Some(BSplineRef { degree: usize::from(degree), poles, knots, weights, periodic })
+            }
+            _ => None,
         }
     }
 
@@ -618,6 +664,36 @@ impl Sketch {
         Ok(id)
     }
 
+    /// Adds an exact (rational) B-spline whose poles are existing points (conventions in
+    /// [`crate::bspline`]): `degree` 1 to [`crate::MAX_BEZIER_DEGREE`], `knots` the flat knot
+    /// vector (`poles + degree + 1` values; `poles + 1` when periodic), one positive weight per
+    /// pole (all 1 for a polynomial B-spline). A pole may repeat (a closed clamped curve starts
+    /// and ends at the same point).
+    pub fn add_bspline(
+        &mut self,
+        degree: usize,
+        poles: &[EntityId],
+        knots: &[f64],
+        weights: &[f64],
+        periodic: bool,
+    ) -> Result<EntityId, SketchError> {
+        if let Err(what) = crate::bspline::check(degree, poles.len(), knots, weights, periodic) {
+            return Err(SketchError::BadBSpline(what));
+        }
+        for &p in poles {
+            self.expect_point(p)?;
+        }
+        let first = u32::try_from(self.spline_pts.len()).map_err(|_| SketchError::TooManyEntities)?;
+        let count = u32::try_from(poles.len()).map_err(|_| SketchError::TooManyEntities)?;
+        let data = u32::try_from(self.bspline_data.len()).map_err(|_| SketchError::TooManyEntities)?;
+        let degree8 = u8::try_from(degree).map_err(|_| SketchError::InvalidValue { what: "B-spline degree" })?;
+        let id = self.push(Geom::BSpline { first, count, data, degree: degree8, periodic })?;
+        self.spline_pts.extend_from_slice(poles);
+        self.bspline_data.extend_from_slice(knots);
+        self.bspline_data.extend_from_slice(weights);
+        Ok(id)
+    }
+
     fn check_room(&self, n: usize) -> Result<(), SketchError> {
         if self.entities.len().saturating_add(n) > MAX_ENTITIES
             || u64::from(self.next_entity).saturating_add(n as u64) >= u64::from(u32::MAX)
@@ -672,6 +748,22 @@ impl Sketch {
                 }
                 if start == end {
                     return Err(SketchError::RepeatedEntity(start));
+                }
+            }
+            Geom::BSpline { first, count, data, degree, periodic } => {
+                let (a, b) = (first as usize, (first as usize).saturating_add(count as usize));
+                let pts = self.spline_pts.get(a..b).ok_or(SketchError::InvalidValue { what: "B-spline pole list" })?;
+                let nk = crate::bspline::knot_count(count as usize, usize::from(degree), periodic);
+                let d = data as usize;
+                let nums = self
+                    .bspline_data
+                    .get(d..d.saturating_add(nk).saturating_add(count as usize))
+                    .ok_or(SketchError::InvalidValue { what: "B-spline knots and weights" })?;
+                let (knots, weights) = nums.split_at(nk.min(nums.len()));
+                crate::bspline::check(usize::from(degree), pts.len(), knots, weights, periodic)
+                    .map_err(SketchError::BadBSpline)?;
+                for &p in pts {
+                    self.expect_point(p)?;
                 }
             }
             Geom::Spline { first, count, .. } => {
@@ -748,7 +840,11 @@ impl Sketch {
                 match self.kind(a)? {
                     EntityKind::Line => self.expect_line(b),
                     EntityKind::Circle | EntityKind::Arc => self.expect_curve(b),
-                    EntityKind::Point | EntityKind::Spline | EntityKind::Ellipse | EntityKind::EllipseArc => {
+                    EntityKind::Point
+                    | EntityKind::Spline
+                    | EntityKind::BSpline
+                    | EntityKind::Ellipse
+                    | EntityKind::EllipseArc => {
                         Err(SketchError::WrongKind { entity: a, expected: "a line, circle or arc" })
                     }
                 }
