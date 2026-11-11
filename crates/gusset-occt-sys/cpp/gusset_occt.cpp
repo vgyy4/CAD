@@ -90,6 +90,7 @@
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
+#include <BRepPrimAPI_MakeHalfSpace.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <BinTools.hxx>
@@ -1826,10 +1827,57 @@ struct Corner {
   TopoDS_Shape face;
 };
 
+// The planes that end an arc's corner: at each end of the arc one more face meets it, a plane
+// that crosses the arc (not along it) and has the material on the arc's side (3101: the top
+// edges of a ring cut by four slots, a fillet whose radius is the ring's height). A blend
+// that runs into such a face ends on it: the corner, revolved past the arc's ends, is trimmed
+// by both planes. Each plane as a point and its outward normal; `tan_max` is the largest
+// tangent of the angle between a plane and the plane through the axis at its end.
+bool arc_ends(const TopoDS_Shape& body, const TopoDS_Edge& e, const std::vector<TopoDS_Face>& fs,
+              std::vector<std::pair<gp_Pnt, gp_Dir>>& ends, double& tan_max) {
+  AncMap vmap;
+  TopExp::MapShapesAndAncestors(body, TopAbs_VERTEX, TopAbs_FACE, vmap);
+  BRepAdaptor_Curve c(e);
+  const double t0 = c.FirstParameter(), t1 = c.LastParameter();
+  TopoDS_Vertex v0, v1;
+  TopExp::Vertices(e, v0, v1);
+  if (v0.IsNull() || v1.IsNull() || v0.IsSame(v1)) return false;
+  tan_max = 0;
+  for (const TopoDS_Vertex& v : {v0, v1}) {
+    const gp_Pnt p = BRep_Tool::Pnt(v);
+    const bool at_end = p.Distance(c.Value(t1)) < p.Distance(c.Value(t0));
+    gp_Pnt q;
+    gp_Vec t;
+    c.D1(at_end ? t1 : t0, q, t);
+    if (q.Distance(p) > 1e-6 || t.Magnitude() < 1e-12) return false;
+    t.Normalize();
+    int k = vmap.FindIndex(v);
+    if (k <= 0) return false;
+    std::vector<TopoDS_Face> others;
+    for (ShapeList::Iterator it(vmap(k)); it.More(); it.Next()) {
+      bool known = false;
+      for (const auto& g : fs) known = known || g.IsSame(it.Value());
+      for (const auto& g : others) known = known || g.IsSame(it.Value());
+      if (!known) others.push_back(TopoDS::Face(it.Value()));
+    }
+    if (others.size() != 1) return false;
+    if (BRepAdaptor_Surface(others[0], false).GetType() != GeomAbs_Plane) return false;
+    gp_Dir n;
+    if (!outward_normal(others[0], p, n)) return false;
+    // Leaving the material at the arc's last point, entering it at its first.
+    const double cs = gp_Vec(n).Dot(t) * (at_end ? 1.0 : -1.0);
+    if (cs < 0.5) return false;
+    tan_max = std::max(tan_max, std::sqrt(std::max(0.0, 1.0 - cs * cs)) / cs);
+    ends.emplace_back(p, n);
+  }
+  return ends.size() == 2;
+}
+
 // The corner of a convex edge between two perpendicular faces whose section is the same all
-// along it: a straight edge between two planes (the corner is a prism) or a whole circle
-// between a plane across its axis and a cylinder about it (the corner is revolved). `a` is
-// measured on `x.ref` (or the first face), `b` on the other face.
+// along it: a straight edge between two planes (the corner is a prism) or a circle between a
+// plane across its axis and a cylinder about it (the corner is revolved; an arc's corner ends
+// on the planes `arc_ends` finds). `a` is measured on `x.ref` (or the first face), `b` on the
+// other face.
 bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, bool fillet, Corner& out) {
   int ei = anc.FindIndex(x.e);
   if (ei <= 0) return false;
@@ -1851,6 +1899,9 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   const bool line = c.GetType() == GeomAbs_Line;
   const bool circle = c.GetType() == GeomAbs_Circle;
   if (!line && !circle) return false;
+  bool whole = true;
+  std::vector<std::pair<gp_Pnt, gp_Dir>> ends;
+  double tan_max = 0;
   BRepAdaptor_Surface s0(fs[0], false), s1(fs[1], false);
   gp_Pnt p0 = c.Value(line ? t0 : 0.5 * (t0 + t1));
   gp_Dir n1, n2;
@@ -1859,8 +1910,10 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   if (line) {
     if (s0.GetType() != GeomAbs_Plane || s1.GetType() != GeomAbs_Plane) return false;
   } else {
-    // A whole circle; one face a plane across its axis, the other a cylinder about it.
-    if (std::fabs(t1 - t0 - 2 * M_PI) > 1e-9) return false;
+    // A whole circle or an arc between two end planes; one face a plane across its axis, the
+    // other a cylinder about it.
+    whole = std::fabs(t1 - t0 - 2 * M_PI) <= 1e-9;
+    if (!whole && !arc_ends(body, x.e, fs, ends, tan_max)) return false;
     gp_Ax1 ax = c.Circle().Axis();
     const BRepAdaptor_Surface& pl = s0.GetType() == GeomAbs_Plane ? s0 : s1;
     const BRepAdaptor_Surface& cy = s0.GetType() == GeomAbs_Cylinder ? s0 : s1;
@@ -1873,6 +1926,15 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   // The section, in the plane of n1 and n2 at p0: inward along the first face is -n2.
   const gp_Vec v1(n1), v2(n2);
   const double d = 0.25 * std::min(a, b);
+  // How far past an arc's ends its corner is revolved: past where the end planes leave the
+  // section (measured at its point nearest the axis).
+  double reach_angle = 0;
+  if (!whole) {
+    const double r_in = c.Circle().Radius() - std::max(a, b) - d;
+    if (!(r_in > 1e-6) || !(tan_max < 2.0)) return false;
+    reach_angle = 1.5 * (std::max(a, b) + d) * std::sqrt(2.0) * tan_max / r_in + 1e-3;
+    if (t1 - t0 + 2 * reach_angle >= 2 * M_PI) return false;
+  }
   gp_Pnt A = p0.Translated(-v2 * a), B = p0.Translated(-v1 * b);
   auto section = [&](bool reach) -> std::pair<TopoDS_Face, TopoDS_Edge> {
     BRepBuilderAPI_MakeWire mw;
@@ -1911,23 +1973,45 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
       sh = mk.Shape();
       const ShapeList& g = mk.Generated(blend);
       if (!g.IsEmpty()) face = g.First();
-    } else {
+    } else if (whole) {
       BRepPrimAPI_MakeRevol mk(f, c.Circle().Axis(), 2 * M_PI);
       mk.Build();
       if (!mk.IsDone()) throw Standard_Failure("could not build the corner");
       sh = mk.Shape();
       const ShapeList& g = mk.Generated(blend);
       if (!g.IsEmpty()) face = g.First();
+    } else {
+      // The section is at the arc's middle: turned back to past its start, then revolved to
+      // past its end.
+      gp_Trsf back;
+      back.SetRotation(c.Circle().Axis(), -(0.5 * (t1 - t0) + reach_angle));
+      const TopLoc_Location loc(back);
+      BRepPrimAPI_MakeRevol mk(f.Moved(loc), c.Circle().Axis(), t1 - t0 + 2 * reach_angle);
+      mk.Build();
+      if (!mk.IsDone()) throw Standard_Failure("could not build the corner");
+      sh = mk.Shape();
+      const ShapeList& g = mk.Generated(blend.Moved(loc));
+      if (!g.IsEmpty()) face = g.First();
     }
     return sh;
   };
   auto [fi, bi] = section(false);
   TopoDS_Shape unused;
-  out.ideal = std::fabs(signed_volume(solid_of(fi, bi, unused)));
+  TopoDS_Shape exact = solid_of(fi, bi, unused);
+  if (!whole) {
+    // The corner trimmed by the end planes: the material the cut may take.
+    for (const auto& [p, n] : ends) {
+      TopoDS_Face pf = BRepBuilderAPI_MakeFace(gp_Pln(p, n)).Face();
+      TopoDS_Shape half = BRepPrimAPI_MakeHalfSpace(pf, p.Translated(-gp_Vec(n))).Solid();
+      BRepAlgoAPI_Common cm(exact, half);
+      if (!cm.IsDone()) throw Standard_Failure("could not build the corner");
+      exact = cm.Shape();
+    }
+  }
+  out.ideal = std::fabs(signed_volume(exact));
   auto [fc, bc] = section(true);
   out.cutter = solid_of(fc, bc, out.face);
   if (signed_volume(out.cutter) < 0) out.cutter.Reverse();
-  (void)body;
   return !out.face.IsNull() && out.ideal > 0;
 }
 

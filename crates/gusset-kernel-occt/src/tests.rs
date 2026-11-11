@@ -1682,6 +1682,37 @@ fn fillets_that_meet_make_a_full_round() {
 }
 
 #[test]
+fn fillet_of_an_arc_that_takes_its_whole_face() {
+    // A 1 mm half disc of radius 10: a 1 mm fillet of its top arc leaves nothing of the
+    // cylinder (OCCT's blend fails); the corner is cut away and ends on the flat side.
+    let half = Profile {
+        frame: Frame::XY,
+        regions: vec![Region2 {
+            outer: Loop2 {
+                edges: vec![
+                    ProfileEdge {
+                        seg: Seg2::Arc { center: [0.0, 0.0], start: [10.0, 0.0], end: [-10.0, 0.0], ccw: true },
+                        tag: 1,
+                    },
+                    ProfileEdge { seg: Seg2::Line { a: [-10.0, 0.0], b: [10.0, 0.0] }, tag: 2 },
+                ],
+            },
+            holes: vec![],
+        }],
+    };
+    let d = k().extrude(&half, &ExtrudeSpec { distance: 1.0, symmetric: false }).unwrap();
+    let t = k().topology(&d.shape).unwrap();
+    let rim = t.edges.iter().position(|e| (e.midpoint[2] - 1.0).abs() < 1e-9 && e.length > 30.0).unwrap() as u32;
+    let f = k().fillet(&d.shape, &[rim], 1.0).unwrap();
+    // Half of the revolved corner: area 1 - pi/4, its centroid 9 + (1/6) / (1 - pi/4) from the axis.
+    let pi = std::f64::consts::PI;
+    let corner = pi * (9.0 * (1.0 - pi / 4.0) + 1.0 / 6.0);
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, 50.0 * pi - corner, 1e-7), "{}", m.volume);
+    assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: rim }));
+}
+
+#[test]
 fn chamfer_that_takes_a_whole_face() {
     // A 1 mm disc: a 1 mm chamfer of its bottom rim leaves no cylinder below the top rim.
     let disc = Profile {
