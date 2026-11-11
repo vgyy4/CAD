@@ -79,7 +79,7 @@ fn f64_at(b: &[u8], at: usize) -> Option<f64> {
 
 /// A rigid matrix starting at `at`: finite, orthonormal rows, determinant +1, last row
 /// 0 0 0 1, a translation within reach.
-fn rigid_at(b: &[u8], at: usize) -> Option<Placement> {
+pub(crate) fn rigid_at(b: &[u8], at: usize) -> Option<Placement> {
     // The last element (1.0) first: most offsets fail here, cheaply.
     if f64_at(b, at + 120).map(f64::to_bits) != Some(1.0f64.to_bits()) {
         return None;

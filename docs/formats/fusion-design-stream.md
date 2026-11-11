@@ -1090,3 +1090,67 @@ error: `gusset-eval` now unites the regions a feature takes when they share whol
 * 4800 MagTag now passes the tool rules and stops at the box (a jointed part stands 1.2 mm from its stored body, like
   3957 and 4200: joints). 4367 TFT Gizmo, which stored the same 22.2724 mm3 solid, comes in as history.
 * 2219, 4745, 5420: a stored solid no feature explains (0.0791, 0.0101, 144.4789 mm3); not examined further.
+
+## 24. Round 16: joints decoded and checked against the stored placements (2026-11-11)
+Reader: `fusion_tree/joint.rs` (`joint_placements`, `place_by_joints`). Learned from the 42 `Assemble` records of the
+two Adafruit sets (38 distinct joints; four records are repeats); all lengths in cm in the file, matrices row-major 4x4
+(`p' = R p + t`), a plain reference is `01`, `u64` id, `00` (10 bytes).
+
+### `Assemble` `8DFDD543` (the joint feature)
+* Header (`str` version, `u64` id, a version-dependent run of zero/flag bytes), then the **flip** byte three bytes
+  before the first reference (0 or 1; the two bytes after it are 0).
+* Two **joint origins**, each: a reference to a `7B6C3C2D` (a frame snapped to geometry: it repeats the frame and names
+  a point `69EE2FA7` and edges `F2A7590D`, with its own `OffsetX/Y/Z`, `AngleZ` holders) or to a `JointOrigin`
+  `02E8AA49` (a named origin; UUID zero = the component's own origin); `00`; a byte 0 (a matrix follows) or 1 (none:
+  the origin of the side's component); the frame = the origin in the coordinates of the side's occurrence.
+* `00 00 00 00`, then four `D91D429C` parameter holders in the order `alignAngle` (rad), `alignOffsetZ`,
+  `alignOffsetX`, `alignOffsetY`; further on `u32 2` and two `2E3AC990` transform records, a reference to the joint's
+  **snapshot** `7F5A0426`, the UUID, the lists of the geometry and holders again, the name `Assemble` and its number.
+* The `2E3AC990` pair holds the two frames in some later state of the design (5358/5360: both moved by -1.27 mm
+  after the joint) and is not used.
+* Four designs (6114, 6124, 6126, 6299) have a longer run before the flip byte and more bytes between an origin's
+  reference and its matrix: not read (the joint is reported unverified).
+* The joint **type** (rigid, revolute, ...) and motion values were not located: every joint of the sets is satisfied
+  by the rule below with no motion term, so the sets may hold rigid joints only.
+
+### Snapshot `7F5A0426`
+* `01`, `u32 n` and `n` entries (occurrence `CE2913AA` reference, `00`, `u32`) for every occurrence on either side,
+  a version-dependent run, then `u32 2` and the two **sides**. A side: a byte 0/1 and (for 0) a matrix = the side's
+  frame **with the offsets, the angle and the flip applied**; `u32 k` and `k` occurrences (each followed by `00`) =
+  the path of the side's occurrence, counted from the component named next (`E03784ED` reference, `00`): the
+  component the joint lives in. `k = 0`: that component itself.
+* An occurrence inside an inserted design is named by UUID texts instead of a reference (4862, 5128, 5981): not read.
+
+### Occurrence path `549FBB80` (where every occurrence stood after each feature)
+* (`27B2054B` references for some), `u32 k`, `k` occurrences each followed by `00` (the path from the root component
+  down), the root component and `00`, a `u32`, `u32 m`, then `m` steps: `01 00`, a reference to a timeline feature
+  (the occurrence's creation `54F9ACE8`, a Component Insert `428B5C6E`, an as-built joint `AA8B3D40`, a joint
+  `8DFDD543`), `00`, a byte 0/1 and (for 0) a matrix = **the path's placement in the design after that feature**,
+  all parents included. The last matrix is where the occurrence stands in the saved design; a path without any
+  stands at the origin.
+
+### The rule, and its check
+* With `F` = half a turn about x when flip is set (else the identity), `A` = the turn by `alignAngle` about z with
+  the translation (`alignOffsetX`, `alignOffsetY`, `alignOffsetZ`): the snapshot's first frame is
+  `origin1 * F * A^-1`, its second frame is `origin2`, and the joint puts the first side so that
+  `W1 * frame1 = W2 * frame2` (`W` = the side's path placement after the joint, taken from the path records;
+  for a joint inside a component the path is prefixed by each path of that component). So a joint places its first
+  side at `W1 = W2 * origin2 * A * F^-1 * origin1^-1`.
+* Example (3957): origin 1 `[0 -1 0 4.858] [-1 0 0 0] [0 0 -1 -0.1]`, no flip, 90 deg, offsets (0.03, 0, -0.15):
+  frame 1 = diag(1, -1, -1) at (4.828, 0, -0.25); frame 2 = identity at (5.663, 5.123, 0.157); the inserted header's
+  path record has diag(1, -1, -1) at (0.835, 5.123, -0.093) after the joint, which carries frame 1 onto frame 2.
+* All three statements hold for every joint whose records are read: 23 of the 38 distinct joints (rotations within
+  1e-6, translations within 1e-5 mm). Unread: ten with UUID-named occurrences (4862, 5128 x 8, 5981) and the four
+  of the other origin layout; one more (4367 `Assemble3`) fails the placement check (its side's path record does
+  not list the joint, and the placement taken for it is a later one).
+
+### What the importer does with it
+* Joints stay timeline entries without geometry. When **every** joint of a design stream passes the check and every
+  path record is read, the path records place the design: a body blob whose occurrence records give other
+  placements than its component's paths (the placement before a joint, or none at all: 4200's two headers had no
+  placement, 4863's jointed parts stood where they were inserted) gets the paths' final placements, never fewer
+  than were read; a Component Insert in the root component takes its occurrence's last path placement instead of
+  the insert's matrix (3957). The body import uses the same placements.
+* 3957, 4200 and 4400 now come in as history (their box mismatches were the unplaced or pre-joint occurrences).
+  4800 is unchanged: its one joint is verified and its bodies already stood where the path records have them, so
+  its box mismatch (features y -5.215..5.585, stored -5.085..6.785; 293.8 mm3 short) is not a joint's.

@@ -1695,3 +1695,149 @@ fn coverage_tiles_every_record_into_known_and_unknown_spans() {
     // Outside a coverage run nothing is recorded.
     assert!(!crate::cover::on());
 }
+
+/// A header jointed onto a board: the root component 3, the board's occurrence 31 and the
+/// header's 32 (component 50, blob `BREP.hdr.smb`), the joint 10 with its snapshot 70, and the
+/// path records 80 (the header: where the insert 90 put it, then where the joint did) and 81
+/// (the board, never moved). Frame 1 is at (4, 0, 0) cm on the header, flipped and set off by
+/// 0.5 cm along z; frame 2 is at (10, 20, 1) cm on the board.
+fn jointed_header(flip: u8) -> (Vec<u8>, Vec<u8>) {
+    const CLASSES: [&str; 11] = [
+        "8DFDD543-0000-0000-0000-000000000000",
+        "7B6C3C2D-0000-0000-0000-000000000000",
+        "02E8AA49-0000-0000-0000-000000000000",
+        "7F5A0426-0000-0000-0000-000000000000",
+        "549FBB80-0000-0000-0000-000000000000",
+        "CE2913AA-0000-0000-0000-000000000000",
+        "E03784ED-0000-0000-0000-000000000000",
+        "CD57BC48-0000-0000-0000-000000000000",
+        "D91D429C-0000-0000-0000-000000000000",
+        "7A6A3D31-0000-0000-0000-000000000000",
+        "11111111-0000-0000-0000-000000000000",
+    ];
+    let refs = |ids: &[u64]| ids.iter().flat_map(|i| r#ref(*i)).collect::<Vec<u8>>();
+    let mat = |r: [[f64; 3]; 3], t: [f64; 3]| -> Vec<u8> {
+        let rows =
+            [[r[0][0], r[0][1], r[0][2], t[0]], [r[1][0], r[1][1], r[1][2], t[1]], [r[2][0], r[2][1], r[2][2], t[2]]];
+        rows.iter().flatten().chain(&[0.0, 0.0, 0.0, 1.0]).flat_map(|v| f64::to_le_bytes(*v)).collect()
+    };
+    let one = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let over = [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]];
+    // A list entry: the reference and a zero byte.
+    let item = |id: u64| [r#ref(id), vec![0]].concat();
+    let path = |occ: u64| [le32(1), item(occ), item(3)].concat();
+    let mut recs: Vec<(u64, usize, Vec<u8>)> = Vec::new();
+    // The joint: flip, the two origins with their frames, the four holders, the snapshot.
+    let mut j = vec![flip, 0, 0];
+    j.extend([r#ref(60), vec![0, 0], mat(one, [4.0, 0.0, 0.0])].concat());
+    j.extend([r#ref(61), vec![0, 0], mat(one, [10.0, 20.0, 1.0])].concat());
+    j.extend([0; 4]);
+    j.extend(refs(&[20, 21, 22, 23, 70]));
+    recs.push((10, 0, j));
+    recs.push((60, 1, Vec::new()));
+    recs.push((61, 2, Vec::new()));
+    for (holder, param, expr, name, v) in [
+        (20, 25, "0 deg", "alignAngle", 0.0),
+        (21, 26, "5 mm", "alignOffsetZ", 0.5),
+        (22, 27, "0 mm", "alignOffsetX", 0.0),
+        (23, 28, "0 mm", "alignOffsetY", 0.0),
+    ] {
+        recs.push((holder, 8, refs(&[param])));
+        let mut p = ws(expr);
+        p.extend(ws(name));
+        p.extend(ws("d1"));
+        p.extend(f64::to_le_bytes(v));
+        recs.push((param, 9, p));
+    }
+    // The snapshot: every occurrence involved, then the two sides.
+    let mut snap = [vec![1], le32(2), item(31), le32(7), item(32), le32(1), vec![0; 9], le32(2)].concat();
+    snap.extend([vec![0], mat(over, [4.0, 0.0, 0.5]), path(32)].concat());
+    snap.extend([vec![0], mat(one, [10.0, 20.0, 1.0]), path(31)].concat());
+    recs.push((70, 3, snap));
+    // The header's path: where the insert put it, then where the joint did.
+    let step = |id: u64, m: Option<Vec<u8>>| match m {
+        Some(m) => [vec![1, 0], item(id), vec![0], m].concat(),
+        None => [vec![1, 0], item(id), vec![1]].concat(),
+    };
+    let header = [
+        vec![0; 9],
+        path(32),
+        le32(1),
+        le32(2),
+        step(90, Some(mat(over, [0.0, -8.0, 1.0]))),
+        step(10, Some(mat(over, [6.0, 20.0, 1.5]))),
+    ];
+    recs.push((80, 4, header.concat()));
+    recs.push((81, 4, [vec![0; 9], path(31), le32(1), le32(1), step(10, None)].concat()));
+    recs.push((90, 10, Vec::new()));
+    recs.push((31, 5, refs(&[40])));
+    recs.push((32, 5, refs(&[50])));
+    recs.push((3, 6, Vec::new()));
+    recs.push((40, 6, Vec::new()));
+    recs.push((50, 6, [refs(&[51]), ws("Header")].concat()));
+    recs.push((51, 7, refs(&[52])));
+    recs.push((52, 10, ws("BREP.hdr.smb")));
+    let mut bulk = Vec::new();
+    let mut objs = Vec::new();
+    for (id, class, body) in recs {
+        objs.push((id, bulk.len() as u64, class));
+        bulk.extend(record(256 + class as u32, id, &body));
+    }
+    (meta_classes(&CLASSES, &objs), bulk)
+}
+
+#[test]
+fn a_verified_joint_places_its_occurrence_where_the_path_record_has_it() {
+    let (m, bulk) = jointed_header(1);
+    let got = super::joint_placements(&m, &bulk);
+    assert_eq!((got.verified, got.unverified.len()), (1, 0), "{got:?}");
+    let header = got.placements.iter().find(|p| p.path == [32]).unwrap();
+    assert_eq!((header.name.as_str(), header.blobs.as_slice()), ("Header", &["BREP.hdr.smb".to_string()][..]));
+    assert_eq!(header.placement.t, [60.0, 200.0, 15.0]);
+    assert_eq!(header.placement.r[1], [0.0, -1.0, 0.0]);
+    // The body stood where the insert put it; other bodies stay.
+    let at = |t: [f64; 3]| crate::fusion::Placement { t, ..crate::fusion::Placement::IDENTITY };
+    let body = |brep: &str, t: [f64; 3]| crate::fusion::Placed {
+        brep: brep.into(),
+        occurrence: "x:1".into(),
+        placement: at(t),
+    };
+    let mut placed = vec![body("hdr", [0.0, -80.0, 10.0]), body("other", [1.0, 2.0, 3.0])];
+    super::place_by_joints(&mut placed, &got);
+    assert_eq!(placed.len(), 2);
+    assert_eq!((placed[0].occurrence.as_str(), placed[0].placement), ("Header:1", header.placement));
+    assert_eq!(placed[1], body("other", [1.0, 2.0, 3.0]));
+    // A body the occurrence records did not place at all is placed too.
+    let mut placed = vec![body("other", [1.0, 2.0, 3.0])];
+    super::place_by_joints(&mut placed, &got);
+    assert_eq!(placed.len(), 2);
+    assert_eq!(placed[1].placement, header.placement);
+    // An inserted design in the root component takes the placement of its occurrence's path.
+    let mut tree = json!({"features": [{"type": "component_insert", "_occurrence": 32,
+        "placement": {"r": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], "t": [0, 0, 0]}}]});
+    super::joint::place_inserts(&mut tree, &got);
+    assert_eq!(tree["features"][0]["placement"]["t"], json!([60.0, 200.0, 15.0]));
+}
+
+#[test]
+fn a_joint_that_disagrees_with_the_stored_placement_places_nothing() {
+    // The flip byte says the frames look the same way; the stored frame is turned over.
+    let (m, bulk) = jointed_header(0);
+    let got = super::joint_placements(&m, &bulk);
+    assert_eq!((got.verified, got.unverified.len()), (0, 1), "{got:?}");
+    assert!(got.placements.is_empty());
+    let mut placed = vec![crate::fusion::Placed {
+        brep: "hdr".into(),
+        occurrence: "x:1".into(),
+        placement: crate::fusion::Placement::IDENTITY,
+    }];
+    let before = placed.clone();
+    super::place_by_joints(&mut placed, &got);
+    assert_eq!(placed, before);
+    // A stream without joints says nothing.
+    assert_eq!(super::joint_placements(&meta_classes(&[], &[]), &[]), super::Joints::default());
+    // Damaged records are refused without panics.
+    for cut in (0..bulk.len()).step_by(7) {
+        let _ = super::joint_placements(&m, &bulk[..cut]);
+    }
+}

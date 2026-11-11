@@ -202,3 +202,14 @@ shells), state check 11 (stored solids no feature of the tree makes: 2219, 3211,
 that a joint moved: 3957, 4200, 4800; blends after the last stored state: 2011, 931), no history stored 7, rebuild
 failures 6 (blend edges not found on the model, a shell and an extrusion that do not build, a pattern that makes a
 new body).
+
+## After the joints (2026-11-11, the designs with joints only; no full re-run)
+Joints are decoded and checked against the placements the stream stores per occurrence path (section 24 of
+`fusion-design-stream.md`); a design whose joints all pass is placed by those records.
+
+| design | before | now |
+|---|---|---|
+| 3957 | box check (the inserted header stood where its insert put it) | history |
+| 4200 | box check (two jointed headers had no placement) | history |
+| 4400 | box check | history |
+| 4800 | box check | unchanged: its joint is verified and its bodies already stood right; the mismatch is not a joint's |

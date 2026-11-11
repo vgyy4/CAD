@@ -1275,7 +1275,7 @@ fn insert_json(d: &Design, fid: u64, name: &str, fusion_type: &str, class: &str)
     };
     let rr = |v: V3| json!([round9(v[0]), round9(v[1]), round9(v[2])]);
     json!({"type": "component_insert", "fusion_type": fusion_type, "name": name, "source_id": fid,
-        "insert_keys": keys,
+        "insert_keys": keys, "_occurrence": cx,
         "placement": {"r": [rr(r[0]), rr(r[1]), rr(r[2])], "t": [round6(t[0]), round6(t[1]), round6(t[2])]}})
 }
 

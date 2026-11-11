@@ -2812,6 +2812,11 @@ fn f3d(
                     &mut d.bodies,
                     &gusset_sat::fusion_tree::pattern_copies(meta, b),
                 );
+                // Where the joints left the occurrences they moved.
+                gusset_sat::fusion_tree::place_by_joints(
+                    &mut d.bodies,
+                    &gusset_sat::fusion_tree::joint_placements(meta, b),
+                );
             }
             charge_placements(
                 &mut placements_kept,

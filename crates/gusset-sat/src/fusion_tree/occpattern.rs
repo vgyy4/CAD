@@ -55,7 +55,7 @@ fn values(d: &Design, fid: u64, name: &str) -> Vec<f64> {
 }
 
 /// The single value of a parameter, if the feature has exactly one.
-fn value(d: &Design, fid: u64, name: &str) -> Option<f64> {
+pub(super) fn value(d: &Design, fid: u64, name: &str) -> Option<f64> {
     match values(d, fid, name).as_slice() {
         [v] => Some(*v),
         _ => None,

@@ -21,6 +21,7 @@ mod coverage;
 mod feature;
 mod geom;
 mod insert;
+mod joint;
 mod json;
 mod naming;
 mod occpattern;
@@ -142,13 +143,17 @@ fn built(
     depth: usize,
 ) -> Result<serde_json::Value, String> {
     let mut tree = feature_tree_unchecked(files, file_name)?;
+    let (meta, bulk) = pick_stream(files)?;
+    // Joints make no geometry; they move occurrences, and the stream stores where to.
+    let joints = joint_placements(meta, bulk);
+    joint::place_inserts(&mut tree, &joints);
     insert::splice(&mut tree, resolve, depth)?;
     json::check(&tree)?;
     // The features are in each component's own coordinates; the file's bodies stand where the
     // occurrences of the components put them.
-    let (meta, bulk) = pick_stream(files)?;
     let mut placed = crate::fusion::read_design(bulk).bodies;
     add_pattern_copies(&mut placed, &pattern_copies(meta, bulk));
+    place_by_joints(&mut placed, &joints);
     json::place(&mut tree, &placed)?;
     Ok(tree)
 }
@@ -400,6 +405,7 @@ fn timeline(d: &Design) -> (Vec<u64>, Vec<u64>) {
     (out, extra)
 }
 
+pub use joint::{JointPlacement, Joints};
 pub use occpattern::PatternCopies;
 
 /// The occurrences that the rectangular patterns of components of one design stream made, each
@@ -415,6 +421,25 @@ pub fn pattern_copies(meta: &[u8], bulk: &[u8]) -> Vec<PatternCopies> {
         .filter(|i| d.is(**i, "AE12AD3F") || d.is(**i, "E8816367"))
         .filter_map(|i| occpattern::copies_of(&d, *i).ok())
         .collect()
+}
+
+/// What the joints of one design stream say: how many agree with the placements the stream
+/// stores for the occurrences they move, why the others could not be checked, and, when all
+/// agree, where every occurrence of the design stands ([`Joints`]). Nothing for a stream
+/// without joints.
+pub fn joint_placements(meta: &[u8], bulk: &[u8]) -> Joints {
+    if meta.len().saturating_add(bulk.len()) > MAX_STREAM_BYTES {
+        return Joints::default();
+    }
+    Design::new(meta, bulk).map(|d| joint::read(&d)).unwrap_or_default()
+}
+
+/// Puts the bodies of a design where its occurrence path records have them, when
+/// [`joint_placements`] could check every joint of the design against those records: a body the
+/// occurrence records place elsewhere (where it stood before a joint moved it) or not at all
+/// gets the placements of its component's occurrence paths. Nothing changes otherwise.
+pub fn place_by_joints(bodies: &mut Vec<crate::fusion::Placed>, joints: &Joints) {
+    joint::place(bodies, joints);
 }
 
 /// Adds to `bodies` the occurrences the patterns of components made: every body placed by an
