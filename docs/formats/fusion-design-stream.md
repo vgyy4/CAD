@@ -1768,3 +1768,77 @@ Reader: `fusion_tree/mirrorcomp.rs`, `fusion_tree/thin.rs`; importer: `fusion_st
 ### Result
 * adafruit-more: 117 of 150 as history (4343 gained, none lost); adafruit: 11 (none lost). The thin extrude reading
   touches only extrudes with a wall thickness (5981, 6299, 6126, checked one by one after it).
+
+## 35. Round 21 K: outlines that touch themselves, circles drawn twice, cuts of several bodies (2026-11-11)
+
+### A notch whose corner meets the outline (2348)
+* 2348's `Board` sketch: the board's rounded outline (65 x 56.5 mm, r 3 corners), a slot, and a notch whose last
+  line runs from (0, 35.23) on the board's left edge to (0.1, 18.23), just inside it. The notch is a hole that
+  touches the outline in one point, so the board's region is one loop passing that point twice (four zero-length
+  lines on x = 0 lie on the edge as well and drop out). Swept, the point becomes a vertical edge four side faces
+  share. The extrude's fast closed-shell test wanted two faces per edge and refused it; OCCT's analyzer finds the
+  prism valid. The stored board is 5570.2218 mm3 = (3664.774 - 83.72 - 33.14) mm2 x 1.57 mm, this solid.
+* The shim now gives a shell whose edges are all used an even number of times to the full analyzer (odd counts are
+  still refused). 2348 comes in as history (147 states, 245 cut tools).
+
+### A circle drawn twice cuts its copy half way round (858, revises section 25)
+* 858's `Extrude5` (the double-flat shaft): two copies of a circle r 2.5 mm (seam at the sketch's +x), a 5 x 3 mm
+  rectangle whose short sides are tangent to the circle at its seam and opposite it, and whose long sides cross it
+  at +-36.87 and +-143.13 deg. The loop lists both copies as pieces 1, 3 and 4 of 5 and the two long sides' middle
+  pieces. Five pieces with the region's arcs 1 (the right arc, round the seam), 3 and 4 (the left arc in two)
+  mean: the four crossings cut, the seam does not, the tangent points do not, and one more cut lies at 180 deg.
+* 324's flat (a chord and the circle drawn twice, the cap piece 2 of 3) needs one cut besides the chord's ends,
+  anywhere from 127 to 360 deg: the seam fits, and so does 180 deg. One rule fits both: **a closed copy cuts
+  the curve at the point half way round from the copy's seam**. An open curve lying on a circle (an arc) still
+  cuts it at its ends.
+
+### Regions that touch themselves, united (858)
+* 858's `Extrude1` takes eight regions of a sketch where a circle r 4.5 mm is tangent to the tab's top line: the
+  region above the line, outside that circle, passes the tangent point twice. Uniting the regions computed each
+  member's area by chaining its edges again, which fails at such a point, so the regions stayed apart and the
+  sweep was refused. The area now comes from the member's loops as they are.
+
+### An extrude cut through several bodies (858)
+* `Extrude6` cuts the case (`Extrude1`) and the shaft (`Extrude4`): its body links name both. The tree's extrude
+  now takes a list of bodies for a cut, and the importer writes one cut per body (`Extrude6`, `Extrude6_2`) with
+  the same profile and extent; both are one step of the state check, as the blends of section 31 are.
+* 858 then stops at `Fillet3`: its edge (z -19 mm, on the r 14 mm circle from (7.3, -11.93) to (13.54, -3.5))
+  is a piece of the side of `Extrude2` that Fusion keeps apart where the profile's curve was cut (at the tab's
+  line); Gusset's join unifies the coaxial pieces of the circle into one face, so no edge of the model is that
+  piece. Without unifying (`refine: false` on every extrude, an experiment) `Fillet3` builds but `Fillet2`'s edge
+  (x -7.3, from z 0 to -17) is then split at z -0.8 where `Extrude1` and `Extrude2` meet, an edge Fusion does unify.
+  So Fusion merges a tool's faces with the body's across the boolean but keeps the tool's own faces apart where its
+  profile curves were cut. Gusset has no such mode: not attempted. After it come `Fillet4` (0.75 mm on an edge of
+  1 mm), `Extrude13` (an arc of its profile does not build) and `OffsetFaces2`.
+
+### A face of an extrude by a numbering the stored faces confirm (6299)
+* `Chamfer1 (2)` names the edge between side `8` and cap `2` of `Extrude1 (2)` and nothing else. The extrude's
+  profile is an outline of 16 pieces and a round hole; the generator numbering (section 13) was not used when a
+  profile has holes. Generators 3 to 6 of this extrude name stored faces whose pieces are known, and all four are
+  the pieces the numbering gives: the numbering is now used for a profile with holes where at least two stored
+  faces confirm it and none contradicts it.
+* An edge named by a side and a cap of one extrude and by no bounding face is the whole side at the cap: its middle
+  is the side's chord middle moved onto the cap (tried after the model and the stored bodies). A model edge that is
+  only part of it does not match that middle, so the import stops there rather than guess.
+* 6299 then stops at `Extrude17`, whose profile is a face: side `5` of `Extrude` op 326 as a later feature (op 425)
+  left it, a plane parallel to the extrude's direction. Not an extrude's cap: the face's outline is not a sketch,
+  and no extrude of a body face exists in Gusset. Not attempted.
+
+### The magnetic connector's pin (5358, 5360)
+* Section 30's frame question has its answer in the stored blend: the sweep body ends at x = -3.81 mm and the model's
+  sweep does too (Fusion sweeps the profile, off the path by -2.54 mm along the path plane's normal, with that
+  offset kept, as OCCT's pipe does). `Fillet - Pin` failed for another reason: the profile (the cap of the pin's
+  extrude, a disc r 0.45 mm and the ring out to 0.5 mm) was copied with both circles, swept as two regions, and the
+  end kept the circle between them; the 0.1 mm blend of the rim ran into it. Curves all of whose pieces bound two of
+  the extrude's regions lie inside the cap face and are now left out of the copy. `Fillet - Pin` builds.
+* 5358 then stops at `Chamfer2` (two distances, on two sides of `Extrude3` next to the edge `Chamfer1` blended):
+  OCCT refuses the two-distance chamfer of both edges at once (they share the cap; separate passes are tried only
+  for independent edges) and the fallback that cuts the corners away leaves a face with no origin (`face 20 has no
+  usable origin`), likely a cutter end face where the corner meets `Chamfer1`'s slope (not examined further).
+* 5360 (three pins) builds every feature and reaches the step check, which refuses it: a stored solid is neither a
+  state of the model nor a tool the check explains (not examined this round).
+
+### Result
+* adafruit-more: 122 of 150 as history (2348 gained; none lost; 121 before). adafruit: 13 of 18 (unchanged).
+* First blockers now: 858 `Fillet3` (tool faces Fusion keeps apart), 6299 `Extrude17` (a body face as profile),
+  5358 `Chamfer2`, 5360 the step check.
