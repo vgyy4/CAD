@@ -293,3 +293,32 @@ normalise `a >= b` (turning the axis a quarter turn and shifting the anomaly), s
 `Curve::Ellipse` / `Curve::EllipseArc` carry a unit `major` direction. Areas are exact
 (`pi a b`; an arc: `1/2 (c x (e - s) + a b span)`) and windings are taken in the unit-circle
 image of the ellipse (an affine, orientation-preserving map).
+
+### Amendment (2026-11-11): exact B-splines
+The splines of §3 are Catmull-Rom curves through their points and cannot hold the B-splines
+other systems store (Fusion's sketch splines, STEP, Parasolid). `Geom::BSpline { first,
+count, data, degree, periodic }` (gusset-sketch) is an exact rational B-spline: its poles are
+`count` entries of the spline point table (ordinary points, so constraints and drags move
+them; the curve adds no equations and takes no constraints), its knots and then its weights
+are in a side table of numbers (`Geom` stays `Copy`). Conventions (`gusset_sketch::bspline`):
+degree 1 to 9 (`MAX_BEZIER_DEGREE`), a flat knot vector of `n + p + 1` non-decreasing values
+over the domain `[t_p, t_n]` (clamped or not; interior multiplicity at most `p`), positive
+weights. Periodic: `n + 1` knots, period `t_n - t_0`, the sequence continued by
+`t_{i+n} = t_i + T`, pole `i` belonging to the basis function that starts at `t_{i-p}`, which
+is OCCT's convention (checked against the occt-port translation of BSplCLib: the uniform
+periodic cubic over four poles starts at `(P0 + 4 P1 + P2) / 6`).
+
+Representation for profiles: the curve is cut at its knots into one rational Bézier per
+non-empty span, computed by blossoming (de Boor with one argument per level) in homogeneous
+coordinates: exact, not a fit. The spline chain of `profile.rs` now holds rational Béziers of
+any degree up to 9 (`RationalBezier`; the polynomial cubics of Catmull-Rom splines keep their
+closed formulas bit for bit), so cutting at crossings, numeric intersection (`curves.rs`
+cells and Newton), self-crossing checks, windings and areas all run on the exact curve. Areas
+of rational spans use 16-point Gauss-Legendre (polynomial spans of degree `n` use `n` points,
+exact). A clamped curve whose ends meet within the tolerance is a closed curve like a
+periodic one (its seam is made exact). Profile segments of spans that are polynomial cubics
+stay `Curve::Bezier`; all others are `Curve::RationalBezier`, carried to the kernel as
+`Seg2::RationalBezier` (one edge and one lateral face per span, like spline segments, for
+exact mass properties) and built by the shim as a rational `Geom_BezierCurve`; faces swept
+from rational curves are integrated with the fine tolerance of ellipses. **Not supported
+yet:** on-curve constraints, trimming, knot insertion/editing commands, a GUI tool.

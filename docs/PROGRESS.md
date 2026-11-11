@@ -9,6 +9,16 @@ refuses tag pushes); the tag triggers the release workflow after the milestone r
 Phase 3 has started (see Next).
 
 ## Done
+- Exact (rational) B-spline sketch curves (2026-11-11), end to end: `Geom::BSpline` (degree
+  1 to 9, flat knots, poles that are sketch points, weights, periodic) cut by blossoming into
+  rational Bézier spans that the spline machinery (crossings, areas, windings) runs on;
+  `Seg2::RationalBezier` through the kernel wire and the OCCT shim (rational
+  `Geom_BezierCurve`, fine quadrature for rational swept faces); text `bspline(degree:, poles:,
+  knots:, weights:) [periodic]`; sketch patterns copy them; tree import `{type: bspline}`
+  (ADR 0042). Golden volumes: NURBS circle cylinder and torus, periodic quadratic
+  (10 a²/3), quintic edge, Fusion-style clamped cubic, a shelled NURBS cup with per-span face
+  names. Left: the Fusion reader emitting `bspline` for its 69 decoded `D82E012F` records,
+  on-curve constraints, trimming, a command and GUI tool. ADRs 0004, 0016, 0042 amended.
 - Ellipses and elliptical arcs (2026-11-09), end to end: sketch entities with solver
   support (angle, `a`, `b` as plain unknowns, arc ends kept on the curve, point-on-ellipse,
   fixed, horizontal/vertical, `semi_major`/`semi_minor`), arrangement and exact areas,

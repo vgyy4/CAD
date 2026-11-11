@@ -289,3 +289,20 @@ Two whole-body features complete the set of body edits a feature tree (ADR 0042)
   body that remains. A suppressed `remove` removes nothing. Appearances of a removed body stay
   unused, as for any body that is gone. The body's features before the `remove` still build
   (the history is kept); only the result lacks it.
+
+## Amendment (2026-11-11): exact B-splines in the text language
+Sketch entity `b9 = bspline(degree: 2, poles: [p1, p2, ...], knots: [...], weights: [...])`
+(id prefix `b`), optionally followed by `periodic`, then `construction`. `poles` are ordinary
+point ids (a pole may repeat: a clamped closed curve lists its first point again last),
+`knots` the flat knot vector (`poles + degree + 1` numbers, `poles + 1` when periodic),
+`weights` one per pole or left out (then empty in the model, meaning all 1; the text prints
+them only when the model has them, so text round-trips exactly). Knots and weights are
+printed exactly. Validation: degree 1 to 9, at least `degree + 1` and at most 1000 poles, the
+knot count, finite non-decreasing knots, positive finite weights, poles that are earlier
+points; multiplicities and the non-empty domain are checked when the sketch is built (the
+sketch crate's error names the entity). B-splines are pattern sources (copies map the poles,
+knots and weights stay); they cannot be trimmed. Persistent names need nothing new beyond the
+per-segment tags of splines: each knot span is one profile edge tagged
+`with_segment(tag, span)`, so the lateral faces of an extruded B-spline are named
+`Extrude1/side(Sketch1/b9_g0)`, `..._g1`, ... (ADR 0003). No `sketch.add_bspline` command and
+no GUI tool yet: B-splines come from importers and the code view.

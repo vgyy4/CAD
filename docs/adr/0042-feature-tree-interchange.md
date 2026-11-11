@@ -437,3 +437,50 @@ The evaluator unites the regions an extrude, revolve or sheet feature takes when
 whole edges (`gusset-eval` `merge.rs`): a tree feature with several profile picks that lie side
 by side builds one solid, as the source application does, where it built one solid per pick
 before. Picks apart from each other still give one body of several solids.
+
+## Amendment (2026-11-11): exact B-spline curves in sketches
+
+One more sketch curve type (either format version):
+
+```json
+{ "id": "s1", "type": "bspline", "degree": 3,
+  "knots": [0, 0, 0, 0, 1, 1, 1, 1],
+  "poles": ["p1", "p2", "p3", "p4"],
+  "weights": [1, 1, 1, 1],
+  "periodic": false }
+```
+
+- `degree` 1 to 9; `poles` are ids of sketch points (in the sketch's own frame, like every
+  point; a pole may repeat, e.g. a closed clamped curve lists its first pole again last);
+  `knots` is the **flat** knot vector, every knot repeated by its multiplicity:
+  `poles + degree + 1` values for a non-periodic curve (the curve runs from knot `degree` to
+  knot `poles`, 0-based), `poles + 1` for a periodic one (period = last - first; pole `i`
+  belongs to the basis function starting `degree` knots before knot `i`, as in OCCT).
+  `weights` is one positive number per pole, or omitted / `[]` for a polynomial curve.
+  `periodic` defaults to false.
+- The curve is exact: Gusset keeps degree, knots, weights and poles and cuts the curve at its
+  knots into rational Bézier spans; nothing is approximated. Each span is one edge, so an
+  extruded B-spline has one lateral face per non-empty span, named `<extrude>/side(<sketch>/
+  b<n>_g<span>)`.
+- Gusset text: `b9 = bspline(degree: 3, poles: [p1, p2, p3, p4], knots: [...], weights:
+  [...])` (+ ` periodic`); pole points keep 8 decimals, knots and weights all digits. On a
+  mirrored plane only the poles are mapped.
+- Bad data (a degree outside 1 to 9, too few poles, a wrong knot count, decreasing knots, an
+  interior knot repeated more than `degree` times, an empty domain, a weight that is not
+  positive, an unknown pole) skips the sketch with the reason in `skipped`.
+
+What the Fusion reader should emit for its `D82E012F` records (design-stream notes section 23:
+`u32 degree`, knots, weights, control points in cm): the control points as sketch points (mm,
+the sketch's frame, as for every other point), then
+
+```json
+{ "id": "<curve id>", "type": "bspline", "degree": <degree>,
+  "knots": [<the record's knots as stored, unchanged>],
+  "poles": ["<point id of control point 0>", ..., "<point id of control point n-1>"],
+  "weights": [<the record's weights; may be omitted when all are 1>],
+  "periodic": false }
+```
+
+(all 69 decoded records are clamped with `knots = poles + degree + 1`, so `periodic` is false;
+a record whose first and last control points coincide is a closed curve and should reuse the
+first point's id as its last pole so the region closes exactly).
