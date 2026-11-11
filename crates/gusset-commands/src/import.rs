@@ -2326,6 +2326,18 @@ fn fusion_explain_placed(
     if fusion_ends_agree(finished, ends) {
         return Ok((states, tool_at.into_iter().enumerate().map(|(i, at)| (at, joined.contains(&i))).collect()));
     }
+    // End bodies that are not the finished bodies: the features between the stored states and
+    // the end differ from the file's, whatever the states say (1145 with its modeled thread left
+    // out: every state and tool explained, its end bodies 2435.90 and 436.99 mm3 where the model
+    // has 2742.21 and 476.79).
+    if !ends.is_empty() {
+        let fmt = |v: &[f64]| v.iter().map(|x| format!("{x:.4}")).collect::<Vec<_>>().join(", ");
+        return Err(format!(
+            "the finished bodies ({} mm3) are not the end bodies the file stores ({} mm3)",
+            fmt(finished),
+            fmt(ends)
+        ));
+    }
     for k in last + 1..vols.len() {
         if delta(k) <= 1e-9 {
             continue;
@@ -4177,6 +4189,40 @@ mod fusion_steps_tests {
             finished: &[],
         };
         assert!(fusion_explain_placed(&bad, &mut inside, &mut firsts).is_err());
+    }
+
+    #[test]
+    fn end_bodies_that_are_not_the_finished_bodies_are_refused() {
+        // A fillet no stored solid shows, then a stored new body: the states explain every
+        // stored solid, and only the end bodies can tell the fillet is wrong.
+        let t = vec![
+            json!({"type": "extrude", "name": "Plate", "operation": "new"}),
+            json!({"type": "extrude", "name": "Part", "operation": "new"}),
+            json!({"type": "fillet", "name": "Fillet1"}),
+            json!({"type": "extrude", "name": "Pin", "operation": "new"}),
+        ];
+        let per_body = vec![vec![], vec![100.0], vec![100.0, 7.0], vec![100.0, 6.5], vec![100.0, 6.5, 3.0]];
+        let vols = [0.0, 100.0, 107.0, 106.5, 109.5];
+        let stored = [100.0, 7.0, 3.0];
+        let (insts, loose, names_) = (fusion_instances(&t), fusion_loose(&t), names(&t));
+        let mut inside = |_: usize, _: &[usize]| -> Result<Option<Vec<[f64; 2]>>, String> { Ok(None) };
+        let mut check = |ends: &[f64]| {
+            let steps = FusionSteps {
+                vols: &vols,
+                per_body: &per_body,
+                per_solid: &[],
+                stored: &stored,
+                insts: &insts,
+                loose: &loose,
+                names: &names_,
+                ends,
+                finished: &[],
+            };
+            fusion_explain_placed(&steps, &mut inside, &mut |_, tools| Ok(tools.to_vec())).map(|(states, _)| states)
+        };
+        assert_eq!(check(&[]), Ok(3));
+        assert_eq!(check(&[100.0, 6.5, 3.0]), Ok(3));
+        assert!(check(&[100.0, 6.0, 3.0]).unwrap_err().contains("not the end bodies"));
     }
 
     #[test]
