@@ -305,3 +305,10 @@ side, body-pattern copies counted, blends split per body, revolves about an orig
 adafruit-more 120 of 150 as history (was 116: 355, 1463, 3422, 4863 added; none lost), adafruit 13 of 18 (4863
 added). 1145 and 3350 stop at their modeled threads; with the threads left out 1145 is refused by its end bodies
 and 3350 stops at Fillet2 (edges not resolved).
+
+## Combined re-run after round 20 G and H (2026-11-11)
+
+Round 20 G on top of round 19 E and F: adafruit-more 121 of 150 as history (116 before: 355, 1463, 3422, 4863
+and 5967 added; none lost), adafruit 13 of 18 (4862 and 4863 added). 4862 and 5967 came in with G's body-pattern
+fix: the step check counted pattern copies in a run of new bodies but not after a single feature, so the board
+hole cuts looked too large (section 32).
