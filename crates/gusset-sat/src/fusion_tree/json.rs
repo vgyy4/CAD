@@ -7,8 +7,9 @@ use super::naming::{self, RecipeKind};
 use super::sketch::{self, SKETCH_FEAT};
 use super::stream::ref_ids;
 use super::stream::{self, Design};
-use super::{Ctx, EXTRUDE, Graph, PARAM, SWEEP, component_bodies, component_name, timeline};
+use super::{Ctx, EXTRUDE, Graph, PARAM, SWEEP, component_bodies, component_name, mirrorcomp, timeline};
 use crate::cover;
+use crate::fusion::Placement;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 
@@ -1322,6 +1323,28 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             }
             continue;
         }
+        if d.is(fid, mirrorcomp::DERIVED_INSTANCE)
+            && ref_ids(d, d.rec(fid)).iter().any(|q| d.is(*q, mirrorcomp::MIRROR_COMPONENT))
+        {
+            skipped.push(json!({"name": name, "fusion_type": fusion_type, "source_id": fid,
+                "reason": "the occurrence of a mirrored component: read with its MirrorComponent"}));
+            continue;
+        }
+        if d.is(fid, mirrorcomp::MIRROR_COMPONENT) {
+            let made = mirror_component_json(cx, &mut comps, &feats, fid, &nm);
+            match made {
+                Ok((mut made, new)) => {
+                    tag_feats(&mut made, 0, Some((new.0, new.1.as_deref())), extra.contains(&fid));
+                    feats.extend(made);
+                }
+                Err(why) => {
+                    feats.push(json!({"type": "unsupported", "fusion_type": fusion_type, "name": nm,
+                        "class_guid": class, "source_id": fid, "error": why}));
+                    tag_feats(&mut feats, nbefore, comp.map(|c| (c, comp_name.as_deref())), extra.contains(&fid));
+                }
+            }
+            continue;
+        }
         if d.is(fid, SKETCH_FEAT) {
             match sketch_json(cx, fid, &nm) {
                 Some((j, sid)) => {
@@ -1810,6 +1833,42 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
 /// to that one. The body that lives on is the one a later feature names (a join of the bodies of
 /// Extrude1 and Extrude9 followed by a join to Extrude9's keeps Extrude9's), the first where none
 /// does; where later features name two of them the feature stays as it is (refused).
+/// The features of a MirrorComponent: one body mirror (into a new body) per body its source
+/// component has, in the new component (section 33). Also lists the new component.
+type NewComp = (u64, Option<String>);
+fn mirror_component_json(
+    cx: &Ctx,
+    comps: &mut Vec<(u64, Option<String>, Vec<String>)>,
+    feats: &[Value],
+    fid: u64,
+    nm: &str,
+) -> Result<(Vec<Value>, NewComp), String> {
+    let d = cx.d;
+    let m = mirrorcomp::read(cx, fid)?;
+    let bodies = mirrorcomp::component_bodies_so_far(feats, m.source)?;
+    if bodies.is_empty() {
+        return Err("the mirrored component has no body the tree built".into());
+    }
+    let id = Placement::IDENTITY;
+    let plane = mirrorcomp::reflection_plane(&mirrorcomp::body_map(&m, &id, &id))
+        .ok_or("the mirrored bodies are not a reflection of the source's in the new component")?;
+    if !comps.iter().any(|x| x.0 == m.new) {
+        comps.push((m.new, component_name(d, m.new), component_bodies(d, m.new)));
+    }
+    let keys = m.keys_json();
+    let made = bodies
+        .iter()
+        .enumerate()
+        .map(|(k, b)| {
+            let name = if k == 0 { nm.to_string() } else { format!("{nm} body {}", k + 1) };
+            json!({"type": "mirror", "name": name, "source_id": fid, "features": [], "target": b,
+                "merge": false, "creates_bodies": 1, "plane": mirrorcomp::plane_json(plane),
+                "_mirror_component": keys.clone()})
+        })
+        .collect();
+    Ok((made, (m.new, component_name(d, m.new))))
+}
+
 pub(super) fn joins_of_several_bodies(feats: &mut Vec<Value>) {
     let mut i = 0;
     while i < feats.len() {
@@ -2350,6 +2409,24 @@ pub(super) fn place(tree: &mut Value, placed: &[crate::fusion::Placed]) -> Resul
         replicate_instances(feats, &by_comp);
     }
     let Some(feats) = tree.get_mut("features").and_then(Value::as_array_mut) else { return Ok(()) };
+    // A mirrored component's bodies: the reflection of its source's, each where the file places
+    // its bodies (section 33; the parent's own placement cancels out). Its plane is not moved
+    // again below.
+    for f in feats.iter_mut() {
+        let Some(m) = f.get("_mirror_component").and_then(mirrorcomp::keys_of) else { continue };
+        let one = |c: u64| match by_comp.get(&c).map(Vec::as_slice) {
+            None => Ok(crate::fusion::Placement::IDENTITY),
+            Some([p]) => Ok(*p),
+            Some(_) => Err("a mirrored component or its source stands in several places".to_string()),
+        };
+        let map = mirrorcomp::body_map(&m, &one(m.source)?, &one(m.new)?);
+        let plane = mirrorcomp::reflection_plane(&map)
+            .ok_or("the mirrored component's bodies are not a reflection of its source's where the file places them")?;
+        if let Some(o) = f.as_object_mut() {
+            o.insert("plane".into(), mirrorcomp::plane_json(plane));
+            o.remove("_component");
+        }
+    }
     for f in feats.iter_mut() {
         let inst = f.get("_instance").and_then(Value::as_u64).unwrap_or(0) as usize;
         let Some(pl) = f

@@ -23,6 +23,7 @@ mod geom;
 mod insert;
 mod joint;
 mod json;
+mod mirrorcomp;
 mod naming;
 mod occpattern;
 mod patdir;
