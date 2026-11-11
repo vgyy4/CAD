@@ -2419,18 +2419,20 @@ fn fusion_explain_placed(
                 let kept = changed_after(k);
                 let removes = vols.get(k).zip(vols.get(k - 1)).is_some_and(|(a, b)| a < b);
                 let all_at: Vec<usize> = all.iter().filter_map(|i| tool_at.get(*i).copied()).collect();
-                if removes && kept > 1e-9 && all.len() <= MAX_FUSION_PLACED_TOOLS {
-                    if let Some(parts) = inside(k, &all_at)?.filter(|parts| parts.len() == all_at.len()) {
-                        let mine: Vec<usize> = all
-                            .iter()
-                            .zip(&parts)
-                            .filter(|(_, [before, after])| same(*before, kept) && same(*after, kept))
-                            .map(|(i, _)| *i)
-                            .collect();
-                        if let [one] = mine.as_slice() {
-                            covered.insert(*one);
-                            explained.insert(k);
-                        }
+                if removes
+                    && kept > 1e-9
+                    && all.len() <= MAX_FUSION_PLACED_TOOLS
+                    && let Some(parts) = inside(k, &all_at)?.filter(|parts| parts.len() == all_at.len())
+                {
+                    let mine: Vec<usize> = all
+                        .iter()
+                        .zip(&parts)
+                        .filter(|(_, [before, after])| same(*before, kept) && same(*after, kept))
+                        .map(|(i, _)| *i)
+                        .collect();
+                    if let [one] = mine.as_slice() {
+                        covered.insert(*one);
+                        explained.insert(k);
                     }
                 }
                 continue;

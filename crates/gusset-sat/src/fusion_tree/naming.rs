@@ -1086,7 +1086,7 @@ impl Ctx<'_> {
             else {
                 continue;
             };
-            if (dot(n, axis).abs() - 1.0).abs() > 1e-9 || !(radius > 0.0) {
+            if (dot(n, axis).abs() - 1.0).abs() > 1e-9 || radius.is_nan() || radius <= 0.0 {
                 continue;
             }
             // The circle's centre: the axis where it meets the plane.
