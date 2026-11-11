@@ -1704,9 +1704,27 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         Ok(by_body)
     };
     let mut by_body = collect(None)?;
+    // A pick whose nearest edge lies in more than one body (a magnet's rim on its pocket's): the
+    // nearest-edge search keeps the first body's, whichever the source means.
+    let shared = || {
+        d.edges.iter().any(|pick| {
+            let mut nearest: Vec<(f64, &str)> = Vec::new();
+            for b in &ev.bodies {
+                let dd =
+                    b.topology.edges.iter().map(|e| norm(sub(e.midpoint, pick.midpoint))).fold(f64::INFINITY, f64::min);
+                if dd <= 0.01 {
+                    nearest.push((dd, b.feature.as_str()));
+                }
+            }
+            let Some(min) = nearest.iter().map(|(dd, _)| *dd).reduce(f64::min) else { return false };
+            let mut bodies: Vec<&str> = nearest.iter().filter(|(dd, _)| *dd <= min + 1e-7).map(|(_, b)| *b).collect();
+            bodies.dedup();
+            bodies.len() > 1
+        })
+    };
     // Edges of several bodies that lie on one another (a magnet in its pocket): the body the
     // source names decides.
-    if by_body.len() > 1
+    if (by_body.len() > 1 || shared())
         && let Some(t) = &d.on_body
     {
         let tb = g.body_named(t, "body")?;
