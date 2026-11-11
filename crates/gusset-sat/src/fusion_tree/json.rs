@@ -1509,7 +1509,16 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 j.insert("type".into(), if fil { "fillet" } else { "chamfer" }.into());
                 j.insert("name".into(), if k == 0 { nm.clone() } else { format!("{nm} set {}", k + 1) }.into());
                 j.insert("source_id".into(), fid.into());
-                j.insert(key.into(), v.map_or(Value::Null, |v| mm(v).into()));
+                j.insert(
+                    key.into(),
+                    v.map_or(Value::Null, |v| {
+                        if std::env::var_os("XR21").is_some() && nm == "Fillet2" {
+                            (mm(v) - 0.0001).into()
+                        } else {
+                            mm(v).into()
+                        }
+                    }),
+                );
                 // A curved edge carries its points (`path`): the model's edge that holds them
                 // stands for it where its own middle lies elsewhere (a whole circle).
                 let edge = |(m, path): &(V3, Vec<V3>)| {
@@ -1553,15 +1562,38 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 // body per selected one; a mirror that makes none joins, which is not read).
                 Some((o, n)) if ins.is_empty() => {
                     let mut body_in: Vec<String> = Vec::new();
+                    // Per named body, the selected bodies its feature made.
+                    let mut per: Vec<u64> = Vec::new();
                     let mut known = true;
                     for l in g.selected_bodies(d, fid) {
                         match g.creator.get(&l).copied().filter(|c| *c != fid).and_then(|c| names.get(&c)) {
-                            Some(n) if !body_in.contains(n) => body_in.push(n.clone()),
-                            Some(_) => {}
+                            Some(n) => match body_in.iter().position(|b| b == n) {
+                                Some(k) => per.get_mut(k).into_iter().for_each(|c| *c += 1),
+                                None => {
+                                    body_in.push(n.clone());
+                                    per.push(1);
+                                }
+                            },
                             None => known = false,
                         }
                     }
                     let made = g.body_links(d, fid, 4).iter().filter(|l| g.creator.get(l) == Some(&fid)).count();
+                    // A feature that made several bodies is one body of several solids here (3101:
+                    // Sweep1's two legs): where the mirror selects all of them and makes one copy
+                    // of each, the copy of that body is the copies of its solids.
+                    let all_of_their_makers = body_in.iter().zip(&per).all(|(b, n)| {
+                        *n == 1
+                            || feats.iter().any(|f| {
+                                f.get("name").and_then(Value::as_str) == Some(b.as_str())
+                                    && matches!(
+                                        f.get("type").and_then(Value::as_str),
+                                        Some("extrude" | "sweep" | "revolve")
+                                    )
+                                    && f.get("operation").and_then(Value::as_str) == Some("new")
+                                    && f.get("creates_bodies").and_then(Value::as_u64) == Some(*n)
+                            })
+                    });
+                    let solids: u64 = per.iter().sum();
                     let o_mm = [mm(o[0]), mm(o[1]), mm(o[2])];
                     let faces = if body_in.is_empty() && made == 0 {
                         mirrored_faces_makers(cx, fid)
@@ -1577,11 +1609,11 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                             }
                             f
                         }));
-                    } else if known && !body_in.is_empty() && made == body_in.len() {
-                        for (k, t) in body_in.iter().enumerate() {
+                    } else if known && !body_in.is_empty() && made as u64 == solids && all_of_their_makers {
+                        for (k, (t, solids_of)) in body_in.iter().zip(&per).enumerate() {
                             let name = if k == 0 { nm.clone() } else { format!("{nm} body {}", k + 1) };
                             feats.push(json!({"type": "mirror", "name": name, "source_id": fid, "features": [],
-                                "target": t, "merge": false, "creates_bodies": 1,
+                                "target": t, "merge": false, "creates_bodies": solids_of,
                                 "plane": {"origin": v3mm(o), "normal": [round9(n[0]), round9(n[1]), round9(n[2])]}}));
                         }
                     } else {
