@@ -632,15 +632,56 @@ fn revolve_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         [(sk, prim)] if *sk == sid => sketch::curve_by_primary(d, &s, *prim).filter(|c| s.lines.contains_key(c)),
         _ => None,
     };
-    match line {
-        Some(c) => {
+    match (line, origin_axis(d, rec)) {
+        (Some(c), _) => {
             j.insert("axis".into(), json!({"line": format!("c{c}")}));
         }
-        None => {
+        (None, Some((p, v))) if axes.is_empty() => {
+            j.insert(
+                "axis".into(),
+                json!({"origin": [mm(p[0]), mm(p[1]), mm(p[2])], "direction": [round9(v[0]), round9(v[1]), round9(v[2])]}),
+            );
+        }
+        _ => {
             j.insert("error".into(), "the revolve axis is not a line of its sketch".into());
         }
     }
     j
+}
+
+/// A revolve's axis when it is an axis of its component's origin: the selection (`5A1BF548`)
+/// names it by id (`90055C05`, a `u64` at its body), and the axis record (`19031004`, named `X`,
+/// `Y` or `Z`) holds a point and a unit direction (cm, the component's frame) at its body (3350:
+/// three revolves about Z, the record's point 0 and direction (0, 0, 1)).
+fn origin_axis(d: &Design, rec: &[u8]) -> Option<(V3, V3)> {
+    let mut found: Vec<u64> = Vec::new();
+    for q in ref_ids(d, rec).into_iter().filter(|q| d.is(*q, "2CA5A1CD")) {
+        for q2 in ref_ids(d, d.rec(q)).into_iter().filter(|q2| d.is(*q2, "5A1BF548")) {
+            for a in ref_ids(d, d.rec(q2)).into_iter().filter(|a| d.is(*a, "90055C05")) {
+                let r = d.rec(a);
+                let at = stream::parse_header(r)?.body;
+                let id = u64::from_le_bytes(r.get(at..at + 8)?.try_into().ok()?);
+                cover::field(r, at, 8, "origin-axis.id");
+                if !found.contains(&id) {
+                    found.push(id);
+                }
+            }
+        }
+    }
+    let [id] = found.as_slice() else { return None };
+    if !d.has(*id) || !d.is(*id, "19031004") {
+        return None;
+    }
+    let r = d.rec(*id);
+    let named = stream::wstrings_all(r).into_iter().any(|w| matches!(w.2.as_str(), "X" | "Y" | "Z"));
+    let at = stream::parse_header(r)?.body;
+    let v = stream::finite_doubles::<6>(r, at, 1e6)?;
+    let (p, dir) = ([v[0], v[1], v[2]], [v[3], v[4], v[5]]);
+    if !named || (geom::norm(dir) - 1.0).abs() > 1e-9 {
+        return None;
+    }
+    cover::field(r, at, 48, "origin-axis.point-direction");
+    Some((p, dir))
 }
 
 fn sweep_json(
