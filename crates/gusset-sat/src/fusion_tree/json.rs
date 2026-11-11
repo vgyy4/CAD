@@ -2246,7 +2246,11 @@ fn blocker(f: &Value) -> Option<String> {
             if !matches!(op, "new" | "join" | "cut" | "intersect") {
                 return Some(format!("its operation is {op}"));
             }
-            if matches!(op, "join" | "cut" | "intersect") && !f.get("target").is_some_and(Value::is_string) {
+            // A cut may name several bodies: the tree cuts each (858's Extrude6).
+            let several_cut = op == "cut"
+                && f.get("target").and_then(Value::as_array).is_some_and(|a| a.iter().all(Value::is_string));
+            if matches!(op, "join" | "cut" | "intersect") && !f.get("target").is_some_and(Value::is_string) && !several_cut
+            {
                 return Some("the body it changes is not one body of one feature".into());
             }
             None

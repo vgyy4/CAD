@@ -178,6 +178,27 @@ struct Axis {
     direction: Option<[f64; 3]>,
 }
 
+/// The body a feature changes, or (a cut through several bodies) the bodies.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum Target {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Target {
+    /// The one body, if there is one.
+    fn one(&self) -> Result<&str, String> {
+        match self {
+            Target::One(t) => Ok(t),
+            Target::Many(v) => match v.as_slice() {
+                [t] => Ok(t),
+                _ => Err("it changes several bodies".into()),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct SolidF {
     name: String,
@@ -197,7 +218,7 @@ struct SolidF {
     #[serde(default)]
     operation: Option<String>,
     #[serde(default)]
-    target: Option<String>,
+    target: Option<Target>,
     /// `false` keeps the boolean's split faces (FreeCAD's `Refine = false`, ADR 0042).
     #[serde(default = "refine_default")]
     refine: bool,
@@ -1258,23 +1279,33 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
         return tapered(g, s, d, &name, args, op, &sm, taper.unwrap_or(0.0));
     }
     args.push(format!("op: {op}"));
-    if op != "new"
-        && let Some(t) = &d.target
-    {
-        let tn = &g.body_named(t, "target")?;
-        args.push(format!("body: {tn}"));
-    }
-    if !d.refine && op != "new" {
-        args.push("refine: false".into());
-    }
+    let unrefined = if !d.refine && op != "new" { ", refine: false" } else { "" };
+    // A cut through several bodies (858's Extrude6 cuts the case and the shaft) is one cut per
+    // body, each with the same profile and extent.
+    let targets: Vec<String> = match &d.target {
+        Some(Target::Many(v)) if op == "cut" && v.len() > 1 => v.clone(),
+        Some(t) if op != "new" => vec![t.one()?.to_string()],
+        _ => Vec::new(),
+    };
     let kw = if revolve { "revolve" } else { "extrude" };
-    let _ = writeln!(g.text, "\n{kw} {name} ({})", args.join(", "));
+    let mut made = Vec::new();
+    if targets.is_empty() {
+        let _ = writeln!(g.text, "\n{kw} {name} ({}{unrefined})", args.join(", "));
+        made.push(name.clone());
+    }
+    for (k, t) in targets.iter().enumerate() {
+        let tn = g.body_named(t, "target")?;
+        let this = if k == 0 { name.clone() } else { g.fresh(&d.name, "Extrude") };
+        let _ = writeln!(g.text, "\n{kw} {this} ({}, body: {tn}{unrefined})", args.join(", "));
+        made.push(this);
+    }
     // The new feature must build: a failure is reported and the line taken back out.
     let ev = g.evaluate(s).map_err(|e| e.message)?;
-    if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {
+    if let Some(e) = ev.errors().iter().find(|e| made.contains(&e.feature)) {
         return Err(format!("it does not build here: {}", e.message));
     }
-    g.made.push(name.clone());
+    // The tree's name stands for the first; the others are only made.
+    g.made.extend(made);
     g.features.insert(d.name.clone(), name);
     Ok(())
 }
@@ -1329,7 +1360,7 @@ fn tapered(
         g.features.insert(d.name.clone(), name.to_string());
         return Ok(());
     }
-    let t = d.target.as_ref().ok_or("the body it changes is not named")?;
+    let t = d.target.as_ref().ok_or("the body it changes is not named")?.one()?;
     let target = g.body_named(t, "target")?;
     let comb = g.fresh(&format!("{name} combine"), "Combine");
     let _ = writeln!(g.text, "\ncombine {comb} (body: {target}, tools: [{}], op: {op}{unrefined})", tools.join(", "));
