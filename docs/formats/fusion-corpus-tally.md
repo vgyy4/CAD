@@ -213,3 +213,8 @@ Joints are decoded and checked against the placements the stream stores per occu
 | 4200 | box check (two jointed headers had no placement) | history |
 | 4400 | box check | history |
 | 4800 | box check | unchanged: its joint is verified and its bodies already stood right; the mismatch is not a joint's |
+
+The 18-design set: 12 as history (3957 added). The four designs of the larger set that have joints and came in as
+history before (4062, 4367, 4465, 5302) still do. No design's first blocker is a joint: the designs whose joints
+stay unverified (occurrences of inserted designs, the other origin layout, section 24) stop at other features or
+come in as history already (4862).
