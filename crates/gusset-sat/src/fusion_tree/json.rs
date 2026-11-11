@@ -286,8 +286,16 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
     let ps = &e.params;
     let along = pget(ps, "AlongDistance");
     let against = pget(ps, "AgainstDistance");
+    // The direction is given in the sketch's frame, except where it lies in the sketch plane:
+    // then it is given in the frame of the assembly the component stands in (4800: a component's
+    // standoffs and another's screen, drawn in place), and the placement of the component's
+    // occurrence tells the side ([`place`]).
+    let in_plane = match (&plane, e.vec) {
+        (Some(pl), Some(v)) => dot(pl.z, v).abs() < 1e-6,
+        _ => false,
+    };
     let sign = match (&plane, e.vec) {
-        (Some(pl), Some(v)) => {
+        (Some(pl), Some(v)) if !in_plane => {
             if dot(pl.z, v) >= 0.0 {
                 1.0
             } else {
@@ -296,6 +304,9 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         }
         _ => 1.0,
     };
+    if let (true, Some(pl), Some(v)) = (in_plane, &plane, e.vec) {
+        j.insert("_assembly_direction".into(), json!({"normal": pl.z, "direction": v}));
+    }
     // Where it starts, off the sketch plane (cm along its normal).
     let start = match &plane {
         Some(pl) => cx.extrude_start(fid, &e, pl, sign),
@@ -353,6 +364,12 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         }
     }
     j.insert("distance".into(), distance.map_or(Value::Null, Value::from));
+    if in_plane && (start != 0.0 || e.extent == 2) {
+        j.insert(
+            "error".into(),
+            "its direction lies in its sketch plane and it does not start there or goes both ways".into(),
+        );
+    }
     if start != 0.0 {
         j.insert("start".into(), mm(start).into());
     }
@@ -1796,7 +1813,7 @@ pub(super) fn place(tree: &mut Value, placed: &[crate::fusion::Placed]) -> Resul
         replicate_instances(feats, &by_comp);
     }
     let Some(feats) = tree.get_mut("features").and_then(Value::as_array_mut) else { return Ok(()) };
-    for f in feats {
+    for f in feats.iter_mut() {
         let inst = f.get("_instance").and_then(Value::as_u64).unwrap_or(0) as usize;
         let Some(pl) = f
             .get("_component")
@@ -1808,6 +1825,32 @@ pub(super) fn place(tree: &mut Value, placed: &[crate::fusion::Placed]) -> Resul
             continue;
         };
         move_feature(f, &pl);
+    }
+    // An extrude whose direction is given in the assembly: it goes along its distance where the
+    // occurrence turns the sketch normal onto that direction, the other way where it turns it
+    // against it; one that stays across it in the assembly too is refused.
+    for f in feats.iter_mut() {
+        let Some(a) = f.get("_assembly_direction") else { continue };
+        let (Some(n), Some(v)) = (get3(a.get("normal")), get3(a.get("direction"))) else { continue };
+        let inst = f.get("_instance").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let pl = f
+            .get("_component")
+            .and_then(Value::as_u64)
+            .and_then(|c| by_comp.get(&c))
+            .and_then(|v| v.get(inst))
+            .copied()
+            .unwrap_or(crate::fusion::Placement::IDENTITY);
+        let along = dot(xf_dir(&pl, n), v);
+        if (along.abs() - 1.0).abs() > 1e-6 {
+            let name = f.get("name").and_then(Value::as_str).unwrap_or("?").to_string();
+            return Err(format!("the direction of {name} lies across its sketch's normal in the assembly too"));
+        }
+        if along < 0.0
+            && let Some(o) = f.as_object_mut()
+            && let Some(d) = o.get("distance").and_then(Value::as_f64)
+        {
+            o.insert("distance".into(), (-d).into());
+        }
     }
     Ok(())
 }
