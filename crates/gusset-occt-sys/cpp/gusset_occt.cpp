@@ -853,15 +853,16 @@ bool has_elliptic_face(const TopoDS_Shape& s) {
 // A face that winds more than once around a periodic surface: a thread's root or crest, a
 // strip of a cylinder between two helices of many turns (a Fusion modeled thread). The
 // adaptive quadrature integrates its domain as if it were one period: 1145's root, nine turns,
-// put the solid 1.1 mm3 off (4.5e-4), while Gauss-Kronrod agrees with the mesh to 1e-6.
+// put the solid 1.1 mm3 off (4.5e-4), while Gauss-Kronrod agrees with the mesh to 1e-6. Half a
+// period of slack: the pcurve box of a whole cylinder's face can pass one period a little.
 bool has_wound_face(const TopoDS_Shape& s) {
   for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
     const TopoDS_Face& f = TopoDS::Face(ex.Current());
     BRepAdaptor_Surface sa(f, false);
     double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
     BRepTools::UVBounds(f, u0, u1, v0, v1);
-    if (sa.IsUPeriodic() && u1 - u0 > sa.UPeriod() * (1.0 + 1e-9)) return true;
-    if (sa.IsVPeriodic() && v1 - v0 > sa.VPeriod() * (1.0 + 1e-9)) return true;
+    if (sa.IsUPeriodic() && u1 - u0 > sa.UPeriod() * 1.5) return true;
+    if (sa.IsVPeriodic() && v1 - v0 > sa.VPeriod() * 1.5) return true;
   }
   return false;
 }
