@@ -1831,6 +1831,10 @@ struct Corner {
   TopoDS_Shape face;
   // A concave edge: the blend fills the corner (the tool is added, not cut).
   bool concave = false;
+  // A straight edge: its ends and direction (see `blend_by_corners`).
+  bool line = false;
+  gp_Pnt end0, end1;
+  gp_Dir dir;
 };
 
 // The planes that end an arc's corner: at each end of the arc one more face meets it, a plane
@@ -1974,8 +1978,10 @@ bool plane_cylinder_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Fa
 // along it: a straight edge between two planes (the corner is a prism) or a circle between a
 // plane across its axis and a cylinder about it (the corner is revolved; an arc's corner ends
 // on the planes `arc_ends` finds). `a` is measured on `x.ref` (or the first face), `b` on the
-// other face.
-bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, bool fillet, Corner& out) {
+// other face. The cutter of a straight edge's corner may reach on past the edge's start by `e0`
+// and past its end by `e1` (`exact` and `ideal` stay the corner along the edge).
+bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, bool fillet, Corner& out,
+               double e0 = 0, double e1 = 0) {
   int ei = anc.FindIndex(x.e);
   if (ei <= 0) return false;
   std::vector<TopoDS_Face> fs;
@@ -2076,14 +2082,31 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
     if (!mf.IsDone()) throw Standard_Failure("could not build the corner");
     return {mf.Face(), blend};
   };
-  auto solid_of = [&](const TopoDS_Face& f, const TopoDS_Edge& blend, TopoDS_Shape& face) -> TopoDS_Shape {
+  if (line) {
+    const gp_Vec along(c.Value(t0), c.Value(t1));
+    if (!(along.Magnitude() > 0)) return false;
+    out.line = true;
+    out.end0 = c.Value(t0);
+    out.end1 = c.Value(t1);
+    out.dir = gp_Dir(along);
+  } else if (e0 != 0 || e1 != 0) {
+    return false;
+  }
+  auto solid_of = [&](const TopoDS_Face& f, const TopoDS_Edge& blend, TopoDS_Shape& face,
+                      bool longer = false) -> TopoDS_Shape {
     TopoDS_Shape sh;
     if (line) {
-      BRepPrimAPI_MakePrism mk(f, gp_Vec(c.Value(t0), c.Value(t1)));
+      // The longer cutter starts `e0` before the edge and ends `e1` after it.
+      const gp_Vec along(c.Value(t0), c.Value(t1));
+      const double l0 = longer ? e0 : 0.0, l1 = longer ? e1 : 0.0;
+      gp_Trsf back;
+      back.SetTranslation(-gp_Vec(out.dir) * l0);
+      const TopLoc_Location loc(back);
+      BRepPrimAPI_MakePrism mk(f.Moved(loc), along + gp_Vec(out.dir) * (l0 + l1));
       mk.Build();
       if (!mk.IsDone()) throw Standard_Failure("could not build the corner");
       sh = mk.Shape();
-      const ShapeList& g = mk.Generated(blend);
+      const ShapeList& g = mk.Generated(blend.Moved(loc));
       if (!g.IsEmpty()) face = g.First();
     } else if (whole) {
       BRepPrimAPI_MakeRevol mk(f, c.Circle().Axis(), 2 * M_PI);
@@ -2124,31 +2147,41 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   out.exact = exact;
   out.ideal = std::fabs(signed_volume(exact));
   auto [fc, bc] = section(true);
-  out.cutter = solid_of(fc, bc, out.face);
+  out.cutter = solid_of(fc, bc, out.face, true);
   if (signed_volume(out.cutter) < 0) out.cutter.Reverse();
   return !out.face.IsNull() && out.ideal > 0;
 }
 
-// The blend as booleans: each edge's corner cut away (or, for concave edges, filled). Only
-// where every edge has such a corner, all of one kind, and the material removed (added) is
-// exactly the corners' volume (so each corner lay wholly in the body, or wholly out of it, and
-// no tool took or added anything else).
-int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
-                     GsShape** out, GsBuf* origins) {
-  AncMap anc;
-  TopExp::MapShapesAndAncestors(s->s, TopAbs_EDGE, TopAbs_FACE, anc);
+// The corners cut away (or filled): the result, its face origins, the faces of it with no
+// origin, and the corners. `ext`: per edge, how far past its start and its end its cutter
+// reaches; where it reaches past an end the material removed may be more than the corners'
+// (it is checked by the caller), else it must be exactly theirs.
+struct CornerCut {
+  TopoDS_Shape result;
+  std::vector<int64_t> o;
+  std::vector<TopoDS_Face> orphans;
   std::vector<Corner> cs;
+  bool concave = false;
+};
+
+int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge>& es,
+                const std::vector<uint32_t>& idx, bool fillet, const std::vector<std::array<double, 2>>& ext,
+                CornerCut& cut) {
+  std::vector<Corner>& cs = cut.cs;
   ShapeList args, tools;
   args.Append(s->s);
   double ideal = 0;
-  for (const auto& x : es) {
+  bool longer = false;
+  for (size_t i = 0; i < es.size(); ++i) {
     Corner c;
-    if (!corner_of(s->s, anc, x, fillet, c)) return fail("no corner");
+    if (!corner_of(s->s, anc, es[i], fillet, c, ext[i][0], ext[i][1])) return fail("no corner");
+    longer = longer || ext[i][0] > 0 || ext[i][1] > 0;
     ideal += c.ideal;
     tools.Append(c.cutter);
     cs.push_back(c);
   }
   const bool concave = !cs.empty() && cs.front().concave;
+  cut.concave = concave;
   for (const auto& c : cs)
     if (c.concave != concave) return fail("convex and concave corners");
   // Chamfers of edges that meet at a corner of the body overlap there (258 Chamfer1 around the
@@ -2175,10 +2208,12 @@ int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const s
   if (result.IsNull()) return fail("no result");
   const double before = std::fabs(signed_volume(s->s)), after = std::fabs(signed_volume(result));
   const double change = concave ? after - before : before - after;
-  if (std::fabs(change - ideal) > 1e-7 * std::max(1.0, before)) return fail("the corners were not all material");
+  const double tol = 1e-7 * std::max(1.0, before);
+  if (longer ? change < ideal - tol : std::fabs(change - ideal) > tol)
+    return fail("the corners were not all material");
   ShapeMap out_faces;
   TopExp::MapShapes(result, TopAbs_FACE, out_faces);
-  std::vector<int64_t> o;
+  std::vector<int64_t>& o = cut.o;
   record_input_faces(*b, s->s, 0, out_faces, o);
   for (size_t i = 0; i < cs.size(); ++i) {
     const TopoDS_Shape& f = cs[i].face;
@@ -2195,8 +2230,72 @@ int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const s
     }
     if (!found) return fail("a corner left no blend face");
   }
-  to_buf(o, origins);
-  *out = new GsShape{result};
+  std::vector<bool> has(size_t(out_faces.Extent()), false);
+  for (size_t k = 0; k + 3 < o.size(); k += 4) {
+    const int64_t f = o[k];
+    if (f >= 0 && f < int64_t(has.size())) has[size_t(f)] = true;
+  }
+  for (int k = 1; k <= out_faces.Extent(); ++k)
+    if (!has[size_t(k - 1)]) cut.orphans.push_back(TopoDS::Face(out_faces(k)));
+  cut.result = result;
+  return GS_OK;
+}
+
+// Which end of a straight corner a face lies across: 0 its start, 1 its end, -1 neither (a
+// plane through the end point with the edge's direction as normal).
+int corner_end_of(const Corner& c, const TopoDS_Face& f) {
+  if (!c.line) return -1;
+  BRepAdaptor_Surface sf(f, false);
+  if (sf.GetType() != GeomAbs_Plane) return -1;
+  const gp_Pln pl = sf.Plane();
+  if (!pl.Axis().Direction().IsParallel(c.dir, 1e-9)) return -1;
+  if (pl.Distance(c.end0) < 1e-7) return 0;
+  if (pl.Distance(c.end1) < 1e-7) return 1;
+  return -1;
+}
+
+// The blend as booleans: each edge's corner cut away (or, for concave edges, filled). Only
+// where every edge has such a corner, all of one kind, and the material removed (added) is
+// exactly the corners' volume (so each corner lay wholly in the body, or wholly out of it, and
+// no tool took or added anything else).
+//
+// Where the body goes on past a convex straight edge's end inside its corner (the edge ends at
+// a face slanting away, as a chamfer next to an earlier chamfer's slope: 5358's Chamfer2), the
+// cut leaves a face across that end with no origin. A blend ended by a third face is trimmed
+// by it: the corner then runs on past that end until it leaves the body. The longer cut must
+// still remove all of the corners along the edges and leave no face without an origin (so it
+// ran out of the body before its far end).
+int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
+                     GsShape** out, GsBuf* origins) {
+  AncMap anc;
+  TopExp::MapShapesAndAncestors(s->s, TopAbs_EDGE, TopAbs_FACE, anc);
+  std::vector<std::array<double, 2>> ext(es.size(), {0.0, 0.0});
+  CornerCut cut;
+  int st = cut_corners(s, anc, es, idx, fillet, ext, cut);
+  if (st != GS_OK) return st;
+  if (!cut.orphans.empty() && !cut.concave) {
+    bool placed_all = true;
+    for (const auto& f : cut.orphans) {
+      bool placed = false;
+      for (size_t i = 0; i < cut.cs.size(); ++i) {
+        const int end = corner_end_of(cut.cs[i], f);
+        if (end < 0) continue;
+        const BlendEdge& x = es[i];
+        ext[i][size_t(end)] = 4 * (x.a + (x.mode == 1 ? x.b : x.a));
+        placed = true;
+      }
+      placed_all = placed_all && placed;
+    }
+    if (placed_all) {
+      CornerCut longer;
+      st = cut_corners(s, anc, es, idx, fillet, ext, longer);
+      if (st != GS_OK) return st;
+      if (!longer.orphans.empty()) return fail("a corner left a face with no origin");
+      cut = std::move(longer);
+    }
+  }
+  to_buf(cut.o, origins);
+  *out = new GsShape{cut.result};
   return GS_OK;
 }
 }  // namespace

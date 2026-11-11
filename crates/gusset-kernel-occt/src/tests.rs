@@ -1812,6 +1812,47 @@ fn chamfer_around_a_block_as_high_as_the_chamfer() {
 }
 
 #[test]
+fn a_chamfer_next_to_a_chamfers_slope_runs_on_to_it() {
+    // A 2.5 x 0.6 x 0.5 mm tab under a 6 x 6 x 2 mm block (5358's housing tab). Chamfer1 takes
+    // 0.3 mm of the tab's cap and its whole 0.5 mm front; Chamfer2 then 0.2 mm of the cap and the
+    // whole height of both sides, from the slope to the back. At the slope the body goes on
+    // inside each side's corner: the chamfer runs on until it leaves the body (a tetrahedron of
+    // 0.2 x 0.5 / 2 x 0.3 / 3 mm3 per side besides the 0.3 mm of prism along the edge).
+    let at = |w: f64, h: f64, d: f64, o: [f64; 3]| {
+        let mut p = boxp(w, h);
+        p.frame.origin = o;
+        k().extrude(&p, &ExtrudeSpec { distance: d, symmetric: false }).unwrap().shape
+    };
+    let body = k()
+        .boolean(BoolOp::Union, &at(6.0, 6.0, 2.0, [-3.0, -3.0, 0.0]), &at(2.5, 0.6, 0.5, [-1.25, 1.9, -0.5]))
+        .unwrap();
+    let edge_at = |s: &Shape, m: [f64; 3]| {
+        let t = k().topology(s).unwrap();
+        t.edges.iter().position(|e| (0..3).all(|i| (e.midpoint[i] - m[i]).abs() < 1e-9)).unwrap() as u32
+    };
+    let cap = |s: &Shape, area: f64| {
+        let t = k().topology(s).unwrap();
+        t.faces.iter().position(|f| f.normal[2] < -0.9 && close(f.area, area, 1e-9)).unwrap() as u32
+    };
+    let first = ChamferSpec::TwoDistances { first: 0.3, second: 0.5 };
+    let e = edge_at(&body.shape, [0.0, 1.9, -0.5]);
+    let c1 = k().chamfer_ref(&body.shape, &[e], &[cap(&body.shape, 1.5)], &first).unwrap();
+    let v1 = k().mass_properties(&c1.shape).unwrap().volume;
+    assert!(close(v1, 72.75 - 0.5 * 0.3 * 0.5 * 2.5, 1e-9), "{v1}");
+    let second = ChamferSpec::TwoDistances { first: 0.2, second: 0.5 };
+    let sides = [edge_at(&c1.shape, [-1.25, 2.35, -0.5]), edge_at(&c1.shape, [1.25, 2.35, -0.5])];
+    let f = cap(&c1.shape, 0.75);
+    let c2 = k().chamfer_ref(&c1.shape, &sides, &[f, f], &second).unwrap();
+    let v2 = k().mass_properties(&c2.shape).unwrap().volume;
+    let per_side = 0.5 * 0.2 * 0.5 * 0.3 + 0.5 * 0.2 * 0.5 * 0.3 / 3.0;
+    assert!(close(v2, v1 - 2.0 * per_side, 1e-9), "{v2}");
+    for e in sides {
+        assert!(c2.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+    }
+    assert!(c2.face_origins.iter().all(|o| !o.is_empty()));
+}
+
+#[test]
 fn chamfer_that_takes_a_whole_face() {
     // A 1 mm disc: a 1 mm chamfer of its bottom rim leaves no cylinder below the top rim.
     let disc = Profile {
