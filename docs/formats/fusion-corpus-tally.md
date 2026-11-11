@@ -271,3 +271,18 @@ ElectronicsPackageGenerator 5905 and 5967, class #BC# 5358 and 5360); profiles t
 6126; one each: sweep path 3101, pattern of inserted-design occurrences 5128, a pattern of components 512, the body
 an extrude changes 610, a loop that does not close 858, an extrude between two faces 2190, a Base Feature body
 4431.
+
+## Combined re-run after round 18 (2026-11-11)
+
+Same command on both sets with round 18 C (rebuild failures: sketches of another component, shell face points,
+blend and multi-solid shell fallbacks in the shim) and D (faces of any surface picked by boundary points, drafts):
+adafruit-more 115 of 150 as history (was 112: 2756, 3027, 3632 added; none lost), adafruit 12 of 18. Whole
+adafruit-more run 2,267 s.
+
+Remaining first blockers: no feature history 7; stored-state mismatch 5 (355, 4863, 1463 and 3422 after the last
+stored state); unsupported features 11 (Thread 324, 1145, 3350; ElectronicsPackageGenerator 5905, 5967; class
+#BC# 5358, 5360; Split 3651; MirrorComponent 4343; Derived Base Feature 3502; CoilPrimitive 3722); profiles that
+are faces or PCB data 5981, 6124, 6126; one each: a body mirror on a work plane 2232, the board notch OCCT cannot
+hold 2348, a Combine target 3093, chamfer edges 6299, draft of an end cap 258, a shell with no removed face 4632,
+sweep path 3101, pattern of inserted-design occurrences 5128, a pattern of components 512, the body an extrude
+changes 610, a loop that does not close 858, an extrude between two faces 2190, a Base Feature body 4431.
