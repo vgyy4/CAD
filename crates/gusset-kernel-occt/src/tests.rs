@@ -1682,6 +1682,31 @@ fn fillets_that_meet_make_a_full_round() {
 }
 
 #[test]
+fn fillets_that_round_a_window_end() {
+    // A 4 mm wide window through a 1 mm plate: radius 2 on its two top corners (concave edges)
+    // leaves nothing of the window's top face; the corners are filled instead.
+    let mut window = rect(4.0, 10.0, 20);
+    for e in &mut window.edges {
+        if let Seg2::Line { a, b } = &mut e.seg {
+            for p in [a, b] {
+                p[0] += 8.0;
+                p[1] += 5.0;
+            }
+        }
+    }
+    let p = Profile { frame: Frame::XY, regions: vec![Region2 { outer: rect(20.0, 20.0, 10), holes: vec![window] }] };
+    let b = k().extrude(&p, &ExtrudeSpec { distance: 1.0, symmetric: false }).unwrap();
+    let e0 = vertical_edge_at(&b, 8.0, 15.0, 1.0);
+    let e1 = vertical_edge_at(&b, 12.0, 15.0, 1.0);
+    let f = k().fillet(&b.shape, &[e0, e1], 2.0).unwrap();
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, 360.0 + 2.0 * (4.0 - std::f64::consts::PI), 1e-7), "{}", m.volume);
+    for e in [e0, e1] {
+        assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+    }
+}
+
+#[test]
 fn fillet_of_an_arc_that_takes_its_whole_face() {
     // A 1 mm half disc of radius 10: a 1 mm fillet of its top arc leaves nothing of the
     // cylinder (OCCT's blend fails); the corner is cut away and ends on the flat side.

@@ -91,6 +91,7 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeHalfSpace.hxx>
+#include <BRepClass3d_SolidClassifier.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <BinTools.hxx>
@@ -1825,6 +1826,8 @@ struct Corner {
   TopoDS_Shape cutter;
   double ideal = 0;
   TopoDS_Shape face;
+  // A concave edge: the blend fills the corner (the tool is added, not cut).
+  bool concave = false;
 };
 
 // The planes that end an arc's corner: at each end of the arc one more face meets it, a plane
@@ -1907,6 +1910,19 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   gp_Dir n1, n2;
   if (!outward_normal(fs[0], p0, n1) || !outward_normal(fs[1], p0, n2)) return false;
   if (std::fabs(n1.Dot(n2)) > 1e-9) return false;
+  // Concave: the material is on the outer side of both faces' corner (512: the top corners of
+  // a window cut through a wall, rounded to a half circle). Only straight edges.
+  {
+    const double eps = 1e-3 * std::min(a, b);
+    // Beside the corner, along a face: out of a convex edge's body, in a concave edge's.
+    BRepClass3d_SolidClassifier in(body, c.Value(0.5 * (t0 + t1)).Translated((gp_Vec(n1) - gp_Vec(n2)) * eps), 1e-9);
+    if (in.State() == TopAbs_IN) {
+      if (!line) return false;
+      out.concave = true;
+      n1.Reverse();
+      n2.Reverse();
+    }
+  }
   if (line) {
     if (s0.GetType() != GeomAbs_Plane || s1.GetType() != GeomAbs_Plane) return false;
   } else {
@@ -2015,9 +2031,10 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   return !out.face.IsNull() && out.ideal > 0;
 }
 
-// The blend as booleans: each edge's corner cut away. Only where every edge has such a
-// corner, and the material removed is exactly the corners' volume (so each corner lay wholly
-// in the body and no cutter took anything else).
+// The blend as booleans: each edge's corner cut away (or, for concave edges, filled). Only
+// where every edge has such a corner, all of one kind, and the material removed (added) is
+// exactly the corners' volume (so each corner lay wholly in the body, or wholly out of it, and
+// no tool took or added anything else).
 int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
                      GsShape** out, GsBuf* origins) {
   AncMap anc;
@@ -2033,11 +2050,15 @@ int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const s
     tools.Append(c.cutter);
     cs.push_back(c);
   }
-  auto b = run_boolean_checked(GS_BOOL_CUT, args, tools);
+  const bool concave = !cs.empty() && cs.front().concave;
+  for (const auto& c : cs)
+    if (c.concave != concave) return fail("convex and concave corners");
+  auto b = run_boolean_checked(concave ? GS_BOOL_UNION : GS_BOOL_CUT, args, tools);
   TopoDS_Shape result = b->Shape();
   if (result.IsNull()) return fail("no result");
   const double before = std::fabs(signed_volume(s->s)), after = std::fabs(signed_volume(result));
-  if (std::fabs(before - after - ideal) > 1e-7 * std::max(1.0, before)) return fail("the corners were not all material");
+  const double change = concave ? after - before : before - after;
+  if (std::fabs(change - ideal) > 1e-7 * std::max(1.0, before)) return fail("the corners were not all material");
   ShapeMap out_faces;
   TopExp::MapShapes(result, TopAbs_FACE, out_faces);
   std::vector<int64_t> o;
