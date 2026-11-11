@@ -827,23 +827,194 @@ pub(super) fn linear_pattern_chain(p: &PatternInputs) -> Option<Vec<Value>> {
     Some(out)
 }
 
-/// The feature that made every face a mirror of faces selects, where it is one: each selection
-/// is a face recipe naming one face by its generator and one operation, and the operations all
-/// stand for the same feature.
-fn mirrored_faces_maker(cx: &Ctx, fid: u64) -> Option<u64> {
-    let mut maker: Option<u64> = None;
+/// The features that made the faces a mirror of faces selects, in the order first met: each
+/// selection is a face recipe naming one face by its generator and one operation, and each
+/// operation stands for one feature. `None` where a selection is not such a face.
+fn mirrored_faces_makers(cx: &Ctx, fid: u64) -> Option<Vec<(u64, String, i32)>> {
+    let mut out = Vec::new();
     for rid in cx.input_recipes(fid) {
         let (Some(RecipeKind::Face), Some(faces)) = naming::recipe(cx.d, rid) else { return None };
         let [name] = faces.as_slice() else { return None };
-        let [(_, ops)] = name.as_slice() else { return None };
+        let [(g, ops)] = name.as_slice() else { return None };
         let [op] = ops.as_slice() else { return None };
         let f = cx.opmap.get(&u64::try_from(*op).ok()?).copied()?;
-        if maker.is_some_and(|m| m != f) {
+        out.push((f, g.clone(), *op));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// The tree features for a mirror of faces (`mirror` its name, `o`, `n` its plane in mm), where
+/// every face is made by a cut or join extrude of the tree or by a fillet or chamfer of it, and
+/// at least one by an extrude. Without blends: a mirror of those extrudes. With blends (joins
+/// only): each extrude copied as a body of its own, then a copy of each blend that blends only
+/// the edges whose faces are selected, reflected, then the copies joined. The edge of a selected
+/// blend face is the blend's edge nearest the face as the stored bodies hold it (2232's Mirror2
+/// selects two of Chamfer3's eight faces, those on the edges of Extrude12, with two of
+/// Extrude12's). `None` otherwise.
+fn mirrored_faces_features(
+    cx: &mut Ctx,
+    feats: &[Value],
+    sel: &[(u64, String, i32)],
+    mirror: &str,
+    (o, n): (V3, V3),
+) -> Option<Vec<Value>> {
+    let kind = |f: &Value| f.get("type").and_then(Value::as_str).unwrap_or_default().to_string();
+    let reflect = |p: V3| geom::sub(p, geom::mul(n, 2.0 * geom::dot(geom::sub(p, o), n)));
+    let mut extrudes: Vec<u64> = Vec::new();
+    // Per blend feature of the tree (index into `feats`): the indices of the edges selected.
+    let mut picked: Vec<(usize, Vec<usize>)> = Vec::new();
+    for (m, g, op) in sel {
+        let mine: Vec<usize> = (0..feats.len())
+            .filter(|i| feats.get(*i).and_then(|f| f.get("source_id")).and_then(Value::as_u64) == Some(*m))
+            .filter(|i| feats.get(*i).is_some_and(|f| kind(f) != "sketch"))
+            .collect();
+        let first = feats.get(*mine.first()?)?;
+        match kind(first).as_str() {
+            "extrude" if matches!(first.get("operation").and_then(Value::as_str), Some("cut" | "join")) => {
+                if !extrudes.contains(m) {
+                    extrudes.push(*m);
+                }
+            }
+            "fillet" | "chamfer" => {
+                let pick = cx.stored_face(g, &[*op])?;
+                let k = pick.points.len() as f64;
+                let c = pick.points.iter().fold([0.0; 3], |a, p| geom::add(a, *p));
+                let c = [mm(c[0] / k), mm(c[1] / k), mm(c[2] / k)];
+                // The nearest edge over every set of the blend; it must be clearly the nearest.
+                let mut best: Vec<(f64, usize, usize)> = Vec::new();
+                for i in &mine {
+                    let es = feats.get(*i)?.get("edges")?.as_array()?;
+                    for (j, e) in es.iter().enumerate() {
+                        let mid = get3(e.get("midpoint"))?;
+                        best.push((geom::norm(geom::sub(mid, c)), *i, j));
+                    }
+                }
+                best.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let (d0, i, j) = *best.first()?;
+                if best.get(1).is_some_and(|b| b.0 < 2.0 * d0 + 1e-6) {
+                    return None;
+                }
+                match picked.iter_mut().find(|(x, _)| *x == i) {
+                    Some((_, js)) if !js.contains(&j) => js.push(j),
+                    Some(_) => {}
+                    None => picked.push((i, vec![j])),
+                }
+            }
+            _ => return None,
+        }
+    }
+    if extrudes.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = feats
+        .iter()
+        .filter(|f| f.get("source_id").and_then(Value::as_u64).is_some_and(|s| extrudes.contains(&s)))
+        .filter(|f| kind(f) == "extrude")
+        .filter_map(|f| f.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let mut blends = Vec::new();
+    picked.sort_by_key(|(i, _)| *i);
+    for (i, js) in picked {
+        let Some(Value::Object(f)) = feats.get(i) else { return None };
+        let mut c = f.clone();
+        let es = f.get("edges")?.as_array()?;
+        let mut out = Vec::new();
+        for j in js {
+            let e = es.get(j)?;
+            let mut e2 = Map::new();
+            e2.insert("midpoint".into(), v3_9(reflect(get3(e.get("midpoint"))?)));
+            if let Some(path) = e.get("path").and_then(Value::as_array) {
+                let pts: Option<Vec<Value>> = path.iter().map(|p| get3(Some(p)).map(|p| v3_9(reflect(p)))).collect();
+                e2.insert("path".into(), pts?.into());
+            }
+            out.push(Value::Object(e2));
+        }
+        let name = f.get("name").and_then(Value::as_str).unwrap_or_default();
+        c.insert("name".into(), format!("{mirror} {name}").into());
+        c.insert("edges".into(), out.into());
+        c.insert("note".into(), format!("the edges of {name} whose faces {mirror} mirrors, reflected").into());
+        blends.push(Value::Object(c));
+    }
+    if blends.is_empty() {
+        return Some(vec![json!({"type": "mirror", "name": mirror, "features": names,
+            "plane": {"origin": v3mm_raw(o), "normal": [round9(n[0]), round9(n[1]), round9(n[2])]},
+            "note": "a mirror of faces, all of them made by these features"})]);
+    }
+    // With blends the copies are blended before they join: Fusion copies the blended faces, and
+    // a blend of the joined copy would run into the body (2232: the mirrored wedge reaches 0.38 mm
+    // out of a wall, its 1 mm chamfers would not fit). So each extrude is copied as a new body,
+    // reflected like the tree's mirror of features reflects it (its sketch's frame reflected, the
+    // distance negated), blended, then joined to the body the extrude joined or cut.
+    let mut out = Vec::new();
+    let mut joins: Vec<(String, String)> = Vec::new();
+    for nm in &names {
+        let f = feats.iter().rev().find(|f| f.get("name").and_then(Value::as_str) == Some(nm.as_str()))?;
+        let target = f.get("target").and_then(Value::as_str)?.to_string();
+        if f.get("operation").and_then(Value::as_str) != Some("join") {
             return None;
         }
-        maker = Some(f);
+        let known = [
+            "type",
+            "name",
+            "sketch",
+            "sketch_source_id",
+            "source_id",
+            "distance",
+            "distance_expr",
+            "operation",
+            "target",
+            "creates_bodies",
+            "symmetric",
+            "profiles",
+            "component",
+            "_component",
+            "in_timeline",
+        ];
+        let Value::Object(fo) = f else { return None };
+        if fo.keys().any(|k| !known.contains(&k.as_str())) || fo.get("symmetric").and_then(Value::as_bool) == Some(true)
+        {
+            return None;
+        }
+        let dist = fo.get("distance").and_then(Value::as_f64)?;
+        let sk = fo.get("sketch").and_then(Value::as_str)?;
+        let Some(Value::Object(s)) = feats.iter().rev().find(|g| {
+            g.get("type").and_then(Value::as_str) == Some("sketch") && g.get("name").and_then(Value::as_str) == Some(sk)
+        }) else {
+            return None;
+        };
+        let mut s = s.clone();
+        let plane = s.get("plane")?;
+        let (po, px, py) = (get3(plane.get("origin"))?, get3(plane.get("x_axis"))?, get3(plane.get("y_axis"))?);
+        let dir = |v: V3| geom::sub(v, geom::mul(n, 2.0 * geom::dot(v, n)));
+        let sname = format!("{mirror} {sk}");
+        s.insert("name".into(), sname.clone().into());
+        s.insert(
+            "plane".into(),
+            json!({"origin": v3_9(reflect(po)), "x_axis": v3_9(dir(px)), "y_axis": v3_9(dir(py))}),
+        );
+        s.insert("plane_note".into(), format!("{sk} reflected across the plane of {mirror}").into());
+        out.push(Value::Object(s));
+        let mut e = fo.clone();
+        let ename = format!("{mirror} {nm}");
+        e.insert("name".into(), ename.clone().into());
+        e.insert("sketch".into(), sname.into());
+        e.insert("distance".into(), (-dist).into());
+        e.remove("distance_expr");
+        e.insert("operation".into(), "new".into());
+        e.insert("target".into(), Value::Null);
+        e.insert("creates_bodies".into(), 1.into());
+        e.insert("note".into(), format!("{nm} reflected across the plane of {mirror}, as a body of its own").into());
+        out.push(Value::Object(e));
+        joins.push((ename, target));
     }
-    maker
+    out.extend(blends);
+    for (k, (tool, target)) in joins.into_iter().enumerate() {
+        let name = if k == 0 { mirror.to_string() } else { format!("{mirror} ({})", k + 1) };
+        out.push(json!({"type": "combine", "name": name, "target": target, "tools": [tool],
+            "operation": "join",
+            "note": "the mirrored copy, blended, joins the body its feature changed"}));
+    }
+    Some(out)
 }
 
 /// A pattern of a body makes one new body per copy in the file: the tree's pattern keeps them
@@ -1031,7 +1202,9 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         } else if d.is(fid, "1C037A07") {
             feats.push(Value::Object(hole_json(cx, fid, &nm)));
         } else if d.is(fid, "D1728651") {
-            let ins = g.inputs(d, fid);
+            // A construction plane among the inputs is the mirror plane, not a feature it repeats
+            // (2232's Mirror2 names WorkPlane2 and nothing else).
+            let ins: Vec<u64> = g.inputs(d, fid).into_iter().filter(|q| !d.is(*q, "D869265F")).collect();
             let in_names: Vec<String> =
                 ins.iter().map(|q| names.get(q).cloned().unwrap_or_else(|| q.to_string())).collect();
             let plane = cx.under(fid, "CC54ECAD", 4, None).into_iter().find_map(|q| feature::plane_frame(d, q));
@@ -1054,18 +1227,21 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                         }
                     }
                     let made = g.body_links(d, fid, 4).iter().filter(|l| g.creator.get(l) == Some(&fid)).count();
-                    if let (true, 0, Some(maker)) = (body_in.is_empty(), made, mirrored_faces_maker(cx, fid))
-                        && let Some(of) = names.get(&maker)
-                        && feats.iter().any(|f| {
-                            f.get("source_id").and_then(Value::as_u64) == Some(maker)
-                                && f.get("type").and_then(Value::as_str) == Some("extrude")
-                                && matches!(f.get("operation").and_then(Value::as_str), Some("cut" | "join"))
-                        })
-                    {
-                        // A mirror of faces that one cut or join made: that feature, mirrored.
-                        feats.push(json!({"type": "mirror", "name": nm, "source_id": fid, "features": [of],
-                            "plane": {"origin": v3mm(o), "normal": [round9(n[0]), round9(n[1]), round9(n[2])]},
-                            "note": "a mirror of faces, all of them made by this one feature"}));
+                    let o_mm = [mm(o[0]), mm(o[1]), mm(o[2])];
+                    let faces = if body_in.is_empty() && made == 0 {
+                        mirrored_faces_makers(cx, fid)
+                            .and_then(|sel| mirrored_faces_features(cx, &feats, &sel, &nm, (o_mm, n)))
+                    } else {
+                        None
+                    };
+                    if let Some(made) = faces {
+                        // A mirror of faces that joins or cuts (and blends of their edges) made.
+                        feats.extend(made.into_iter().map(|mut f| {
+                            if let Some(o) = f.as_object_mut() {
+                                o.insert("source_id".into(), fid.into());
+                            }
+                            f
+                        }));
                     } else if known && !body_in.is_empty() && made == body_in.len() {
                         for (k, t) in body_in.iter().enumerate() {
                             let name = if k == 0 { nm.clone() } else { format!("{nm} body {}", k + 1) };

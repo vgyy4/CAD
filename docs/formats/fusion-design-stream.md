@@ -1419,3 +1419,23 @@ sides) does not give.
 * 4632's Shell1 selects a body (`9716F783`, a body recipe), not faces: a closed shell, a body with a void. The
   kernel's thick solid with no removed faces gives the inner offset solid (a 30 x 20 x 10 box with a 2 mm wall:
   2496 mm3, the void, not 3504), so the reader still refuses it ("no removed face was found").
+
+## 29. Round 19 E: threads, splits, coils, mirrors of faces and of components (2026-11-11)
+
+### Mirror of faces with blends of their edges (2232)
+* A construction plane among a mirror's input features is its mirror plane, not a feature it repeats: 2232's Mirror2
+  names WorkPlane2 (x = 60.042164 mm) and nothing else. It selects four faces (`5662F619` face recipes, each one
+  face named by one generator and one operation): `6 [346]` and `4 [346]` of Extrude12 (a 1 x 20 x 2 mm block joined
+  into Extrude8's case, x 120.1..121.1) and `6 [335]` and `7 [335]` of Chamfer3, which chamfers eight edges, two
+  of them the block's inner edges. The faces of a mirror may thus come from several features: every one must be a
+  cut or join extrude, or a fillet or chamfer.
+* A selected blend face stands for the blend's edge nearest to it, the face taken from the stored bodies by its name
+  (`stored_face`): here the edges at x = 120.1, z = 1.2 and 3.2 (the nearest by a factor of two and more).
+* Fusion copies the blended faces: the mirrored block is a wedge (1 x 2 mm, its two 1 mm chamfers meet), 0.38 mm of it
+  standing out of the left wall. Chamfering the joined copy fails (the chamfer would run into the wall). The tree
+  therefore copies the extrude as a body of its own (its sketch's frame reflected, the distance negated: the same
+  reflection the tree's mirror of features makes), chamfers the reflected edges on it, and joins it to the body the
+  extrude joined (`combine`). Extrude8's body: 7068.8114 -> 7071.7656 mm3, the end body of the history blob
+  7071.7657 mm3 (the 2.9542 mm3 of the wedge outside the wall). 2232 now comes in as history.
+* A mirror of faces whose makers are only extrudes stays a mirror of those features (one or several); with blends,
+  cuts are not converted (a blended cut tool is no sample's).
