@@ -1845,6 +1845,40 @@ fn a_convex_fillet_beside_a_concave_one_rolls_on_it() {
 }
 
 #[test]
+fn a_convex_and_a_concave_round_that_use_up_their_face() {
+    // A pocket through a 2 mm plate with a 6 mm notch out of its side: rounding the notch's
+    // convex corner at (15, 8) and its concave corner at (21, 8) by 3 mm leaves nothing of the
+    // 6 mm face between them (OCCT's blend fails); the convex corners are cut away, the concave
+    // one filled. The convex corner at (15, 12) is rounded too.
+    let pts =
+        [[5.0, 2.0], [15.0, 2.0], [15.0, 8.0], [21.0, 8.0], [21.0, 12.0], [15.0, 12.0], [15.0, 15.0], [5.0, 15.0]];
+    let pocket = Loop2 {
+        edges: (0..pts.len())
+            .map(|i| ProfileEdge { seg: Seg2::Line { a: pts[i], b: pts[(i + 1) % pts.len()] }, tag: 20 + i as u64 })
+            .collect(),
+    };
+    let p = Profile { frame: Frame::XY, regions: vec![Region2 { outer: rect(30.0, 20.0, 10), holes: vec![pocket] }] };
+    let b = k().extrude(&p, &ExtrudeSpec { distance: 2.0, symmetric: false }).unwrap();
+    let picked = [
+        vertical_edge_at(&b, 15.0, 8.0, 2.0),
+        vertical_edge_at(&b, 21.0, 8.0, 2.0),
+        vertical_edge_at(&b, 15.0, 12.0, 2.0),
+    ];
+    let f = k().fillet(&b.shape, &picked, 3.0).unwrap();
+    let corner = 2.0 * (9.0 - 9.0 * std::f64::consts::FRAC_PI_4);
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, 2.0 * (600.0 - 154.0) - corner, 1e-7), "{}", m.volume);
+    // No face is left on y = 8 between the two rounds.
+    let t = k().topology(&f.shape).unwrap();
+    assert!(!t.faces.iter().any(|x| x.kind == SurfaceKind::Plane
+        && (x.normal[1].abs() - 1.0).abs() < 1e-9
+        && (x.centroid[1] - 8.0).abs() < 1e-9));
+    for e in picked {
+        assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+    }
+}
+
+#[test]
 fn fillet_of_an_arc_that_takes_its_whole_face() {
     // A 1 mm half disc of radius 10: a 1 mm fillet of its top arc leaves nothing of the
     // cylinder (OCCT's blend fails); the corner is cut away and ends on the flat side.

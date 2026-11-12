@@ -2262,26 +2262,40 @@ struct CornerCut {
   bool concave = false;
 };
 
+int mixed_corners(const GsShape* s, const std::vector<uint32_t>& idx, const ShapeList& tools, const ShapeList& cave,
+                  double ideal, double ideal_cave, bool longer, CornerCut& cut);
+template <typename Op, typename Gone>
+int corner_origins(Op& op, Gone gone, const TopoDS_Shape& in, const TopoDS_Shape& result,
+                   const std::vector<uint32_t>& idx, CornerCut& cut);
+
 int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge>& es,
                 const std::vector<uint32_t>& idx, bool fillet, const std::vector<std::array<double, 2>>& ext,
                 CornerCut& cut) {
   std::vector<Corner>& cs = cut.cs;
-  ShapeList args, tools;
+  ShapeList args, tools, cave;
   args.Append(s->s);
-  double ideal = 0;
+  double ideal = 0, ideal_cave = 0;
   bool longer = false;
   for (size_t i = 0; i < es.size(); ++i) {
     Corner c;
     if (!corner_of(s->s, anc, es[i], fillet, c, ext[i][0], ext[i][1])) return fail("no corner");
     longer = longer || ext[i][0] > 0 || ext[i][1] > 0;
-    ideal += c.ideal;
-    tools.Append(c.cutter);
+    if (c.concave) {
+      ideal_cave += c.ideal;
+      cave.Append(c.cutter);
+    } else {
+      ideal += c.ideal;
+      tools.Append(c.cutter);
+    }
     cs.push_back(c);
   }
-  const bool concave = !cs.empty() && cs.front().concave;
+  if (!tools.IsEmpty() && !cave.IsEmpty()) return mixed_corners(s, idx, tools, cave, ideal, ideal_cave, longer, cut);
+  const bool concave = !cave.IsEmpty();
   cut.concave = concave;
-  for (const auto& c : cs)
-    if (c.concave != concave) return fail("convex and concave corners");
+  if (concave) {
+    tools = cave;
+    ideal = ideal_cave;
+  }
   // Chamfers of edges that meet at a corner of the body overlap there (258 Chamfer1 around the
   // top of a block): the material removed must be the union's volume, and corners of edges
   // that do not meet must not overlap at all (a blend wider than its face is refused).
@@ -2309,16 +2323,58 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
   const double tol = 1e-7 * std::max(1.0, before);
   if (longer ? change < ideal - tol : std::fabs(change - ideal) > tol)
     return fail("the corners were not all material");
+  return corner_origins(*b, [&](const TopoDS_Shape& f) { return b->IsDeleted(f); }, s->s, result, idx, cut);
+}
+
+// Two booleans: the convex corners cut away (`tools`), then the concave ones filled (`cave`),
+// each changing the volume by exactly its corners' (2278 Fillet1: a convex and a concave corner
+// 6 mm apart on one face, both rounded by 3 mm, which leaves nothing of that face; OCCT's
+// fillet cannot end a blend on a face it uses up).
+int mixed_corners(const GsShape* s, const std::vector<uint32_t>& idx, const ShapeList& tools, const ShapeList& cave,
+                  double ideal, double ideal_cave, bool longer, CornerCut& cut) {
+  ShapeList args;
+  args.Append(s->s);
+  auto b1 = run_boolean_checked(GS_BOOL_CUT, args, tools);
+  const TopoDS_Shape mid = b1->Shape();
+  if (mid.IsNull()) return fail("no result");
+  ShapeList mids;
+  mids.Append(mid);
+  auto b2 = run_boolean_checked(GS_BOOL_UNION, mids, cave);
+  const TopoDS_Shape result = b2->Shape();
+  if (result.IsNull()) return fail("no result");
+  const double before = std::fabs(signed_volume(s->s)), between = std::fabs(signed_volume(mid)),
+               after = std::fabs(signed_volume(result));
+  const double tol = 1e-7 * std::max(1.0, before);
+  const double cut_away = before - between, filled = after - between;
+  if (longer ? cut_away < ideal - tol : std::fabs(cut_away - ideal) > tol)
+    return fail("the corners were not all material");
+  if (std::fabs(filled - ideal_cave) > tol) return fail("the concave corners were not all empty");
+  ShapeList a1 = args, a2 = mids;
+  for (ShapeList::Iterator it(tools); it.More(); it.Next()) a1.Append(it.Value());
+  for (ShapeList::Iterator it(cave); it.More(); it.Next()) a2.Append(it.Value());
+  BRepTools_History h(a1, *b1);
+  h.Merge(a2, *b2);
+  // Concave corners were filled: no convex corner is cut on past its ends (`blend_by_corners`).
+  cut.concave = true;
+  return corner_origins(h, [&](const TopoDS_Shape& f) { return h.IsRemoved(f); }, s->s, result, idx, cut);
+}
+
+// The origins of the faces of `result`, made from `in` by `op` (a boolean or a history; `gone`
+// says whether it removed a shape): the input's faces and each corner's blend face.
+template <typename Op, typename Gone>
+int corner_origins(Op& op, Gone gone, const TopoDS_Shape& in, const TopoDS_Shape& result,
+                   const std::vector<uint32_t>& idx, CornerCut& cut) {
+  const std::vector<Corner>& cs = cut.cs;
   ShapeMap out_faces;
   TopExp::MapShapes(result, TopAbs_FACE, out_faces);
   std::vector<int64_t>& o = cut.o;
-  record_input_faces(*b, s->s, 0, out_faces, o);
+  record_input_faces(op, in, 0, out_faces, o);
   for (size_t i = 0; i < cs.size(); ++i) {
     const TopoDS_Shape& f = cs[i].face;
     std::vector<TopoDS_Shape> res;
-    const ShapeList& mods = b->Modified(f);
+    const ShapeList& mods = op.Modified(f);
     for (ShapeList::Iterator it(mods); it.More(); it.Next()) res.push_back(it.Value());
-    if (mods.IsEmpty() && !b->IsDeleted(f)) res.push_back(f);
+    if (mods.IsEmpty() && !gone(f)) res.push_back(f);
     bool found = false;
     for (const auto& g : res) {
       int k = out_faces.FindIndex(g);
@@ -2353,8 +2409,8 @@ int corner_end_of(const Corner& c, const TopoDS_Face& f) {
 }
 
 // The blend as booleans: each edge's corner cut away (or, for concave edges, filled). Only
-// where every edge has such a corner, all of one kind, and the material removed (added) is
-// exactly the corners' volume (so each corner lay wholly in the body, or wholly out of it, and
+// where every edge has such a corner (convex ones cut first, then concave ones filled where
+// there are both: `mixed_corners`) and the material removed (added) is exactly the corners' volume (so each corner lay wholly in the body, or wholly out of it, and
 // no tool took or added anything else).
 //
 // Where the body goes on past a convex straight edge's end inside its corner (the edge ends at
