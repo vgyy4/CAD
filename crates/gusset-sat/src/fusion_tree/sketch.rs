@@ -391,6 +391,13 @@ pub(super) fn read_sketch(d: &Design, sid: u64) -> Sketch {
             out.points.insert(q, p);
         }
     }
+    // A flagged curve that a profile loop of the sketch names is a profile curve all the same
+    // (11 of 534 flagged 396-byte lines of the three adafruit sets: 2895's Extrude4, 3010's
+    // board outline); read lazily, only for sketches with a flagged curve.
+    let mut named: Option<HashSet<(u64, u64)>> = None;
+    let mut kept = |q: u64, flagged: bool| {
+        !flagged || crv_key(d, q).is_some_and(|k| named.get_or_insert_with(|| profile_curve_keys(d, sid)).contains(&k))
+    };
     for q in ents {
         if has_section(d, q, POINT) {
         } else if d.is(q, SPLINE)
@@ -400,14 +407,14 @@ pub(super) fn read_sketch(d: &Design, sid: u64) -> Sketch {
         } else if has_section(d, q, LINE) {
             if let Some(l) = line(d, q)
                 && let Some((b, _)) = find_section(d, q, LINE)
-                && !construction(d, d.rec(q), b + 72, true)
+                && kept(q, construction(d, d.rec(q), b + 72, true))
             {
                 out.lines.insert(q, l);
             }
         } else if has_section(d, q, ARC) {
             if let Some(a) = arc(d, q)
                 && let Some((b, _)) = find_section(d, q, ARC)
-                && !construction(d, d.rec(q), b + 96, false)
+                && kept(q, construction(d, d.rec(q), b + 96, false))
             {
                 out.arcs.insert(q, a);
             }
@@ -642,6 +649,33 @@ pub(super) struct RegionCache {
 /// so is a region whose outline it was.
 fn gone_loop(l: &Loop, keymap: &HashMap<(u64, u64), u64>) -> bool {
     !l.curves.is_empty() && l.curves.iter().all(|c| !keymap.contains_key(&(c.primary, c.secondary)))
+}
+
+/// The `(primary, secondary)` ids of the curves that the profile loops of sketch `sid` name.
+fn profile_curve_keys(d: &Design, sid: u64) -> HashSet<(u64, u64)> {
+    let mut out = HashSet::new();
+    for &i in &d.ids {
+        if !d.is(i, "0D57BD2F") {
+            continue;
+        }
+        let own: Vec<u64> =
+            refs_at(d, d.rec(i), 0).into_iter().take(2).map(|p| p.1).filter(|q| d.is(*q, "4BD53E5A")).collect();
+        if own.first().and_then(|q| sketch_of_profile(d, *q)) != Some(sid) {
+            continue;
+        }
+        fn walk(g: &Region, out: &mut HashSet<(u64, u64)>) {
+            for l in &g.loops {
+                out.extend(l.curves.iter().map(|c| (c.primary, c.secondary)));
+            }
+            for c in &g.children {
+                walk(c, out);
+            }
+        }
+        for g in parse_profiles(d, i).unwrap_or_default() {
+            walk(&g, &mut out);
+        }
+    }
+    out
 }
 
 fn sketch_of_profile(d: &Design, q: u64) -> Option<u64> {
