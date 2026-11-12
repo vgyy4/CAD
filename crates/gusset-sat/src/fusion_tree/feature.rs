@@ -117,6 +117,8 @@ pub(super) struct ExtRaw {
     /// A symmetric extent's measurement: `Some(true)` where its distance is each side's,
     /// `Some(false)` where it is the whole length, `None` where it was not found.
     pub half_length: Option<bool>,
+    /// The `u32` after the flags: 0 the profile plane, 1 an offset, 2 an object.
+    pub start_kind: Option<u8>,
     pub sketch: Option<u64>,
     pub params: Params,
 }
@@ -211,6 +213,7 @@ pub(super) fn extrude_raw(d: &Design, fid: u64) -> Option<ExtRaw> {
         extent,
         vec: dir.map(|(_, v)| v),
         half_length,
+        start_kind: u32_at(rec, end).filter(|k| *k <= 2).and_then(|k| u8::try_from(k).ok()),
         sketch: profile_sketch_of(d, rec),
         params: params_of(d, fid),
     })
@@ -281,6 +284,29 @@ impl Ctx<'_> {
         }
         let to_object = pget(&e.params, "Side1Offset").is_some();
         match (faces.as_slice(), to_object) {
+            // From a construction plane (817's Extrude2 and Extrude3: start kind 2, the selection
+            // `2CA5A1CD` -> `5A1BF548` -> `CC54ECAD`, a plane through the middle of the box they
+            // join, where the stored tabs are centred): that plane, parallel to the sketch, plus
+            // the offset.
+            ([], false) if e.start_kind == Some(2) => {
+                // The record names its selections twice (in its body and in its list).
+                let holders: std::collections::BTreeSet<u64> = ref_ids(d, d.rec(fid))
+                    .into_iter()
+                    .filter(|q| d.is(*q, "2CA5A1CD"))
+                    .flat_map(|q| ref_ids(d, d.rec(q)))
+                    .filter(|q| d.is(*q, "5A1BF548"))
+                    .flat_map(|q| ref_ids(d, d.rec(q)))
+                    .filter(|q| d.is(*q, "CC54ECAD"))
+                    .collect();
+                let planes: Vec<(V3, V3)> = holders.into_iter().filter_map(|q| plane_frame(d, q)).collect();
+                match planes.as_slice() {
+                    [] => Ok(off),
+                    [(o, n)] if (dot(*n, pl.z).abs() - 1.0).abs() < 1e-9 => {
+                        Ok(dot(*n, super::geom::sub(*o, pl.origin)) / dot(*n, pl.z) + off)
+                    }
+                    _ => Err("its start plane is not one plane parallel to the sketch"),
+                }
+            }
             ([], _) | ([_], true) => Ok(off),
             ([names], false) => {
                 let (g, ops) = names.first().and_then(|f| f.first()).ok_or("the start face has no name")?;
