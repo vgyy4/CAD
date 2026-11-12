@@ -387,7 +387,7 @@ impl State {
             (lo, hi) = ([0.0, 0.0], [297.0, 210.0]);
         }
         let (w, h) = (((hi[0] - lo[0]) as f32).max(10.0), ((hi[1] - lo[1]) as f32).max(10.0));
-        self.zoom = ((rect.width() - 40.0) / w).min((rect.height() - 40.0) / h).clamp(0.2, 400.0);
+        self.zoom = ((rect.width() - 40.0) / w).min((rect.height() - 40.0) / h).clamp(0.2, 400.0).min(24.0);
         let c = Vec2::new((lo[0] + hi[0]) as f32 / 2.0, (lo[1] + hi[1]) as f32 / 2.0);
         self.offset = rect.size() / 2.0 - c * self.zoom;
     }
@@ -397,7 +397,8 @@ impl State {
 pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut State) -> Out {
     let mut out = Out::default();
     let Some(open) = open else {
-        ui.label(tr("sch.none"));
+        // The canvas carries the explanation; the panel only offers the way out.
+        ui.set_min_width(200.0);
         if ui.button(tr("sch.new")).clicked() {
             out.commands.push(("sch.new", json!({})));
         }
@@ -435,13 +436,13 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &m
     );
     ui.separator();
     ui.horizontal_wrapped(|ui| {
-        for (t, key) in [
-            (Tool::Select, "pcb.select"),
-            (Tool::Wire, "sch.wire"),
-            (Tool::Label, "sch.label"),
-            (Tool::Place, "sch.place"),
+        for (t, key, tip) in [
+            (Tool::Select, "pcb.select", "sch.tip_select"),
+            (Tool::Wire, "sch.wire", "sch.tip_wire"),
+            (Tool::Label, "sch.label", "sch.tip_label"),
+            (Tool::Place, "sch.place", "sch.tip_place"),
         ] {
-            if ui.selectable_label(st.tool == t, tr(key)).clicked() {
+            if ui.selectable_label(st.tool == t, tr(key)).on_hover_text(tr(tip)).clicked() {
                 st.tool = t;
                 st.wire.clear();
             }
@@ -485,7 +486,7 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &m
     }
     ui.separator();
     ui.label(tr("sch.label"));
-    ui.text_edit_singleline(&mut st.label_text);
+    ui.add(egui::TextEdit::singleline(&mut st.label_text).hint_text(tr("sch.label_hint")).desired_width(f32::INFINITY));
     ui.horizontal(|ui| {
         for (k, key) in
             [(LabelKind::Local, "sch.local"), (LabelKind::Global, "sch.global"), (LabelKind::Hierarchical, "sch.hier")]
@@ -495,9 +496,9 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &m
     });
     ui.separator();
     ui.label(tr("sch.library"));
-    ui.text_edit_singleline(&mut st.library);
+    ui.add(egui::TextEdit::singleline(&mut st.library).hint_text(tr("sch.library_hint")).desired_width(f32::INFINITY));
     ui.label(tr("sch.symbol"));
-    ui.text_edit_singleline(&mut st.symbol);
+    ui.add(egui::TextEdit::singleline(&mut st.symbol).hint_text(tr("sch.symbol_hint")).desired_width(f32::INFINITY));
     ui.separator();
     ui.checkbox(&mut st.show_markers, tr("sch.markers"));
     if ui.button(tr("sch.run_erc")).clicked() {
@@ -527,7 +528,8 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
             egui::Align2::CENTER_CENTER,
             tr("sch.none"),
             FontId::proportional(14.0),
-            pal.text_muted,
+            // The canvas keeps its own colours in both themes, so the hint does too.
+            Color32::from_gray(90),
         );
         return out;
     };

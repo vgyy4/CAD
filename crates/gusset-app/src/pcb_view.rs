@@ -625,7 +625,7 @@ impl State {
             (lo, hi) = ([0.0, 0.0], [100.0, 100.0]);
         }
         let (w, h) = (((hi[0] - lo[0]) as f32).max(1.0), ((hi[1] - lo[1]) as f32).max(1.0));
-        self.zoom = ((rect.width() - 40.0) / w).min((rect.height() - 40.0) / h).clamp(0.05, 2000.0);
+        self.zoom = ((rect.width() - 40.0) / w).min((rect.height() - 40.0) / h).clamp(0.05, 2000.0).min(40.0);
         let c = Vec2::new((lo[0] + hi[0]) as f32 / 2.0, (lo[1] + hi[1]) as f32 / 2.0);
         self.offset = rect.size() / 2.0 - c * self.zoom;
     }
@@ -639,7 +639,8 @@ impl State {
 pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State) -> Out {
     let mut out = Out::default();
     let Some(open) = open else {
-        ui.label(tr("pcb.no_board"));
+        // The canvas carries the explanation; the panel only offers the way out.
+        ui.set_min_width(200.0);
         if ui.button(tr("pcb.new")).clicked() {
             out.commands.push(("pcb.new", json!({ "width": "100 mm", "height": "80 mm" })));
         }
@@ -660,13 +661,13 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
     ui.colored_label(if n == 0 { pal.success } else { pal.warning }, unrouted_text(n));
     ui.separator();
     ui.horizontal(|ui| {
-        for (t, key) in [
-            (Tool::Select, "pcb.select"),
-            (Tool::Route, "pcb.route"),
-            (Tool::Via, "pcb.via"),
-            (Tool::Place, "pcb.place"),
+        for (t, key, tip) in [
+            (Tool::Select, "pcb.select", "pcb.tip_select"),
+            (Tool::Route, "pcb.route", "pcb.tip_route"),
+            (Tool::Via, "pcb.via", "pcb.tip_via"),
+            (Tool::Place, "pcb.place", "pcb.tip_place"),
         ] {
-            if ui.selectable_label(st.tool == t, tr(key)).clicked() {
+            if ui.selectable_label(st.tool == t, tr(key)).on_hover_text(tr(tip)).clicked() {
                 st.tool = t;
                 st.track_from = None;
             }
@@ -695,7 +696,9 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
                     st.hidden.insert(l.clone());
                 }
             }
-            if cu.contains(&l) && ui.selectable_label(st.active == l, tr("pcb.active")).clicked() {
+            if cu.contains(&l)
+                && ui.selectable_label(st.active == l, tr("pcb.active")).on_hover_text(tr("pcb.tip_active")).clicked()
+            {
                 st.active = l.clone();
             }
         });
@@ -703,17 +706,18 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
     ui.checkbox(&mut st.show_ratsnest, tr("pcb.ratsnest"));
     ui.separator();
     ui.label(tr("pcb.library"));
-    ui.text_edit_singleline(&mut st.library);
+    ui.add(egui::TextEdit::singleline(&mut st.library).hint_text(tr("pcb.library_hint")).desired_width(f32::INFINITY));
     if st.library_read != st.library {
         st.library_read = st.library.clone();
         st.library_names =
             if st.library.trim().is_empty() { Vec::new() } else { library_footprints(&st.library, 20_000) };
     }
     if !st.library_names.is_empty() {
-        ui.horizontal(|ui| {
-            ui.label("🔍");
-            ui.text_edit_singleline(&mut st.library_filter);
-        });
+        ui.add(
+            egui::TextEdit::singleline(&mut st.library_filter)
+                .hint_text(tr("pcb.filter_hint"))
+                .desired_width(f32::INFINITY),
+        );
         let filter = st.library_filter.to_lowercase();
         egui::ScrollArea::vertical().id_salt("pcb_lib").max_height(140.0).show(ui, |ui| {
             for n in st.library_names.iter().filter(|n| n.to_lowercase().contains(&filter)).take(500) {
@@ -775,7 +779,8 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
             egui::Align2::CENTER_CENTER,
             tr("pcb.no_board"),
             FontId::proportional(14.0),
-            pal.text_muted,
+            // The canvas keeps its own colours in both themes, so the hint does too.
+            Color32::from_gray(150),
         );
         return out;
     };
