@@ -292,7 +292,7 @@ impl Command for PcbExportDsn {
     const ID: &'static str = "pcb.export_dsn";
     const TITLE: &'static str = "Export DSN";
     const DESCRIPTION: &'static str =
-        "Write the open board as Specctra DSN for an external autorouter; read its .ses back with pcb.import_ses.";
+        "Write the open board as Specctra DSN for an external autorouter; read its .ses back with pcb_import_ses.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
