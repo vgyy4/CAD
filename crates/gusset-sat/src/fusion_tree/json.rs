@@ -1948,6 +1948,9 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 o.insert("direction".into(), json!([round9(dir[0]), round9(dir[1]), round9(dir[2])]));
             }
             feats.push(j);
+        } else if c8 == "65CA3206" {
+            let ed = super::bodyops::Edit { d, g: &g, names: &names, feats: &feats };
+            feats.push(split_json(cx, &ed, fid, &nm, &fusion_type, class));
         } else if c8 == "584D9526" {
             // The body its face is on, by the feature that made it (as a blend's).
             let mut on: Vec<String> = g
@@ -2257,6 +2260,47 @@ fn offset_faces_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, clas
         return fail("no offset face was found");
     }
     json!({"type": "offset_face", "name": name, "source_id": fid, "faces": faces, "distance": mm(*distance)})
+}
+
+/// Split Body `65CA3206`: the body it splits (a `2CA5A1CD` -> `9716F783` selection), the
+/// splitting tool (a `2CA5A1CD` -> `5A1BF548` -> `CC54ECAD` construction plane, or a face) and the
+/// body links it makes (`D26351F0` whose creator is the split): one, the new body (the body
+/// selected keeps its own link). A split by a construction plane into two bodies is read; one
+/// into more, or by a face, is not.
+fn split_json(cx: &Ctx, ed: &super::bodyops::Edit<'_>, fid: u64, name: &str, fusion_type: &str, class: &str) -> Value {
+    let d = cx.d;
+    let fail = |why: String| {
+        json!({"type": "unsupported", "fusion_type": fusion_type, "name": name, "class_guid": class,
+            "source_id": fid, "error": why})
+    };
+    let made = ed.g.body_links(d, fid, 2).iter().filter(|l| ed.g.creator.get(l) == Some(&fid)).count();
+    if made != 1 {
+        return fail(format!("the split makes {made} new bodies, not one (a split into two bodies is read)"));
+    }
+    let target = match ed.target(fid) {
+        Ok(t) => t,
+        Err(e) => return fail(format!("the body it splits: {e}")),
+    };
+    let tools: Vec<u64> = ref_ids(d, d.rec(fid))
+        .into_iter()
+        .filter(|q| d.is(*q, "2CA5A1CD"))
+        .flat_map(|q| ref_ids(d, d.rec(q)))
+        .filter(|q| d.is(*q, "5A1BF548") || d.is(*q, "5662F619"))
+        .collect::<HashSet<u64>>()
+        .into_iter()
+        .collect();
+    let [tool] = tools.as_slice() else { return fail(format!("it names {} splitting tools, not one", tools.len())) };
+    if !d.is(*tool, "5A1BF548") {
+        return fail("its splitting tool is a face, not a construction plane".into());
+    }
+    let frames: Vec<(V3, V3)> = ref_ids(d, d.rec(*tool))
+        .into_iter()
+        .filter(|q| d.is(*q, "CC54ECAD"))
+        .filter_map(|q| feature::plane_frame(d, q))
+        .collect();
+    let [(o, n)] = frames.as_slice() else { return fail("its splitting plane is not one construction plane".into()) };
+    json!({"type": "split", "name": name, "source_id": fid, "target": target, "creates_bodies": 1,
+        "plane": {"origin": v3mm(*o), "normal": [round9(n[0]), round9(n[1]), round9(n[2])]}})
 }
 
 /// The plane of a mirror whose plane holder (`C444E6AD`) selects a face (`2CA5A1CD` ->
@@ -2680,7 +2724,7 @@ fn blocker(f: &Value) -> Option<String> {
             None
         }
         "hole" | "mirror" | "shell" | "draft" | "offset_face" | "move_body" | "scale_body" | "remove_body"
-        | "combine" => None,
+        | "split" | "combine" => None,
         "component_insert" => Some("the design it inserts is not merged into the tree".into()),
         "stored_body" => (!has("brep")).then(|| "the stored body names no blob".to_string()),
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),
@@ -2963,7 +3007,7 @@ pub(super) fn move_feature(f: &mut Value, pl: &crate::fusion::Placement) {
                 }
             }
         }
-        "mirror" => {
+        "mirror" | "split" => {
             if let Some(fc) = f.get_mut("plane").and_then(Value::as_object_mut) {
                 let (p, n) = (pt(fc.get("origin")), dir(fc.get("normal")));
                 for (k, v) in [("origin", p), ("normal", n)] {

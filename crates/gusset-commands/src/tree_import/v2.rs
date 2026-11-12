@@ -1333,6 +1333,29 @@ pub(super) fn remove_body(g: &mut Gen, s: &Session, d: &RemoveBodyF) -> Result<(
     Ok(())
 }
 
+/// A split of a body by a plane into two bodies (ADR 0004 amendment): the part on the side the
+/// written plane's normal points to becomes a body named after the split, the rest stays the
+/// body. The plane must cross the body.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct SplitF {
+    name: String,
+    target: String,
+    plane: MirrorPlane,
+}
+
+pub(super) fn split(g: &mut Gen, s: &Session, d: &SplitF) -> Result<(), String> {
+    let target = g.body_named(&d.target, "target")?;
+    let o = finite3(d.plane.origin, "the plane origin")?;
+    let n = unit(finite3(d.plane.normal, "the plane normal")?).ok_or("the plane normal is zero")?;
+    let name = g.fresh(&d.name, "Split");
+    let plane = datum_plane(g, &name, o, n)?;
+    let _ = writeln!(g.text, "\nsplit {name} (body: {target}, plane: {plane})");
+    builds(g, s, &name)?;
+    g.made.push(name.clone());
+    g.features.insert(d.name.clone(), name);
+    Ok(())
+}
+
 /// Push or pull faces along their normals (ADR 0042 amendment).
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct OffsetFaceF {

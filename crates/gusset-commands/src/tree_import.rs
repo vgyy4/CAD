@@ -813,7 +813,7 @@ pub fn apply_with(
                 .map_err(|e| e.to_string())
                 .and_then(|d| edges(&mut g, s, &d, kind == "fillet")),
             "hole" | "pattern_linear" | "pattern_circular" | "mirror" | "shell" | "sweep" | "loft" | "stored_body"
-            | "move_body" | "draft" | "scale_body" | "remove_body" | "offset_face"
+            | "move_body" | "draft" | "scale_body" | "remove_body" | "offset_face" | "split"
                 if tree.version < 2 =>
             {
                 Err(format!("feature type '{kind}' is in version 2 files; this file says version 1"))
@@ -848,6 +848,9 @@ pub fn apply_with(
             "remove_body" => serde_json::from_value::<v2::RemoveBodyF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::remove_body(&mut g, s, &d)),
+            "split" => serde_json::from_value::<v2::SplitF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::split(&mut g, s, &d)),
             "draft" => serde_json::from_value::<v2::DraftF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::draft(&mut g, s, &d)),
