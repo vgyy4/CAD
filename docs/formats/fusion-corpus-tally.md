@@ -344,3 +344,15 @@ at a patterned thread. Round 23 O (a draft of a slanted face, Base Feature bodie
 Body by a plane, the shell of a whole body as a hollow, mirror planes on faces): adafruit-more 132 of 150 as
 history (258, 3651 added; none lost), adafruit 13 of 18. 4431 reads in full but a feature changes a body the file
 stores as finished; 4632 stops at a surface extrude (Extrude11); 3502 at Bend1 (sections 38, 39).
+
+## New set adafruit-next: first run (2026-11-12)
+
+`scripts/fetch-samples.py DEST adafruit-next`: 150 more designs of the same repository, half a step on from
+adafruit-more and disjoint from it (155 MiB). Run with the importer at 078fc53, never tuned on these designs:
+110 of 150 as history (73 %). Of the 40 left, the first blockers: fillet or chamfer edges not resolved or not
+built 11 (67, 770, 2278, 2315, 3777, 5360 contacts, 5998, 6118, 6252, and others), profile regions not decoded 5
+(1833, 2895, 3010, 4222, a board), extrude layout not recognised 3 (817, 1264, 2530), modeled threads 4 (916,
+3221, 3429, a UNS thread), revolve axis not a sketch line 2 (1054, 1313), sweeps 3 (1119 and 3923 by their
+mirror, 6002 path), Base Feature or box primitive placement 3 (2354, 3000, 2831), and one each: draft 1438,
+shell 3346, Pipe 64, Combine target 3093, an extrude of several bodies 3802, a mirrored component 5907, a stream
+that cannot be framed 5988; no feature history 2 (2226, 6495).
