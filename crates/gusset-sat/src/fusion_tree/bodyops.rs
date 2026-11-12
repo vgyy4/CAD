@@ -237,7 +237,9 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
     let mut plane: Option<(V3, V3)> = None;
     let mut seen: Vec<u64> = Vec::new();
     type Pick = (Value, Option<(V3, bool)>, Option<(V3, V3)>);
-    let mut lists: Vec<(u64, Vec<Option<RecipeKind>>, Vec<Pick>)> = Vec::new();
+    type Name = (String, Vec<i32>);
+    type Listed = (u64, Vec<Option<RecipeKind>>, Vec<Pick>, Vec<Name>);
+    let mut lists: Vec<Listed> = Vec::new();
     for l in ref_ids(d, d.rec(fid)) {
         if !d.is(l, "2CA5A1CD") || seen.contains(&l) {
             continue;
@@ -247,6 +249,7 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
         // and the outward normal (a neutral plane candidate).
         let mut picks: Vec<Pick> = Vec::new();
         let mut kinds: Vec<Option<RecipeKind>> = Vec::new();
+        let mut names_of: Vec<Name> = Vec::new();
         for s in ref_ids(d, d.rec(l)) {
             if !d.is(s, "5662F619") {
                 continue;
@@ -261,6 +264,7 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
                     return bad("a face of the draft has no name");
                 };
                 let own = ops.len() == 1;
+                names_of.push((g.clone(), ops.clone()));
                 match cx.face_pick(g, ops) {
                     // A cap's modelled point is its plane's (the sketch origin's projection): two
                     // caps on one plane would be one pick. The stored cap's points tell them apart.
@@ -293,7 +297,7 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
             }
         }
         if !kinds.is_empty() {
-            lists.push((l, kinds, picks));
+            lists.push((l, kinds, picks, names_of));
         }
     }
     // The faces are bounded-face recipes and the neutral plane one plain face. An older file
@@ -310,9 +314,12 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
     }
     // The drafted faces' planes (a point and the outward normal), where they are planes.
     let mut face_planes: Vec<Option<(V3, V3)>> = Vec::new();
-    for (_, kinds, picks) in lists {
+    // The drafted faces' names, with their normals where they are planes.
+    let mut drafted: Vec<(Name, Option<(V3, bool)>)> = Vec::new();
+    for (_, kinds, picks, names_of) in lists {
         if bounded(&kinds) {
-            for (pick, dir, pl) in picks {
+            for ((pick, dir, pl), nm) in picks.into_iter().zip(names_of) {
+                drafted.push((nm, dir));
                 faces.push(pick);
                 dirs.extend(dir);
                 face_planes.push(pl);
@@ -390,7 +397,32 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
     }
     // Pull direction: the neutral face's outward normal, reversed where the draft flips it.
     // 355's two drafts (10 and -10 degrees) rebuild to the stored drafted faces this way
-    // (section 28).
+    // (section 28). Where the stored bodies hold a drafted plane face after the draft (its name
+    // carries the draft's operation, negated) and its normal is the one the reversed pull gives,
+    // and none is the other, the pull is reversed: 3000's Draft1 (-20 degrees, about a wall
+    // whose outward normal is -y) tapers a box's top down towards -y, as only a pull along +y
+    // gives (section 45).
+    let draft_ops: Vec<i32> =
+        cx.opmap.iter().filter(|(_, f)| **f == fid).filter_map(|(k, _)| i32::try_from(*k).ok()).collect();
+    let (mut agree, mut reversed) = (0usize, 0usize);
+    let (sa, ca) = (libm::sin(angle), libm::cos(angle));
+    for ((g, ops), dir) in &drafted {
+        let (Some((_, true)), Some(nu), Some(pu)) = (dir, dir.and_then(|d| unit(d.0)), unit(pull)) else { continue };
+        for k in &draft_ops {
+            let mut after = ops.clone();
+            after.push(-k);
+            let Some(naming::Surface::Plane { normal, .. }) = cx.stored_face(g, &after).map(|sp| sp.surface) else {
+                continue;
+            };
+            let close = |w: V3| norm(sub(normal, w)) < 1e-6;
+            if close(add(mul(nu, ca), mul(pu, sa))) {
+                agree += 1;
+            } else if close(add(mul(nu, ca), mul(pu, -sa))) {
+                reversed += 1;
+            }
+        }
+    }
+    let flip = if reversed > 0 && agree == 0 { !flip } else { flip };
     json!({"type": "draft", "name": name, "source_id": fid, "faces": faces,
         "plane": {"origin": v3(o), "normal": unit9(n)}, "angle": round9(angle.to_degrees()), "flip": flip})
 }
