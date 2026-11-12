@@ -207,6 +207,52 @@ pub(super) struct ExtGeom {
     pub t1: Option<f64>,
     /// The side walls lean (a taper angle): they do not stand on the profile.
     pub tapered: bool,
+    /// The curve pieces that bound the profile as a whole (those of one region only: a piece two
+    /// regions share lies inside the extruded area).
+    pub bounds: Vec<Rc<Seg>>,
+}
+
+impl ExtGeom {
+    /// Whether a sketch point lies inside the profile's area (even-odd over `bounds`); `None`
+    /// without a closed boundary.
+    fn in_profile(&self, q: P2) -> Option<bool> {
+        if self.bounds.is_empty() {
+            return None;
+        }
+        // Every end of a piece meets an end of another (or its own other end): closed loops.
+        let ends: Vec<P2> =
+            self.bounds.iter().flat_map(|sg| [sg.poly.first(), sg.poly.last()]).flatten().copied().collect();
+        let close = |a: &P2, b: &P2| geom::dist(*a, *b) < 1e-6;
+        if ends.iter().enumerate().any(|(i, a)| !ends.iter().enumerate().any(|(j, b)| i != j && close(a, b))) {
+            return None;
+        }
+        let mut c = false;
+        for sg in &self.bounds {
+            for w in sg.poly.windows(2) {
+                let [a, b] = w else { continue };
+                if (a[1] > q[1]) != (b[1] > q[1]) && q[0] < (b[0] - a[0]) * (q[1] - a[1]) / (b[1] - a[1]) + a[0] {
+                    c = !c;
+                }
+            }
+        }
+        Some(c)
+    }
+
+    /// The side of a planar side face (its normal `n`, a point `mid` of it) away from the
+    /// profile's area: the probes either side of the face, where one is inside and one outside.
+    fn away_from_profile(&self, n: V3, mid: V3) -> Option<f64> {
+        let pl = &self.pl;
+        let rel = sub(mid, pl.origin);
+        let (q, m) = ([dot(rel, pl.x), dot(rel, pl.y)], [dot(n, pl.x), dot(n, pl.y)]);
+        let len = (m[0] * m[0] + m[1] * m[1]).sqrt();
+        if len < 1e-9 {
+            return None;
+        }
+        let e = 1e-5 / len;
+        let plus = self.in_profile([q[0] + m[0] * e, q[1] + m[1] * e])?;
+        let minus = self.in_profile([q[0] - m[0] * e, q[1] - m[1] * e])?;
+        (plus != minus).then_some(if plus { -1.0 } else { 1.0 })
+    }
 }
 
 /// Generator text to (profile curve piece index in `ExtGeom::segs`, traversed forward).
@@ -843,15 +889,50 @@ impl Ctx<'_> {
         u64::try_from(op).ok().and_then(|o| self.opmap.get(&o).copied())
     }
 
-    /// The face a fillet puts on its `g`-th edge (1-based, in the order of its edge recipes): the
-    /// two sides that edge joins must be planar faces, and the fillet a corner of the void they
-    /// bound, rounded with the radius of the fillet's set.
+    /// The face a fillet puts on its `g`-th face (1-based): the faces are numbered in the order
+    /// of its edge recipes, but an edge whose round lies on the round of an earlier edge (the
+    /// same radius and axis: two corners of a side the rounds use up, 2315's posts, whose 4 mm
+    /// ends are rounded by 2 mm, the stored faces show one face per end) takes no number of its
+    /// own. Where a recipe's round cannot be worked out, the `g`-th recipe.
     fn face_of_fillet(&mut self, g: &str, fid: u64, depth: usize) -> Option<FaceG> {
         if depth >= 3 {
             return None;
         }
         let k: usize = g.parse().ok().filter(|k| *k >= 1)?;
-        let (r, rid) = self.blend_edge(fid, k - 1)?;
+        let axis = |f: &FaceG| -> Option<(f64, V3, V3)> {
+            let FaceG::Fillet { r, a, b } = f else { return None };
+            let dir = unit(cross(a.1, b.1))?;
+            Some((*r, dir, fillet_centre(*r, *a, *b, (dir, [0.0; 3]))?))
+        };
+        let mut seen: Vec<(f64, V3, V3)> = Vec::new();
+        let mut idx = 0;
+        while seen.len() < k && idx < 512 {
+            if self.blend_edge(fid, idx).is_none() {
+                break;
+            }
+            let Some(f) = self.fillet_of_recipe(fid, idx, depth) else {
+                return self.fillet_of_recipe(fid, k - 1, depth);
+            };
+            let Some(ax) = axis(&f) else { return self.fillet_of_recipe(fid, k - 1, depth) };
+            let same = |o: &(f64, V3, V3)| {
+                (o.0 - ax.0).abs() < 1e-9 && (dot(o.1, ax.1).abs() - 1.0).abs() < 1e-9 && norm(sub(o.2, ax.2)) < 1e-7
+            };
+            if !seen.iter().any(same) {
+                seen.push(ax);
+                if seen.len() == k {
+                    return Some(f);
+                }
+            }
+            idx += 1;
+        }
+        self.fillet_of_recipe(fid, k - 1, depth)
+    }
+
+    /// The round a fillet puts on its `idx`-th edge recipe (0-based): the two sides that edge
+    /// joins must be planar faces, and the fillet a corner of the void they bound, rounded with
+    /// the radius of the fillet's set.
+    fn fillet_of_recipe(&mut self, fid: u64, idx: usize, depth: usize) -> Option<FaceG> {
+        let (r, rid) = self.blend_edge(fid, idx)?;
         let (Some(RecipeKind::Edge), Some(faces)) = recipe(self.d, rid) else { return None };
         // A cap counts where the edge's two faces are of one extrude (a side and its cap meet
         // at a convex edge of the prism, the material inside both): 67's Fillet1 rounds the
@@ -893,6 +974,11 @@ impl Ctx<'_> {
         let pts: Vec<P2> = eg.segs.iter().flat_map(|sg| sg.poly.iter().copied()).collect();
         if pts.is_empty() {
             return None;
+        }
+        // Away from the profile's own area where the probes tell (a profile of several regions
+        // apart: 2315's posts), else away from the middle of its points.
+        if let Some(s) = eg.away_from_profile(n, mid) {
+            return Some((mid, mul(n, s)));
         }
         let k = pts.len() as f64;
         let mean = [pts.iter().map(|q| q[0]).sum::<f64>() / k, pts.iter().map(|q| q[1]).sum::<f64>() / k];

@@ -346,7 +346,14 @@ impl Ctx<'_> {
         let pl = s.plane?;
         let rg = self.rc.regions(d, fid, &s).ok()?;
         let mut segs: Vec<Rc<sketch::Seg>> = Vec::new();
+        let mut uses: Vec<(Rc<sketch::Seg>, usize)> = Vec::new();
         for r in rg.iter() {
+            for sg in &r.segments {
+                match uses.iter_mut().find(|(x, _)| x.id == sg.id) {
+                    Some((_, k)) => *k += 1,
+                    None => uses.push((sg.clone(), 1)),
+                }
+            }
             let list = match &r.naming_segments {
                 Some(n) if !n.is_empty() => n,
                 _ => &r.segments,
@@ -372,7 +379,8 @@ impl Ctx<'_> {
             }
         }
         let tapered = pget(&e.params, "TaperAngle").and_then(|p| p.value).is_some_and(|t| t != 0.0);
-        Some(ExtGeom { pl, sketch: s, segs, t0, t1, tapered })
+        let bounds = uses.into_iter().filter(|(_, k)| *k == 1).map(|(sg, _)| sg).collect();
+        Some(ExtGeom { pl, sketch: s, segs, t0, t1, tapered, bounds })
     }
 
     pub(super) fn gen_map(&mut self, fid: u64) -> Option<Rc<naming::GenMap>> {

@@ -1862,12 +1862,16 @@ fn on_path_edges(ev: &gusset_eval::Evaluation, path: &[[f64; 3]]) -> Vec<(String
 
 /// The model's edges that hold a source edge: its midpoint and both ends lie on one edge of
 /// the model (a line, or a circle's arc). FreeCAD splits an edge where the faces of a joined
-/// pattern meet; Gusset keeps the whole edge, and a fillet takes all of it.
+/// pattern meet; Gusset keeps the whole edge, and a fillet takes all of it. A pick without a
+/// path (Fusion's) is held by the model's edges its midpoint lies on, away from their ends:
+/// Fusion keeps the two blend faces of a used-up side apart where Gusset's are one (2315's posts,
+/// rounded across their 4 mm ends by 2 mm); the state check rejects a wrong guess.
 fn containing_edges(ev: &gusset_eval::Evaluation, pick: &EdgePick) -> Vec<(String, String)> {
-    let (Some(first), Some(last)) = (pick.path.first().copied(), pick.path.last().copied()) else {
-        return Vec::new();
+    let pts: Vec<V3> = match (pick.path.first().copied(), pick.path.last().copied()) {
+        (Some(first), Some(last)) => vec![pick.midpoint, first, last],
+        _ => vec![pick.midpoint],
     };
-    let pts = [pick.midpoint, first, last];
+    let interior = pick.path.is_empty();
     let mut out = Vec::new();
     for b in &ev.bodies {
         let t = &b.topology;
@@ -1875,6 +1879,7 @@ fn containing_edges(ev: &gusset_eval::Evaluation, pick: &EdgePick) -> Vec<(Strin
             let ends: Vec<V3> =
                 e.vertices.iter().filter_map(|v| t.vertices.get(*v as usize)).map(|v| v.point).collect();
             if edge_holds(e.kind, &ends, e.midpoint, e.circle, &pts)
+                && (!interior || ends.iter().all(|v| norm(sub(*v, pick.midpoint)) > 0.01))
                 && let Some(n) = b.names.edges.get(i)
             {
                 out.push((b.feature.clone(), n.to_string()));
