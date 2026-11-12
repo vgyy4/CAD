@@ -1945,16 +1945,8 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             feats.push(split_json(cx, &ed, fid, &nm, &fusion_type, class));
         } else if c8 == "584D9526" {
             // The body its face is on, by the feature that made it (as a blend's).
-            let mut on: Vec<String> = g
-                .body_links(d, fid, 2)
-                .iter()
-                .filter_map(|l| g.creator.get(l).copied())
-                .filter(|c| *c != fid)
-                .filter_map(|c| names.get(&c).cloned())
-                .collect();
-            on.sort();
-            on.dedup();
-            let body = if let [one] = on.as_slice() { Some(one.as_str()) } else { None };
+            let on = one_body(g.body_links(d, fid, 2).iter().filter_map(|l| g.creator.get(l).copied()), fid, &names);
+            let body = on.as_deref();
             match super::thread::json(cx, fid, &nm, &fusion_type, class, body) {
                 Ok(super::thread::Word::Cosmetic(note)) => {
                     skipped.push(json!({"name": name, "fusion_type": fusion_type, "reason": note, "source_id": fid}));
@@ -1978,7 +1970,14 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 feats.push(shell_json(cx, fid, &nm, &fusion_type, class, None));
             }
         } else if c8 == "D087EFE5" {
-            feats.push(offset_faces_json(cx, fid, &nm, &fusion_type, class));
+            let on = one_body(g.body_links(d, fid, 2).iter().filter_map(|l| g.creator.get(l).copied()), fid, &names);
+            let mut j = offset_faces_json(cx, fid, &nm, &fusion_type, class);
+            if let (Some(o), Some(b)) = (j.as_object_mut(), on)
+                && o.get("type").and_then(Value::as_str) == Some("offset_face")
+            {
+                o.insert("on_body".into(), b.into());
+            }
+            feats.push(j);
         } else if c8 == "F4163A07" {
             feats.push(super::bodyops::draft_json(cx, fid, &nm, &fusion_type, class));
         } else if matches!(c8.as_str(), "64E40C8E" | "D45FD6C4" | "4A782808") {
@@ -2208,6 +2207,15 @@ pub(super) fn joins_of_several_bodies(feats: &mut Vec<Value>) {
         feats.insert(i + 1, Value::Object(c));
         i += 2;
     }
+}
+
+/// The one body, by the feature that made it, of the creators `of` a feature's body links
+/// (`fid` itself left out); `None` for none or several.
+fn one_body(of: impl Iterator<Item = u64>, fid: u64, names: &HashMap<u64, String>) -> Option<String> {
+    let mut on: Vec<String> = of.filter(|c| *c != fid).filter_map(|c| names.get(&c).cloned()).collect();
+    on.sort();
+    on.dedup();
+    if let [one] = on.as_slice() { Some(one.clone()) } else { None }
 }
 
 /// OffsetFaces `D087EFE5`: the faces are `7ACC2A03` face recipes under its selection (planar

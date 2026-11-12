@@ -427,17 +427,20 @@ fn find_pick(
     if pick.points.is_empty() {
         return find_face(kernel, ev, meshes, finite3(pick.point, "a face point")?, pick.normal);
     }
-    find_face_by_points(kernel, ev, meshes, pick)
+    find_face_by_points(kernel, ev, meshes, pick, None)
 }
 
 /// The face of the model that lies on the pick's surface (every node of its tessellation within
 /// 0.001 mm of it; any face for `other`) and holds the most of the pick's points (within the
-/// tessellation's deflection). Exactly one face must hold the most, and at least one point.
+/// tessellation's deflection). Exactly one face must hold the most, and at least one point; or,
+/// where faces of several bodies tie, exactly one of them on the body `tie` names (an offset of a
+/// face that another body's face lies on: 3350's insert in the pocket cut by the same profile).
 fn find_face_by_points(
     kernel: &dyn gusset_kernel::Kernel,
     ev: &gusset_eval::Evaluation,
     meshes: &mut Meshes,
     pick: &FacePick,
+    tie: Option<&str>,
 ) -> Result<FaceHit, String> {
     if pick.points.len() > MAX_FACE_POINTS {
         return Err(format!("a face pick has more than {MAX_FACE_POINTS} points"));
@@ -496,6 +499,12 @@ fn find_face_by_points(
                 },
             ));
         }
+    }
+    if best.len() > 1
+        && let Some(t) = tie
+        && let [(_, one)] = best.iter().filter(|(_, h)| h.body == t).collect::<Vec<_>>().as_slice()
+    {
+        return Ok((*one).clone());
     }
     match best.as_slice() {
         [(_, one)] => Ok(one.clone()),
@@ -1362,6 +1371,10 @@ pub(super) struct OffsetFaceF {
     name: String,
     faces: Vec<FacePick>,
     distance: f64,
+    /// The body the faces are on, by the feature that made it: decides between faces of two
+    /// bodies that lie on one another.
+    #[serde(default)]
+    on_body: Option<String>,
 }
 
 pub(super) fn offset_face(g: &mut Gen, s: &Session, d: &OffsetFaceF) -> Result<(), String> {
@@ -1375,8 +1388,16 @@ pub(super) fn offset_face(g: &mut Gen, s: &Session, d: &OffsetFaceF) -> Result<(
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     let mut body: Option<String> = None;
     let mut names: Vec<String> = Vec::new();
+    let mut meshes: Meshes = Vec::new();
     for pick in &d.faces {
-        let (b, face) = pick_face_name(g, s, &ev, pick)?;
+        let tie = d.on_body.as_deref().and_then(|b| g.features.get(b)).map(String::as_str);
+        let f = if pick.points.is_empty() {
+            find_pick(s.kernel().as_ref(), &ev, &mut meshes, pick)?
+        } else {
+            find_face_by_points(s.kernel().as_ref(), &ev, &mut meshes, pick, tie)?
+        };
+        warn_fallback(g, &f, finite3(pick.point, "the face point")?);
+        let (b, face) = (f.body, f.name);
         if body.as_ref().is_some_and(|x| *x != b) {
             return Err("its faces are on several bodies".into());
         }
