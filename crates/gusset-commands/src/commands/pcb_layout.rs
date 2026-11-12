@@ -12,6 +12,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
     vec![
         spec::<PcbFillZones>(),
         spec::<PcbRoute>(),
+        spec::<PcbAddFootprint>(),
         spec::<PcbExportStep>(),
         spec::<PcbExportDsn>(),
         spec::<PcbImportSes>(),
@@ -145,6 +146,72 @@ impl Command for PcbRoute {
             "net_user_text": net,
         });
         commit_board(s, ctx, "Route track", open.file.clone(), &nb, None, extra)
+    }
+}
+
+/// Places a footprint from a footprint library folder.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PcbAddFootprint {
+    /// Folder holding Lib.pretty libraries (or .kicad_mod files).
+    pub library: String,
+    /// Lib:Name (or Name).
+    pub footprint: String,
+    pub at: [f64; 2],
+    /// Degrees.
+    #[serde(default)]
+    pub angle: Option<f64>,
+    /// Default: the next free FP<n>.
+    #[serde(default)]
+    pub reference: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+impl Command for PcbAddFootprint {
+    const ID: &'static str = "pcb.add_footprint";
+    const TITLE: &'static str = "Place footprint";
+    const DESCRIPTION: &'static str = "Place a footprint from a KiCad library folder (Lib.pretty) on the open board.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if self.angle.is_some_and(|a| !a.is_finite()) {
+            return Err(CommandError::args("the angle must be a number of degrees"));
+        }
+        let text = super::sch::footprint_candidates(&self.library, &self.footprint)
+            .into_iter()
+            .find_map(|p| super::sch::read_text(s, ctx, &p, super::sch::MAX_FOOTPRINT_BYTES).ok())
+            .ok_or_else(|| {
+                CommandError::not_found(format!(
+                    "no footprint '{}' in the library folder",
+                    crate::paths::display_name(&self.footprint)
+                ))
+                .hint("name it Lib:Name for Lib.pretty/Name.kicad_mod in that folder")
+            })?;
+        let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
+        let mut b = open.board.clone();
+        let reference = match &self.reference {
+            Some(r) => r.clone(),
+            None => (1..100_000).map(|n| format!("FP{n}")).find(|r| b.footprint_index(r).is_none()).unwrap_or_default(),
+        };
+        if b.footprint_index(&reference).is_some() {
+            return Err(CommandError::args(format!(
+                "'{}' is already on the board",
+                crate::paths::display_name(&reference)
+            )));
+        }
+        let name = self.footprint.rsplit(':').next().unwrap_or(&self.footprint).to_string();
+        let value = self.value.clone().unwrap_or(name);
+        let i = b
+            .add_footprint(&text, &self.footprint, &reference, &value, self.at, &Limits::default())
+            .map_err(pcb_err)?;
+        if let Some(a) = self.angle.filter(|a| a.rem_euclid(360.0).abs() > 1e-9) {
+            b.move_footprint(i, self.at, a.rem_euclid(360.0), &Limits::default()).map_err(pcb_err)?;
+        }
+        let pads = b.footprints.get(i).map_or(0, |f| f.pads.len());
+        let label = format!("Place {}", crate::paths::display_name(&reference));
+        let extra = json!({ "footprint": i, "reference_user_text": reference, "pads": pads });
+        commit_board(s, ctx, &label, open.file.clone(), &b, None, extra)
     }
 }
 

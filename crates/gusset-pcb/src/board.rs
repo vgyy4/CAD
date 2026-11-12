@@ -155,13 +155,42 @@ pub struct Graphic {
     pub footprint: Option<usize>,
 }
 
-/// A text item (kept for information; not plotted yet).
+/// A text item (drawn in the editor; not plotted yet).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Text {
     pub text: String,
     pub at: Pt,
     pub layer: String,
     pub footprint: Option<usize>,
+    /// Character height (mm).
+    pub size: f64,
+    /// Degrees, counter-clockwise on screen.
+    pub angle: f64,
+    pub hidden: bool,
+    /// Mirrored (bottom-side text reads from below).
+    pub mirrored: bool,
+}
+
+/// A text's height, angle, hidden and mirrored flags from its node.
+fn text_look(n: &Node) -> (f64, f64, bool, bool) {
+    let e = n.child("effects");
+    let size = e
+        .and_then(|e| e.child("font"))
+        .and_then(|f| f.child("size"))
+        .and_then(|s| s.num_arg(0))
+        .filter(|v| v.is_finite() && *v > 0.0 && *v < 1000.0)
+        .unwrap_or(1.0);
+    let angle = n.child("at").and_then(|a| a.num_arg(2)).filter(|v| v.is_finite()).unwrap_or(0.0);
+    let flag = |node: Option<&Node>, name: &str| {
+        node.is_some_and(|x| {
+            x.args().iter().any(|a| a.atom() == Some(name))
+                || x.child(name).is_some_and(|h| h.arg(0).is_none_or(|v| v == "yes"))
+        })
+    };
+    let hidden = flag(Some(n), "hide") || flag(e, "hide");
+    let mirrored =
+        e.and_then(|e| e.child("justify")).is_some_and(|j| j.args().iter().any(|a| a.atom() == Some("mirror")));
+    (size, angle, hidden, mirrored)
 }
 
 /// What a pad is.
@@ -946,7 +975,17 @@ impl Reader<'_> {
                 // `(gr_text "text" (at x y))`, `(fp_text reference "R1" (at x y))`.
                 let t = if head.starts_with("fp_") { n.arg(1) } else { n.arg(0) };
                 let at = pt(n.child("at")).map(p).unwrap_or([0.0, 0.0]);
-                self.board.texts.push(Text { text: t.unwrap_or_default().to_string(), at, layer, footprint: fp });
+                let (size, angle, hidden, mirrored) = text_look(n);
+                self.board.texts.push(Text {
+                    text: t.unwrap_or_default().to_string(),
+                    at,
+                    layer,
+                    footprint: fp,
+                    size,
+                    angle,
+                    hidden,
+                    mirrored,
+                });
                 return Ok(());
             }
             "curve" | "bbox" | "vector" => return Ok(()),
@@ -990,11 +1029,28 @@ impl Reader<'_> {
         let fp_zone = zone_connect(n);
         for c in n.args() {
             match c.head() {
-                Some("property") => match c.arg(0) {
-                    Some("Reference") => fp.reference = text_arg(c, 1),
-                    Some("Value") => fp.value = text_arg(c, 1),
-                    _ => {}
-                },
+                Some("property") => {
+                    match c.arg(0) {
+                        Some("Reference") => fp.reference = text_arg(c, 1),
+                        Some("Value") => fp.value = text_arg(c, 1),
+                        _ => {}
+                    }
+                    // KiCad 7+ fields with a layer are texts on the board.
+                    if let (Some(layer), Some(at)) = (c.child("layer").and_then(|l| l.arg(0)), pt(c.child("at"))) {
+                        self.check(self.board.graphics.len() + self.board.texts.len(), "drawings")?;
+                        let (size, angle, hidden, mirrored) = text_look(c);
+                        self.board.texts.push(Text {
+                            text: text_arg(c, 1),
+                            at: place.apply(at),
+                            layer: layer.to_string(),
+                            footprint: Some(index),
+                            size,
+                            angle,
+                            hidden,
+                            mirrored,
+                        });
+                    }
+                }
                 Some("fp_text") => {
                     match c.arg(0) {
                         Some("reference") => fp.reference = text_arg(c, 1),

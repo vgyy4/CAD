@@ -153,3 +153,48 @@ fn dsn_out_and_session_in_with_undo() {
     let e = execute(&mut s, &a, "pcb.import_ses", json!({"path": "/etc/passwd.ses"})).unwrap_err();
     assert_eq!(e.code, "not_allowed", "{e:?}");
 }
+
+#[test]
+fn footprints_are_placed_from_a_library_folder() {
+    let mut s = layout_session();
+    let dir = s.project_dir.clone().unwrap();
+    std::fs::create_dir_all(dir.join("libs/Test.pretty")).unwrap();
+    let fp = r#"(footprint "R_Small" (version 20240108) (generator "hand") (layer "F.Cu")
+      (property "Reference" "REF**" (at 0 -1.5) (layer "F.SilkS"))
+      (property "Value" "R_Small" (at 0 1.5) (layer "F.Fab"))
+      (pad "1" smd rect (at -0.8 0) (size 0.8 0.9) (layers "F.Cu" "F.Paste" "F.Mask"))
+      (pad "2" smd rect (at 0.8 0) (size 0.8 0.9) (layers "F.Cu" "F.Paste" "F.Mask")))"#;
+    std::fs::write(dir.join("libs/Test.pretty/R_Small.kicad_mod"), fp).unwrap();
+    run(&mut s, &u(1), "pcb.open", json!({"path": "layout.kicad_pcb"}));
+    let r = run(
+        &mut s,
+        &u(2),
+        "pcb.add_footprint",
+        json!({"library": "libs", "footprint": "Test:R_Small", "at": [15, 5], "angle": 90}),
+    );
+    assert_eq!((r["reference_user_text"].as_str(), r["pads"].as_u64()), (Some("FP1"), Some(2)), "{r}");
+    let b = open(&mut s);
+    let f = &b.board.footprints[2];
+    assert_eq!((f.reference.as_str(), f.value.as_str(), f.lib_id.as_str()), ("FP1", "R_Small", "Test:R_Small"));
+    assert_eq!((f.at, f.angle), ([15.0, 5.0], 90.0));
+    // Turned 90°: pad 1 below or above the place.
+    let p = &b.board.pads[f.pads[0]];
+    assert!((p.at[0] - 15.0).abs() < 1e-9 && (p.at[1] - 5.0).abs() > 0.7, "{:?}", p.at);
+    let e =
+        execute(&mut s, &u(3), "pcb.add_footprint", json!({"library": "libs", "footprint": "Test:Nope", "at": [1, 1]}))
+            .unwrap_err();
+    assert_eq!(e.code, "not_found");
+    let e = execute(
+        &mut s,
+        &u(3),
+        "pcb.add_footprint",
+        json!({"library": "libs", "footprint": "Test:R_Small", "at": [1, 1], "reference": "R1"}),
+    )
+    .unwrap_err();
+    assert_eq!(e.code, "invalid_args", "R1 is taken");
+    let e = execute(&mut s, &u(3), "pcb.add_footprint", json!({"library": "libs", "footprint": "../x", "at": [1, 1]}))
+        .unwrap_err();
+    assert_eq!(e.code, "not_found");
+    run(&mut s, &u(4), "history.undo", json!({}));
+    assert_eq!(open(&mut s).board.footprints.len(), 2);
+}

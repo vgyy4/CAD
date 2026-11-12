@@ -152,7 +152,11 @@ fn board_model_reads_layers_stackup_nets_and_items() {
     assert_eq!(b.vias.len(), 1);
     assert_eq!(b.zones.len(), 1);
     assert_eq!(b.zones[0].fills.len(), 1);
-    assert_eq!(b.texts.len(), 1);
+    // The board text and the footprints' fields on layers (KiCad 7+ properties).
+    assert_eq!(b.texts.len(), 5);
+    let r = b.texts.iter().find(|t| t.text == "R1").unwrap();
+    assert_eq!((r.layer.as_str(), r.footprint, r.size, r.angle, r.hidden), ("F.SilkS", Some(0), 1.0, 90.0, false));
+    assert!((r.at[0] - 108.57).abs() < 1e-9 || (r.at[0] - 111.43).abs() < 1e-9, "{:?}", r.at);
     let r1 = &b.footprints[0];
     assert_eq!((r1.reference.as_str(), r1.value.as_str()), ("R1", "10k"));
     assert_eq!(r1.models.len(), 1);

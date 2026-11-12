@@ -36,7 +36,7 @@ const MAX_SHEET_BYTES: u64 = 64 << 20;
 /// Most sheet files a design reads.
 const MAX_SHEETS: usize = 256;
 /// Largest footprint file read for a board update.
-const MAX_FOOTPRINT_BYTES: u64 = 16 << 20;
+pub(super) const MAX_FOOTPRINT_BYTES: u64 = 16 << 20;
 /// Most entries of each list in a result.
 const MAX_LIST: usize = 200;
 
@@ -62,7 +62,7 @@ fn file_name(path: &str) -> String {
 }
 
 /// Reads a text file the user or agent may read, up to `max` bytes.
-fn read_text(s: &Session, ctx: &CmdCtx, path: &str, max: u64) -> Result<String, CommandError> {
+pub(super) fn read_text(s: &Session, ctx: &CmdCtx, path: &str, max: u64) -> Result<String, CommandError> {
     crate::paths::refuse_remote(path)?;
     let full = crate::paths::read_target(s.project_dir.as_deref(), path, &ctx.actor)?;
     let f = crate::import::open_regular(&full, path, max)?;
