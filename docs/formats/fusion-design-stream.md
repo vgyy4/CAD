@@ -2198,3 +2198,79 @@ kernel: `gs_shell` with no opened face.
   lost).
 * First blockers of the four: 258 passes; 4431 the finished-body rule on its PM-blob stored body (above, 1-3);
   858 `Fillet3` and 6299 `Extrude17` as in section 35.
+
+## 40. Round 23 P: stored blends on procedural supports, extrude sides, a threaded nut (2026-11-12)
+
+### 1145: the stored cap was read wrong, not built wrong
+* Revolve2's cap (a degree-5 spline revolved, its rim filleted 0.6 mm) rebuilt to 476.7911 mm3 against a stored
+  436.9949. Pappus over the sketch's spline and the 2D fillet arc gives 476.7903: the rebuild was right. A mesh of
+  the converted stored cap gave 475.6 while every OCCT quadrature (default, adaptive, Gauss-Kronrod) gave 436.99:
+  the converted shell had a gap.
+* Its fillet is an `rb_blend_spl_sur` whose second support is the revolved spline (`blend_support_surface spline
+  T { rot_spl_sur ... }`), and the support's block holds its own B-spline approximation before the blend's. The
+  reader took the first `nubs|nurbs` that reads as a surface, the support's: the "fillet" face was the dome over
+  u 0.922..1, ending at r 6.5, z 18.2, and the cylinder below it stopped at z 17.73 (88.48 mm3/mm x 0.47 mm =
+  41.5 mm3 of shell missing). A procedural surface's approximation is now one in its own block only (nested
+  `{ ... }` skipped; a `{ ref n }` definition ends at its closing brace). Stored cap: 476.7417 mm3.
+* That approximation is coarse: cubic, three spans across, 3.4 um inside the true rolling-ball surface (0.0494 mm3,
+  1.04e-4 of the body; the step check allows 2e-5). A constant-radius rolling-ball blend whose ball centre (the
+  `intcurve { off_int_cur ... }` of its own block, here a circle r 5.9 at z 17.7307 about the cap's axis) runs round
+  a circle is a piece of a torus; where the defining curve lies on one circle within 1e-5 of its radius, the
+  approximation's corners at one distance from it and its other points within 2% of that, the face is written as
+  that torus (seam at the curve's start, facing as the approximation). Stored cap: 476.7899 mm3 (2.5e-6 off the
+  rebuild, 1.7e-6 off Pappus). 1145 comes in as history.
+* The same nesting held 3722's coils: their stored solids now convert to 743.6554 and 758.1703 mm3 (were -13877 and
+  501.18), the Pappus values of round 19's reading (below).
+
+### 3350: an extrude's side is its distance's, not its vector's
+* `extrude_raw`'s unit vector was taken to flip the extrude where it ran against the sketch normal. Over both sets
+  only 3350 has such vectors (four extrudes, each with components like 1.457e-15: a computed vector), and its stored
+  bodies show every one going the way its signed `AlongDistance` says along the sketch normal: Extrude1 (-14 mm on
+  XY) is the rod at z -14..0, Extrude3 (3 mm on a sketch at z -14 facing down) a disc at z -17..-14, Extrude6 (3 mm
+  on a sketch at z -17 facing down) bodies at z -20..-17. The vector no longer decides the side (one in the sketch
+  plane still gives the assembly's direction, 4800). With the rod the right way up, Fillet4 builds.
+
+### 3350: Thread2 is on a hole of a profile with holes
+* The thread's face recipe is `("10", [431])`: generator 10 of Extrude8 (a hexagon with an 8 mm hole, z -5..-2), not a
+  revolve's face. The extrude's generator numbering is used for profiles with holes only where stored faces confirm
+  it, and the stored faces of the hole have one vertex each (a whole cylinder), which `truth` cannot place. The
+  thread now takes such a face from the stored faces of that name when they lie on one cylinder about the extrude's
+  direction through the centre of exactly one whole circle of the profile with that radius.
+* The internal thread's move was the wrong way round: Fusion fills an 8 mm hole in to the minor radius 7.51775 mm (a
+  join of the ring 7.51775..8), and a hole already narrower than the minor diameter is now refused (no sample).
+
+### 3350: Fillet1, a convex round beside a concave one
+* Fillet1 (0.5 mm) rounds the groove that Revolve2 cuts at the rod's foot: its concave top edge (r 7, z -10.5), the
+  rod's rim above it (r 7.942, z -10.5) and the groove's foot (r 7 against the 45 degree chamfer). The step between
+  the first two is 0.942 mm, less than both rounds need. Fusion's stored rim torus is centred at z -10.0017, not
+  -10.0: its ball touches the rod and the concave round (centre distance 1.000 to (7.5, -11)), its v range is
+  1.51276 rad (stored `F 0 F 1.51276`). Filleting the concave edge first and the convex ones after gives exactly
+  that: 2573.04750 mm3 by OCCT and by Pappus over the section. OCCT at once returns an invalid solid that ShapeFix
+  turns into a valid one of 2575.58 mm3 (more than the unrounded 2573.49). The shim now tries concave-first passes
+  before the repair, for fillets of both kinds of edge (golden test
+  `a_convex_fillet_beside_a_concave_one_rolls_on_it`).
+* The threaded rod is itself invalid to BRepCheck (helix edges of the groove's B-spline fits a little off their faces,
+  wires at the thread's start); a blend whose every fault lies in a vertex, edge, wire or face the body had unchanged
+  is now kept (faults the blend made, or any on a shell or solid, still refuse it).
+
+### 3350: OffsetFaces1 (not built)
+* Its two faces (`Extrude4/side c6, c7`, the pocket walls r 4.9 and 6.0 at z 1.1..1.5) lie on the faces of Extrude5,
+  the insert cut by the same profile, so the pick tied. The offset now carries the body its selection links to, as
+  blends do, and a tie goes to that body: Extrude1, which the end blob confirms (pocket r 0.49 -> 0.48 and
+  0.60 -> 0.61 cm, the insert unchanged).
+* OCCT's `BRepOffset_MakeOffset` then fails on the whole rod: offsetting the threaded body throws
+  "Geom_BSplineSurface: Weights values too small" (it builds offset surfaces of every face, the thread's flanks
+  included). An offset of a local piece (the body split round the faces, offset and fused back) is the likely way;
+  not attempted. 3350 stops here.
+
+### 3722: the coil, read but not built
+* Section enums of `CoilPrimitive` (round 19's reading confirmed by the now correct stored solids): the triangle is
+  equilateral, 2 mm (`SectionSize`) across radially and 4/sqrt 3 mm along the axis, its side on the coil's diameter.
+  Coil 1 (d 67, position 3, type 3): side at r 33.5, apex out to 35.5, centroid r 34.1667; coil 2 (d 71, position
+  1, type 4): side at r 35.5, apex in to 33.5, centroid 34.8333. A helical sweep of an axial section has volume
+  A x angle x r_centroid: 2.3094 x 3 pi x 34.1667 = 743.6554 and x 34.8333 = 758.1703 mm3, the stored values to
+  1e-7. So position 3 = outside, 1 = inside; type 3 = triangle pointing out, 4 = pointing in (each seen once, so
+  position and type are not separated).
+* Not converted: the coil's axis and start (the `DA1231DE` entity and `7B6C3C2D` frame) and its hand are not decoded,
+  and the design goes on with Move1 of the coil, Combine1, Chamfer1 on the coil's end edges (unresolved) and Shell3,
+  which OCCT fails on (section 25). 3722 stays at `CoilPrimitive1`.
