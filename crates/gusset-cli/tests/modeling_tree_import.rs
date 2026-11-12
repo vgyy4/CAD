@@ -623,6 +623,21 @@ fn a_tree_combine_cuts_one_body_from_another() {
 }
 
 #[test]
+fn a_split_makes_its_new_body_on_the_side_its_plane_faces() {
+    // A 10 mm cube split at z = 3 mm: the new body is the part the plane's normal points to.
+    for (normal, want) in [([0, 0, -1], 300.0), ([0, 0, 1], 700.0)] {
+        let (mut s, _) = import_v2_session(vec![
+            rect("Base", plane_at(0.0), 0.0, 0.0, 10.0, 10.0),
+            extrude("Box", "Base", 10.0, "new"),
+            json!({"type": "split", "name": "Split1", "target": "Box", "creates_bodies": 1,
+                   "plane": {"origin": [5, 5, 3], "normal": normal}}),
+        ]);
+        let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({"body": "Split1"})).unwrap();
+        assert_vol(b["volume_mm3"].as_f64().unwrap(), want);
+    }
+}
+
+#[test]
 fn a_cut_through_two_regions_that_share_an_edge() {
     // A 10 x 176.25 strip and a 3 x 32 tab whose corner lies on the strip's side: two
     // regions with a common edge. Their prisms touch face to face; the cut must still take
