@@ -593,6 +593,18 @@ pub(super) fn curve_by_primary(d: &Design, s: &Sketch, primary: u64) -> Option<u
     s.lines.keys().chain(s.arcs.keys()).copied().find(|q| crv_key(d, *q).is_some_and(|k| k.0 == primary))
 }
 
+/// The line of sketch `sid` whose `crv_primary_id` is `primary`, construction lines included
+/// (which the sketch drops): a revolve's axis is often one (1313's Revolve1 and Revolve2).
+pub(super) fn any_line_by_primary(d: &Design, sid: u64, primary: u64) -> Option<Line> {
+    let (b, e) = find_section(d, sid, SKETCH_BASE)?;
+    let slice = d.rec(sid).get(..e)?;
+    ref_lists(d, slice, b)
+        .into_iter()
+        .flat_map(|(_, ids)| ids)
+        .filter(|q| has_section(d, *q, LINE) && crv_key(d, *q).is_some_and(|k| k.0 == primary))
+        .find_map(|q| line(d, q))
+}
+
 /// Sketch curve `q` as a polyline from its start to its end (cm).
 fn curve_polyline(d: &Design, s: &Sketch, q: u64) -> Option<Vec<P2>> {
     if let Some(l) = s.lines.get(&q) {

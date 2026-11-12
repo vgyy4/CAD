@@ -731,9 +731,33 @@ fn revolve_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         [(sk, prim)] if *sk == sid => sketch::curve_by_primary(d, &s, *prim).filter(|c| s.lines.contains_key(c)),
         _ => None,
     };
+    // A construction line of the sketch (dropped from its curves): the axis by its place.
+    let construction_axis = match (line, axes.as_slice(), s.plane) {
+        (None, [(sk, prim)], Some(pl)) if *sk == sid => sketch::any_line_by_primary(d, sid, *prim).and_then(|l| {
+            let p = geom::world(&pl, [l.origin[0], l.origin[1]], l.origin[2]);
+            let q = geom::world(&pl, [l.origin[0] + l.vector[0], l.origin[1] + l.vector[1]], l.origin[2] + l.vector[2]);
+            Some((p, geom::unit(geom::sub(q, p))?))
+        }),
+        _ => None,
+    };
     match (line, origin_axis(d, rec)) {
         (Some(c), _) => {
             j.insert("axis".into(), json!({"line": format!("c{c}")}));
+        }
+        (None, _) if let Some((p, v)) = construction_axis => {
+            j.insert(
+                "axis".into(),
+                json!({"origin": [mm(p[0]), mm(p[1]), mm(p[2])], "direction": [round9(v[0]), round9(v[1]), round9(v[2])]}),
+            );
+        }
+        (None, None)
+            if axes.is_empty()
+                && let Some((p, v)) = face_axis(cx, fid) =>
+        {
+            j.insert(
+                "axis".into(),
+                json!({"origin": [mm(p[0]), mm(p[1]), mm(p[2])], "direction": [round9(v[0]), round9(v[1]), round9(v[2])]}),
+            );
         }
         (None, Some((p, v))) if axes.is_empty() => {
             j.insert(
@@ -746,6 +770,32 @@ fn revolve_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         }
     }
     j
+}
+
+/// A revolve's axis when it is the axis of a cylindrical face of a body: the selection
+/// (`2CA5A1CD` -> `5662F619`) names one face recipe (`7ACC2A03`), and the stored bodies hold that
+/// face as a cylinder (1054's Revolve1: about the side of Extrude1's round boss, generator `3`).
+/// Which way the axis points does not matter for a whole turn.
+fn face_axis(cx: &mut Ctx, fid: u64) -> Option<(V3, V3)> {
+    let d = cx.d;
+    let mut recipes: Vec<u64> = Vec::new();
+    for q in ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "2CA5A1CD")) {
+        for s in ref_ids(d, d.rec(q)).into_iter().filter(|s| d.is(*s, "5662F619")) {
+            for r in ref_ids(d, d.rec(s)).into_iter().filter(|r| d.is(*r, "7ACC2A03")) {
+                if !recipes.contains(&r) {
+                    recipes.push(r);
+                }
+            }
+        }
+    }
+    let [rid] = recipes.as_slice() else { return None };
+    let (Some(RecipeKind::Face), Some(faces)) = naming::recipe(d, *rid) else { return None };
+    let [face] = faces.as_slice() else { return None };
+    let (g, ops) = face.first()?;
+    match cx.stored_face(g, ops)?.surface {
+        naming::Surface::Cylinder { origin, axis, radius } if radius > 0.0 => Some((origin, geom::unit(axis)?)),
+        _ => None,
+    }
 }
 
 /// A revolve's axis when it is an axis of its component's origin: the selection (`5A1BF548`)
