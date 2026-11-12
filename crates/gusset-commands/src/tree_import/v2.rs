@@ -873,6 +873,37 @@ fn reflect_feature(f: &Value, o: V3, n: V3, rename: &dyn Fn(&str) -> String) -> 
                 }
             }
         }
+        // A draft tapers its faces about where they meet the neutral plane, toward or away from
+        // the plane's normal: reflecting the faces and the plane reflects the taper.
+        "draft" => {
+            if let Some(plane) = out.get_mut("plane") {
+                map_v3(plane, "origin", &pt)?;
+                map_v3(plane, "normal", &dr)?;
+            }
+            for face in out.get_mut("faces").and_then(Value::as_array_mut).into_iter().flatten() {
+                map_v3(face, "point", &pt)?;
+                map_v3(face, "normal", &dr)?;
+                if let Some(ps) = face.get_mut("points").and_then(Value::as_array_mut) {
+                    for p in ps {
+                        let v = v3_of(p).ok_or("a face point is not three numbers")?;
+                        *p = json!(pt(v));
+                    }
+                }
+                if let Some(sf) = face.get_mut("surface") {
+                    match sf.get("type").and_then(Value::as_str) {
+                        Some("plane") => {
+                            map_v3(sf, "origin", &pt)?;
+                            map_v3(sf, "normal", &dr)?;
+                        }
+                        Some("cylinder" | "cone") => {
+                            map_v3(sf, "origin", &pt)?;
+                            map_v3(sf, "axis", &dr)?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         other => return Err(format!("a {} feature cannot be mirrored", short(other))),
     }
     Ok(out)
@@ -1018,6 +1049,11 @@ fn mirror_features(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value], o: V3
                 let ed = serde_json::from_value::<EdgeF>(rf).map_err(|e| e.to_string())?;
                 edges(g, s, &ed, kind == "fillet")?;
                 last = Some(ed.name);
+            }
+            "draft" => {
+                let dd = serde_json::from_value::<DraftF>(rf).map_err(|e| e.to_string())?;
+                draft(g, s, &dd)?;
+                last = Some(dd.name);
             }
             other => return Err(format!("a {} feature cannot be mirrored", short(other))),
         }

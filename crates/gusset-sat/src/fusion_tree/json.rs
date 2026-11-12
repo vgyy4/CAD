@@ -1260,18 +1260,27 @@ pub(super) fn linear_pattern_chain(p: &PatternInputs) -> Option<Vec<Value>> {
     Some(out)
 }
 
+/// A face a mirror of faces selects: its maker, generator, operation and the draft that changed it.
+type FaceMaker = (u64, String, i32, Option<u64>);
+
 /// The features that made the faces a mirror of faces selects, in the order first met: each
 /// selection is a face recipe naming one face by its generator and one operation, and each
-/// operation stands for one feature. `None` where a selection is not such a face.
-fn mirrored_faces_makers(cx: &Ctx, fid: u64) -> Option<Vec<(u64, String, i32)>> {
+/// operation stands for one feature; a face a later feature changed names that feature's
+/// operation too, negated (3000's Mirror1: the box's face `2` drafted by Draft1, `[318, -319]`),
+/// given as the fourth item. `None` where a selection is not such a face.
+fn mirrored_faces_makers(cx: &Ctx, fid: u64) -> Option<Vec<FaceMaker>> {
     let mut out = Vec::new();
     for rid in cx.input_recipes(fid) {
         let (Some(RecipeKind::Face), Some(faces)) = naming::recipe(cx.d, rid) else { return None };
         let [name] = faces.as_slice() else { return None };
         let [(g, ops)] = name.as_slice() else { return None };
-        let [op] = ops.as_slice() else { return None };
-        let f = cx.opmap.get(&u64::try_from(*op).ok()?).copied()?;
-        out.push((f, g.clone(), *op));
+        let (op, by) = match ops.as_slice() {
+            [op] => (*op, None),
+            [op, by] if *by < 0 => (*op, Some(cx.opmap.get(&u64::try_from(by.checked_neg()?).ok()?).copied()?)),
+            _ => return None,
+        };
+        let f = cx.opmap.get(&u64::try_from(op).ok()?).copied()?;
+        out.push((f, g.clone(), op, by));
     }
     (!out.is_empty()).then_some(out)
 }
@@ -1287,7 +1296,7 @@ fn mirrored_faces_makers(cx: &Ctx, fid: u64) -> Option<Vec<(u64, String, i32)>> 
 fn mirrored_faces_features(
     cx: &mut Ctx,
     feats: &[Value],
-    sel: &[(u64, String, i32)],
+    sel: &[FaceMaker],
     mirror: &str,
     (o, n): (V3, V3),
 ) -> Option<Vec<Value>> {
@@ -1296,7 +1305,15 @@ fn mirrored_faces_features(
     let mut extrudes: Vec<u64> = Vec::new();
     // Per blend feature of the tree (index into `feats`): the indices of the edges selected.
     let mut picked: Vec<(usize, Vec<usize>)> = Vec::new();
-    for (m, g, op) in sel {
+    // Drafts of the selected faces, with how many selected faces each changed.
+    let mut drafts: Vec<(u64, usize)> = Vec::new();
+    for (m, g, op, by) in sel {
+        if let Some(by) = by {
+            match drafts.iter_mut().find(|d| d.0 == *by) {
+                Some(d) => d.1 += 1,
+                None => drafts.push((*by, 1)),
+            }
+        }
         let mine: Vec<usize> = (0..feats.len())
             .filter(|i| feats.get(*i).and_then(|f| f.get("source_id")).and_then(Value::as_u64) == Some(*m))
             .filter(|i| feats.get(*i).is_some_and(|f| kind(f) != "sketch"))
@@ -1339,10 +1356,23 @@ fn mirrored_faces_features(
     if extrudes.is_empty() {
         return None;
     }
+    // A draft is mirrored with the faces it changed when they are all of its faces (the copy
+    // drafts the reflected faces as the draft did its own); blends after it are not read.
+    for (by, count) in &drafts {
+        let mut of = feats.iter().filter(|f| f.get("source_id").and_then(Value::as_u64) == Some(*by));
+        let (Some(draft), None) = (of.next(), of.next()) else { return None };
+        let faces = draft.get("faces").and_then(Value::as_array).map_or(0, Vec::len);
+        if kind(draft) != "draft" || faces != *count || !picked.is_empty() {
+            return None;
+        }
+    }
     let names: Vec<String> = feats
         .iter()
-        .filter(|f| f.get("source_id").and_then(Value::as_u64).is_some_and(|s| extrudes.contains(&s)))
-        .filter(|f| kind(f) == "extrude")
+        .filter(|f| {
+            let s = f.get("source_id").and_then(Value::as_u64);
+            (kind(f) == "extrude" && s.is_some_and(|s| extrudes.contains(&s)))
+                || (kind(f) == "draft" && s.is_some_and(|s| drafts.iter().any(|d| d.0 == s)))
+        })
         .filter_map(|f| f.get("name").and_then(Value::as_str).map(str::to_string))
         .collect();
     let mut blends = Vec::new();

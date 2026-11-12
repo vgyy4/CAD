@@ -874,7 +874,7 @@ pub fn apply_with(
         };
         match r {
             Ok(()) => {
-                if matches!(kind, "sketch" | "extrude" | "revolve" | "hole" | "fillet" | "chamfer") {
+                if matches!(kind, "sketch" | "extrude" | "revolve" | "hole" | "fillet" | "chamfer" | "draft") {
                     g.index.insert(src_name.clone(), fi);
                 }
             }
