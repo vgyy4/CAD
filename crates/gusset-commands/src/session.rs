@@ -134,6 +134,8 @@ pub struct Session {
     /// Preview mode ([`crate::preview`]): commits are evaluated into this slot instead of
     /// being made. `None` outside preview mode.
     preview: Option<Option<Arc<Evaluation>>>,
+    /// The open PCB, parsed, by its stored hash (ADR 0047).
+    pub(crate) pcb_cache: crate::pcb_session::Cache,
 }
 
 impl std::fmt::Debug for Session {
@@ -188,6 +190,7 @@ impl Session {
             changes: Vec::new(),
             drawing_cache: gusset_drawing::HlrCache::default(),
             cam_cache: None,
+            pcb_cache: crate::pcb_session::Cache::default(),
         }
     }
 

@@ -8,7 +8,9 @@ use gusset_pcb::{Board, board3d, check, drill, gerber};
 use std::sync::atomic::AtomicBool;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<PcbInfo>(), spec::<PcbImport>(), spec::<PcbExportGerbers>(), spec::<PcbExportDrill>()]
+    let mut v = vec![spec::<PcbInfo>(), spec::<PcbImport>(), spec::<PcbExportGerbers>(), spec::<PcbExportDrill>()];
+    v.extend(super::pcb_edit::specs());
+    v
 }
 
 /// Largest board file read (the S-expression reader's own limit).
@@ -22,6 +24,29 @@ pub(crate) const TIER_PCB: &str =
 
 /// Reads a `.kicad_pcb` or `.kicad_mod` named by the caller.
 fn read_board(s: &Session, ctx: &CmdCtx, path: &str) -> Result<(Board, String), CommandError> {
+    read_board_text(s, ctx, path).map(|(b, stem, _)| (b, stem))
+}
+
+/// The board a command works on: the file at `path`, or the session's open board.
+pub(super) fn board_source(s: &Session, ctx: &CmdCtx, path: Option<&str>) -> Result<(Board, String), CommandError> {
+    match path {
+        Some(p) => read_board(s, ctx, p),
+        None => {
+            let open = crate::pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
+            let stem = open.file.rsplit_once('.').map_or(open.file.as_str(), |x| x.0).to_string();
+            Ok((open.board.clone(), stem))
+        }
+    }
+}
+
+/// No board is open and no file was named.
+pub(super) fn no_board() -> CommandError {
+    CommandError::new("not_found", "no board is open")
+        .hint("open one with pcb_open (or start one with pcb_new), or give a path")
+}
+
+/// [`read_board`] with the file's text.
+pub(super) fn read_board_text(s: &Session, ctx: &CmdCtx, path: &str) -> Result<(Board, String, String), CommandError> {
     crate::paths::refuse_remote(path)?;
     let full = crate::paths::read_target(s.project_dir.as_deref(), path, &ctx.actor)?;
     let ext = full.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
@@ -34,11 +59,11 @@ fn read_board(s: &Session, ctx: &CmdCtx, path: &str) -> Result<(Board, String), 
     let board = Board::read(&text, &gusset_pcb::Limits::default())
         .map_err(|e| CommandError::new("io", format!("KiCad board: {e}")))?;
     let stem = full.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    Ok((board, stem))
+    Ok((board, stem, text))
 }
 
 /// A file-name stem from the board's name: letters, digits, `-` and `_` only.
-fn clean_stem(stem: &str) -> String {
+pub(super) fn clean_stem(stem: &str) -> String {
     let s: String = stem
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
@@ -49,7 +74,7 @@ fn clean_stem(stem: &str) -> String {
 
 /// Writes generated files into `folder` with the export rules (agents: inside the project,
 /// allow-listed extension; overwriting asks as for other exports).
-fn write_outputs(
+pub(super) fn write_outputs(
     s: &Session,
     ctx: &CmdCtx,
     folder: &str,
@@ -83,8 +108,9 @@ fn write_outputs(
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PcbInfo {
-    /// .kicad_pcb or .kicad_mod.
-    pub path: String,
+    /// .kicad_pcb or .kicad_mod (default: the open board).
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 impl Command for PcbInfo {
@@ -95,7 +121,7 @@ impl Command for PcbInfo {
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let (b, _) = read_board(s, ctx, &self.path)?;
+        let (b, _) = board_source(s, ctx, self.path.as_deref())?;
         let (loops, _) = gusset_pcb::geom::outline_loops(&b, check::OUTLINE_TOL);
         let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
         for p in loops.iter().flat_map(|l| l.polygon(0.01)) {
@@ -121,6 +147,7 @@ impl Command for PcbInfo {
             "nets": b.nets.len(),
             "holes": {"plated": plated.len(), "non_plated": npth.len()},
             "model_references": models,
+            "unrouted": gusset_pcb::ratsnest::ratsnest(&b).unrouted(),
             "issues": issues,
             "notes_user_text": b.notes,
         }))
@@ -135,8 +162,9 @@ fn round3(v: f64) -> f64 {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PcbImport {
-    /// .kicad_pcb.
-    pub path: String,
+    /// .kicad_pcb (default: the open board).
+    #[serde(default)]
+    pub path: Option<String>,
     /// Cut pad holes (default true).
     #[serde(default)]
     pub holes: Option<bool>,
@@ -157,8 +185,8 @@ pub struct PcbImport {
     pub models_dir: Option<String>,
 }
 
-fn length_mm(field: &str, t: &str) -> Result<f64, CommandError> {
-    let bad = || CommandError::args(format!("pcb.import: `{field}` is a length such as \"2 mm\""));
+pub(super) fn length_mm(field: &str, t: &str) -> Result<f64, CommandError> {
+    let bad = || CommandError::args(format!("`{field}` is a length such as \"2 mm\""));
     let e = gusset_units::expr::parse(t.trim()).map_err(|_| bad())?;
     gusset_eval::expr_value("length", &e, gusset_units::Dim::LENGTH, &Default::default(), Default::default())
         .map_err(|_| bad())
@@ -243,7 +271,7 @@ impl Command for PcbImport {
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let (b, stem) = read_board(s, ctx, &self.path)?;
+        let (b, stem) = board_source(s, ctx, self.path.as_deref())?;
         let height = match &self.component_height {
             Some(t) => length_mm("component_height", t)?,
             None => 2.0,
@@ -313,8 +341,9 @@ impl Command for PcbImport {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PcbExportGerbers {
-    /// .kicad_pcb.
-    pub path: String,
+    /// .kicad_pcb (default: the open board).
+    #[serde(default)]
+    pub path: Option<String>,
     /// Existing folder for the files (<board>-<layer>.gbr).
     pub folder: String,
     #[serde(default)]
@@ -329,7 +358,7 @@ impl Command for PcbExportGerbers {
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let (b, stem) = read_board(s, ctx, &self.path)?;
+        let (b, stem) = board_source(s, ctx, self.path.as_deref())?;
         let stem = clean_stem(&stem);
         let layers = gerber::write_all(&b).map_err(|e| CommandError::new("io", e.to_string()))?;
         let files: Vec<(String, String)> =
@@ -345,8 +374,9 @@ impl Command for PcbExportGerbers {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PcbExportDrill {
-    /// .kicad_pcb.
-    pub path: String,
+    /// .kicad_pcb (default: the open board).
+    #[serde(default)]
+    pub path: Option<String>,
     /// Existing folder for <board>-PTH.drl and <board>-NPTH.drl.
     pub folder: String,
     #[serde(default)]
@@ -361,7 +391,7 @@ impl Command for PcbExportDrill {
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let (b, stem) = read_board(s, ctx, &self.path)?;
+        let (b, stem) = board_source(s, ctx, self.path.as_deref())?;
         let stem = clean_stem(&stem);
         let (plated, npth) = drill::holes(&b);
         let files = vec![

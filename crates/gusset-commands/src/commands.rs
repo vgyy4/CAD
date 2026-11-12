@@ -36,6 +36,7 @@ mod lettering;
 mod measure;
 mod ops;
 pub(crate) mod pcb;
+mod pcb_edit;
 mod sheet;
 mod sim;
 mod sketch_ops;
@@ -65,6 +66,10 @@ pub use lettering::Text;
 pub use measure::QueryMeasure;
 pub use ops::{DeleteFace, Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Shell};
 pub use pcb::{PcbExportDrill, PcbExportGerbers, PcbImport, PcbInfo};
+pub use pcb_edit::{
+    PcbAddTrack, PcbAddVia, PcbDelete, PcbDrc, PcbExportBom, PcbExportPos, PcbMoveFootprint, PcbNew, PcbOpen, PcbSave,
+    PcbSetOutline,
+};
 pub use sheet::{ContourFlange, EdgeFlange, ExportFlat, FlatPatternQuery, Tab};
 pub use sim::{FaceLoad, ModalQuery, OptimizeQuery, StaticQuery};
 pub use sketch_ops::{SketchExplodePattern, SketchPattern, SketchTrim};

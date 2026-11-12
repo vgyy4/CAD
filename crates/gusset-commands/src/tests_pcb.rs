@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 /// A 40 × 20 mm board with a resistor (pads only), a part with a fabrication outline and a
 /// 3D model, and a through-hole pin.
-const BOARD: &str = r#"(kicad_pcb (version 20240108) (generator "pcbnew")
+pub(crate) const BOARD: &str = r#"(kicad_pcb (version 20240108) (generator "pcbnew")
   (general (thickness 1.2))
   (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (37 "F.SilkS" user) (39 "F.Mask" user) (38 "B.Mask" user)
     (35 "F.Paste" user) (34 "B.Paste" user) (36 "B.SilkS" user) (44 "Edge.Cuts" user) (49 "F.Fab" user))
@@ -30,7 +30,7 @@ const BOARD: &str = r#"(kicad_pcb (version 20240108) (generator "pcbnew")
   (segment (start 9 10) (end 35 15) (width 0.3) (layer "F.Cu") (net 1)))
 "#;
 
-fn session() -> Session {
+pub(crate) fn session() -> Session {
     let doc = Document::from_text("gusset 1\nunits mm\n").unwrap();
     let mut s = Session::new(&doc, Arc::new(MockKernel), &CmdCtx::user(0));
     let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
@@ -43,7 +43,7 @@ fn session() -> Session {
     s
 }
 
-fn run(s: &mut Session, ctx: &CmdCtx, id: &str, args: Value) -> Value {
+pub(crate) fn run(s: &mut Session, ctx: &CmdCtx, id: &str, args: Value) -> Value {
     execute(s, ctx, id, args).unwrap_or_else(|e| panic!("{id}: {e:?}"))
 }
 

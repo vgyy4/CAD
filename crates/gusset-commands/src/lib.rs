@@ -13,6 +13,7 @@ pub mod golden;
 pub mod hole_standards;
 pub mod import;
 pub mod paths;
+pub mod pcb_session;
 pub mod registry;
 pub mod scad_build;
 mod scad_text;
@@ -47,6 +48,8 @@ mod tests_joint;
 mod tests_ops;
 #[cfg(test)]
 mod tests_pcb;
+#[cfg(test)]
+mod tests_pcb_edit;
 #[cfg(test)]
 mod tests_sheet;
 #[cfg(test)]
