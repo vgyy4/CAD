@@ -1449,7 +1449,7 @@ fn facing_plane(g: &mut Gen, name: &str, o: V3, n: V3) -> Result<String, String>
         let base = if dot(n, frame_n) > 0.0 {
             base.to_string()
         } else {
-            let axis = if x == [1.0, 0.0, 0.0] { "X" } else { "Y" };
+            let axis = if base == "YZ" { "Y" } else { "X" };
             let pn = g.fresh(&format!("{name}_turned"), "Plane");
             let _ = writeln!(g.text, "\nplane {pn} (base: {base}, axis: {axis}, angle: 180 deg)");
             g.made.push(pn.clone());

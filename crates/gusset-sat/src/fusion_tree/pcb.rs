@@ -433,7 +433,8 @@ impl Ctx<'_> {
             refs.iter().map(|(_, q)| *q).find(|q| d.is(*q, "7B6C3C2D")).ok_or("the coil names no origin snapshot")?;
         let (rot, t) = snapshot_frame(d.rec(s))
             .map_or(([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0; 3]), |p| (p.r, p.t));
-        let col = |k: usize| -> V3 { [rot[0][k], rot[1][k], rot[2][k]] };
+        let at = |i: usize, k: usize| rot.get(i).and_then(|row| row.get(k)).copied().unwrap_or(0.0);
+        let col = |k: usize| -> V3 { [at(0, k), at(1, k), at(2, k)] };
         let (fx, fy, fz, o) = (col(0), col(1), col(2), t.map(|c| c / 10.0));
         // Where the history blob holds the coil's body (or a later state of it), that body has
         // the box of the coil's ends. 3722's state lists do not name their own bodies; the
@@ -453,7 +454,7 @@ impl Ctx<'_> {
                 let p = geom::add(
                     o,
                     geom::add(
-                        geom::add(geom::mul(fx, pr * a.cos()), geom::mul(fy, pr * a.sin())),
+                        geom::add(geom::mul(fx, pr * libm::cos(a)), geom::mul(fy, pr * libm::sin(a))),
                         geom::mul(fz, h0 + ph),
                     ),
                 );
