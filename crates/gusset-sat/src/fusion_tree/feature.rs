@@ -461,8 +461,16 @@ impl Ctx<'_> {
     /// differs between the samples, so the stored bodies decide (section 30): per edge, of its
     /// two planar faces A and B, A is the reference when a stored point of A lies `Distance 1`
     /// from the edge (`d1 sin` of the faces' angle from plane B) and a stored point of B lies
-    /// `Distance 2` from it, and the other way round not; every edge must name the same face.
-    pub(super) fn chamfer_reference(&mut self, fid: u64, d1: f64, d2: f64) -> Result<serde_json::Value, String> {
+    /// `Distance 2` from it (or one of the two, where the other way round shows neither), and the
+    /// other way round not; every edge must name the same face. `first` names the parameter of
+    /// the first distance (`Distance 1`, or `leftDistance` in older records).
+    pub(super) fn chamfer_reference(
+        &mut self,
+        fid: u64,
+        first: &str,
+        d1: f64,
+        d2: f64,
+    ) -> Result<serde_json::Value, String> {
         const TOL: f64 = 1e-6;
         if (d1 - d2).abs() < 1e-9 {
             return Err("the two distances are equal".into());
@@ -470,7 +478,7 @@ impl Ctx<'_> {
         let d = self.d;
         let mut chosen: Option<(String, Vec<i32>)> = None;
         let mut edges = 0;
-        for (_, recs) in self.blend_groups(fid, &["Distance 1"]) {
+        for (_, recs) in self.blend_groups(fid, &[first]) {
             for rid in recs {
                 let (kind, faces) = naming::recipe(d, rid);
                 let (Some(RecipeKind::Edge), Some(faces)) = (kind, faces) else { continue };
@@ -497,11 +505,15 @@ impl Ctx<'_> {
                 let has = |pts: &[V3], o: V3, n: V3, dist: f64| {
                     pts.iter().any(|p| (dot(n, super::geom::sub(*p, o)).abs() - dist * sin).abs() < TOL)
                 };
-                let a_ref = has(&pa.points, *ob, *nb, d1) && has(&pb.points, *oa, *na, d2);
-                let b_ref = has(&pb.points, *oa, *na, d1) && has(&pa.points, *ob, *nb, d2);
+                // Each way round, how many of its two lines the stored faces show. A later blend
+                // can take one away (2895's Chamfer2: a fillet runs along the line 2 mm across the
+                // top; the line 3 mm down the side is still there, and neither line of the other
+                // way round is).
+                let a_ref = usize::from(has(&pa.points, *ob, *nb, d1)) + usize::from(has(&pb.points, *oa, *na, d2));
+                let b_ref = usize::from(has(&pb.points, *oa, *na, d1)) + usize::from(has(&pa.points, *ob, *nb, d2));
                 let face = match (a_ref, b_ref) {
-                    (true, false) => a,
-                    (false, true) => b,
+                    (2, 0 | 1) | (1, 0) => a,
+                    (0 | 1, 2) | (0, 1) => b,
                     _ => return Err("the stored bodies do not tell which face the first distance runs along".into()),
                 };
                 if chosen.as_ref().is_some_and(|c| *c != face) {

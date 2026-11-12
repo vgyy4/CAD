@@ -1587,20 +1587,24 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             let fil = d.is(fid, "A07D5F17");
             let key = if fil { "radius" } else { "distance" };
             // A chamfer of two distances (section 30): the first along a reference face.
-            let two = if fil {
+            // Older records name the two `leftDistance` and `rightDistance` (2895's Chamfer2: 2
+            // and 3 mm, its stored faces 2 mm across the top and 3 mm down the side); equal, they
+            // are a chamfer of one distance.
+            let value = |n: &str| feature::param_values(d, fid, &[n]).first().copied();
+            let pair = if fil {
                 None
             } else {
-                match (
-                    feature::param_values(d, fid, &["Distance 1"]).first().copied(),
-                    feature::param_values(d, fid, &["Distance 2"]).first().copied(),
-                ) {
-                    (Some(d1), Some(d2)) => Some(cx.chamfer_reference(fid, d1, d2).map(|f| (d2, f))),
+                match (value("Distance 1"), value("Distance 2"), value("leftDistance"), value("rightDistance")) {
+                    (Some(d1), Some(d2), _, _) => Some(("Distance 1", d1, d2)),
+                    (None, None, Some(d1), Some(d2)) if (d1 - d2).abs() > 1e-9 => Some(("leftDistance", d1, d2)),
                     _ => None,
                 }
             };
+            let two = pair.map(|(first, d1, d2)| cx.chamfer_reference(fid, first, d1, d2).map(|f| (d2, f)));
+            let first = [pair.map_or("Distance 1", |p| p.0)];
             let role: &[&str] = match (fil, &two) {
                 (true, _) => &["Radius"],
-                (false, Some(_)) => &["Distance 1"],
+                (false, Some(_)) => &first,
                 (false, None) => &["Distance", "leftDistance"],
             };
             // The body its edges are on, by the feature that made it, where that is one: the
