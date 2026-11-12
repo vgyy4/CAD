@@ -42,6 +42,8 @@ mod tests_gear;
 #[cfg(test)]
 mod tests_gear_math;
 #[cfg(test)]
+mod tests_history_choice;
+#[cfg(test)]
 mod tests_hole;
 #[cfg(test)]
 mod tests_joint;

@@ -4136,6 +4136,9 @@ impl Command for ExportMesh {
 pub struct ImportFile {
     /// File name relative to the project folder (agents) or any path (the user).
     pub path: String,
+    /// F3D/SLDPRT/IPT/FCStd history: default features only if exact; rebuild even if not; final shapes; ask = classify only.
+    #[serde(default)]
+    pub history: Option<crate::import::HistoryChoice>,
 }
 
 impl Command for ImportFile {
@@ -4149,7 +4152,8 @@ impl Command for ImportFile {
         // Direct (synchronous) path, e.g. `execute` in tests. Hosts use
         // `import::begin_import` / `ImportJob::run` / `import::complete_import` so the
         // parsing runs off the model thread and can be cancelled.
-        let job = crate::import::open_import(s, ctx, &self.path)?;
+        let mut job = crate::import::open_import(s, ctx, &self.path)?;
+        job.set_history_choice(self.history.unwrap_or_default());
         let prepared = job.run(&crate::import::CancelFlag::default())?;
         crate::import::commit_import(s, ctx, prepared)
     }

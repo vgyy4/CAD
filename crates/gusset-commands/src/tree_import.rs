@@ -56,6 +56,11 @@ pub struct Tree {
     /// the JSON: a tree file alone cannot bring in geometry.
     #[serde(skip)]
     pub stored_bodies: Vec<Vec<u8>>,
+    /// Keep a feature that fails in the timeline, suppressed with its error as a note, instead
+    /// of leaving it out (a native history imported although it differs from the file). Never
+    /// read from the JSON.
+    #[serde(skip)]
+    pub keep_failed: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -879,7 +884,9 @@ pub fn apply_with(
                 }
             }
             Err(why) => {
-                g.text.truncate(text_len);
+                if !(tree.keep_failed && keep_suppressed(&mut g, text_len, &why)) {
+                    g.text.truncate(text_len);
+                }
                 g.made.truncate(made_len);
                 g.skip(&src_name, why);
             }
@@ -940,6 +947,31 @@ pub fn apply_with(
         o.insert("warnings_user_text".into(), json!(g.warnings));
     }
     Ok(out)
+}
+
+/// Keeps what a failed feature wrote after `text_len` as suppressed features noting `why`, when
+/// it is whole statements that parse. Whether it was kept.
+fn keep_suppressed(g: &mut Gen, text_len: usize, why: &str) -> bool {
+    let (Some(before), Some(added)) = (g.text.get(..text_len), g.text.get(text_len..)) else { return false };
+    if added.trim().is_empty() {
+        return false;
+    }
+    let (Ok(old), Ok(mut doc)) = (gusset_doc::text::parse(before), gusset_doc::text::parse(&g.text)) else {
+        return false;
+    };
+    let had: HashSet<&str> = old.features.iter().map(|f| f.name.as_str()).collect();
+    let why: String = short(why).chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let mut any = false;
+    for f in doc.features.iter_mut().filter(|f| !had.contains(f.name.as_str())) {
+        f.suppressed = true;
+        f.note = Some(format!("Import: this feature failed to rebuild: {why}"));
+        any = true;
+    }
+    if !any {
+        return false;
+    }
+    g.text = doc.to_text();
+    true
 }
 
 fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {

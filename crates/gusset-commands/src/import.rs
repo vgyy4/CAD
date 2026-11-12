@@ -24,6 +24,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod history;
+pub use history::{HistoryChoice, HistoryClass, HistoryInfo, TIER_PARTIAL_HISTORY};
+
 /// Set to `true` (from any thread) to cancel an import.
 pub type CancelFlag = Arc<AtomicBool>;
 
@@ -88,6 +91,8 @@ pub struct ImportJob {
     kernel: Arc<dyn gusset_kernel::Kernel>,
     /// The folder of an assembly (the only place its parts are read from).
     dir: Option<std::path::PathBuf>,
+    /// What to do with the file's feature history.
+    choice: HistoryChoice,
 }
 
 impl std::fmt::Debug for ImportJob {
@@ -189,6 +194,10 @@ pub struct PreparedImport {
     warnings: Vec<String>,
     /// Set for a `.gtree.json`: features to add instead of bodies.
     tree: Option<crate::tree_import::Tree>,
+    /// A native file's feature history, beside its shapes (see [`history`]).
+    history: Option<history::History>,
+    /// What to do with it.
+    choice: HistoryChoice,
 }
 
 impl PreparedImport {
@@ -211,7 +220,32 @@ impl PreparedImport {
                 scad: None,
             })
             .collect();
-        PreparedImport { bodies, file_name, tier, warnings, tree: None }
+        PreparedImport { bodies, file_name, tier, warnings, tree: None, history: None, choice: HistoryChoice::Auto }
+    }
+
+    /// The file's feature history class, for formats that carry one (shown to the user before
+    /// committing).
+    #[must_use]
+    pub fn history(&self) -> Option<&HistoryInfo> {
+        self.history.as_ref().map(|h| &h.info)
+    }
+
+    /// The imported file's name (untrusted text).
+    #[must_use]
+    pub fn file_name(&self) -> &str {
+        &self.file_name
+    }
+
+    /// What [`complete_import`] will do with the history (the `history` argument, or the
+    /// user's answer).
+    #[must_use]
+    pub fn history_choice(&self) -> HistoryChoice {
+        self.choice
+    }
+
+    /// Sets what [`complete_import`] does with the history (the user's answer).
+    pub fn set_history_choice(&mut self, choice: HistoryChoice) {
+        self.choice = choice;
     }
 }
 
@@ -327,10 +361,15 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
     let file = open_regular(&full, path, MAX_IMPORT_BYTES)?;
     let file_name = full.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let dir = matches!(kind, Kind::Sldasm).then(|| full.parent().map(Path::to_path_buf)).flatten();
-    Ok(ImportJob { file, kind, file_name, importer, kernel: s.kernel().clone(), dir })
+    Ok(ImportJob { file, kind, file_name, importer, kernel: s.kernel().clone(), dir, choice: HistoryChoice::Auto })
 }
 
 impl ImportJob {
+    /// Sets what the import does with the file's feature history.
+    pub(crate) fn set_history_choice(&mut self, choice: HistoryChoice) {
+        self.choice = choice;
+    }
+
     /// Phase 2: reads and parses the file. Call it off the model thread; it may take
     /// long (the worker's timeout bounds STEP/IGES). Setting `cancel` stops it.
     ///
@@ -348,8 +387,11 @@ impl ImportJob {
                 tier: crate::tree_import::TIER,
                 warnings: Vec::new(),
                 tree: Some(tree),
+                history: None,
+                choice: self.choice,
             });
         }
+        let mut history = None;
         let (bodies, tier, warnings) = match self.kind {
             Kind::Brep(format) => {
                 let importer = self
@@ -391,20 +433,17 @@ impl ImportJob {
                 // The feature history as editable features, when it rebuilds to the part's
                 // own bodies (ADR 0043 amendment); else the bodies themselves.
                 let stock = sldprt_stock(&bytes, &stem, importer.as_ref(), cancel);
-                match solidworks_history(&bytes, &out, &self.kernel, &self.file_name, stock) {
-                    Ok((tree, note)) => {
-                        warnings.extend(note);
-                        return Ok(PreparedImport {
-                            bodies: Vec::new(),
-                            file_name: self.file_name,
-                            tier: TIER_SOLIDWORKS_HISTORY,
-                            warnings,
-                            tree: Some(tree),
-                        });
-                    }
-                    Err(why) if why.is_empty() => {}
-                    Err(why) => warnings.push(format!("the design history came in as exact bodies: {why}")),
-                }
+                let mut attempt = None;
+                let r = solidworks_history(&bytes, &out, &self.kernel, &self.file_name, stock, &mut attempt);
+                let h = history::classify(
+                    r,
+                    attempt,
+                    TIER_SOLIDWORKS_HISTORY,
+                    warnings.clone(),
+                    &mut warnings,
+                    "exact bodies",
+                );
+                history = Some(h);
                 (out, TIER_XT, warnings)
             }
             Kind::Sldasm => {
@@ -413,6 +452,7 @@ impl ImportJob {
                     .ok_or_else(|| CommandError::new("not_allowed", "SolidWorks import is not available"))?;
                 let dir =
                     self.dir.ok_or_else(|| CommandError::new("not_allowed", "the assembly's folder is not known"))?;
+                history = Some(history::not_read("the feature histories of assemblies are not read"));
                 sldasm(&bytes, &dir, importer.as_ref(), cancel)?
             }
             Kind::Sat => {
@@ -441,25 +481,23 @@ impl ImportJob {
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 if matches!(self.kind, Kind::SolidEdge) {
+                    history = Some(history::not_read("Solid Edge feature histories are not read yet"));
                     solid_edge_part(&bytes, &stem, importer.as_ref(), cancel)?
                 } else {
                     let (out, tier, mut warnings) = inventor_part(&bytes, &stem, importer.as_ref(), cancel)?;
                     // The feature history as editable features, when it rebuilds to the part's
                     // own body (ADR 0046 amendment); else the body itself.
-                    match inventor_history(&bytes, &out, &self.kernel, &self.file_name) {
-                        Ok((tree, note)) => {
-                            warnings.extend(note);
-                            return Ok(PreparedImport {
-                                bodies: Vec::new(),
-                                file_name: self.file_name,
-                                tier: TIER_INVENTOR_HISTORY,
-                                warnings,
-                                tree: Some(tree),
-                            });
-                        }
-                        Err(why) if why.is_empty() => {}
-                        Err(why) => warnings.push(format!("the design history came in as an exact body: {why}")),
-                    }
+                    let mut attempt = None;
+                    let r = inventor_history(&bytes, &out, &self.kernel, &self.file_name, &mut attempt);
+                    let h = history::classify(
+                        r,
+                        attempt,
+                        TIER_INVENTOR_HISTORY,
+                        warnings.clone(),
+                        &mut warnings,
+                        "an exact body",
+                    );
+                    history = Some(h);
                     (out, tier, warnings)
                 }
             }
@@ -469,23 +507,22 @@ impl ImportJob {
                 let (out, tier, mut warnings) = f3d(&bytes, importer.as_ref(), &self.kernel, cancel)?;
                 // The design timeline as editable features, when it rebuilds to the bodies the
                 // file stores (ADR 0039 amendment); else the bodies themselves.
-                match fusion_history(&bytes, &out, &self.kernel, &self.file_name, importer.as_ref(), cancel) {
-                    Ok((tree, note)) => {
-                        // The warnings of the exact-body import (placements, repeats) do not
-                        // describe the features; the surfaces it leaves out still hold.
-                        warnings.retain(|w| w.contains("sheet (surface)"));
-                        warnings.extend(note);
-                        return Ok(PreparedImport {
-                            bodies: Vec::new(),
-                            file_name: self.file_name,
-                            tier: TIER_FUSION_HISTORY,
-                            warnings,
-                            tree: Some(tree),
-                        });
-                    }
-                    Err(why) if why.is_empty() => {}
-                    Err(why) => warnings.push(format!("the design history came in as exact bodies: {why}")),
-                }
+                let mut attempt = None;
+                let r = fusion_history(
+                    &bytes,
+                    &out,
+                    &self.kernel,
+                    &self.file_name,
+                    importer.as_ref(),
+                    cancel,
+                    &mut attempt,
+                );
+                // The warnings of the exact-body import (placements, repeats) do not describe the
+                // features; the surfaces it leaves out still hold.
+                let tree_warnings = warnings.iter().filter(|w| w.contains("sheet (surface)")).cloned().collect();
+                let h =
+                    history::classify(r, attempt, TIER_FUSION_HISTORY, tree_warnings, &mut warnings, "exact bodies");
+                history = Some(h);
                 (out, tier, warnings)
             }
             Kind::Tree => return Err(CommandError::args("a feature tree has no bodies")),
@@ -495,20 +532,25 @@ impl ImportJob {
                 let (bodies, tier, mut warnings) = freecad(&bytes, importer.as_ref(), cancel)?;
                 // The PartDesign history as editable features, when it rebuilds to the
                 // shapes FreeCAD stored (ADR 0033 amendment); else the shapes themselves.
-                match freecad_history(&bytes, &bodies, &self.kernel, importer.as_ref(), cancel, &self.file_name) {
-                    Ok((tree, note)) => {
-                        warnings.extend(note);
-                        return Ok(PreparedImport {
-                            bodies: Vec::new(),
-                            file_name: self.file_name,
-                            tier: TIER_FREECAD_HISTORY,
-                            warnings,
-                            tree: Some(tree),
-                        });
-                    }
-                    Err(why) if why.is_empty() => {}
-                    Err(why) => warnings.push(format!("the design history came in as exact bodies: {why}")),
-                }
+                let mut attempt = None;
+                let r = freecad_history(
+                    &bytes,
+                    &bodies,
+                    &self.kernel,
+                    importer.as_ref(),
+                    cancel,
+                    &self.file_name,
+                    &mut attempt,
+                );
+                let h = history::classify(
+                    r,
+                    attempt,
+                    TIER_FREECAD_HISTORY,
+                    warnings.clone(),
+                    &mut warnings,
+                    "exact bodies",
+                );
+                history = Some(h);
                 (bodies, tier, warnings)
             }
             Kind::Mesh(format) => {
@@ -555,7 +597,15 @@ impl ImportJob {
         if bodies.is_empty() {
             return Err(CommandError::new("io", "the file contains no bodies"));
         }
-        Ok(PreparedImport { bodies, file_name: self.file_name, tier, warnings, tree: None })
+        Ok(PreparedImport {
+            bodies,
+            file_name: self.file_name,
+            tier,
+            warnings,
+            tree: None,
+            history,
+            choice: self.choice,
+        })
     }
 }
 
@@ -1100,6 +1150,7 @@ fn freecad_history(
     importer: &dyn Importer,
     cancel: &CancelFlag,
     file_name: &str,
+    attempt: &mut Option<crate::tree_import::Tree>,
 ) -> Result<(crate::tree_import::Tree, Option<String>), String> {
     let limits = gusset_meshio::Limits::default();
     let mut budget = limits.max_decompressed_bytes;
@@ -1205,6 +1256,8 @@ fn freecad_history(
     let mut tree = crate::fcstd_tree::tree(doc, &mut shape_edges)?;
     let first = rebuild_check(&mut tree, bodies, kernel, file_name, "FreeCAD's");
     if let Err(why) = &first {
+        // The tree as read, for an import of the history all the same.
+        *attempt = Some(tree.clone());
         // FreeCAD copies a pad's or pocket's whole tool in a pattern, and a Part object takes a
         // copy of its input (the body goes on beside it): try the tree written so.
         // A pad or pocket up to a face that does not rebuild as such is tried as the distance
@@ -1271,6 +1324,7 @@ fn solidworks_history(
     kernel: &Arc<dyn gusset_kernel::Kernel>,
     file_name: &str,
     stock: Result<Vec<Vec<u8>>, String>,
+    attempt: &mut Option<crate::tree_import::Tree>,
 ) -> Result<(crate::tree_import::Tree, Option<String>), String> {
     let mut tree = gusset_sldprt::features::feature_tree(bytes, file_name, &gusset_sldprt::Limits::default())?
         .ok_or_else(String::new)?;
@@ -1278,7 +1332,10 @@ fn solidworks_history(
     let text = serde_json::to_vec(&tree).map_err(|e| e.to_string())?;
     let mut tree = crate::tree_import::parse(&text).map_err(|e| e.message)?;
     tree.stored_bodies = stored;
-    let note = rebuild_check(&mut tree, bodies, kernel, file_name, "the part's")?;
+    let note = rebuild_check(&mut tree, bodies, kernel, file_name, "the part's").inspect_err(|_| {
+        // The tree as read, for an import of the history all the same.
+        *attempt = Some(tree.clone());
+    })?;
     let note = match (stock_note, note) {
         (Some(a), Some(b)) => Some(format!("{a}; {b}")),
         (a, b) => a.or(b),
@@ -1477,6 +1534,7 @@ fn inventor_history(
     bodies: &[PreparedBody],
     kernel: &Arc<dyn gusset_kernel::Kernel>,
     file_name: &str,
+    attempt: &mut Option<crate::tree_import::Tree>,
 ) -> Result<(crate::tree_import::Tree, Option<String>), String> {
     let tree = gusset_ole::inventor_features::feature_tree(bytes, file_name, &gusset_ole::Limits::default())?;
     let holes: Vec<String> = tree
@@ -1513,6 +1571,11 @@ fn inventor_history(
                 return Ok((t, (!notes.is_empty()).then(|| notes.join("; "))));
             }
             Err(why) => {
+                // The first form tried (the holes as holes), for an import of the history all
+                // the same.
+                if attempt.is_none() {
+                    *attempt = Some(t);
+                }
                 if let Some(n) = first_skipped(&why).filter(|n| holes.contains(n) && !swapped.contains(n)) {
                     swapped.insert(n);
                 } else if !all_tried && swapped.len() < holes.len() {
@@ -1557,6 +1620,7 @@ fn fusion_history(
     file_name: &str,
     importer: &dyn Importer,
     cancel: &CancelFlag,
+    attempt: &mut Option<crate::tree_import::Tree>,
 ) -> Result<(crate::tree_import::Tree, Option<String>), String> {
     let limits = gusset_meshio::Limits::default();
     let mut budget = limits.max_decompressed_bytes;
@@ -1659,7 +1723,12 @@ fn fusion_history(
     let text = serde_json::to_vec(&tree).map_err(|e| e.to_string())?;
     let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
     t.stored_bodies = stored.clone();
-    match rebuild_check(&mut t, bodies, kernel, file_name, "the file's stored") {
+    let checked = rebuild_check(&mut t, bodies, kernel, file_name, "the file's stored");
+    if checked.is_err() {
+        // The tree as read, for an import of the history all the same.
+        *attempt = Some(t.clone());
+    }
+    match checked {
         Ok(note) => {
             // One entry per stored body, so the import's own body count check agrees.
             t.bodies = bodies
@@ -3727,8 +3796,23 @@ fn freecad(
     Ok((out, TIER_FREECAD, warnings))
 }
 
-/// Phase 3 without policy checks: stores the blobs and commits the import features.
+/// Phase 3 without policy checks: applies the history choice, stores the blobs and commits the
+/// import features. With `history: ask` and a choice to make, nothing is committed and the
+/// result says what there is to choose.
 pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) -> Result<Value, CommandError> {
+    let (p, report) = match history::plan(p) {
+        history::Plan::Ask(v) => return Ok(v),
+        history::Plan::Commit(p, report) => (*p, report),
+    };
+    let mut out = commit_prepared(s, ctx, p)?;
+    if let (Some(r), Some(o)) = (report, out.as_object_mut()) {
+        o.insert("history".into(), r);
+    }
+    Ok(out)
+}
+
+/// [`commit_import`] once the history choice is applied.
+fn commit_prepared(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) -> Result<Value, CommandError> {
     if let Some(tree) = &p.tree {
         let mut out = crate::tree_import::apply(s, ctx, tree, &p.file_name)?;
         // A FreeCAD document's or SolidWorks part's history says where it came from (not an
@@ -3736,7 +3820,8 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
         if (p.tier == TIER_FREECAD_HISTORY
             || p.tier == TIER_SOLIDWORKS_HISTORY
             || p.tier == TIER_INVENTOR_HISTORY
-            || p.tier == TIER_FUSION_HISTORY)
+            || p.tier == TIER_FUSION_HISTORY
+            || p.tier == TIER_PARTIAL_HISTORY)
             && let Some(o) = out.as_object_mut()
         {
             o.insert("tier".into(), json!(p.tier));
@@ -3925,7 +4010,9 @@ pub fn begin_import(s: &mut Session, ctx: &CmdCtx, args: Value) -> Result<Import
     let r = registry::check_policy(s, ctx, spec, true).and_then(|()| {
         let a: crate::commands::ImportFile = serde_json::from_value(if args.is_null() { json!({}) } else { args })
             .map_err(|e| CommandError::args(format!("import.file: {e}")))?;
-        open_import(s, ctx, &a.path)
+        let mut job = open_import(s, ctx, &a.path)?;
+        job.set_history_choice(a.history.unwrap_or_default());
+        Ok(job)
     });
     if let Err(e) = &r {
         registry::audit(s, ctx, spec, &detail, Err(e));
