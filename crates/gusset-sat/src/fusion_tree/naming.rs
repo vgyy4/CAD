@@ -1329,9 +1329,9 @@ impl Ctx<'_> {
             return Some((add(pp, mul(u, (t0 + t1) / 2.0)), false, Vec::new()));
         }
         // A plane and a stored cylinder about an axis across it.
-        let ((n, p), (o, a, r)) = match (cyls.first().copied().flatten(), cyls.get(1).copied().flatten()) {
-            (None, Some(c)) => (self.plane_of(f0)?, c),
-            (Some(c), None) => (self.plane_of(f1)?, c),
+        let ((n, p), (o, a, r), round) = match (cyls.first().copied().flatten(), cyls.get(1).copied().flatten()) {
+            (None, Some(c)) => (self.plane_of(f0)?, c, f1),
+            (Some(c), None) => (self.plane_of(f1)?, c, f0),
             _ => return None,
         };
         if (dot(n, a).abs() - 1.0).abs() > 1e-9 {
@@ -1349,15 +1349,27 @@ impl Ctx<'_> {
         }
         let [t0, t1] = touch.as_slice() else { return None };
         let (v0, v1) = (sub(*t0, c), sub(*t1, c));
-        let bis = add(v0, v1);
+        let mut bis = add(v0, v1);
+        let mut ang = libm::acos((dot(v0, v1) / (r * r)).clamp(-1.0, 1.0));
         if norm(bis) < 1e-6 * r {
-            return None;
+            // A half circle (the round end of a thin wall, 5998's Chamfer7): it bulges to the side
+            // of the cylinder's stored points.
+            let (g, ops) = round.first()?;
+            let pts = self.stored_face(g, ops)?.points;
+            let k = pts.len() as f64;
+            let w = sub(pts.iter().fold([0.0; 3], |m, q| add(m, mul(*q, 1.0 / k))), c);
+            let w = sub(w, mul(a, dot(w, a)));
+            let w = sub(w, mul(v0, dot(w, v0) / (r * r)));
+            if pts.is_empty() || norm(w) < 1e-3 * r {
+                return None;
+            }
+            bis = w;
+            ang = std::f64::consts::PI;
         }
         let mid = add(c, mul(unit(bis)?, r));
-        let ang = libm::acos((dot(v0, v1) / (r * r)).clamp(-1.0, 1.0));
         let w = unit(cross(a, v0))?;
-        // The turn from v0 towards v1 about the axis.
-        let sgn = if dot(cross(v0, v1), a) >= 0.0 { 1.0 } else { -1.0 };
+        // The turn from v0 towards the middle about the axis.
+        let sgn = if dot(cross(v0, bis), a) >= 0.0 { 1.0 } else { -1.0 };
         let k = 16;
         let path: Vec<V3> = (0..=k)
             .map(|i| {
