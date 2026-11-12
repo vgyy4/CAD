@@ -826,6 +826,11 @@ impl Ctx<'_> {
         Some(FaceG::Plane { n, p: q, cap, mid: add(mid, mul(n, wall * side.signum())) })
     }
 
+    /// The feature an operation id belongs to.
+    fn op_feature(&self, op: i32) -> Option<u64> {
+        u64::try_from(op).ok().and_then(|o| self.opmap.get(&o).copied())
+    }
+
     /// The face a fillet puts on its `g`-th edge (1-based, in the order of its edge recipes): the
     /// two sides that edge joins must be planar faces, and the fillet a corner of the void they
     /// bound, rounded with the radius of the fillet's set.
@@ -1075,6 +1080,39 @@ impl Ctx<'_> {
             .or_else(|| self.stored_edge(faces))
             .or_else(|| self.side_at_cap(faces))
             .or_else(|| self.rim_at_plane(faces))
+            .or_else(|| self.mirrored_edge(faces))
+    }
+
+    /// An edge of a copy a mirror of features made, where every face it names carries the
+    /// operations of its own feature, the mirror's and the copy's (`AD719C1A`, one per copy):
+    /// the same edge of the feature mirrored, reflected in the mirror plane. 770's Fillet2 rounds
+    /// the end edges of tabs `Mirror1` copied (`[308, 313, 314]`), whose end faces the fillets
+    /// take away, so no stored state holds the copies' edges.
+    fn mirrored_edge(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
+        let mut tail: Option<(i32, i32)> = None;
+        let mut orig: Vec<FaceName> = Vec::new();
+        for f in faces {
+            let mut of = Vec::new();
+            for (g, ops) in f {
+                let [first, m, i] = ops.as_slice() else { return None };
+                if tail.is_some_and(|t| t != (*m, *i)) {
+                    return None;
+                }
+                tail = Some((*m, *i));
+                of.push((g.clone(), vec![*first]));
+            }
+            orig.push(of);
+        }
+        let (m, i) = tail?;
+        let mfid = self.op_feature(m).filter(|q| self.d.is(*q, "D1728651"))?;
+        if !self.op_feature(i).is_some_and(|q| self.d.is(q, "AD719C1A")) {
+            return None;
+        }
+        let (mid, arc, path) = self.edge_midpoint(&orig)?;
+        let (o, n) = super::json::mirror_plane(self, mfid)?;
+        let n = unit(n)?;
+        let pt = |p: V3| sub(p, mul(n, 2.0 * dot(n, sub(p, o))));
+        Some((pt(mid), arc, path.into_iter().map(pt).collect()))
     }
 
     /// A closed edge (no faces bound its ends) between a plane and a cylinder about an axis

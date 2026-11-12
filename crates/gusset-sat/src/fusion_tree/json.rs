@@ -1671,8 +1671,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 ins.iter().map(|q| names.get(q).cloned().unwrap_or_else(|| q.to_string())).collect();
             // The plane is a planar face where the plane holder (`C444E6AD`) selects one (a header
             // part's Mirror1: the extrude's side face x = 0); otherwise a construction plane.
-            let plane = mirror_face_plane(cx, fid)
-                .or_else(|| cx.under(fid, "CC54ECAD", 4, None).into_iter().find_map(|q| feature::plane_frame(d, q)));
+            let plane = mirror_plane(cx, fid);
             match plane {
                 Some((o, n)) if !ins.is_empty() && ins.iter().all(|q| names.contains_key(q)) => {
                     feats.push(json!({"type": "mirror", "name": nm, "source_id": fid, "features": in_names,
@@ -2306,6 +2305,14 @@ fn split_json(cx: &Ctx, ed: &super::bodyops::Edit<'_>, fid: u64, name: &str, fus
 /// The plane of a mirror whose plane holder (`C444E6AD`) selects a face (`2CA5A1CD` ->
 /// `5662F619` -> a `7ACC2A03` face recipe) instead of a construction plane: a planar face's
 /// point and normal (cm). `None` where the holder selects no face or the face is not planar.
+/// The plane of a mirror (point, unit normal; cm): a planar face it selects, else a
+/// construction plane.
+pub(super) fn mirror_plane(cx: &mut Ctx, fid: u64) -> Option<(V3, V3)> {
+    let d = cx.d;
+    mirror_face_plane(cx, fid)
+        .or_else(|| cx.under(fid, "CC54ECAD", 4, None).into_iter().find_map(|q| feature::plane_frame(d, q)))
+}
+
 fn mirror_face_plane(cx: &mut Ctx, fid: u64) -> Option<(V3, V3)> {
     let d = cx.d;
     let holders: Vec<u64> = ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "C444E6AD")).collect();
