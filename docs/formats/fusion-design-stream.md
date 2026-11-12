@@ -2274,3 +2274,21 @@ kernel: `gs_shell` with no opened face.
 * Not converted: the coil's axis and start (the `DA1231DE` entity and `7B6C3C2D` frame) and its hand are not decoded,
   and the design goes on with Move1 of the coil, Combine1, Chamfer1 on the coil's end edges (unresolved) and Shell3,
   which OCCT fails on (section 25). 3722 stays at `CoilPrimitive1`.
+
+### The adafruit-next threads
+* 916 (the same M16x1 nut as 3350): its hole's stored faces lie on two cylinders under one name (the state after
+  the thread keeps the name on the minor diameter), so the single-surface pick gave none; the hole is now the
+  profile's one whole circle about that axis with the radius of one of them. Thread2 reads; the design stops at
+  Fillet1: the same groove rounds as 3350's, but the thread starts at z -16, 0.5 mm above the rim edge, and the rim
+  round reaches the cylinder at z -16.0017 (Fusion's torus), 1.7 um below the groove's square end. OCCT fails on it in
+  every order.
+* 3221 and 3429 now read their threads and stop elsewhere (3221: CopyPasteBodies1 with one Base Feature and no
+  RemoveBodies; 3429: Fillet2, four edges unresolved).
+* 3692 (an internal 1/4 UNS thread) reads and builds; its first body is refused by the end blob: 431.5074 mm3 against
+  the stored 441.2291 (the other five bodies agree). Not examined.
+
+### Result
+* adafruit-more: 133 of 150 as history (1145 gained; none lost; 132 before). adafruit: 13 of 18 (unchanged).
+  adafruit-next: 110 of 150 (unchanged, none lost).
+* First blockers: 1145 passes; 3350 OffsetFaces1 (OCCT's offset throws on the threaded rod); 3722 CoilPrimitive1
+  (axis, start and hand not decoded; Shell3 and a chamfer of the coil's ends follow); 916 Fillet1.

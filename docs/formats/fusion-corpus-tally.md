@@ -356,3 +356,10 @@ built 11 (67, 770, 2278, 2315, 3777, 5360 contacts, 5998, 6118, 6252, and others
 mirror, 6002 path), Base Feature or box primitive placement 3 (2354, 3000, 2831), and one each: draft 1438,
 shell 3346, Pipe 64, Combine target 3093, an extrude of several bodies 3802, a mirrored component 5907, a stream
 that cannot be framed 5988; no feature history 2 (2226, 6495).
+
+## Re-run after round 23 P (2026-11-12)
+
+Round 23 P (a procedural surface's own approximation, rolling-ball blends round a circle as tori, an extrude's side by
+its distance, threads on holes the stored faces place, concave-first fillets, offset picks by body link):
+adafruit-more 133 of 150 as history (1145 added; none lost), adafruit 13 of 18, adafruit-next 110 of 150 (none lost).
+3350 stops at OffsetFaces1 (OCCT's offset of the threaded rod), 3722 at its coil, 916 at Fillet1 (section 40).
