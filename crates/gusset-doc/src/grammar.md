@@ -789,6 +789,45 @@ hole Hole3 (face: Extrude1/cap(end), at: [e1: [30 mm, 8 mm]], type: countersink,
 fillet Fillet1 (edges: [edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5))], radius: 1 mm)
 ```
 
+## Threads
+
+```
+thread <Name> (face: <face>, pitch: <length>, [designation: "M16x1"], [modeled: true],
+               [major: <length>], [minor: <length>], [angle: <angle>],
+               [length: <length>], [offset: <length>], [along: X|Y|Z|[x, y, z]], [left: true])
+```
+
+- A thread on a cylindrical face: a shaft's side (external) or a hole's wall (internal; the
+  face decides, its material lies outside). Without `modeled: true` it is cosmetic: recorded in
+  the document, the body unchanged.
+- `major` and `minor` are the thread's diameters. A shaft's `major` defaults to the face's
+  diameter, a hole's `minor` does; the other defaults to 1.082532 pitches away (ISO 68-1's basic
+  profile). `angle` is the full flank angle (default 60 deg); `left: true` makes it left-handed.
+- `offset` (default 0) and `length` (default: to the face's far end) place it along the face,
+  from the face's end that comes first along `along` (default: the face's own axis direction;
+  give it to say which end). The groove's crest flat at the major diameter starts P/8 before the
+  thread's start.
+- A modeled thread moves the whole face to the thread's major diameter (a shaft, cut down) or
+  minor diameter (a hole, filled in; the new wall keeps the face's name), then cuts the basic
+  profile's groove (crest flat P/8 wide, the root the rest) one turn at a time along exact
+  helices. The groove ends square where the thread starts or ends inside the face, and runs out
+  through a face end it reaches unless a face there looks back at the thread (a shoulder, a
+  hole's floor). Groove faces are named `<Name>/side(<Name>/g<k>_<turn>)` (k = 1 to 4).
+
+```gusset
+gusset 1
+units mm
+
+sketch Sketch1 (plane: XY) {
+  p1 = point(0, 0)
+  c1 = circle(p1, 8.2)
+}
+
+extrude Extrude1 (profile: Sketch1, distance: 13 mm, op: new)
+
+thread Thread1 (face: Extrude1/side(Sketch1/c1), designation: "M16x1 6g", pitch: 1 mm, modeled: true, major: 15.884 mm, minor: 14.741 mm, length: 9 mm, offset: 4 mm, along: Z)
+```
+
 ## Generated features (gears)
 
 There is no `gear` statement. `generate_gear` (module, teeth, pressure_angle, face_width, bore,
@@ -951,6 +990,7 @@ or `target` + `merge` for a whole body) and `shell` (`faces: [{point, normal}]`,
 `side: inside|outside`). Whole-body edits (version 2): `move_body` (`target`, `translate: [x, y, z]`
 mm and/or `rotate: {axis, origin, angle}` degrees, the turn first; `copy: true` makes a new body
 named after the feature), `scale_body` (`target`, `factor` or `factors: [x, y, z]`, `center`),
-`remove_body` (`target`) and `draft` (`faces: [{point, normal}]`, `plane: {origin, normal}`,
-`angle` degrees, `flip`). The exporter plugins in `plugins/` write these files.
+`remove_body` (`target`), `draft` (`faces: [{point, normal}]`, `plane: {origin, normal}`,
+`angle` degrees, `flip`) and `thread` (`face: {point, normal}`, `pitch`, `major`, `minor`, `angle`
+degrees, `length`, `offset`, `along: [x, y, z]`, `modeled`, `left`, `designation`). The exporter plugins in `plugins/` write these files.
 Anything that cannot be imported is listed in `skipped_user_text` with its reason.

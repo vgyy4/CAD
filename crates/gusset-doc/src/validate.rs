@@ -451,6 +451,19 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 }
             }
             FeatureKind::Hole(d) => check_hole(n, d, &seen, &mut out),
+            FeatureKind::Thread(d) => {
+                if let Some(t) = &d.designation
+                    && (t.is_empty()
+                        || t.chars().count() > MAX_THREAD_DESIGNATION
+                        || t.chars().any(|c| c.is_control() || c == '"'))
+                {
+                    out.push(issue_h(
+                        n,
+                        "the thread designation must be 1 to 32 printable characters",
+                        "write it like \"M16x1\"",
+                    ));
+                }
+            }
             FeatureKind::Surface(d) => match &d.op {
                 SurfaceOp::Extrude { curves, .. } => {
                     if let PathRef::Sketch { sketch, curves } = curves {

@@ -62,7 +62,7 @@ fn access(kind: &FeatureKind) -> Access {
         FeatureKind::Loft(d) => modifies(d.op, d.body.as_ref()),
         FeatureKind::Text(d) => modifies(d.op, d.body.as_ref()),
         // The edges decide the body.
-        FeatureKind::Fillet(_) | FeatureKind::Chamfer(_) | FeatureKind::Hole(_) => {
+        FeatureKind::Fillet(_) | FeatureKind::Chamfer(_) | FeatureKind::Hole(_) | FeatureKind::Thread(_) => {
             Access { bodies: Vec::new(), dynamic: true }
         }
         FeatureKind::Shell(d) => target(d.body.as_ref()),

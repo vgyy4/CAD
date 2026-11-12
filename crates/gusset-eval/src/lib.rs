@@ -31,6 +31,7 @@ pub mod sketch;
 mod surface;
 mod sweep;
 mod text;
+mod thread;
 
 pub use budget::{
     DEFAULT_MAX_BODY_FACES, DEFAULT_MAX_BOOLEAN_WORK, DEFAULT_MAX_JOINT_STEPS, DEFAULT_MAX_TOOLS, EvalLimits,
@@ -39,6 +40,7 @@ pub use error::{ErrorCode, EvalError};
 pub use hole::{DEFAULT_POINT_ANGLE, Dims as HoleDims, HoleInfo, ThreadInfo};
 pub use ops::rule_faces;
 pub use sketch::{PartnerKind, RegionInfo, SketchResult, SketchStatus, TrimCut, TrimPlan, trim_plan};
+pub use thread::{ISO_DEPTH_PITCHES, MAX_THREAD_TURNS};
 
 use gusset_doc::text::print_feature_object;
 use gusset_doc::{
@@ -1205,6 +1207,7 @@ impl Evaluator {
             FeatureKind::Surface(d) => self.run_surface(s, name, d, units, params),
             FeatureKind::Sheet(d) => self.run_sheet(s, name, d, units, params),
             FeatureKind::Hole(d) => self.run_hole(s, name, d, units, params),
+            FeatureKind::Thread(d) => self.run_thread(s, name, d, units, params),
             FeatureKind::Import(i) => {
                 let bytes = blobs.blob(&i.blob).ok_or_else(|| {
                     EvalError::new(name, ErrorCode::MissingBlob, "the imported data is missing from the project")

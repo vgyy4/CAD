@@ -261,6 +261,31 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     const HOLE_BASE: &str = "gusset 1\nunits mm\n\nparam d = 6.6 mm\nparam deep = 12 mm\n\nsketch P (plane: XY, next_id: 6) {\n  p1 = point(0, 0)\n  p2 = point(30, 0)\n  p3 = point(30, 20)\n  l4 = line(p1, p2)\n  l5 = line(p2, p3)\n}\n\nextrude E (profile: P, distance: deep, op: new)\n\nsketch S (plane: E/cap(end), next_id: 3) {\n  p1 = point(5, 5)\n  c2 = circle(p1, 2)\n}\n\n";
 
     #[test]
+    fn thread_round_trips_and_is_validated() {
+        let ok = format!(
+            "{HOLE_BASE}thread T1 (face: E/side(P/l5), designation: \"M16x1 6g\", pitch: d / 6.6, modeled: true, major: 15.884 mm, minor: 14.741 mm, angle: 60 deg, length: 9 mm, offset: 4 mm, along: [0, 0, -1], left: true)\n\nthread T2 (face: E/side(P/l4), pitch: 1 mm)\n"
+        );
+        let doc = text::parse(&ok).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(text::print(&doc), ok);
+        let FeatureKind::Thread(t) = &doc.feature("T1").unwrap().kind else { panic!() };
+        assert!(t.modeled && t.left && t.designation.as_deref() == Some("M16x1 6g"));
+        let FeatureKind::Thread(t) = &doc.feature("T2").unwrap().kind else { panic!() };
+        assert!(!t.modeled && t.major.is_none() && t.along.is_none());
+        assert_eq!(doc.feature("T1").unwrap().kind.parameters(), ["d"]);
+        assert_eq!(doc.feature("T1").unwrap().kind.dependencies(), ["E", "P"]);
+        assert!(!validate::creates_body(doc.feature("T1").unwrap()));
+        assert!(validate::validate(&doc).is_empty(), "{:?}", validate::validate(&doc));
+        let e = text::parse(&format!("{HOLE_BASE}thread T (face: E/side(P/l5))\n")).unwrap_err();
+        assert!(e.to_string().contains("pitch"), "{e}");
+        let e =
+            text::parse(&format!("{HOLE_BASE}thread T (face: E/side(P/l5), pitch: 1 mm, hand: left)\n")).unwrap_err();
+        assert!(e.to_string().contains("hand"), "{e}");
+        let bad = text::parse(&format!("{HOLE_BASE}thread T (face: E/side(P/l5), designation: \"\", pitch: 1 mm)\n"))
+            .unwrap();
+        assert!(validate::validate(&bad).iter().any(|i| i.message.contains("designation")));
+    }
+
+    #[test]
     fn hole_round_trips_and_is_validated() {
         let ok = format!(
             "{HOLE_BASE}hole H1 (face: E/cap(end), points: S, type: counterbore, diameter: d, through: true, cbore_diameter: d * 1.7, cbore_depth: 6 mm)\n\nhole H2 (face: E/cap(end), at: [e1: [10 mm, 5 mm], e3: [2 * d, 4 mm]], type: tapped, diameter: 5 mm, depth: deep, point_angle: 120 deg, thread: \"M6\", pitch: 1 mm, thread_depth: 8 mm)\n\nhole H3 (face: H1/cbore_floor(p1), at: [e1: [0 mm, 0 mm]], type: countersink, diameter: 3 mm, depth: 5 mm, csink_diameter: 6 mm, csink_angle: 90 deg)\n\nhole H4 (face: E/side(P/l5)#2, at: [], type: simple, diameter: 1 mm, depth: 2 mm)\n"

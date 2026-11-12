@@ -231,6 +231,8 @@ pub enum FeatureKind {
     Split(SplitDef),
     Combine(CombineDef),
     Hole(HoleDef),
+    /// A thread on a cylindrical face (ADR 0034 amendment): modeled (cut) or cosmetic.
+    Thread(Box<FaceThreadDef>),
     Joint(Box<JointDef>),
     Component(ComponentDef),
     /// Surface operations (ADR 0036): sheets from curves or regions, thicken, stitch.
@@ -269,6 +271,7 @@ impl FeatureKind {
             FeatureKind::Split(_) => "split",
             FeatureKind::Combine(_) => "combine",
             FeatureKind::Hole(_) => "hole",
+            FeatureKind::Thread(_) => "thread",
             FeatureKind::Joint(_) => "joint",
             FeatureKind::Component(_) => "component",
         }
@@ -414,6 +417,7 @@ impl FeatureKind {
                     add(s);
                 }
             }
+            FeatureKind::Thread(d) => d.face.features(&mut add),
             FeatureKind::Joint(d) => {
                 add(&d.body);
                 d.with.iter().for_each(|b| add(b));
@@ -522,6 +526,7 @@ impl FeatureKind {
             FeatureKind::Remove(_) | FeatureKind::Split(_) => {}
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => d.exprs().into_iter().for_each(&mut take),
+            FeatureKind::Thread(d) => d.exprs().into_iter().for_each(&mut take),
             FeatureKind::Joint(d) => d.exprs().into_iter().for_each(&mut take),
             FeatureKind::Component(d) => d.set.iter().for_each(|(_, e)| take(e)),
         }
@@ -630,6 +635,7 @@ impl FeatureKind {
             FeatureKind::Remove(_) | FeatureKind::Split(_) => {}
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => out.extend(d.exprs_mut()),
+            FeatureKind::Thread(d) => out.extend(d.exprs_mut()),
             FeatureKind::Joint(d) => out.extend(d.exprs_mut()),
             FeatureKind::Component(d) => out.extend(d.set.iter_mut().map(|(_, e)| e)),
         }
@@ -2094,6 +2100,64 @@ impl HoleDef {
         if let Some(t) = &mut self.thread {
             v.push(&mut t.pitch);
             v.extend(t.depth.iter_mut());
+        }
+        v
+    }
+}
+
+/// A thread on a cylindrical face (ADR 0034 amendment, `thread`): a modeled thread moves the
+/// whole face to the thread's major diameter (a shaft) or minor diameter (a hole) and cuts the
+/// groove of the basic profile along exact helices, square at both ends inside the face and out
+/// through a face end it reaches; a cosmetic one only records the thread. Whether it is
+/// internal is the face's: a hole's wall faces its axis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FaceThreadDef {
+    /// The cylindrical face; it names the body.
+    pub face: FaceRef,
+    /// Designation such as `M16x1` (untrusted text; at most [`MAX_THREAD_DESIGNATION`]
+    /// printable characters).
+    pub designation: Option<String>,
+    pub pitch: Expr,
+    /// `true`: the groove is cut; `false` (default): cosmetic, the body is unchanged.
+    pub modeled: bool,
+    /// Major and minor diameter. Defaults: a shaft's major is the face's diameter, a hole's
+    /// minor is; the other is 1.082532 pitches away (ISO 68-1's basic profile).
+    pub major: Option<Expr>,
+    pub minor: Option<Expr>,
+    /// Flank angle (the full angle between the flanks); default 60 deg.
+    pub angle: Option<Expr>,
+    /// Threaded length; `None` = from the offset to the face's far end.
+    pub length: Option<Expr>,
+    /// Distance from the face's start to the thread's start; default 0.
+    pub offset: Option<Expr>,
+    /// The direction the thread runs along the axis, from the face's end that comes first that
+    /// way; `None` = the face's own axis direction.
+    pub along: Option<DirRef>,
+    /// Left-handed.
+    pub left: bool,
+}
+
+impl FaceThreadDef {
+    /// Every expression of the feature.
+    pub fn exprs(&self) -> Vec<&Expr> {
+        let mut v = vec![&self.pitch];
+        v.extend([&self.major, &self.minor, &self.angle, &self.length, &self.offset].into_iter().flatten());
+        if let Some(d) = &self.along {
+            v.extend(d.exprs());
+        }
+        v
+    }
+
+    /// Mutable expressions of the feature.
+    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let mut v = vec![&mut self.pitch];
+        v.extend(
+            [&mut self.major, &mut self.minor, &mut self.angle, &mut self.length, &mut self.offset]
+                .into_iter()
+                .filter_map(Option::as_mut),
+        );
+        if let Some(d) = &mut self.along {
+            v.extend(d.exprs_mut());
         }
         v
     }

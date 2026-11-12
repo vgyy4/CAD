@@ -53,3 +53,21 @@ pitches, ISO 3508's coarse-thread value), so the groove fades into the shank ins
 stopping at a step. The thread sweep itself is unchanged; the shank is added to the same
 body. OCCT test: the volume gained lies between the groove's volume over the shank and
 over shank plus run-out.
+
+## Amendment (2026-11-12): threads on faces
+A `thread` feature puts a thread on any cylindrical face: a shaft's side or a hole's wall (the
+face's side decides). Cosmetic by default (recorded, no geometry); `modeled: true` builds the
+form Fusion's modeled thread has (read from its stored bodies, docs/formats/fusion-design-stream.md
+section 36): the whole face moved to the major diameter (shaft) or minor diameter (hole) by a
+revolved ring cut or joined over the face's length (the new wall keeps the face's name), then
+the basic profile's groove (crest flat P/8, root the rest, flanks at half the flank angle, run
+3 % of P past the surface it cuts) swept one turn at a time along exact helices and cut, each
+turn its own boolean (OCCT cut a groove of many turns through an end face not at all). Turns
+that cross a thread end inside the face, or a face end where a face looks back at the thread
+(a shoulder, a hole's floor), are first intersected with a disc between the thread's ends, so
+the groove ends square; elsewhere it runs out through the end face. A turn wholly inside the
+face must take out at least half its share of the groove, or the feature fails (OCCT has
+returned a body unchanged without an error). Diameters default to the face's and ISO 68-1's
+basic depth (1.082532 P); `offset`/`length` run from the end `along` names. The feature is
+composed in the evaluator from existing kernel calls (revolve, helical sweep, boolean): no new
+shim entry or worker protocol. OCCT test: `modeling_thread.rs`.

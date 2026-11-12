@@ -907,6 +907,33 @@ fn print_feature(out: &mut String, f: &Feature) {
                 args.push(format!("free: [{}]", d.free.join(", ")));
             }
         }
+        FeatureKind::Thread(d) => {
+            args.push(format!("face: {}", d.face));
+            if let Some(t) = &d.designation {
+                args.push(format!("designation: {}", quote(t)));
+            }
+            args.push(format!("pitch: {}", d.pitch));
+            if d.modeled {
+                args.push("modeled: true".into());
+            }
+            for (k, v) in [
+                ("major", &d.major),
+                ("minor", &d.minor),
+                ("angle", &d.angle),
+                ("length", &d.length),
+                ("offset", &d.offset),
+            ] {
+                if let Some(e) = v {
+                    args.push(format!("{k}: {e}"));
+                }
+            }
+            if let Some(a) = &d.along {
+                args.push(format!("along: {}", print_dir(a)));
+            }
+            if d.left {
+                args.push("left: true".into());
+            }
+        }
         FeatureKind::Hole(d) => {
             args.push(format!("face: {}", d.face));
             match &d.sites {
@@ -1142,8 +1169,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
             | "draft" | "offset_face" | "delete_face" | "move_face" | "text" | "mirror" | "split"
             | "pattern_linear" | "pattern_circular" | "plane" | "move" | "scale" | "remove" | "combine" | "hole"
-            | "joint" | "component" | "surface_extrude" | "patch" | "thicken" | "stitch" | "contour_flange" | "tab"
-            | "edge_flange" | "cam_job" => {
+            | "thread" | "joint" | "component" | "surface_extrude" | "patch" | "thicken" | "stitch"
+            | "contour_flange" | "tab" | "edge_flange" | "cam_job" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -1169,6 +1196,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     parse_feature_ext3(kw, &mut c)?
                 } else if kw == "hole" {
                     parse_hole(&mut c)?
+                } else if kw == "thread" {
+                    parse_thread(&mut c)?
                 } else if kw == "joint" {
                     parse_joint(&mut c)?
                 } else if kw == "component" {
@@ -1985,6 +2014,53 @@ fn parse_hole(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         countersink,
         thread,
     });
+    Ok(Feature { name, label, note: None, group, suppressed, kind })
+}
+
+/// The thread statement (ADR 0034 amendment).
+fn parse_thread(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
+    const ALLOWED: &str = "face, designation, pitch, modeled, major, minor, angle, length, offset, along, left, \
+                           label, group, suppressed";
+    let name = c.ident()?.to_string();
+    let (mut label, mut group, mut suppressed) = (None, None, false);
+    let (mut face, mut designation, mut pitch, mut modeled, mut left) = (None, None, None, false, false);
+    let (mut major, mut minor, mut angle, mut length, mut offset, mut along) = (None, None, None, None, None, None);
+    parse_args(c, |key, c| {
+        match key {
+            "label" => label = Some(c.string()?),
+            "group" => group = Some(c.string()?),
+            "suppressed" => suppressed = parse_bool(c)?,
+            "face" => face = Some(parse_face(c)?),
+            "designation" => designation = Some(c.string()?),
+            "pitch" => pitch = Some(c.expr()?),
+            "modeled" => modeled = parse_bool(c)?,
+            "major" => major = Some(c.expr()?),
+            "minor" => minor = Some(c.expr()?),
+            "angle" => angle = Some(c.expr()?),
+            "length" => length = Some(c.expr()?),
+            "offset" => offset = Some(c.expr()?),
+            "along" => along = Some(parse_dir(c)?),
+            "left" => left = parse_bool(c)?,
+            other => return Err(unknown_arg(c, "thread", other, ALLOWED)),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    let kind = FeatureKind::Thread(Box::new(FaceThreadDef {
+        face: face.ok_or_else(|| missing(c, "thread", "face"))?,
+        designation,
+        pitch: pitch.ok_or_else(|| missing(c, "thread", "pitch"))?,
+        modeled,
+        major,
+        minor,
+        angle,
+        length,
+        offset,
+        along,
+        left,
+    }));
     Ok(Feature { name, label, note: None, group, suppressed, kind })
 }
 

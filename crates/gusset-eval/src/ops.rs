@@ -771,7 +771,12 @@ fn mirror_plane(feature: &str, plane: &PlaneRef, s: &State) -> Result<([f64; 3],
 }
 
 /// Evaluates a direction to a unit vector.
-fn direction(feature: &str, d: &DirRef, params: &ParamValues, units: LengthUnit) -> Result<[f64; 3], EvalError> {
+pub(crate) fn direction(
+    feature: &str,
+    d: &DirRef,
+    params: &ParamValues,
+    units: LengthUnit,
+) -> Result<[f64; 3], EvalError> {
     let v = match d {
         DirRef::X => [1.0, 0.0, 0.0],
         DirRef::Y => [0.0, 1.0, 0.0],
