@@ -52,6 +52,8 @@ egui_kittest = { version = "0.36.2", features = ["wgpu", "snapshot"] }
 landlock = "0.4.7"
 seccompiler = "0.5.0"
 rlimit = "0.11.0"
+# gusset-pcb: Gerber X2 output (ADR 0047); MIT OR Apache-2.0.
+gerber-types = "0.7.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 serde_path_to_error = "0.1"
@@ -95,6 +97,7 @@ gusset-sat = { path = "crates/gusset-sat", version = "0.1.0-mvp" }
 gusset-xt = { path = "crates/gusset-xt", version = "0.1.0-mvp" }
 gusset-sldprt = { path = "crates/gusset-sldprt", version = "0.1.0-mvp" }
 gusset-ole = { path = "crates/gusset-ole", version = "0.1.0-mvp" }
+gusset-pcb = { path = "crates/gusset-pcb", version = "0.1.0-mvp" }
 gusset-occt-sys = { path = "crates/gusset-occt-sys", version = "0.1.0-mvp" }
 gusset-kernel-occt = { path = "crates/gusset-kernel-occt", version = "0.1.0-mvp" }
 gusset-eval = { path = "crates/gusset-eval", version = "0.1.0-mvp" }

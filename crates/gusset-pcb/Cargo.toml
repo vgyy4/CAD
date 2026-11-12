@@ -1,0 +1,16 @@
+[package]
+name = "gusset-pcb"
+description = "Printed circuit boards for Gusset: KiCad board files, Gerber and drill output (ADR 0047)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gerber-types.workspace = true
+gusset-kernel.workspace = true
+libm.workspace = true
+
+[lints]
+workspace = true
