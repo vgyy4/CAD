@@ -1974,6 +1974,49 @@ fn a_convex_and_a_concave_round_that_use_up_their_face() {
     }
 }
 
+fn block_at(x0: f64, y0: f64, w: f64, h: f64, z0: f64, d: f64) -> OpResult {
+    let p = Profile {
+        frame: Frame { origin: [x0, y0, z0], ..Frame::XY },
+        regions: vec![Region2 { outer: rect(w, h, 10), holes: vec![] }],
+    };
+    k().extrude(&p, &ExtrudeSpec { distance: d, symmetric: false }).unwrap()
+}
+
+#[test]
+fn fillet_of_a_rim_between_two_flats_is_the_whole_rims_round() {
+    // A disc of radius 10 with flats at y = 8 and y = -7: its foot is two arcs. Rounding both by
+    // 2.5 (OCCT's blend fails at the flats) gives the round of the whole rim cut off by the
+    // flats, as Fusion's one torus face is: the same as rounding a plain disc and then cutting.
+    let flats = |s: &Shape| {
+        let s = k().boolean(BoolOp::Cut, s, &block_at(-20.0, 8.0, 40.0, 10.0, -1.0, 7.0).shape).unwrap();
+        k().boolean(BoolOp::Cut, &s.shape, &block_at(-20.0, -17.0, 40.0, 10.0, -1.0, 7.0).shape).unwrap()
+    };
+    let d = flats(&disc(10.0, 5.0, 0.0).shape);
+    let t = k().topology(&d.shape).unwrap();
+    let arcs: Vec<u32> = (0..t.edges.len() as u32)
+        .filter(|&i| {
+            let e = &t.edges[i as usize];
+            e.circle.as_ref().is_some_and(|c| (c.radius - 10.0).abs() < 1e-9 && c.center[2].abs() < 1e-9)
+        })
+        .collect();
+    assert_eq!(arcs.len(), 2);
+    let f = k().fillet(&d.shape, &arcs, 2.5).unwrap();
+    let plain = disc(10.0, 5.0, 0.0);
+    let pt = k().topology(&plain.shape).unwrap();
+    let foot = pt
+        .edges
+        .iter()
+        .position(|e| e.circle.as_ref().is_some_and(|c| (c.radius - 10.0).abs() < 1e-9 && c.center[2].abs() < 1e-9))
+        .unwrap() as u32;
+    let round = k().fillet(&plain.shape, &[foot], 2.5).unwrap();
+    let want = k().mass_properties(&flats(&round.shape).shape).unwrap().volume;
+    let got = k().mass_properties(&f.shape).unwrap().volume;
+    assert!(close(got, want, 1e-7), "{got} vs {want}");
+    for e in arcs {
+        assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+    }
+}
+
 #[test]
 fn fillet_of_an_arc_that_takes_its_whole_face() {
     // A 1 mm half disc of radius 10: a 1 mm fillet of its top arc leaves nothing of the

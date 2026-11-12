@@ -976,6 +976,18 @@ double signed_volume(const TopoDS_Shape& s) {
   return g.Mass();
 }
 
+// The volume as `gs_mass` measures it: adaptively where a face is a torus or freeform. The
+// default quadrature is off by some 1e-7 of the volume on tori trimmed by planes, which is the
+// tolerance the corner blends check their volumes to (3777's rim round, cut off by flats).
+double measured_volume(const TopoDS_Shape& s) {
+  GProp_GProps g;
+  if (!has_wound_face(s) && (has_freeform_face(s) || has_torus_face(s)))
+    BRepGProp::VolumeProperties(s, g, has_elliptic_face(s) ? 1e-10 : 1e-7);
+  else
+    BRepGProp::VolumeProperties(s, g);
+  return g.Mass();
+}
+
 std::vector<TopoDS_Edge> ordered_edges(const TopoDS_Wire& w) {
   std::vector<TopoDS_Edge> v;
   for (BRepTools_WireExplorer ex(w); ex.More(); ex.Next()) v.push_back(ex.Current());
@@ -1982,6 +1994,46 @@ bool arc_ends(const TopoDS_Shape& body, const TopoDS_Edge& e, const std::vector<
   return ends.size() == 2;
 }
 
+// For arc `i` of a fillet among other arcs of its circle rounded alike (3777 Fillet4: the two
+// arcs of a disc's rim between two flats; Fusion's round is the whole rim's, one torus cut off by
+// the flats): how far past its start and its end its corner is revolved, to the middle of the
+// gap on each side, so that the arcs' corners meet there and together are the whole rim's
+// corner trimmed by the planes the gaps lie under. False when the arc has no such neighbours
+// or another arc overlaps it.
+bool ring_turns(const std::vector<BlendEdge>& es, size_t i, double& turn0, double& turn1) {
+  BRepAdaptor_Curve ci(es[i].e);
+  if (ci.GetType() != GeomAbs_Circle) return false;
+  const double t0 = ci.FirstParameter(), t1 = ci.LastParameter();
+  if (std::fabs(t1 - t0 - 2 * M_PI) <= 1e-9) return false;
+  const gp_Circ circ = ci.Circle();
+  auto wrap = [](double x) {
+    x = std::fmod(x, 2 * M_PI);
+    return x < 0 ? x + 2 * M_PI : x;
+  };
+  double next = 2 * M_PI, prev = 2 * M_PI;
+  bool any = false;
+  for (size_t j = 0; j < es.size(); ++j) {
+    if (j == i || std::fabs(es[j].a - es[i].a) > 1e-12) continue;
+    BRepAdaptor_Curve cj(es[j].e);
+    if (cj.GetType() != GeomAbs_Circle) continue;
+    const gp_Circ o = cj.Circle();
+    if (std::fabs(o.Radius() - circ.Radius()) > 1e-7 || o.Location().Distance(circ.Location()) > 1e-7 ||
+        !o.Axis().IsParallel(circ.Axis(), 1e-9))
+      continue;
+    any = true;
+    for (const double t : {cj.FirstParameter(), 0.5 * (cj.FirstParameter() + cj.LastParameter()), cj.LastParameter()}) {
+      const double u = ElCLib::Parameter(circ, cj.Value(t));
+      if (wrap(u - t0) < t1 - t0 - 1e-9 && wrap(u - t0) > 1e-9) return false;  // inside this arc
+      next = std::min(next, wrap(u - t1));
+      prev = std::min(prev, wrap(t0 - u));
+    }
+  }
+  if (!any || !(next > 1e-6) || !(prev > 1e-6)) return false;
+  turn0 = 0.5 * prev;
+  turn1 = 0.5 * next;
+  return true;
+}
+
 // The corner of a fillet of a straight concave edge between a plane and a cylinder about an
 // axis along the edge (512 Fillet3: a 0.6 mm groove whose ends, the sides of the arms that cross
 // it, are rounded with radius 0.3, which leaves nothing of the ends). The section is the same
@@ -2080,7 +2132,7 @@ bool plane_cylinder_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Fa
 // other face. The cutter of a straight edge's corner may reach on past the edge's start by `e0`
 // and past its end by `e1` (`exact` and `ideal` stay the corner along the edge).
 bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, bool fillet, Corner& out,
-               double e0 = 0, double e1 = 0) {
+               double e0 = 0, double e1 = 0, double turn0 = -1, double turn1 = -1) {
   int ei = anc.FindIndex(x.e);
   if (ei <= 0) return false;
   std::vector<TopoDS_Face> fs;
@@ -2145,12 +2197,17 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   const double d = 0.25 * std::min(a, b);
   // How far past an arc's ends its corner is revolved: past where the end planes leave the
   // section (measured at its point nearest the axis).
-  double reach_angle = 0;
+  // An arc of a ring (`ring_turns`) is revolved on to the middles of the gaps beside it instead.
+  double reach0 = 0, reach1 = 0;
   if (!whole) {
     const double r_in = c.Circle().Radius() - std::max(a, b) - d;
     if (!(r_in > 1e-6) || !(tan_max < 2.0)) return false;
-    reach_angle = 1.5 * (std::max(a, b) + d) * std::sqrt(2.0) * tan_max / r_in + 1e-3;
-    if (t1 - t0 + 2 * reach_angle >= 2 * M_PI) return false;
+    reach0 = reach1 = 1.5 * (std::max(a, b) + d) * std::sqrt(2.0) * tan_max / r_in + 1e-3;
+    if (turn0 >= 0 && turn1 >= 0) {
+      reach0 = turn0;
+      reach1 = turn1;
+    }
+    if (t1 - t0 + reach0 + reach1 >= 2 * M_PI) return false;
   }
   gp_Pnt A = p0.Translated(-v2 * a), B = p0.Translated(-v1 * b);
   auto section = [&](bool reach) -> std::pair<TopoDS_Face, TopoDS_Edge> {
@@ -2218,9 +2275,9 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
       // The section is at the arc's middle: turned back to past its start, then revolved to
       // past its end.
       gp_Trsf back;
-      back.SetRotation(c.Circle().Axis(), -(0.5 * (t1 - t0) + reach_angle));
+      back.SetRotation(c.Circle().Axis(), -(0.5 * (t1 - t0) + reach0));
       const TopLoc_Location loc(back);
-      BRepPrimAPI_MakeRevol mk(f.Moved(loc), c.Circle().Axis(), t1 - t0 + 2 * reach_angle);
+      BRepPrimAPI_MakeRevol mk(f.Moved(loc), c.Circle().Axis(), t1 - t0 + reach0 + reach1);
       mk.Build();
       if (!mk.IsDone()) throw Standard_Failure("could not build the corner");
       sh = mk.Shape();
@@ -2244,7 +2301,7 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   }
   if (signed_volume(exact) < 0) exact.Reverse();
   out.exact = exact;
-  out.ideal = std::fabs(signed_volume(exact));
+  out.ideal = std::fabs(measured_volume(exact));
   auto [fc, bc] = section(true);
   out.cutter = solid_of(fc, bc, out.face, true);
   if (signed_volume(out.cutter) < 0) out.cutter.Reverse();
@@ -2279,7 +2336,9 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
   bool longer = false;
   for (size_t i = 0; i < es.size(); ++i) {
     Corner c;
-    if (!corner_of(s->s, anc, es[i], fillet, c, ext[i][0], ext[i][1])) return fail("no corner");
+    double turn0 = -1, turn1 = -1;
+    if (fillet && !ring_turns(es, i, turn0, turn1)) turn0 = turn1 = -1;
+    if (!corner_of(s->s, anc, es[i], fillet, c, ext[i][0], ext[i][1], turn0, turn1)) return fail("no corner");
     longer = longer || ext[i][0] > 0 || ext[i][1] > 0;
     if (c.concave) {
       ideal_cave += c.ideal;
@@ -2319,7 +2378,7 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
   auto b = run_boolean_checked(concave ? GS_BOOL_UNION : GS_BOOL_CUT, args, tools);
   TopoDS_Shape result = b->Shape();
   if (result.IsNull()) return fail("no result");
-  const double before = std::fabs(signed_volume(s->s)), after = std::fabs(signed_volume(result));
+  const double before = std::fabs(measured_volume(s->s)), after = std::fabs(measured_volume(result));
   const double change = concave ? after - before : before - after;
   const double tol = 1e-7 * std::max(1.0, before);
   if (longer ? change < ideal - tol : std::fabs(change - ideal) > tol)
@@ -2343,8 +2402,8 @@ int mixed_corners(const GsShape* s, const std::vector<uint32_t>& idx, const Shap
   auto b2 = run_boolean_checked(GS_BOOL_UNION, mids, cave);
   const TopoDS_Shape result = b2->Shape();
   if (result.IsNull()) return fail("no result");
-  const double before = std::fabs(signed_volume(s->s)), between = std::fabs(signed_volume(mid)),
-               after = std::fabs(signed_volume(result));
+  const double before = std::fabs(measured_volume(s->s)), between = std::fabs(measured_volume(mid)),
+               after = std::fabs(measured_volume(result));
   const double tol = 1e-7 * std::max(1.0, before);
   const double cut_away = before - between, filled = after - between;
   if (longer ? cut_away < ideal - tol : std::fabs(cut_away - ideal) > tol)
