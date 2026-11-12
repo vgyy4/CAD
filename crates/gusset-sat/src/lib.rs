@@ -208,5 +208,25 @@ pub fn to_step_nth(
     Ok(Converted { step, bodies, skipped_sheets, version: sat.version, warnings })
 }
 
+/// The bodies of a blob that are solids (convert to at least one closed shell), by their place
+/// in file order (the `nth` of [`to_step_nth`]), with the blob's body count.
+///
+/// # Errors
+/// [`SatError`] for a damaged blob.
+pub(crate) fn solid_bodies(bytes: &[u8], limits: &Limits) -> Result<(Vec<usize>, usize), SatError> {
+    let mut sat = parse(bytes, limits)?;
+    sat.scale = FUSION_CM_TO_MM;
+    let n = sat.recs.iter().filter(|r| r.ty == "body").count();
+    let mut out = Vec::new();
+    for nth in 0..n {
+        if let Ok((_, bodies, _, _)) = step::write(&sat, "body", None, false, &Colours::new(), None, Some((nth, n)))
+            && bodies > 0
+        {
+            out.push(nth);
+        }
+    }
+    Ok((out, n))
+}
+
 #[cfg(test)]
 mod tests;

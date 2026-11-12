@@ -2008,7 +2008,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         } else if c8 == "D7015B81" || c8 == DERIVED_BASE {
             // Base Feature: its visible bodies are bodies the file stores (section 13), handed
             // to the importer as `stored_body` features.
-            match base_feature_bodies(d, &g, fid) {
+            match base_feature_bodies(d, &g, fid, cx.acis) {
                 Ok(bodies) if bodies.is_empty() => {
                     skipped.push(json!({"name": name, "fusion_type": fusion_type, "reason": "Base Feature that makes no body", "source_id": fid}));
                     continue;
@@ -2363,8 +2363,18 @@ fn insert_json(d: &Design, fid: u64, name: &str, fusion_type: &str, class: &str)
 /// The bodies a Base Feature makes: per visible (DM) body, the history blob its state list names
 /// (`BREP.<id>.smbh`), the body's place in that blob and the number of bodies the blob holds
 /// (the DM bodies are its last ones, section 13). Empty for a base feature that makes no body.
-fn base_feature_bodies(d: &Design, g: &Graph, fid: u64) -> Result<Vec<(String, usize, usize)>, String> {
+/// Where a DM body's list is a later state of the component (4431: a Combine that follows took
+/// one DM body out of it, or later extrudes added bodies), the bodies are the PM bodies they
+/// stand for, taken from the PM blob ([`base_feature_pm_bodies`]).
+fn base_feature_bodies(
+    d: &Design,
+    g: &Graph,
+    fid: u64,
+    acis: &[(&str, &[u8])],
+) -> Result<Vec<(String, usize, usize)>, String> {
     let mut out = Vec::new();
+    let mut dms = Vec::new();
+    let mut later = false;
     for link in ref_ids(d, d.rec(fid)) {
         if !d.is(link, "D26351F0") || g.creator.get(&link) != Some(&fid) {
             continue;
@@ -2372,41 +2382,81 @@ fn base_feature_bodies(d: &Design, g: &Graph, fid: u64) -> Result<Vec<(String, u
         let Some(dm) = ref_ids(d, d.rec(link)).into_iter().find(|q| d.is(*q, "D3937028")) else {
             return Err("a Base Feature body link names no body".into());
         };
+        dms.push(dm);
         // The state list of the body that names a history blob.
-        let mut found: Option<(String, Vec<u64>)> = None;
-        for list in ref_ids(d, d.rec(dm)).into_iter().filter(|q| d.is(*q, "CD57BC48")) {
-            let members = ref_ids(d, d.rec(list));
-            let name = members.iter().find_map(|q| {
-                stream::wstrings_all(d.rec(*q))
-                    .into_iter()
-                    .map(|w| w.2)
-                    .find(|w| w.starts_with("BREP.") && w.ends_with(".smbh"))
-            });
-            if let Some(name) = name {
-                // The record lists its bodies twice (two reference lists).
-                let mut bodies: Vec<u64> = Vec::new();
-                for q in members.into_iter().filter(|q| d.is(*q, "D3937028")) {
-                    if !bodies.contains(&q) {
-                        bodies.push(q);
-                    }
-                }
-                found = Some((name, bodies));
-                break;
-            }
-        }
-        let Some((name, members)) = found else { return Err("a Base Feature body names no history blob".into()) };
-        let Some(at) = members.iter().position(|q| *q == dm) else {
-            return Err("a Base Feature body is not in its own state list".into());
+        let Some((name, members)) = state_list(d, dm, ".smbh") else {
+            return Err("a Base Feature body names no history blob".into());
         };
-        // The visible bodies are the last of the list (section 13).
-        out.push((name, at, members.len()));
-    }
-    for (_, at, count) in &out {
-        if *at + out.len() < *count {
-            return Err("a Base Feature body is not among the last bodies of its state list".into());
+        match members.iter().position(|q| *q == dm) {
+            Some(at) => out.push((name, at, members.len())),
+            None => later = true,
         }
     }
-    Ok(out)
+    if !later && out.iter().all(|(_, at, count)| *at + out.len() >= *count) {
+        // The visible bodies are the last of the list (section 13).
+        return Ok(out);
+    }
+    base_feature_pm_bodies(d, &dms, acis).ok_or_else(|| {
+        if later {
+            "a Base Feature body is not in its own state list".into()
+        } else {
+            "a Base Feature body is not among the last bodies of its state list".into()
+        }
+    })
+}
+
+/// The state list `CD57BC48` of body `body` that names a blob ending in `ext` (`.smb` or
+/// `.smbh`), and the bodies it lists (the record lists them twice, as two reference lists).
+fn state_list(d: &Design, body: u64, ext: &str) -> Option<(String, Vec<u64>)> {
+    for list in ref_ids(d, d.rec(body)).into_iter().filter(|q| d.is(*q, "CD57BC48")) {
+        let members = ref_ids(d, d.rec(list));
+        let name = members.iter().find_map(|q| {
+            stream::wstrings_all(d.rec(*q))
+                .into_iter()
+                .map(|w| w.2)
+                .find(|w| w.starts_with("BREP.") && w.ends_with(ext))
+        });
+        if let Some(name) = name {
+            let mut bodies: Vec<u64> = Vec::new();
+            for q in members.into_iter().filter(|q| d.is(*q, "D3937028")) {
+                if !bodies.contains(&q) {
+                    bodies.push(q);
+                }
+            }
+            return Some((name, bodies));
+        }
+    }
+    None
+}
+
+/// The DM bodies `dms` of a Base Feature as their PM bodies (the input bodies they stand for:
+/// each names the other, section 13), from the PM bodies' blob (`BREP.<id>.smb`). That blob
+/// keeps the component's bodies of earlier states too (4431: the switch's 1 PM body among 11
+/// solids and 17 sheets; the connector's 5 among 6 solids, the first a copy of the second): the
+/// PM list's bodies are, in list order, its last solid bodies, as the DM bodies are the last of a
+/// history blob. `None` where a DM body has no PM body of one list, or the blob has fewer solids.
+/// The importer's checks hold the bodies to every later stored state.
+fn base_feature_pm_bodies(d: &Design, dms: &[u64], acis: &[(&str, &[u8])]) -> Option<Vec<(String, usize, usize)>> {
+    let mut pms = Vec::with_capacity(dms.len());
+    for dm in dms {
+        let pm = ref_ids(d, d.rec(*dm))
+            .into_iter()
+            .find(|q| d.is(*q, "D3937028") && ref_ids(d, d.rec(*q)).first() == Some(dm))?;
+        pms.push(pm);
+    }
+    let (name, members) = state_list(d, *pms.first()?, ".smb")?;
+    if pms.iter().any(|pm| state_list(d, *pm, ".smb").is_none_or(|l| l.0 != name || l.1 != members)) {
+        return None;
+    }
+    let blob = acis.iter().find(|(n, _)| n.rsplit('/').next() == Some(name.as_str()))?.1;
+    let (solids, count) = crate::solid_bodies(blob, &crate::Limits::default()).ok()?;
+    let first = solids.len().checked_sub(members.len())?;
+    pms.iter()
+        .map(|pm| {
+            let at = members.iter().position(|q| q == pm)?;
+            Some((name.clone(), *solids.get(first + at)?, count))
+        })
+        .collect()
 }
 
 /// The input (PM) bodies of a Base Feature that it does not hand on, as `{"brep": <the PM
