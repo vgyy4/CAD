@@ -12,6 +12,8 @@
 //! * [`copper`], [`ratsnest`] (connectivity and unrouted connections), [`drc`] (a basic
 //!   design rule check) and [`rules`] (net classes and minimums).
 //! * [`fab`]: pick-and-place and BOM CSV files.
+//! * [`zones`]: zone fills (clearances, thermal reliefs, minimum width, islands) over
+//!   [`poly`] (polygon booleans and offsets, holes bridged in, triangles for drawing).
 //! * [`sch`]: KiCad schematics (`.kicad_sch`) and symbol libraries (`.kicad_sym`), read
 //!   and written losslessly; [`sch_edit`] edits them.
 //! * [`netlist`] (nets across the sheet hierarchy), [`erc`] (a basic electrical rule
@@ -32,12 +34,14 @@ pub mod fab;
 pub mod geom;
 pub mod gerber;
 pub mod netlist;
+pub mod poly;
 pub mod ratsnest;
 pub mod rules;
 pub mod sch;
 pub mod sch_edit;
 pub mod sexpr;
 pub mod sync;
+pub mod zones;
 
 pub use board::{Board, Limits};
 
@@ -47,3 +51,5 @@ mod tests;
 mod tests_edit;
 #[cfg(test)]
 mod tests_sch;
+#[cfg(test)]
+mod tests_zone;

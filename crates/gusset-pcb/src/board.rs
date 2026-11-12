@@ -230,6 +230,8 @@ pub struct Pad {
     pub mask_margin: Option<f64>,
     pub paste_margin: Option<f64>,
     pub paste_ratio: Option<f64>,
+    /// The pad's own zone connection (`zone_connect`), overriding the zone's.
+    pub zone_connect: Option<ZoneConnect>,
     /// Custom pad primitives (filled polygons and circles), in board coordinates.
     pub primitives: Vec<Shape>,
 }
@@ -306,6 +308,59 @@ pub struct Zone {
     pub fills: Vec<(String, Vec<Pt>)>,
     /// A keep-out/rule area (no copper of its own).
     pub keepout: bool,
+    /// Fill settings (copper zones).
+    pub settings: ZoneSettings,
+    /// Position of the zone's node in the board's tree.
+    pub node: usize,
+}
+
+/// How a zone joins the pads of its own net.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ZoneConnect {
+    /// Spokes across a gap (KiCad's default).
+    #[default]
+    Thermal,
+    /// Copper all round.
+    Solid,
+    /// Thermal reliefs for through-hole pads, solid for the others.
+    ThtThermal,
+    /// Not joined: the pad keeps the clearance.
+    None,
+}
+
+/// A zone's fill settings (mm; area in mm²).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ZoneSettings {
+    /// Gap to copper of other nets (`connect_pads (clearance)`).
+    pub clearance: f64,
+    /// Narrowest copper the fill keeps (`min_thickness`).
+    pub min_width: f64,
+    pub connect: ZoneConnect,
+    pub thermal_gap: f64,
+    pub thermal_width: f64,
+    /// Higher fills first; lower ones keep clear of them.
+    pub priority: i64,
+    /// 0: remove islands, 1: keep them, 2: remove those under `island_min_area`.
+    pub island_mode: u8,
+    pub island_min_area: f64,
+    /// Keep-out areas: whether copper pours are kept out.
+    pub no_pour: bool,
+}
+
+impl Default for ZoneSettings {
+    fn default() -> Self {
+        ZoneSettings {
+            clearance: 0.5,
+            min_width: 0.25,
+            connect: ZoneConnect::Thermal,
+            thermal_gap: 0.5,
+            thermal_width: 0.5,
+            priority: 0,
+            island_mode: 0,
+            island_min_area: 10.0,
+            no_pour: false,
+        }
+    }
 }
 
 /// A board (or one footprint read as a board of its own).
@@ -623,6 +678,50 @@ fn net_ref(n: &Node) -> NetRef {
     }
 }
 
+/// `(zone_connect 0..3)` of a pad or footprint: none, thermal, solid, thermal for
+/// through-hole pads only.
+fn zone_connect(n: &Node) -> Option<ZoneConnect> {
+    match num(n, "zone_connect").map(|v| v as i64) {
+        Some(0) => Some(ZoneConnect::None),
+        Some(1) => Some(ZoneConnect::Thermal),
+        Some(2) => Some(ZoneConnect::Solid),
+        Some(3) => Some(ZoneConnect::ThtThermal),
+        _ => None,
+    }
+}
+
+/// A zone's fill settings, KiCad's defaults where the file says nothing.
+fn zone_settings(n: &Node) -> ZoneSettings {
+    let d = ZoneSettings::default();
+    let len = |v: Option<f64>, def: f64| v.filter(|v| v.is_finite() && (0.0..=100.0).contains(v)).unwrap_or(def);
+    let cp = n.child("connect_pads");
+    let connect = match cp.and_then(|c| c.args().first()).and_then(Node::atom) {
+        Some("yes") => ZoneConnect::Solid,
+        Some("no") => ZoneConnect::None,
+        Some("thru_hole_only") => ZoneConnect::ThtThermal,
+        _ => ZoneConnect::Thermal,
+    };
+    let fill = n.child("fill");
+    let keep = n.child("keepout");
+    ZoneSettings {
+        clearance: len(cp.and_then(|c| num(c, "clearance")), d.clearance),
+        min_width: len(num(n, "min_thickness"), d.min_width),
+        connect,
+        thermal_gap: len(fill.and_then(|f| num(f, "thermal_gap")), d.thermal_gap),
+        thermal_width: len(fill.and_then(|f| num(f, "thermal_bridge_width")), d.thermal_width),
+        priority: num(n, "priority").filter(|v| v.is_finite()).map_or(0, |v| v.clamp(-1e9, 1e9) as i64),
+        island_mode: fill
+            .and_then(|f| num(f, "island_removal_mode"))
+            .filter(|v| (0.0..=2.0).contains(v))
+            .map_or(0, |v| v as u8),
+        island_min_area: fill
+            .and_then(|f| num(f, "island_area_min"))
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(d.island_min_area),
+        no_pour: keep.and_then(|k| k.child("copperpour")).and_then(|c| c.arg(0)) == Some("not_allowed"),
+    }
+}
+
 /// A stroke width: `(stroke (width w))` (KiCad 7+) or `(width w)`.
 fn stroke_width(n: &Node) -> f64 {
     n.child("stroke").and_then(|s| num(s, "width")).or_else(|| num(n, "width")).unwrap_or(0.0).max(0.0)
@@ -732,7 +831,7 @@ impl Reader<'_> {
                 Some("segment") => self.track(n, false, node)?,
                 Some("arc") => self.track(n, true, node)?,
                 Some("via") => self.via(n, node)?,
-                Some("zone") => self.zone(n)?,
+                Some("zone") => self.zone(n, node)?,
                 Some(h) if h.starts_with("gr_") => self.graphic(n, None, &Place::ORIGIN)?,
                 _ => {}
             }
@@ -776,7 +875,7 @@ impl Reader<'_> {
         Ok(())
     }
 
-    fn zone(&mut self, n: &Node) -> Result<(), Error> {
+    fn zone(&mut self, n: &Node, node: usize) -> Result<(), Error> {
         self.check(self.board.zones.len(), "zones")?;
         let max = self.limits.max_items;
         let mut layers: Vec<String> = Vec::new();
@@ -796,7 +895,8 @@ impl Reader<'_> {
             }
         }
         let keepout = n.child("keepout").is_some() || n.child("rule_area").is_some();
-        self.board.zones.push(Zone { net: net_ref(n), layers, outline, fills, keepout });
+        let settings = zone_settings(n);
+        self.board.zones.push(Zone { net: net_ref(n), layers, outline, fills, keepout, settings, node });
         Ok(())
     }
 
@@ -887,6 +987,7 @@ impl Reader<'_> {
         let fp_mask = num(n, "solder_mask_margin");
         let fp_paste = num(n, "solder_paste_margin");
         let fp_ratio = num(n, "solder_paste_ratio").or_else(|| num(n, "solder_paste_margin_ratio"));
+        let fp_zone = zone_connect(n);
         for c in n.args() {
             match c.head() {
                 Some("property") => match c.arg(0) {
@@ -908,6 +1009,7 @@ impl Reader<'_> {
                         pad.mask_margin = pad.mask_margin.or(fp_mask);
                         pad.paste_margin = pad.paste_margin.or(fp_paste);
                         pad.paste_ratio = pad.paste_ratio.or(fp_ratio);
+                        pad.zone_connect = pad.zone_connect.or(fp_zone);
                         fp.pads.push(self.board.pads.len());
                         self.board.pads.push(pad);
                     }
@@ -1010,6 +1112,7 @@ impl Reader<'_> {
             mask_margin: num(n, "solder_mask_margin"),
             paste_margin: num(n, "solder_paste_margin"),
             paste_ratio: num(n, "solder_paste_margin_ratio"),
+            zone_connect: zone_connect(n),
             primitives,
         })
     }

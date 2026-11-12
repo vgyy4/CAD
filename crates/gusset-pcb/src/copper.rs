@@ -18,6 +18,8 @@ pub enum ItemRef {
     Pad(usize),
     Track(usize),
     Via(usize),
+    /// A zone's fill.
+    Zone(usize),
 }
 
 /// One copper item: its pieces, copper layers (indices into [`Copper::layers`]) and net.
@@ -363,6 +365,33 @@ impl EdgeGrid {
             }
         }
         c
+    }
+
+    /// The gap from a piece of copper to the polygon's area when it is under `margin`
+    /// (zero or less: they touch), with a point between them.
+    pub fn gap(&self, p: &Prim, margin: f64) -> Option<(f64, Pt)> {
+        let bb = bbox_of(std::slice::from_ref(p));
+        if !boxes_near(&bb, &self.bbox, margin) {
+            return None;
+        }
+        let q = match p {
+            Prim::Capsule { a, .. } => *a,
+            Prim::Poly { pts } => *pts.first()?,
+        };
+        if self.inside(q) {
+            return Some((0.0, q));
+        }
+        let lo = [bb[0][0] - margin, bb[0][1] - margin];
+        let hi = [bb[1][0] + margin, bb[1][1] + margin];
+        let mut best: Option<(f64, Pt)> = None;
+        for k in self.ids_in(lo, hi) {
+            let Some((a, b)) = self.edges.get(k as usize) else { continue };
+            let g = gap(p, &Prim::Capsule { a: *a, b: *b, r: 0.0 });
+            if g.0 < margin && best.is_none_or(|x| g.0 < x.0) {
+                best = Some(g);
+            }
+        }
+        best
     }
 
     /// Whether a piece of copper touches (comes within `tol` of) the polygon.

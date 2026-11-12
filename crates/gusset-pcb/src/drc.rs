@@ -1,8 +1,8 @@
 //! A basic design rule check (ADR 0047 phase 1b): copper clearance per layer between
 //! different nets (the board's clearance, or the larger of the two nets' classes), track
 //! width, annular rings of vias and plated pads, holes and copper near the board edge.
-//! Zones are not checked (their fills are KiCad's result) and neither is copper inside
-//! one footprint's own pads of one net.
+//! Zone fills are checked against other nets' copper and each other; copper inside one
+//! footprint's own pads of one net is not.
 
 use crate::board::{Board, PadKind, PadShape, Pt};
 use crate::copper::{self, Copper, ItemRef, Prim};
@@ -43,6 +43,10 @@ pub fn describe(board: &Board, it: ItemRef) -> String {
         }
         ItemRef::Track(i) => format!("track {i}"),
         ItemRef::Via(i) => format!("via {i}"),
+        ItemRef::Zone(i) => match board.zones.get(i).and_then(|z| board.net_name(&z.net)) {
+            Some(n) => format!("zone {i} ({n})"),
+            None => format!("zone {i}"),
+        },
     }
 }
 
@@ -89,10 +93,85 @@ pub fn check(board: &Board, rules: &Rules, max: usize) -> Vec<Violation> {
             });
         }
     }
+    zones(board, rules, &copper, max, &mut out);
     annular_rings(board, rules, max, &mut out);
     edges(board, rules, &copper, max, &mut out);
     out.truncate(max);
     out
+}
+
+/// Zone fills against the copper of other nets on their layer, and against each other.
+fn zones(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Vec<Violation>) {
+    let mut fills: Vec<(usize, Option<String>, usize, copper::EdgeGrid, f64)> = Vec::new();
+    for (zi, z) in board.zones.iter().enumerate().filter(|(_, z)| !z.keepout) {
+        let net = board.net_name(&z.net);
+        for (layer, poly) in z.fills.iter().filter(|(_, p)| p.len() >= 3) {
+            let Some(l) = copper.layers.iter().position(|x| x == layer) else { continue };
+            let need = z.settings.clearance.max(rules.clearance_of(net.as_deref()));
+            fills.push((zi, net.clone(), l, copper::EdgeGrid::new(poly), need));
+        }
+    }
+    let widest = rules.classes.iter().filter_map(|c| c.clearance).fold(rules.clearance, f64::max);
+    let mut seen = std::collections::BTreeSet::new();
+    for (zi, net, l, grid, zone_need) in &fills {
+        for it in copper.items.iter().filter(|it| it.layers.contains(l)) {
+            if out.len() >= max {
+                return;
+            }
+            if net.is_some() && it.net == *net {
+                continue;
+            }
+            let need = rules.clearance_of(it.net.as_deref()).max(*zone_need).max(rules.clearance);
+            if !copper::boxes_near(&it.bbox, &grid.bbox, need.max(widest)) || seen.contains(&(*zi, it.what)) {
+                continue;
+            }
+            let g = it
+                .prims
+                .iter()
+                .filter_map(|p| grid.gap(p, need))
+                .fold(None, |b: Option<(f64, Pt)>, x| if b.is_none_or(|b| x.0 < b.0) { Some(x) } else { b });
+            let Some((g, at)) = g else { continue };
+            if g < need - SLACK {
+                seen.insert((*zi, it.what));
+                let (da, db) = (describe(board, ItemRef::Zone(*zi)), describe(board, it.what));
+                let (code, message) = if g <= 0.0 {
+                    ("short", format!("{da} and {db} of different nets touch"))
+                } else {
+                    ("clearance", format!("{da} and {db}: {} apart, {} needed", mm(g), mm(need)))
+                };
+                let layer = copper.layers.get(*l).cloned();
+                out.push(Violation { code, message, at, layer, items: vec![ItemRef::Zone(*zi), it.what] });
+            }
+        }
+    }
+    // Fills of different nets on one layer: each one's corners against the other.
+    for (i, (za, na, la, ga, need_a)) in fills.iter().enumerate() {
+        for (zb, nb, lb, gb, need_b) in fills.iter().skip(i + 1) {
+            if la != lb || (na.is_some() && na == nb) || za == zb || out.len() >= max {
+                continue;
+            }
+            let need = need_a.max(*need_b);
+            if !copper::boxes_near(&ga.bbox, &gb.bbox, need) {
+                continue;
+            }
+            let found = board.zones.get(*za).into_iter().flat_map(|z| z.fills.iter()).find_map(|(_, p)| {
+                p.iter().find_map(|q| {
+                    let prim = Prim::Capsule { a: *q, b: *q, r: 0.0 };
+                    gb.gap(&prim, need).filter(|g| g.0 < need - SLACK)
+                })
+            });
+            if let Some((g, at)) = found {
+                let (da, db) = (describe(board, ItemRef::Zone(*za)), describe(board, ItemRef::Zone(*zb)));
+                out.push(Violation {
+                    code: if g <= 0.0 { "short" } else { "clearance" },
+                    message: format!("{da} and {db}: {} apart, {} needed", mm(g.max(0.0)), mm(need)),
+                    at,
+                    layer: copper.layers.get(*la).cloned(),
+                    items: vec![ItemRef::Zone(*za), ItemRef::Zone(*zb)],
+                });
+            }
+        }
+    }
 }
 
 fn annular_rings(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violation>) {

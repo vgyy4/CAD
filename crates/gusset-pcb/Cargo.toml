@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 gerber-types.workspace = true
+i_overlay.workspace = true
 gusset-kernel.workspace = true
 libm.workspace = true
 

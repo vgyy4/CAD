@@ -54,6 +54,8 @@ seccompiler = "0.5.0"
 rlimit = "0.11.0"
 # gusset-pcb: Gerber X2 output (ADR 0047); MIT OR Apache-2.0.
 gerber-types = "0.7.0"
+# gusset-pcb: polygon booleans and offsets for zone fills (ADR 0047); MIT OR Apache-2.0.
+i_overlay = { version = "9.1.0", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 serde_path_to_error = "0.1"
