@@ -36,7 +36,7 @@ const NON_GEOMETRIC: [(&str, &str); 13] = [
 /// Derived Base Feature: the bodies of another design, derived into this one (section 30).
 const DERIVED_BASE: &str = "B1E5B971";
 
-fn op_name(op: u8) -> String {
+pub(super) fn op_name(op: u8) -> String {
     match op {
         1 => "join".into(),
         2 => "cut".into(),
@@ -917,11 +917,34 @@ fn sweep_json(
     let profile = feature::profile_sketch_of(d, rec);
     j.insert("sketch".into(), profile.and_then(|s| sketch_names.get(&s)).map_or(Value::Null, |s| s.as_str().into()));
     j.insert("sketch_source_id".into(), profile.map_or(Value::Null, Value::from));
+    let path = sweep_path(cx, fid);
+    let ok = path.is_ok();
+    let (path_sketch, curve_ids) = match path {
+        Ok((s, c)) => (Some(s), c),
+        Err(why) => {
+            j.insert("error".into(), why.into());
+            (None, Vec::new())
+        }
+    };
+    let curves: Vec<String> = curve_ids.iter().map(|c| format!("c{c}")).collect();
+    j.insert("path".into(), path_sketch.and_then(|s| sketch_names.get(&s)).map_or(Value::Null, |s| s.as_str().into()));
+    j.insert("path_source_id".into(), path_sketch.map_or(Value::Null, Value::from));
+    j.insert("path_curves".into(), curves.into());
+    j.insert("orientation".into(), "frenet".into());
+    j.insert("operation".into(), op_name(op).into());
+    j.insert("target".into(), Value::Null);
+    let shift = profile.filter(|_| ok).and_then(|p| path_start_offset(cx, p, path_sketch?, &curve_ids));
+    (j, shift)
+}
+
+/// The path of a sweep or pipe `fid`: its sketch and the curves of it, from the feature's
+/// `5A1BF548` -> `E2CEFD18` sketch-curve references (`u64 sketch data id`, `u64 crv_primary_id`).
+pub(super) fn sweep_path(cx: &mut Ctx, fid: u64) -> Result<(u64, Vec<u64>), String> {
+    let d = cx.d;
     let mut path_sketch: Option<u64> = None;
-    let mut curves: Vec<String> = Vec::new();
     let mut curve_ids: Vec<u64> = Vec::new();
     let mut ok = true;
-    for q in ref_ids(d, rec) {
+    for q in ref_ids(d, d.rec(fid)) {
         if !d.is(q, "5A1BF548") {
             continue;
         }
@@ -945,25 +968,15 @@ fn sweep_json(
             path_sketch = Some(sk);
             let s = cx.sketch(sk);
             match sketch::curve_by_primary(d, &s, prim) {
-                Some(cid) => {
-                    curves.push(format!("c{cid}"));
-                    curve_ids.push(cid);
-                }
+                Some(cid) => curve_ids.push(cid),
                 None => ok = false,
             }
         }
     }
-    j.insert("path".into(), path_sketch.and_then(|s| sketch_names.get(&s)).map_or(Value::Null, |s| s.as_str().into()));
-    j.insert("path_source_id".into(), path_sketch.map_or(Value::Null, Value::from));
-    j.insert("path_curves".into(), curves.into());
-    if !ok || path_sketch.is_none() {
-        j.insert("error".into(), "sweep path is not a list of sketch curves of one sketch".into());
+    match path_sketch {
+        Some(p) if ok => Ok((p, curve_ids)),
+        _ => Err("sweep path is not a list of sketch curves of one sketch".into()),
     }
-    j.insert("orientation".into(), "frenet".into());
-    j.insert("operation".into(), op_name(op).into());
-    j.insert("target".into(), Value::Null);
-    let shift = profile.filter(|_| ok).and_then(|p| path_start_offset(cx, p, path_sketch?, &curve_ids));
-    (j, shift)
 }
 
 /// The faces a feature's profile selection names (`2CA5A1CD` -> `5662F619` -> face recipes), by
@@ -1818,6 +1831,17 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 }
                 feats.push(Value::Object(j));
             }
+        } else if d.is(fid, super::loft::LOFT) {
+            let mut j = super::loft::loft_json(cx, fid, &nm, &sketch_names, &mut feats);
+            let made = op_target(&mut j, &g, d, fid, &names);
+            j.insert("creates_bodies".into(), made.into());
+            feats.push(Value::Object(j));
+        } else if d.is(fid, super::loft::PIPE) {
+            let mut j = super::loft::pipe_json(cx, fid, &nm, &sketch_names, &mut feats);
+            in_own_component(&mut j, "path", comp, &mut feats, nbefore, format!("{nm} path"));
+            let made = op_target(&mut j, &g, d, fid, &names);
+            j.insert("creates_bodies".into(), made.into());
+            feats.push(Value::Object(j));
         } else if d.is(fid, "E3849A15") {
             let mut j = revolve_json(cx, fid, &nm, &sketch_names);
             in_own_component(&mut j, "sketch", comp, &mut feats, nbefore, format!("{nm} sketch"));
@@ -2899,6 +2923,19 @@ fn blocker(f: &Value) -> Option<String> {
             }
             if !has("sketch") || !(has("path") || has("helix")) {
                 return Some("its profile or path sketch is not decoded".into());
+            }
+            let op = text("operation").unwrap_or("");
+            if !matches!(op, "new" | "join" | "cut" | "intersect") {
+                return Some(format!("its operation is {op}"));
+            }
+            if matches!(op, "join" | "cut" | "intersect") && !f.get("target").is_some_and(Value::is_string) {
+                return Some("the body it changes is not one body of one feature".into());
+            }
+            None
+        }
+        "loft" => {
+            if has("error") {
+                return Some(text("error").unwrap_or("its layout is not recognised").to_string());
             }
             let op = text("operation").unwrap_or("");
             if !matches!(op, "new" | "join" | "cut" | "intersect") {
