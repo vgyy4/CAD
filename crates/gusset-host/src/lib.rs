@@ -46,7 +46,7 @@
 //!   The job itself still finishes: an edit is committed, its evaluation is reported as
 //!   cancelled, and the next job rebuilds. The flag is cleared when the next job starts.
 
-use gusset_commands::import::{CancelFlag, begin_import, complete_import};
+use gusset_commands::import::{CancelFlag, PreparedImport, begin_import, complete_import};
 use gusset_commands::session::Change;
 use gusset_commands::{CmdCtx, CommandError, Session, execute};
 use gusset_history::{Actor, BranchId, NodeId};
@@ -619,6 +619,35 @@ impl HostHandle {
         std::thread::Builder::new()
             .name("gusset-import".into())
             .spawn(move || done(h.import(ctx, args, &cancel)))
+            .map(|_| ())
+            .map_err(|_| internal("starting the import"))
+    }
+
+    /// The first two phases of `import.file` on a new thread, for a GUI that asks the user what
+    /// to do with the file's feature history before committing: returns at once; `done` receives
+    /// `Err` when the file could not be opened (already audited), else the parse result, which
+    /// the caller passes to [`complete_import`] on the model thread (also when the user cancels,
+    /// as a `cancelled` error, so it is audited).
+    ///
+    /// # Errors
+    /// When the thread cannot be started (`done` is then not called).
+    pub fn import_prepare_detached<D>(
+        &self,
+        ctx: CmdCtx,
+        args: Value,
+        cancel: CancelFlag,
+        done: D,
+    ) -> Result<(), CommandError>
+    where
+        D: FnOnce(Result<Result<PreparedImport, CommandError>, CommandError>) + Send + 'static,
+    {
+        let h = self.clone();
+        std::thread::Builder::new()
+            .name("gusset-import".into())
+            .spawn(move || {
+                let job = h.exec(move |s, _| begin_import(s, &ctx, args)).and_then(|r| r);
+                done(job.map(|j| j.run(&cancel)));
+            })
             .map(|_| ())
             .map_err(|_| internal("starting the import"))
     }
