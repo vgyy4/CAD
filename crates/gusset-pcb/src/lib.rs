@@ -12,6 +12,8 @@
 //! * [`copper`], [`ratsnest`] (connectivity and unrouted connections), [`drc`] (a basic
 //!   design rule check) and [`rules`] (net classes and minimums).
 //! * [`fab`]: pick-and-place and BOM CSV files.
+//! * [`route`]: interactive routing in 45° segments around other nets' copper, with
+//!   arc corners.
 //! * [`zones`]: zone fills (clearances, thermal reliefs, minimum width, islands) over
 //!   [`poly`] (polygon booleans and offsets, holes bridged in, triangles for drawing).
 //! * [`sch`]: KiCad schematics (`.kicad_sch`) and symbol libraries (`.kicad_sym`), read
@@ -36,6 +38,7 @@ pub mod gerber;
 pub mod netlist;
 pub mod poly;
 pub mod ratsnest;
+pub mod route;
 pub mod rules;
 pub mod sch;
 pub mod sch_edit;
@@ -49,6 +52,8 @@ pub use board::{Board, Limits};
 mod tests;
 #[cfg(test)]
 mod tests_edit;
+#[cfg(test)]
+mod tests_route;
 #[cfg(test)]
 mod tests_sch;
 #[cfg(test)]

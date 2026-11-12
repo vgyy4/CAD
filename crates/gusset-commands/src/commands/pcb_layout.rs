@@ -5,10 +5,10 @@ use super::pcb::{PcbImport, board_source, no_board, write_outputs};
 use super::pcb_edit::commit_board;
 use super::*;
 use crate::pcb_session;
-use gusset_pcb::{Limits, zones};
+use gusset_pcb::{Limits, route, zones};
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<PcbFillZones>(), spec::<PcbExportStep>()]
+    vec![spec::<PcbFillZones>(), spec::<PcbRoute>(), spec::<PcbExportStep>()]
 }
 
 fn pcb_err(e: gusset_pcb::board::Error) -> CommandError {
@@ -55,6 +55,89 @@ impl Command for PcbFillZones {
             per_zone.iter().map(|(z, a)| json!({ "zone": z, "area_mm2": (a * 100.0).round() / 100.0 })).collect();
         let extra = json!({ "zones": areas, "polygons": polygons, "notes_user_text": filled.notes });
         commit_board(s, ctx, "Fill zones", open.file.clone(), &b, None, extra)
+    }
+}
+
+/// Routes a track through points, around other nets' copper.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PcbRoute {
+    /// Start, waypoints, end (mm).
+    pub points: Vec<[f64; 2]>,
+    /// Copper layer (default F.Cu).
+    #[serde(default)]
+    pub layer: Option<String>,
+    /// Default: the net at the start.
+    #[serde(default)]
+    pub net: Option<String>,
+    /// mm (default: the net class's).
+    #[serde(default)]
+    pub width: Option<f64>,
+    /// false: straight between the points.
+    #[serde(default)]
+    pub around: Option<bool>,
+    /// Round corners into arcs of this radius (mm).
+    #[serde(default)]
+    pub arc_radius: Option<f64>,
+}
+
+impl Command for PcbRoute {
+    const ID: &'static str = "pcb.route";
+    const TITLE: &'static str = "Route track";
+    const DESCRIPTION: &'static str =
+        "Lay a track through points in 45° segments, walking around other nets with the clearance rules.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if !(2..=1000).contains(&self.points.len()) {
+            return Err(CommandError::args("a route has 2 to 1000 points"));
+        }
+        if self.points.iter().flatten().any(|v| !v.is_finite() || v.abs() > 10_000.0) {
+            return Err(CommandError::args("points must be within 10 m"));
+        }
+        if self.arc_radius.is_some_and(|r| !(r.is_finite() && (0.0..=100.0).contains(&r))) {
+            return Err(CommandError::args("arc_radius is 0 to 100 mm"));
+        }
+        let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
+        let b = &open.board;
+        let layer = self.layer.clone().unwrap_or_else(|| "F.Cu".into());
+        if !b.copper_layers().contains(&layer) {
+            return Err(CommandError::args("the layer is not a copper layer of this board"));
+        }
+        let first = self.points.first().copied().unwrap_or_default();
+        let net = self.net.clone().or_else(|| b.net_at(first, &layer));
+        let width = self.width.unwrap_or_else(|| open.rules.track_width_of(net.as_deref()));
+        if !(width.is_finite() && width > 0.0 && width <= 100.0) {
+            return Err(CommandError::args("the width is above 0 and at most 100 mm"));
+        }
+        let obs = route::Obstacles::new(b, &open.rules, &layer, net.as_deref(), width);
+        let grid = (open.rules.clearance_of(net.as_deref()).min(width) / 2.0).clamp(0.05, 0.25);
+        let mut pts: Vec<[f64; 2]> = vec![first];
+        for (i, w) in self.points.windows(2).enumerate() {
+            let &[a, c] = w else { continue };
+            let leg = if self.around.unwrap_or(true) {
+                route::walkaround(&obs, a, c, grid, true).ok_or_else(|| {
+                    CommandError::not_found(format!("no clear way from point {i} to point {}", i + 1))
+                        .hint("move the points, route on another layer, or pass around: false")
+                })?
+            } else {
+                vec![a, c]
+            };
+            pts.extend(leg.into_iter().skip(1));
+        }
+        let pts = route::simplify(&pts);
+        let segs = route::with_arcs(&obs, &pts, self.arc_radius.unwrap_or(0.0));
+        let length = route::length(&segs);
+        let mut nb = b.clone();
+        let index = nb.add_route(&segs, width, &layer, net.as_deref(), &Limits::default()).map_err(pcb_err)?;
+        let extra = json!({
+            "tracks": nb.tracks.len() - index,
+            "first_track": index,
+            "length_mm": (length * 1000.0).round() / 1000.0,
+            "width": width,
+            "net_user_text": net,
+        });
+        commit_board(s, ctx, "Route track", open.file.clone(), &nb, None, extra)
     }
 }
 

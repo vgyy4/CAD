@@ -85,3 +85,32 @@ fn step_export_checks_its_target_and_reaches_the_kernel() {
     assert_eq!(e.code, "io", "{e:?}");
     assert!(!s.project_dir.clone().unwrap().join("b.step").exists());
 }
+
+#[test]
+fn a_route_walks_around_the_via_and_completes_the_connection() {
+    let mut s = layout_session();
+    run(&mut s, &u(1), "pcb.open", json!({"path": "layout.kicad_pcb"}));
+    assert_eq!(open(&mut s).ratsnest.unrouted(), 3, "A once, GND twice");
+    // R1 pad 2 (A) to R2 pad 1 (A) on F.Cu, past the SIG via at (15, 10).
+    let r = run(&mut s, &u(2), "pcb.route", json!({"points": [[6, 10], [24, 10]], "arc_radius": 0.5}));
+    assert_eq!(r["net_user_text"], "A", "{r}");
+    assert_eq!(r["width"], 0.25, "{r}");
+    assert!(r["length_mm"].as_f64().unwrap() > 18.0, "{r}");
+    let b = open(&mut s);
+    assert_eq!(b.ratsnest.unrouted(), 2);
+    assert!(b.board.tracks.iter().any(|t| t.mid.is_some()), "arc corners");
+    assert!(gusset_pcb::drc::check(&b.board, &b.rules, 20).is_empty());
+    // around: false lays what it is given, even through the via.
+    run(&mut s, &u(3), "history.undo", json!({}));
+    let r = run(&mut s, &u(4), "pcb.route", json!({"points": [[6, 10], [24, 10]], "around": false}));
+    assert_eq!(r["tracks"], 1, "{r}");
+    let b = open(&mut s);
+    assert!(gusset_pcb::drc::check(&b.board, &b.rules, 20).iter().any(|v| v.code == "short"));
+    // Off the board there is no way; bad input.
+    let e = execute(&mut s, &u(5), "pcb.route", json!({"points": [[6, 10], [40, 10]]})).unwrap_err();
+    assert_eq!(e.code, "not_found", "{e:?}");
+    let e = execute(&mut s, &u(5), "pcb.route", json!({"points": [[6, 10]]})).unwrap_err();
+    assert_eq!(e.code, "invalid_args");
+    let e = execute(&mut s, &u(5), "pcb.route", json!({"points": [[6, 10], [9, 9]], "layer": "F.SilkS"})).unwrap_err();
+    assert_eq!(e.code, "invalid_args");
+}

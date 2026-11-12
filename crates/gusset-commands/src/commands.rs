@@ -74,7 +74,7 @@ pub use pcb_edit::{
     PcbAddTrack, PcbAddVia, PcbDelete, PcbDrc, PcbExportBom, PcbExportPos, PcbMoveFootprint, PcbNew, PcbOpen, PcbSave,
     PcbSetOutline,
 };
-pub use pcb_layout::{PcbExportStep, PcbFillZones};
+pub use pcb_layout::{PcbExportStep, PcbFillZones, PcbRoute};
 pub use sch::{
     PcbUpdateFromSchematic, SchAddLabel, SchAddSymbol, SchAddWire, SchDelete, SchErc, SchMove, SchNetlist, SchNew,
     SchOpen, SchSave,

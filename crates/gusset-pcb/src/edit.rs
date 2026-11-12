@@ -211,6 +211,56 @@ impl Board {
         Ok(self.tracks.len().saturating_sub(1))
     }
 
+    /// Adds a routed track (lines and arcs) on one layer in one edit; returns the index of
+    /// its first piece in [`Board::tracks`].
+    ///
+    /// # Errors
+    /// Bad coordinates or width, a layer that is not copper, an empty route, or a failed
+    /// re-read.
+    pub fn add_route(
+        &mut self,
+        segs: &[crate::route::Seg],
+        width: f64,
+        layer: &str,
+        net: Option<&str>,
+        limits: &Limits,
+    ) -> Result<usize, Error> {
+        if !(width.is_finite() && width > 0.0 && width <= 100.0) {
+            return Err(bad("the track width must be above 0 and at most 100 mm"));
+        }
+        if segs.is_empty() || segs.len() > 100_000 {
+            return Err(bad("a route has 1 to 100000 pieces"));
+        }
+        self.copper_layer(layer)?;
+        let first = self.tracks.len();
+        let net_node = self.net_node(net)?;
+        for s in segs {
+            check_pt(s.start)?;
+            check_pt(s.end)?;
+            if libm::hypot(s.end[0] - s.start[0], s.end[1] - s.start[1]) < 1e-6 {
+                continue;
+            }
+            let mut items = match s.mid {
+                Some(m) => {
+                    check_pt(m)?;
+                    vec![Node::sym("arc"), xy("start", s.start), xy("mid", m), xy("end", s.end)]
+                }
+                None => vec![Node::sym("segment"), xy("start", s.start), xy("end", s.end)],
+            };
+            items.push(kv("width", Node::num(width)));
+            items.push(kv("layer", Node::str(layer)));
+            items.extend(net_node.clone());
+            if self.writes_uuids() {
+                let n = self.tree.items().len();
+                let text = sexpr::write(&list(items.clone()));
+                items.push(kv("uuid", Node::str(uuid_for(&text, n))));
+            }
+            self.tree.items_mut().ok_or_else(|| bad("not a board"))?.push(list(items));
+        }
+        self.reread(limits)?;
+        Ok(first)
+    }
+
     /// Adds a through via; returns its index in [`Board::vias`].
     ///
     /// # Errors
