@@ -6,14 +6,14 @@ Usage: python3 -I scripts/fetch-samples.py DEST [SET...]
 Each set lands in its own new folder under DEST. Downloaded files are untrusted data:
 nothing here runs them, and nothing that reads them should either (use `python3 -I`,
 pass paths as arguments). Samples are never committed. Sets: freecad, slippad, zenodo,
-arig, adafruit, adafruit-more (default: all but adafruit-more).
+arig, adafruit, adafruit-more, adafruit-next (default: all but the two broad Fusion sets).
 
 The samples back these tests, gated on environment variables:
   GUSSET_FCSTD_SAMPLES   DEST/freecad-examples
   GUSSET_SLDPRT_SAMPLES  DEST/slip-pad
   GUSSET_IPT_SAMPLES     DEST/zenodo        (Inventor parts, records 4309294, 11061412, 13941029, 8028536)
   GUSSET_OLE_SAMPLES     DEST/zenodo        (Solid Edge record 8028435 and the Inventor ones)
-  GUSSET_F3D_SAMPLES     DEST/adafruit, DEST/adafruit-more (the broad Fusion corpus)
+  GUSSET_F3D_SAMPLES     DEST/adafruit, DEST/adafruit-more, DEST/adafruit-next (the broad Fusion corpus)
 """
 
 import hashlib
@@ -174,7 +174,7 @@ MORE_TOTAL = 1500 << 20
 MORE_MIN_FREE = 4 << 30
 
 
-def adafruit_more(root):
+def adafruit_more(root, name="adafruit-more", shift=0.0):
     repo = os.path.join(root, "adafruit-cad")
     clone(ADAFRUIT, repo, full=True)
     head = git("rev-parse", "HEAD", cwd=repo).strip()
@@ -182,8 +182,11 @@ def adafruit_more(root):
                    if p.lower().endswith((".f3d", ".f3z")))
     # Evenly spread over the sorted paths so every product family is represented.
     step = max(1, len(paths) / MORE_FILES)
-    picks = [paths[int(i * step)] for i in range(min(MORE_FILES, len(paths)))]
-    out = os.path.join(root, "adafruit-more")
+    taken = {paths[int(i * step)] for i in range(min(MORE_FILES, len(paths)))} if shift else set()
+    picks = [paths[int(i * step + shift * step)] for i in range(min(MORE_FILES, len(paths)))
+             if int(i * step + shift * step) < len(paths)]
+    picks = [q for q in dict.fromkeys(picks) if q not in taken]
+    out = os.path.join(root, name)
     os.makedirs(out, exist_ok=True)
     total = 0
     for p in picks:
@@ -200,12 +203,18 @@ def adafruit_more(root):
             continue
         if os.path.exists(dest):
             total += os.path.getsize(dest)
-    print("adafruit-more:", len(os.listdir(out)), "files,", total >> 20, "MiB")
+    print(f"{name}:", len(os.listdir(out)), "files,", total >> 20, "MiB")
+
+
+def adafruit_next(root):
+    """A second broad sample of the same repository, half a step on from adafruit-more and
+    disjoint from it (grows the Fusion corpus once adafruit-more is worked through)."""
+    adafruit_more(root, "adafruit-next", 0.5)
 
 
 SETS = {"freecad": freecad, "slippad": slippad, "zenodo": zenodo, "arig": arig, "adafruit": adafruit,
-        "adafruit-more": adafruit_more}
-DEFAULT_SETS = [n for n in SETS if n != "adafruit-more"]
+        "adafruit-more": adafruit_more, "adafruit-next": adafruit_next}
+DEFAULT_SETS = [n for n in SETS if n not in ("adafruit-more", "adafruit-next")]
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
