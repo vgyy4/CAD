@@ -83,17 +83,15 @@ pub(super) fn read_text(d: &super::stream::Design, id: u64) -> Result<SketchText
         *v = f64_at(rec, at + 8 * k).filter(|v| v.is_finite()).ok_or("the text has no placement")?;
     }
     cover::field(rec, at, 128, "text.placement");
-    // A turn in the sketch plane and a shift: no z, no scale.
+    // A turn in the sketch plane and a shift: no z, no scale (6124's carry 3e-14 out of the
+    // plane and 7e-15 cm along its normal).
     let (c, s) = (m[0], m[4]);
+    let tiny = |v: f64| v.abs() < 1e-9;
     let rigid = ((c * c + s * s) - 1.0).abs() < 1e-6
         && (m[1] + s).abs() < 1e-6
         && (m[5] - c).abs() < 1e-6
-        && m[2] == 0.0
-        && m[6] == 0.0
-        && (m[10] - 1.0).abs() < 1e-12
-        && m[8] == 0.0
-        && m[9] == 0.0
-        && m[11] == 0.0
+        && [m[2], m[6], m[8], m[9], m[11]].into_iter().all(tiny)
+        && (m[10] - 1.0).abs() < 1e-9
         && m.get(12..) == Some(&[0.0, 0.0, 0.0, 1.0][..]);
     if !rigid {
         return Err("the text's placement is not a turn in its sketch plane".into());
