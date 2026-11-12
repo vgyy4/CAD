@@ -226,25 +226,133 @@ designs and generated files.
 * MCP: core tool list unchanged (31 tools, 17901 of 18000 bytes); the command tools average 570
   bytes (153 tools; was 581); the largest new one is `sch_add_symbol` at 767 bytes.
 
+## Phase 2b (2026-11-12): board layout
+* **Polygon areas (`gusset-pcb` `poly`)**: booleans and round offsets through `i_overlay` 9.1
+  (MIT OR Apache-2.0, with `i_float`, `i_shape`, `i_tree`, `i_key_sort` from the same author,
+  all MIT OR Apache-2.0; `cargo deny` clean, no duplicates); round shapes as polygons whose edges
+  are tangent to them (they cover the true shape, at most 5 µm beyond); holes bridged into
+  their outline ("fractured", as Gerber regions and KiCad's filled polygons are written, the
+  bridge picked at the copy of a repeated vertex whose inside angle faces the hole); our own
+  ear clipping (vertices bucketed on a grid; a copy of an ear's corner blocks it only when one
+  of its edges runs into the ear) for drawing, as egui fills convex shapes only.
+* **Zone fills (`zones`, `pcb.fill_zones`, undoable)**, per zone and copper layer, highest
+  priority first: the outline inside the board outline shrunk by copper-to-edge; minus other
+  nets' copper (pads, tracks, vias, copper drawings, fills of zones filled before) grown by the
+  larger of the zone's and the net classes' clearances (+6 µm for chords and rounding),
+  non-plated holes and pour keep-outs; minus the zone net's pads grown by the thermal gap
+  (thermal), or by the clearance (`connect_pads no`), or nothing (solid; `thru_hole_only`:
+  thermal for through-hole pads, solid for the others; a pad's or footprint's `zone_connect`
+  overrides); opened by the minimum width; thermal spokes of the bridge width along the pad's
+  axes (45° turned for round pads) where their ends land in the fill, clipped clear again;
+  islands not touching the zone's net removed (mode 0), kept (1) or kept from the minimum
+  area (2); zones without a net keep every island. Written back as `filled_polygon`s (`fill
+  yes`), so Gerbers, connectivity and 3D take them as before. Hatched zones are filled solid
+  (noted). Zone DRC: fills against other nets' copper (clearance or short) and against each
+  other's corners.
+* **Routing (`route`, `pcb.route`)**: A* over an octilinear grid in a window round the two ends
+  (at most 1.5 M points; the step is half the smaller of clearance and width, 0.05 to 0.25 mm);
+  a point is free when its gap to every obstacle is at least the needed gap (the larger net
+  class clearance plus half the width; copper-to-edge for the outline; keep-outs that forbid
+  tracks) plus half a grid diagonal, so the straight moves between free points are clear; then
+  pulled tight: from each corner the farthest corner reachable by one or two 45° segments
+  that are clear (checked exactly) is joined, so tracks hug obstacles. Corners can be rounded
+  into arcs of a radius where the arc stays clear (written as KiCad `arc` tracks). A route is
+  added in one edit (`Board::add_route`/`add_batch`). `pcb.route` lays a track through points,
+  around obstacles (or straight with `around: false`), width from the net class, net from the
+  start. Push-and-shove is not done.
+* **Specctra (`specctra`, `pcb.export_dsn`, `pcb.import_ses`)**, from the published format:
+  the DSN in µm at 0.1 µm, Y up; layers, the largest outline loop as the boundary and the
+  others and non-plated holes as keep-outs, the rule and the via padstacks (KiCad-style
+  `Via[0-1]_600:300_um` names), one image per footprint placed at its origin unrotated on the
+  front with pins where the board has them (bottom-side pads keep their layers in their
+  padstacks, so no rotation or mirroring convention of the reader matters), padstacks by shape
+  (circles, axis-aligned rectangles, else polygons), nets with `REF-PIN` pins (repeated pad
+  numbers get `@n`), net classes with width, clearance and via, and the tracks and vias
+  already laid. The SES reader takes any `(resolution unit n)`, the session's padstack sizes
+  and our via names for drills; it is bounded (64 MiB, depth 64, 8 M nodes) and fuzzed
+  (`ses_read`). Applying a session replaces the routes (or keeps them) in one undoable edit;
+  layers the board lacks are refused, nets it lacks are reported.
+* **Topola** (codeberg.org/topola, crates.io 0.1.0): every source file carries
+  `SPDX-License-Identifier: MIT OR Apache-2.0` (its `topola_specctra` parser MIT) and its
+  dependencies are permissive, so it would vet; but 0.1.0's autorouter is a stub (the
+  `Autorouter` type wraps a router of 26 lines and routes nothing), its API is unstable and it
+  brings about a hundred crates (`spade`, `rstar`, `i_triangle` 0.40 with an older `i_overlay`,
+  `rand` 0.10, `undoredo`, `derive_more`...). **Not integrated**; the DSN/SES hand-off works
+  with any autorouter, Topola included once it routes. Freerouting (GPL) is never bundled: the
+  user runs it on the DSN and imports the SES.
+* **STEP (`pcb.export_step`)**: the board with its holes and the components (their STEP models
+  from `models_dir`, else boxes), optionally outer copper, written by the kernel's STEP writer,
+  each body named with its colour.
+* **Editor (`pcb_view`)**: the Route tool starts on a pad, track end or via and takes its net;
+  the preview walks around obstacles with the net class's width (cached obstacles and path); a
+  click lays the previewed path (`pcb.route`, `around: false`), a click on a pad of the net
+  finishes, V places a via where it fits and goes on on the next copper layer, `/` turns the
+  bend, arc corners optional. Zone fills drawn filled (triangles cached by polygon contents).
+  Texts drawn at their height and angle in the UI font (KiCad's stroke font is not used: its
+  licence was not settled here; plotting texts would use `gusset-text` outlines). The picked
+  track's or via's net is highlighted. Shift-click adds to the picks, a Shift-drag box picks
+  what lies inside; Delete removes every picked track and via; dragging a picked footprint
+  moves the others. A footprint browser lists a library folder (`Lib.pretty` folders, or one
+  `.pretty` folder) for the Place tool (`pcb.add_footprint`: free reference `FP<n>`, angle).
+* **Schematic**: moving a symbol moves the wire ends on its pins (straight); `sch.set_field`
+  edits Value, Footprint, Reference (and its instances) or any field, from the panel too; a
+  picked wire or label highlights its net, and the shown tab's highlighted net is highlighted
+  in the other. Bus members: a bus sheet pin joins the child's member labels to the parent's
+  of the same names; sheet pins on one parent bus join member by member in order (vectors of
+  one width), named by the bus's label.
+
+## Results of phase 2b (2026-11-12)
+* Local check, not in the repository (CC-BY-SA data), release build, the boards' own rules
+  without their project files: refilling the zones of the 7 demo boards gives areas within 0.1
+  to 1.7% of KiCad's own fills (ecc83-pp 1256 vs 1254 mm², interf_u 5622 vs 5570,
+  pic_programmer 10726 vs 10619, complex_hierarchy 5445 vs 5356, the 4-layer coldfire board
+  29982 vs 30018, video 40770 vs 40959), StickHub 12% less (639 vs 725: its project file's
+  rules are not read here), and **no zone DRC finding** on any of them (KiCad's stored fills give 726 on StickHub against our rules without
+  its project file); the largest (video, 2 zones of 19 000 mm²) fills in 2.3 s, its 258 000
+  vertices triangulate in 0.7 s, and every triangulation covers its fill exactly. Routing pad
+  pairs of 30 nets on F.Cu with every other track in place: ecc83-pp 9 of 9, pic_programmer
+  30 of 30 (the slowest 28 ms), video 8 of 30 (a dense, fully routed board: the others have no
+  way on one layer). The video schematic now gives 2021 of 2046 pads KiCad's net (was 1300);
+  the other four designs still match every pad.
+* Not checked: Freerouting on our DSN (running a downloaded program was not allowed here); the
+  DSN follows the published format and round-trips through our SES reader in tests.
+* Tests: `gusset-pcb` 58 (new: `tests_zone` 8 — polygon booleans, offsets and exact
+  triangulation of plates with many holes, zone settings, fill areas against hand-computed
+  values for an empty zone, a crossing track, a thermal relief with spokes, solid and no
+  connection, priorities and keep-outs, written fills read back and passing the DRC, a bad
+  fill caught as a short; `tests_route` 4 — free 45° routes, walkaround round a wall passing
+  the DRC and completing the ratsnest, arc corners written and read, blocked ends and via
+  checks; `tests_dsn` 3 — DSN structure, routes back from a session at another resolution,
+  hostile sessions; `tests_sch` 2 — wires following a symbol and field edits, bus members);
+  `gusset-commands` `tests_pcb_layout` 5 (fill with undo and Gerbers, STEP target checks,
+  route, DSN/SES with undo and agent path rules, footprint placement) and the `sch.set_field`
+  steps; `gusset-app` `tests_pcb` 3 more (route previews and finishing, cached fill triangles,
+  box select, multi delete and the footprint browser) and highlighting and field edits in
+  `tests_sch`; OCCT `gusset-cli/tests/pcb_import.rs` 1 more (the board as STEP read back
+  through the import worker: exact board volume, labels, colours). Fuzz target `ses_read`.
+* MCP: core tool list unchanged (31 tools, 17901 of 18000 bytes); the command tools average 568
+  bytes (160 tools; was 570); the largest new one is `pcb_route` at 798 bytes.
+
 ## Next (out of scope of this ADR's work; each needs its own ADR before work)
-* **Schematic, after phase 2a**: bus member connectivity (`D[0..7]`, `{A B}` groups, bus sheet
-  pins); dragging wires with symbols; multi-select and box select; annotation of a whole design;
-  symbol and field editing (value, footprint assignment) and a symbol library browser; sheet
-  creation and editing; net highlighting; KiCad 5 `.sch` files; back-annotation from the board;
+* **Routing**: push-and-shove, dragging tracks, differential pairs and length tuning, blind and
+  buried vias, routing across layers in one search; detecting Freerouting on the PATH and
+  running it with the user's approval (export DSN, run, import SES).
+* **Zones**: hatched fills, copper text as an obstacle, zones over several outlines, KiCad's
+  exact thermal spoke rules (minimum spoke count), filling on edit.
+* **Schematic, after phase 2b**: wires dragged orthogonally with symbols; bus aliases and
+  KiCad's naming of bus member nets in every case (25 of 2046 video pads differ in the name
+  chosen); multi-select and box select; annotation of a whole design; a symbol library
+  browser; sheet creation and editing; KiCad 5 `.sch` files; back-annotation from the board;
   `kicad-cli sch erc` for the authoritative check.
-* **Interactive routing**: push-and-shove, walk-around, 45° modes, track drag, differential pairs.
-* **Autorouting**: Topola (MIT, Rust) when mature, else Specctra DSN out and Freerouting as an
-  external GPL process (detected, never bundled).
-* **Zone refill** (pour with clearances and thermal reliefs) and zone DRC; filled zone drawing.
 * **KiCad library content pack** (footprints, symbols, 3D models; CC-BY-SA-4.0 with exception) as
   an optional download with notices; placing footprints from it.
 * DRC: hole-to-hole, courtyard overlap, silk on pads, drill sizes, per-class rules beyond
   clearance; KiCad's custom rules (`.kicad_dru`).
-* Editor: text on silkscreen (plotted and drawn), mirrored text on flip, arc tracks drawn by the
-  user, multi-select and box select, footprint placement from a library, board outline drawing
-  with the mouse (today: the `pcb.set_outline` form).
-* From phase 1a: STEP export of the board; Gerber object attributes (`.N`, `.P`, `.C`);
-  re-reading our Gerbers with a permissive parser in tests; a corpus test over local KiCad samples.
+* Editor: texts plotted in Gerbers (`gusset-text` outlines) and mirrored on flip, arc tracks
+  drawn freehand, board outline drawing with the mouse (today: the `pcb.set_outline` form),
+  moving tracks and vias.
+* From phase 1a: Gerber object attributes (`.N`, `.P`, `.C`); re-reading our Gerbers with a
+  permissive parser in tests; a corpus test over local KiCad samples.
 * **KiCad IPC bridge** (protobuf over NNG to a running KiCad, after the `.proto` licence is confirmed)
   and a `kicad-cli` wrapper for authoritative DRC/ERC and STEP/IPC-2581/ODB++ export.
 
