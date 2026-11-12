@@ -2170,6 +2170,12 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             }
         } else if c8 == "428B5C6E" {
             feats.push(insert_json(d, fid, &nm, &fusion_type, class));
+        } else if c8 == super::pcb::COIL {
+            match cx.coil_primitive(&g, fid, &nm) {
+                Ok(made) => feats.extend(made),
+                Err(why) => feats.push(json!({"type": "unsupported", "fusion_type": fusion_type, "name": nm,
+                    "class_guid": class, "source_id": fid, "error": why})),
+            }
         } else if matches!(c8.as_str(), super::pcb::BOX | super::pcb::LAYER | super::pcb::COPPER) {
             let read = match c8.as_str() {
                 super::pcb::BOX => cx.box_primitive(&g, fid, &nm).map(|mut made| {

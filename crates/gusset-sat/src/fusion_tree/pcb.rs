@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 pub(super) const BOX: &str = "F193B033";
 pub(super) const LAYER: &str = "94B9F77E";
 pub(super) const COPPER: &str = "2BB91A84";
+pub(super) const COIL: &str = "DB2E4EDC";
 
 /// Most holes one drill is read with (the importer's limit of profile picks).
 const MAX_HOLES: usize = 256;
@@ -373,6 +374,124 @@ impl Ctx<'_> {
                 "profiles": [{"point": [mm(size[0] / 2.0), mm(size[1] / 2.0)]}],
                 "distance": mm(height * right), "symmetric": false, "operation": op, "target": null,
                 "creates_bodies": u64::from(op == "new"), "direction_from": from}),
+        ])
+    }
+
+    /// `CoilPrimitive` `DB2E4EDC`: a triangle swept along a helix (sections 29, 40, 46). The
+    /// record's body: `u8 0`, the operation (`u32`, 4 a new body), `u32 1`, then the `Diameter`
+    /// and `Height` holders, a `DA1231DE` entity, the coil's origin snapshot (`7B6C3C2D`), the
+    /// `Revolutions` holder and a `u32` (the section's position), the `SectionSize` holder and a
+    /// `u32` (the section's type), `TaperAngle`, `u32 1` and the body link. The coil climbs the
+    /// snapshot's z from its origin and starts on its x (3722: the root's coil has no matrix and
+    /// starts on +x; the Cap's a half turn about z and starts on -x, as their stored helices
+    /// do). Both stored coils turn right-handed; the hand is not read (no left-handed sample).
+    pub(super) fn coil_primitive(&self, g: &Graph, fid: u64, name: &str) -> Result<Vec<Value>, String> {
+        let d = self.d;
+        let rec = d.rec(fid);
+        let ps = params_of(d, fid);
+        let val = |n: &str| pget(&ps, n).and_then(|p| p.value).ok_or_else(|| format!("the coil has no {n}"));
+        let (dia, height, size, turns) = (val("Diameter")?, val("Height")?, val("SectionSize")?, val("Revolutions")?);
+        if ![dia, height, size, turns].iter().all(|v| v.is_finite() && *v > 0.0) || size >= dia / 2.0 {
+            return Err("a size of the coil is not positive".into());
+        }
+        if val("TaperAngle")? != 0.0 {
+            return Err("the coil is tapered".into());
+        }
+        if ps.iter().any(|(n, _)| n == "Pitch") {
+            return Err("the coil has a pitch parameter, which is not read".into());
+        }
+        // Each holder by its parameter's name, and the `u32` behind the holder.
+        let refs = refs_at(d, rec, 0);
+        let after = |want: &str| -> Option<u32> {
+            let (at, _) = refs.iter().find(|(_, q)| {
+                d.is(*q, "D91D429C")
+                    && ref_ids(d, d.rec(*q)).into_iter().any(|p| {
+                        d.is(p, "7A6A3D31") && super::stream::param(d, p).and_then(|p| p.name).as_deref() == Some(want)
+                    })
+            })?;
+            let (_, end) = ref_end(d, rec, *at)?;
+            let skip = rec.get(end..)?.iter().take(3).take_while(|b| **b == 0).count();
+            cover::field(rec, end + skip, 4, "coil.enum");
+            u32_at(rec, end + skip)
+        };
+        let first = refs.iter().find(|(_, q)| d.is(*q, "D91D429C")).map(|(o, _)| *o).ok_or("the coil has no holder")?;
+        cover::field(rec, first.saturating_sub(8), 4, "coil.operation");
+        if u32_at(rec, first.saturating_sub(4)) != Some(1) || u32_at(rec, first.saturating_sub(8)) != Some(4) {
+            return Err("the coil does not make a new body (join, cut and intersect are not read)".into());
+        }
+        // Position and type, as seen: 3 and 3 (the triangle outside the diameter, pointing out),
+        // 1 and 4 (inside it, pointing in). The triangle is equilateral, `SectionSize` across
+        // the radius, its side on the diameter.
+        let (r, apex) = match (after("Revolutions"), after("SectionSize")) {
+            (Some(3), Some(3)) => (dia / 2.0, dia / 2.0 + size),
+            (Some(1), Some(4)) => (dia / 2.0, dia / 2.0 - size),
+            (p, t) => return Err(format!("the coil's section ({p:?}, {t:?}) is not one seen")),
+        };
+        let half = size / 3f64.sqrt();
+        let prof = [(r, -half), (r, half), (apex, 0.0)];
+        let s =
+            refs.iter().map(|(_, q)| *q).find(|q| d.is(*q, "7B6C3C2D")).ok_or("the coil names no origin snapshot")?;
+        let (rot, t) = snapshot_frame(d.rec(s))
+            .map_or(([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0; 3]), |p| (p.r, p.t));
+        let col = |k: usize| -> V3 { [rot[0][k], rot[1][k], rot[2][k]] };
+        let (fx, fy, fz, o) = (col(0), col(1), col(2), t.map(|c| c / 10.0));
+        // Where the history blob holds the coil's body (or a later state of it), that body has
+        // the box of the coil's ends. 3722's state lists do not name their own bodies; the
+        // importer's state checks then confirm the coil.
+        let stored = match self.made(g, fid) {
+            Ok(made) => match made.as_slice() {
+                [one] => one.shape.vertex_box,
+                _ => return Err(format!("the coil makes {} bodies, not one", made.len())),
+            },
+            Err(_) => None,
+        };
+        let mut blo = [f64::INFINITY; 3];
+        let mut bhi = [f64::NEG_INFINITY; 3];
+        let end = std::f64::consts::TAU * turns;
+        for (a, h0) in [(0.0f64, 0.0), (end, height)] {
+            for (pr, ph) in prof {
+                let p = geom::add(
+                    o,
+                    geom::add(
+                        geom::add(geom::mul(fx, pr * a.cos()), geom::mul(fy, pr * a.sin())),
+                        geom::mul(fz, h0 + ph),
+                    ),
+                );
+                for i in 0..3 {
+                    if let (Some(l), Some(h), Some(v)) = (blo.get_mut(i), bhi.get_mut(i), p.get(i)) {
+                        *l = l.min(*v);
+                        *h = h.max(*v);
+                    }
+                }
+            }
+        }
+        let sizes_agree = |(lo, hi): (V3, V3)| {
+            (0..3).all(|i| {
+                let span = |a: &V3, b: &V3| b.get(i).copied().unwrap_or(0.0) - a.get(i).copied().unwrap_or(0.0);
+                (span(&blo, &bhi) - span(&lo, &hi)).abs() < 1e-6
+            })
+        };
+        if stored.is_some_and(|b| !sizes_agree(b)) {
+            return Err("the box of the coil's ends is not the box of its stored body".into());
+        }
+        let v3 = |v: V3| json!([round9(v[0]), round9(v[1]), round9(v[2])]);
+        let sketch = format!("{name} section");
+        let points: Vec<Value> = prof
+            .iter()
+            .enumerate()
+            .map(|(j, (pr, ph))| json!({"id": format!("p{j}"), "x": mm(*pr), "y": mm(*ph)}))
+            .collect();
+        let curves: Vec<Value> = (0..3)
+            .map(|j| json!({"id": format!("l{j}"), "type": "line", "start": format!("p{j}"), "end": format!("p{}", (j + 1) % 3)}))
+            .collect();
+        Ok(vec![
+            json!({"type": "sketch", "name": sketch,
+                "plane": {"origin": v3(o.map(mm)), "x_axis": v3(fx), "y_axis": v3(fz)},
+                "plane_note": "the coil's axial section at its start", "points": points, "curves": curves}),
+            json!({"type": "sweep", "name": name, "source_id": fid, "sketch": sketch, "operation": "new",
+                "creates_bodies": 1,
+                "helix": {"origin": v3(o.map(mm)), "axis": v3(fz), "x": v3(fx), "radius": mm(r),
+                    "pitch": mm(height / turns), "height": mm(height)}}),
         ])
     }
 

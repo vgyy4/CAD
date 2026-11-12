@@ -91,7 +91,9 @@ impl Edit<'_> {
         // A stored body is one body of its Base Feature (`maker` picks it).
         let one_body = |f: &Value| match f.get("type").and_then(Value::as_str) {
             Some("stored_body") => true,
-            Some("extrude" | "sweep" | "mirror") => f.get("creates_bodies").and_then(Value::as_u64) == Some(1),
+            Some("extrude" | "sweep" | "revolve" | "mirror") => {
+                f.get("creates_bodies").and_then(Value::as_u64) == Some(1)
+            }
             _ => false,
         };
         let target = match self.links_of(*target_sel).as_slice() {
