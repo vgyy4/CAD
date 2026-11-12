@@ -1094,6 +1094,7 @@ impl Ctx<'_> {
             .or_else(|| self.rim_at_plane(faces))
             .or_else(|| self.rim_at_cone(faces))
             .or_else(|| self.edge_by_round_ends(faces))
+            .or_else(|| self.rim_named_minus_one(faces))
             .or_else(|| self.mirrored_edge(faces))
     }
 
@@ -1167,6 +1168,27 @@ impl Ctx<'_> {
             return Some((at(std::f64::consts::PI), true, path));
         }
         None
+    }
+
+    /// An edge named by generator `-1` of an extrude, a side of it, and its end cap `2` (6252's
+    /// `Chamfer1 (2)`, adafruit-more 5981's `Chamfer2`): in both the stored state after the blend
+    /// has the rim of the end cap `2` blended (6252: the chamfer face `1 [353]` runs from cap `2`
+    /// at z 7.4 mm to the side at z 7.8 mm; no stored face carries `-1`), so the edge is taken as
+    /// the one between the side and cap `2`.
+    fn rim_named_minus_one(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
+        let [a, b, end] = faces else { return None };
+        let ([(ga, oa)], [(gb, ob)], [(ge, oe)]) = (a.as_slice(), b.as_slice(), end.as_slice()) else {
+            return None;
+        };
+        let side = match (ga.as_str(), gb.as_str()) {
+            ("-1", g) if g != "1" && g != "2" && !g.starts_with('-') => b,
+            (g, "-1") if g != "1" && g != "2" && !g.starts_with('-') => a,
+            _ => return None,
+        };
+        if ge != "2" || oa != ob || oa != oe || oa.len() != 1 {
+            return None;
+        }
+        self.edge_midpoint(&[end.clone(), side.clone()])
     }
 
     /// A planar face, modelled or stored: its unit normal and a point.
