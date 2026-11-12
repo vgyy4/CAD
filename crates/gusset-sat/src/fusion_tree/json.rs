@@ -131,8 +131,9 @@ fn sketch_json(cx: &mut Ctx, fid: u64, name: &str) -> Option<(Value, u64)> {
 }
 
 /// The side and reach of a through-all cut, measured on the stored bodies: copies of the profile's
-/// straight edges at offsets along the normal (cm).
-fn through_reach(cx: &mut Ctx, fid: u64) -> Option<f64> {
+/// straight edges at offsets along the normal (cm). A cut through all to both sides (`symmetric`)
+/// is as long as twice its farther reach: the whole length of a symmetric extrude.
+fn through_reach(cx: &mut Ctx, fid: u64, symmetric: bool) -> Option<f64> {
     let g = cx.ext_geom(fid)?;
     let (pl, z) = (g.pl, g.pl.z);
     let sets = cx.edge_sets();
@@ -168,6 +169,9 @@ fn through_reach(cx: &mut Ctx, fid: u64) -> Option<f64> {
     }
     let pos: Vec<f64> = ts.iter().copied().filter(|t| *t > 0.0).collect();
     let neg: Vec<f64> = ts.iter().copied().filter(|t| *t < 0.0).collect();
+    if symmetric {
+        return ts.iter().map(|t| 2.0 * t.abs()).reduce(f64::max);
+    }
     match (pos.is_empty(), neg.is_empty()) {
         (false, true) => Some(pos.into_iter().fold(f64::NEG_INFINITY, f64::max)),
         (true, false) => Some(neg.into_iter().fold(f64::INFINITY, f64::min)),
@@ -328,7 +332,9 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
             distance = distance.map(|t| 2.0 * t);
             j.insert("symmetric_measure".into(), "each side's distance, doubled".into());
         }
-        (3, None) => {
+        // Through all to both sides (1264's Extrude2 and Extrude3, no distance): the record
+        // has no measure, and none is needed.
+        (3, None) if along.is_some() => {
             j.insert(
                 "error".into(),
                 "whether its symmetric distance is the whole length or each side's is not read".into(),
@@ -381,7 +387,7 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         if let Some(t) = tool_reach(cx, fid) {
             distance = Some(mm(t));
             j.insert("extent_from".into(), "the length of the stored tool body".into());
-        } else if let Some(t) = through_reach(cx, fid).filter(|t| *t != 0.0) {
+        } else if let Some(t) = through_reach(cx, fid, e.extent == 3).filter(|t| *t != 0.0) {
             // Through all: measured on the stored body.
             distance = Some(mm(t));
             j.insert("extent_from".into(), "through all (reach measured on the stored body)".into());

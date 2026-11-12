@@ -122,12 +122,19 @@ pub(super) struct ExtRaw {
 }
 
 /// `u32 operation, u32 extent, u32 kind, 00|01 01` (position varies with the class version).
+/// The second flag is 0 in some extrudes that start at an offset (2530's Extrude2 and Extrude3,
+/// 4632's 5067): there the `u32` start kind that follows is 1 or 2, never 0.
 fn enum_search(rec: &[u8], from: usize, limit: usize) -> Option<usize> {
     let limit = limit.min(rec.len());
     let mut s = from;
     while s + 14 <= limit {
-        let w = rec.get(s..s + 14)?;
+        let w = rec.get(s..(s + 18).min(rec.len()))?;
         let z = |k: usize| w.get(k..k + 3) == Some(&[0, 0, 0]);
+        let flag = match w.get(13) {
+            Some(1) => true,
+            Some(0) => matches!(w.get(14), Some(1 | 2)) && z(15),
+            _ => false,
+        };
         if matches!(w.first(), Some(1..=5))
             && z(1)
             && matches!(w.get(4), Some(1..=4))
@@ -135,7 +142,7 @@ fn enum_search(rec: &[u8], from: usize, limit: usize) -> Option<usize> {
             && matches!(w.get(8), Some(0..=3))
             && z(9)
             && matches!(w.get(12), Some(0 | 1))
-            && w.get(13) == Some(&1)
+            && flag
         {
             return Some(s);
         }
@@ -214,11 +221,13 @@ pub(super) fn extrude_raw(d: &Design, fid: u64) -> Option<ExtRaw> {
 /// references, none in those with typed ones) and the feature's selection list (`u32 1` and a
 /// reference). Each side's: 6299 Extrude2 (2) (11 mm, its stored tool 22 mm long), 324
 /// Extrude1 and Extrude11 (16.5 and 6 mm, bodies 33 and 12 mm long); the whole length:
-/// 4632 Extrude1 (12.4 mm, its body 12.4 mm long) and the L-Bracket's 110 mm.
+/// 4632 Extrude1 (12.4 mm, its body 12.4 mm long) and the L-Bracket's 110 mm. In records with
+/// typed references and a start kind (817's Extrude2 and Extrude3, "( 4.2 / 2 ) * 1 mm") the
+/// list stands 236 bytes after the direction, past five typed references.
 pub(super) fn symmetric_measure(rec: &[u8], from: usize) -> Option<bool> {
     let tail = rec.get(from..)?;
     // The selection list: `01 00 00 00`, then a reference `01 <u32 id> 00 00 00 00`.
-    let list = (0..tail.len().min(200)).find(|i| {
+    let list = (0..tail.len().min(320)).find(|i| {
         tail.get(*i..i + 5) == Some(&[1, 0, 0, 0, 1][..]) && tail.get(i + 9..i + 13) == Some(&[0, 0, 0, 0][..])
     })?;
     // The zeros before it: the measure's three high bytes and the gap.
