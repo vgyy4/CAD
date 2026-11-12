@@ -642,6 +642,12 @@ impl App {
         );
     }
 
+    /// Points the session's project folder at `dir` (screenshot demos read their libraries there).
+    #[cfg(test)]
+    pub(crate) fn set_project_dir(&mut self, dir: PathBuf) {
+        let _ = self.host.exec(move |s, _| s.project_dir = Some(dir));
+    }
+
     /// Runs a registry command as the user and **waits** for the result (automation and
     /// tests; the UI itself uses [`App::submit_command`]). Reports it in the status bar.
     pub fn run(&mut self, id: &str, args: Value) -> Result<Value, CommandError> {

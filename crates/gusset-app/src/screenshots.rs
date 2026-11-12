@@ -22,6 +22,8 @@ fn kernel() -> Arc<dyn Kernel> {
 
 fn app(theme: ThemeKind) -> App {
     let dir = std::env::temp_dir().join(format!("gusset-shots-{}-{:?}", std::process::id(), theme));
+    std::fs::create_dir_all(dir.join("data")).ok();
+    std::fs::create_dir_all(dir.join("cache")).ok();
     let dirs = gusset_store::paths::DataDirs::at(dir.join("data"), dir.join("cache"));
     let mut a = App::new(kernel(), Some(dirs));
     a.theme = theme;
@@ -284,5 +286,76 @@ fn generate_gallery() {
             h.hover_at(egui::pos2(860.0, 330.0));
             h.run_steps(3);
         });
+    }
+}
+
+const SYM_LIB: &str = r##"(kicad_symbol_lib (version 20241209) (generator "hand")
+  (symbol "R" (pin_names (offset 0)) (in_bom yes) (on_board yes)
+    (property "Reference" "R" (at 2.032 0 90) (effects (font (size 1.27 1.27))))
+    (property "Value" "10k" (at 0 0 90) (effects (font (size 1.27 1.27))))
+    (symbol "R_0_1" (rectangle (start -1.016 -2.54) (end 1.016 2.54) (stroke (width 0.254) (type default)) (fill (type background))))
+    (symbol "R_1_1"
+      (pin passive line (at 0 3.81 270) (length 1.27) (name "~" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27)))))
+      (pin passive line (at 0 -3.81 90) (length 1.27) (name "~" (effects (font (size 1.27 1.27)))) (number "2" (effects (font (size 1.27 1.27)))))))
+  (symbol "GND" (power) (in_bom yes) (on_board yes)
+    (property "Reference" "#PWR" (at 0 -6.35 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "Value" "GND" (at 0 -3.81 0) (effects (font (size 1.27 1.27))))
+    (symbol "GND_1_1" (pin power_in line (at 0 0 270) (length 0) (hide yes) (name "GND" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27))))))))
+"##;
+
+const FOOTPRINT: &str = r#"(footprint "R_0603" (version 20240108) (generator "hand") (layer "F.Cu")
+  (property "Reference" "REF**" (at 0 -1.5) (layer "F.SilkS"))
+  (property "Value" "R_0603" (at 0 1.5) (layer "F.Fab"))
+  (fp_rect (start -1.4 -0.7) (end 1.4 0.7) (stroke (width 0.1) (type default)) (fill none) (layer "F.CrtYd"))
+  (pad "1" smd rect (at -0.8 0) (size 0.8 0.9) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "2" smd rect (at 0.8 0) (size 0.8 0.9) (layers "F.Cu" "F.Paste" "F.Mask")))"#;
+
+/// An app whose project folder holds the demo symbol and footprint libraries.
+fn demo_app(theme: ThemeKind) -> App {
+    let mut a = app(theme);
+    let dir = std::env::temp_dir().join(format!("gusset-shots-lib-{}-{:?}", std::process::id(), theme));
+    std::fs::create_dir_all(dir.join("fp/Pads.pretty")).ok();
+    std::fs::write(dir.join("demo.kicad_sym"), SYM_LIB).ok();
+    std::fs::write(dir.join("fp/Pads.pretty/R_0603.kicad_mod"), FOOTPRINT).ok();
+    a.set_project_dir(dir);
+    a.wait_idle();
+    a
+}
+
+#[test]
+fn generate_gallery_pcb_sch() {
+    let Some(dir) = std::env::var_os("GUSSET_SCREENSHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&dir).ok();
+    for (theme, t) in [(ThemeKind::Dark, "dark"), (ThemeKind::Light, "light")] {
+        // The PCB tab with a demo board: two resistors, a track, a via.
+        let mut a = demo_app(theme);
+        a.run("pcb.new", json!({"width": "40 mm", "height": "30 mm"})).ok();
+        for at in [[12, 10], [28, 20]] {
+            a.run("pcb.add_footprint", json!({"library": "fp", "footprint": "Pads:R_0603", "at": at})).ok();
+        }
+        a.run("pcb.add_track", json!({"start": [12.8, 10], "end": [27.2, 20], "width": 0.25})).ok();
+        a.run("pcb.add_via", json!({"at": [20, 15]})).ok();
+        a.wait_idle();
+        a.ribbon_action(crate::ribbon::Action::PcbTab);
+        shoot(&dir, &format!("24-pcb-{t}"), a, |h| h.run_steps(4));
+        // The Schematic tab with two resistors, ground and a label.
+        let mut a = demo_app(theme);
+        a.run("sch.new", json!({"name": "demo"})).ok();
+        for (sym, at) in [("R", [100, 50]), ("R", [110, 50]), ("GND", [100, 60])] {
+            a.run("sch.add_symbol", json!({"library": "demo.kicad_sym", "symbol": sym, "at": at})).ok();
+        }
+        a.run("sch.add_wire", json!({"points": [[100, 46.19], [110, 46.19]]})).ok();
+        a.run("sch.add_wire", json!({"points": [[100, 53.81], [100, 60]]})).ok();
+        a.run("sch.add_label", json!({"text": "OUT", "at": [110, 53.81]})).ok();
+        a.wait_idle();
+        a.ribbon_action(crate::ribbon::Action::SchTab);
+        shoot(&dir, &format!("25-schematic-{t}"), a, |h| h.run_steps(4));
+        // Empty states: the tabs with nothing open.
+        let mut a = app(theme);
+        a.ribbon_action(crate::ribbon::Action::PcbTab);
+        shoot(&dir, &format!("26-pcb-empty-{t}"), a, |_| {});
+        let mut a = app(theme);
+        a.ribbon_action(crate::ribbon::Action::SchTab);
+        shoot(&dir, &format!("27-schematic-empty-{t}"), a, |_| {});
     }
 }
