@@ -9,6 +9,20 @@ refuses tag pushes); the tag triggers the release workflow after the milestone r
 Phase 3 has started (see Next).
 
 ## Done
+- PCB design (ADR 0047, 2026-11-12; owner request: build on the best-loved open-source
+  tools instead of from scratch, research in docs/research/pcb-design.md). `gusset-pcb`
+  reads and writes KiCad boards and schematics losslessly (S-expressions; KiCad libraries
+  are data only, never vendored). Board: Gerber (gerber-types) and Excellon drill export,
+  pick-and-place and BOM, ratsnest, DRC, board as a 3D body and STEP export with component
+  models, footprint placement from `.pretty` libraries, interactive 45-degree routing round
+  other nets' copper (A* plus exact clearance; vias, arc corners), zone fills with thermal
+  reliefs, priorities and island removal (i_overlay), Specctra DSN export and SES import
+  for an external autorouter (Freerouting). Schematic: symbols, wires, labels, buses and
+  hierarchical sheets, netlist, ERC, field edits, sync to the board. Boards and schematics
+  live in the document history (undoable); `pcb.*` / `sch.*` registry commands sit
+  outside the core MCP list; egui PCB and Schematic tabs with net highlighting shared
+  between them. Fuzz targets `pcb_read`, `sch_read`, `ses_read`. Next (ADR 0047): push-and-
+  shove routing, launching Freerouting from the PATH, hatched zones, text in Gerbers.
 - Body patterns that keep their copies apart (2026-11-11): `merge: false` on
   `pattern_linear` / `pattern_circular` makes copy `i` a body `<pattern>_copy<i>` that later
   features target; tree import `"merge": false` with copies `<name>[i]` (ADRs 0004, 0042).
