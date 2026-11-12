@@ -37,6 +37,9 @@ mod measure;
 mod ops;
 pub(crate) mod pcb;
 mod pcb_edit;
+mod sch;
+#[cfg(test)]
+pub(crate) use sch::footprint_candidates as sch_footprint_candidates;
 mod sheet;
 mod sim;
 mod sketch_ops;
@@ -70,6 +73,10 @@ pub use pcb_edit::{
     PcbAddTrack, PcbAddVia, PcbDelete, PcbDrc, PcbExportBom, PcbExportPos, PcbMoveFootprint, PcbNew, PcbOpen, PcbSave,
     PcbSetOutline,
 };
+pub use sch::{
+    PcbUpdateFromSchematic, SchAddLabel, SchAddSymbol, SchAddWire, SchDelete, SchErc, SchMove, SchNetlist, SchNew,
+    SchOpen, SchSave,
+};
 pub use sheet::{ContourFlange, EdgeFlange, ExportFlat, FlatPatternQuery, Tab};
 pub use sim::{FaceLoad, ModalQuery, OptimizeQuery, StaticQuery};
 pub use sketch_ops::{SketchExplodePattern, SketchPattern, SketchTrim};
@@ -102,6 +109,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(configuration::specs());
     v.extend(sketch_ops::specs());
     v.extend(pcb::specs());
+    v.extend(sch::specs());
     v
 }
 

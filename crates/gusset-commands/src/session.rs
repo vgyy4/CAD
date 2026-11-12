@@ -136,6 +136,8 @@ pub struct Session {
     preview: Option<Option<Arc<Evaluation>>>,
     /// The open PCB, parsed, by its stored hash (ADR 0047).
     pub(crate) pcb_cache: crate::pcb_session::Cache,
+    /// The open schematic, parsed, by its stored hashes (ADR 0047 phase 2a).
+    pub(crate) sch_cache: crate::sch_session::Cache,
 }
 
 impl std::fmt::Debug for Session {
@@ -191,6 +193,7 @@ impl Session {
             drawing_cache: gusset_drawing::HlrCache::default(),
             cam_cache: None,
             pcb_cache: crate::pcb_session::Cache::default(),
+            sch_cache: crate::sch_session::Cache::default(),
         }
     }
 

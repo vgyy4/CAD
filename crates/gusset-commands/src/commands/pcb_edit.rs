@@ -44,7 +44,7 @@ fn file_name(path: &str) -> String {
 }
 
 /// Stores a board (and its project file) and commits a document that names it.
-fn commit_board(
+pub(super) fn commit_board(
     s: &mut Session,
     ctx: &CmdCtx,
     label: &str,

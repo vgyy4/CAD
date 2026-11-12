@@ -17,6 +17,7 @@ pub mod pcb_session;
 pub mod registry;
 pub mod scad_build;
 mod scad_text;
+pub mod sch_session;
 pub mod session;
 pub mod tree_import;
 
@@ -50,6 +51,8 @@ mod tests_ops;
 mod tests_pcb;
 #[cfg(test)]
 mod tests_pcb_edit;
+#[cfg(test)]
+mod tests_sch;
 #[cfg(test)]
 mod tests_sheet;
 #[cfg(test)]
