@@ -184,6 +184,39 @@ fn segments_chain_into_a_ring_whatever_their_direction() {
 }
 
 #[test]
+fn a_symmetric_measure_past_typed_references_is_found() {
+    // 236 bytes of other content after the direction (817's typed references), then the measure
+    // (`2`: each side's), its three high bytes and the selection list with one reference.
+    let mut rec = vec![0xAA_u8; 236];
+    rec.extend([2, 0, 0, 0, 1, 0, 0, 0, 1, 5, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(feature::symmetric_measure(&rec, 0), Some(true));
+    rec[236] = 1;
+    assert_eq!(feature::symmetric_measure(&rec, 0), Some(false));
+}
+
+#[test]
+fn closed_curves_joined_by_a_slit_are_holes_of_their_own() {
+    let circle = |cx: f64| -> Vec<P2> {
+        (0..=32)
+            .map(|k| {
+                let t = f64::from(k) / 32.0 * std::f64::consts::TAU;
+                [cx + libm::cos(t), libm::sin(t)]
+            })
+            .collect()
+    };
+    // Two circles and the piece of a line between them (it ends on both).
+    let polys = vec![circle(0.0), vec![[1.0, 0.0], [4.0, 0.0]], circle(5.0)];
+    let holes = geom::joined_holes(&polys).unwrap();
+    assert_eq!(holes.len(), 2);
+    assert!(holes.iter().all(|h| h.len() == 32));
+    // A piece that ends in the open joins nothing.
+    let loose = vec![circle(0.0), vec![[1.0, 0.0], [3.5, 0.0]], circle(5.0)];
+    assert!(geom::joined_holes(&loose).is_none());
+    // One closed curve is not a joined pair.
+    assert!(geom::joined_holes(&[circle(0.0), vec![[1.0, 0.0], [2.0, 0.0]]]).is_none());
+}
+
+#[test]
 fn a_closed_curve_cut_at_its_start_has_two_pieces_not_three() {
     // A circle starting on the cutting line: the crossing at its start comes out as 0 and as 1.
     let circle: Vec<P2> = (0..=64)
