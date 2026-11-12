@@ -2800,3 +2800,66 @@ Readers: `fusion_tree/feature.rs` (`extrude_start`), `fusion_tree/pcb.rs` (`coil
   (unchanged, none lost). adafruit: 13 of 18 (unchanged, none lost).
 * First blockers: 817 and 770 pass; 3722 `Shell3` (OCCT cannot offset the spindle torus's point on the axis), then
   `Chamfer1` and `Chamfer1 (2)` (the coil's side is not one face with the revolve's cylinder); 5998 `Loft1` (not read).
+
+## 48. Round 26 X: Loft, Pipe, an extrude from a loft's end, surface extrudes and Thicken (2026-11-12)
+Readers: `fusion_tree/loft.rs` (`loft_json`, `pipe_json`, `profile_of_a_loft_cap`), `fusion_tree/json.rs`
+(`sweep_path`, shared with sweeps). The document already has `loft` and `sweep`; no document feature was added.
+
+### Loft (`B6678572`)
+* The corpus has four: 5998 `Loft1`, 6299 `Loft1` and `Loft2`, 3221 `Loft1`. The body's first byte is the operation
+  (as a sweep's; 1, join, in all four), then four flag bytes (`01 01 01 01`, 3221 `01 01 01 00`; not read), then
+  `ff ff ff ff` and zeros. The sections are a list (`u32 n`, references padded with two zero bytes) of `2F3200BA`
+  records; each names one profile selection `2CA5A1CD`, whose child is a `4BD53E5A` sketch profile (5998, 6299) or a
+  `5662F619` face (3221: the faces `2 [3]` and `2 [4]`, end caps). The loft's own `2CA5A1CD` -> `9716F783` names the
+  bodies it joins (5998: the case's `Extrude1 (2)`).
+* A section of a sketch profile is read as the profile's one region (as an extrude's regions are found); the tree
+  loft takes copies of the sketches that hold just that region's curves (`Loft1 section k`). An arc drawn over a
+  circle of the region is left out of the copy: 5998's `Sketch5 (2)` holds the U of the thin cut `Extrude6 (2)`, whose
+  end arc lies on the section's circle (r 1.4 mm about (-5, 4.6) mm), and the region's pieces run on both.
+* 5998: section 1 is `Sketch6`'s circle r 1.4 mm about (-3.54, 5) mm at z 7.8 mm, section 2 the circle about (-5, 4.6)
+  mm at z 10 mm: an oblique cylinder (the stored loft face is the elliptical cone the bodies reader skips). A section
+  of a point or a face, rails or a centre line (a `5A1BF548` reference) are refused.
+* The tree loft is checked as a sweep: one operation of the four and, for a join, one body of one feature.
+
+### An extrude from a loft's end face
+* 5998 `Extrude7 (2)` and 6299 `Extrude8`: 0.4 mm, taper -45 deg, join; their profile is a face (`5662F619`) named
+  `1 [op]`, the op being the loft's. The face's plane, from the stored bodies, is the plane of one of the loft's
+  sections: that section's copy and region point are the extrude's profile. 5998's is section 1 (z 7.8 mm): the
+  stored case has a 45 deg cone of r 1.4 mm with its apex side at (-3.54, 5, 7.8) mm. 6299's is its section 2.
+
+### Pipe (`73615646`)
+* Four in the corpus: 64 `Pipe1`..`Pipe3`, 3221 `Pipe1`, all in records with typed references. The body: `u8 0`, then
+  the operation as a `u32` (2 cut in 64, 4 new in 3221, as an extrude's), `01 01` (not read), then parameter holders
+  `AlongDistance` (1: the whole path), `AgainstDistance` (0), `SectionSize` and `SectionThickness`, a `9414C87F`
+  (generic), the path selection `2CA5A1CD` -> `5A1BF548` -> `E2CEFD18` sketch curves (read as a sweep's path).
+* After the path selection's reference and two zero bytes, a `u32`: 0 in 3221, whose stored pipe is a cylinder of
+  r 1.5 mm (half the 3 mm `SectionSize`) about the path with no inner face (so `SectionThickness` 0.75 mm is not a
+  wall: not hollow); 1 in 64, whose stored cut tools are square prisms 2 x 2 and 1.5 x 1.5 mm (the `SectionSize`)
+  centred on the path lines, sides along and across the path sketch's normal. The square's `u32` is followed by a
+  `f64` 0 (taken for its angle) where the circle's is not. 0 is read as a circle, 1 as a square; others refused.
+* The tree: a sketch across the path's free start (`<pipe> section`, y along the path sketch's normal) with the
+  circle or square of the section size, and a `sweep` along the path curves (orientation fixed for one straight
+  line, Frenet otherwise). Only a whole path (along 1, against 0), of lines and arcs in one open chain, is read.
+* 64 comes in as history: three square cuts along the breadboard's top edges (the file stores the box and the
+  three tools; 45347.5 mm3 of box, 722.5 mm3 of tools).
+
+### Surface extrudes and Thicken (not done)
+* 4632 `Extrude11`: the extrude record's enum block is op 4 (new), extent 1, kind 2, then start kind 2 (from an
+  object: the face selection `2CA5A1CD` -> `5662F619`); its profile selection is `2CA5A1CD` -> `5A1BF548` (sketch
+  curves: the open B-spline `c5017` of `Sketch` at 4917), not a `4BD53E5A` profile; `AlongDistance` 5 mm,
+  `ProfileOffset` 0. `Thicken1` (`BCE0AD0E`): `Thickness` 0.5 mm, two body selections: `Extrude11`'s sheet and
+  `Extrude10`'s body (5066). `C-Pattern1` then copies both 12 times. The document has `surface_extrude` and
+  `thicken` (ADR 0036), but the tree importer reads neither, the thicken's side flag and whether it joins
+  `Extrude10` are not established, and a pattern of a surface and a thicken has not been built; not attempted.
+* 2530: `Extrude2` and `Extrude3` (0.9 mm each way) extrude open curves of `Sketch3` as surfaces (the same kind 2 and
+  start kind), `Thicken1`, then a `Fillet1` whose edges are on the thickened body, two `RemoveBody` of the sheets,
+  `Mirror1` (it mirrors 1 body and makes 2) and `Move1` (4 bodies): out of reach with this round.
+
+### Result
+* 64 comes in as history. 5998 now reads past `Loft1` and `Extrude7 (2)` to `Extrude11 (2)`, a cut of a sketch
+  text (`92F9A5F4` profiles of the `Labels` sketch, as section 20's Cases): out of reach (the glyphs are not in the
+  file). 3221 reads `Pipe1` and stops at `Extrude7` (a cut of 0.5 mm from a face of `Pipe1`), then `Loft1` (two
+  face sections). 6299 still stops at `Extrude17` (a face profile), with `Loft2` ("loop does not close") and
+  `Fillet4 (2)` (one edge unresolved) after it.
+* adafruit-next: 124 of 150 as history (64 gained; none lost against round 25 T and V); adafruit-more: 133 of 150
+  (unchanged, none lost); adafruit: 13 of 18 (unchanged, none lost).
