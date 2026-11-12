@@ -1677,7 +1677,10 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             let ins: Vec<u64> = g.inputs(d, fid).into_iter().filter(|q| !d.is(*q, "D869265F")).collect();
             let in_names: Vec<String> =
                 ins.iter().map(|q| names.get(q).cloned().unwrap_or_else(|| q.to_string())).collect();
-            let plane = cx.under(fid, "CC54ECAD", 4, None).into_iter().find_map(|q| feature::plane_frame(d, q));
+            // The plane is a planar face where the plane holder (`C444E6AD`) selects one (a header
+            // part's Mirror1: the extrude's side face x = 0); otherwise a construction plane.
+            let plane = mirror_face_plane(cx, fid)
+                .or_else(|| cx.under(fid, "CC54ECAD", 4, None).into_iter().find_map(|q| feature::plane_frame(d, q)));
             match plane {
                 Some((o, n)) if !ins.is_empty() && ins.iter().all(|q| names.contains_key(q)) => {
                     feats.push(json!({"type": "mirror", "name": nm, "source_id": fid, "features": in_names,
@@ -2242,6 +2245,32 @@ fn offset_faces_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, clas
         return fail("no offset face was found");
     }
     json!({"type": "offset_face", "name": name, "source_id": fid, "faces": faces, "distance": mm(*distance)})
+}
+
+/// The plane of a mirror whose plane holder (`C444E6AD`) selects a face (`2CA5A1CD` ->
+/// `5662F619` -> a `7ACC2A03` face recipe) instead of a construction plane: a planar face's
+/// point and normal (cm). `None` where the holder selects no face or the face is not planar.
+fn mirror_face_plane(cx: &mut Ctx, fid: u64) -> Option<(V3, V3)> {
+    let d = cx.d;
+    let holders: Vec<u64> = ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "C444E6AD")).collect();
+    let mut recipes: Vec<u64> = Vec::new();
+    for h in holders {
+        for r in cx.under(h, "7ACC2A03", 3, Some(&["2CA5A1CD", "5662F619"])) {
+            if !recipes.contains(&r) {
+                recipes.push(r);
+            }
+        }
+    }
+    let [rid] = recipes.as_slice() else { return None };
+    let (kind, names) = naming::recipe(d, *rid);
+    if !matches!(kind, Some(naming::RecipeKind::Face | naming::RecipeKind::BoundedFace)) {
+        return None;
+    }
+    let (g, ops) = names.as_ref()?.first()?.first()?;
+    match cx.face(g, ops)? {
+        naming::FaceG::Plane { n, p, .. } => Some((p, n)),
+        _ => None,
+    }
 }
 
 /// Shell `E8063467`: the faces it removes are `7ACC2A03` face recipes under its selection records
