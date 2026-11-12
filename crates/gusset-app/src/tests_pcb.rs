@@ -190,3 +190,40 @@ fn zone_fills_are_triangulated_once_per_polygon() {
     assert!(std::sync::Arc::ptr_eq(&again[0].1, &tris[0].1), "kept across boards with the same fill");
     assert!(pcb_view::fill_triangles(&mut cache, "h2", &open.board, "F.Cu").is_empty());
 }
+
+#[test]
+fn box_select_multi_delete_and_the_footprint_browser() {
+    let b = board();
+    let all = |_: &str| true;
+    // A box round the right half picks the track and the via, not R1.
+    let picked = pcb_view::in_box(&b, [18.0, 2.0], [28.0, 18.0], &all);
+    assert_eq!(picked, vec![Sel::Track(0), Sel::Via(0)]);
+    assert_eq!(pcb_view::in_box(&b, [5.0, 5.0], [15.0, 15.0], &all), vec![Sel::Footprint(0)]);
+    let mut st = pcb_view::State::default();
+    st.selected = Some(Sel::Footprint(0));
+    st.multi = picked;
+    assert!(pcb_view::is_picked(&st, Sel::Via(0)) && pcb_view::is_picked(&st, Sel::Footprint(0)));
+    let (id, args) = pcb_view::delete_picked(&st).unwrap();
+    assert_eq!((id, args), ("pcb.delete", json!({"tracks": [0], "vias": [0]})));
+    st.multi.clear();
+    assert!(pcb_view::delete_picked(&st).is_none(), "footprints are not deleted this way");
+    // The browser lists Lib:Name from Lib.pretty folders, and a .pretty folder itself.
+    let dir = std::env::temp_dir().join(format!("gusset-fp-lib-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("Res.pretty")).unwrap();
+    std::fs::write(dir.join("Res.pretty/R_0603.kicad_mod"), "(footprint \"R_0603\")").unwrap();
+    std::fs::write(dir.join("Res.pretty/R_0805.kicad_mod"), "(footprint \"R_0805\")").unwrap();
+    std::fs::write(dir.join("Loose.kicad_mod"), "(footprint \"Loose\")").unwrap();
+    let names = pcb_view::library_footprints(&dir.to_string_lossy(), 100);
+    assert_eq!(names, ["Loose", "Res:R_0603", "Res:R_0805"]);
+    let own = pcb_view::library_footprints(&dir.join("Res.pretty").to_string_lossy(), 1);
+    assert_eq!(own, ["Res:R_0603"]);
+    st.library = dir.join("Res.pretty").to_string_lossy().into_owned();
+    st.footprint = "Res:R_0805".into();
+    let (id, args) = pcb_view::place_command(&st, [3.0, 4.0]).unwrap();
+    assert!(gusset_commands::find(id).is_some());
+    assert_eq!(args["library"], dir.to_string_lossy().as_ref());
+    assert_eq!((args["footprint"].clone(), args["at"].clone()), (json!("Res:R_0805"), json!([3.0, 4.0])));
+    st.footprint.clear();
+    assert!(pcb_view::place_command(&st, [3.0, 4.0]).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}

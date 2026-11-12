@@ -31,6 +31,8 @@ pub enum Tool {
     Select,
     Route,
     Via,
+    /// Puts down the footprint picked in the panel's library list.
+    Place,
 }
 
 /// A picked board item (indices into the board's lists).
@@ -79,6 +81,17 @@ pub struct State {
     pub highlight: Option<String>,
     route_cache: Option<RouteCache>,
     fill_cache: FillCache,
+    /// More picked items (Shift-click, Shift-drag box), beside `selected`.
+    pub multi: Vec<Sel>,
+    /// A box being dragged out (board mm, from where it started).
+    boxing: Option<Pt>,
+    /// The footprint library folder (holding Lib.pretty folders), the names found in it
+    /// (`Lib:Name`), a filter, and the name the Place tool puts down.
+    pub library: String,
+    pub library_names: Vec<String>,
+    library_read: String,
+    pub library_filter: String,
+    pub footprint: String,
 }
 
 /// The router's obstacles for the board, layer, net and width last routed, and the last
@@ -119,6 +132,13 @@ impl Default for State {
             highlight: None,
             route_cache: None,
             fill_cache: FillCache::default(),
+            multi: Vec::new(),
+            boxing: None,
+            library: String::new(),
+            library_names: Vec::new(),
+            library_read: String::new(),
+            library_filter: String::new(),
+            footprint: String::new(),
         }
     }
 }
@@ -137,6 +157,105 @@ pub struct Out {
     pub commands: Vec<(&'static str, Value)>,
     /// A via that did not fit there (shown, nothing sent).
     pub blocked: Option<Pt>,
+}
+
+/// The footprints of a library folder: `Lib:Name` for each `Name.kicad_mod` in a
+/// `Lib.pretty` folder in it, and `Name` for loose `.kicad_mod` files (sorted, at most
+/// `max`, the first in name order). A folder that is itself `Lib.pretty` lists its own
+/// files as `Lib:Name`.
+pub fn library_footprints(folder: &str, max: usize) -> Vec<String> {
+    let dir = std::path::Path::new(folder.trim());
+    let mut out = Vec::new();
+    let scan = |d: &std::path::Path, lib: Option<&str>, out: &mut Vec<String>| {
+        let Ok(rd) = std::fs::read_dir(d) else { return };
+        for e in rd.flatten().take(100_000) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if let Some(stem) = name.strip_suffix(".kicad_mod")
+                && !stem.is_empty()
+                && out.len() < 200_000
+            {
+                out.push(match lib {
+                    Some(l) => format!("{l}:{stem}"),
+                    None => stem.to_string(),
+                });
+            }
+        }
+    };
+    let own = dir.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".pretty")).map(str::to_string);
+    if let Some(l) = own {
+        scan(dir, Some(&l), &mut out);
+    } else {
+        scan(dir, None, &mut out);
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten().take(10_000) {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if let Some(l) = name.strip_suffix(".pretty") {
+                    scan(&e.path(), Some(l), &mut out);
+                }
+            }
+        }
+    }
+    out.sort();
+    out.truncate(max);
+    out
+}
+
+/// The command the Place tool sends for a click at `at`.
+pub fn place_command(st: &State, at: Pt) -> Option<(&'static str, Value)> {
+    if st.footprint.trim().is_empty() || st.library.trim().is_empty() {
+        return None;
+    }
+    let folder = st.library.trim();
+    // A `Lib.pretty` folder itself: its parent holds the library.
+    let (dir, name) = match std::path::Path::new(folder).file_name().and_then(|n| n.to_str()) {
+        Some(n) if n.ends_with(".pretty") => {
+            let parent = std::path::Path::new(folder).parent().map(|p| p.to_string_lossy().into_owned());
+            (parent.filter(|p| !p.is_empty()).unwrap_or_else(|| ".".into()), st.footprint.trim().to_string())
+        }
+        _ => (folder.to_string(), st.footprint.trim().to_string()),
+    };
+    Some(("pcb.add_footprint", json!({ "library": dir, "footprint": name, "at": at })))
+}
+
+/// Whether an item is picked (the main pick or one of the others).
+pub fn is_picked(st: &State, s: Sel) -> bool {
+    st.selected == Some(s) || st.multi.contains(&s)
+}
+
+/// The items wholly inside a box (board mm): footprints, tracks and vias.
+pub fn in_box(board: &Board, a: Pt, b: Pt, shown: &dyn Fn(&str) -> bool) -> Vec<Sel> {
+    let (lo, hi) = ([a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])]);
+    let inside = |p: Pt| p[0] >= lo[0] && p[0] <= hi[0] && p[1] >= lo[1] && p[1] <= hi[1];
+    let mut out = Vec::new();
+    for (i, _) in board.footprints.iter().enumerate() {
+        if footprint_box(board, i).is_some_and(|bx| inside(bx[0]) && inside(bx[1])) {
+            out.push(Sel::Footprint(i));
+        }
+    }
+    for (i, t) in board.tracks.iter().enumerate() {
+        if shown(&t.layer) && inside(t.start) && inside(t.end) {
+            out.push(Sel::Track(i));
+        }
+    }
+    for (i, v) in board.vias.iter().enumerate() {
+        if inside(v.at) {
+            out.push(Sel::Via(i));
+        }
+    }
+    out
+}
+
+/// One `pcb.delete` for every picked track and via.
+pub fn delete_picked(st: &State) -> Option<(&'static str, Value)> {
+    let all: Vec<Sel> = st.selected.into_iter().chain(st.multi.iter().copied()).collect();
+    let mut tracks: Vec<usize> =
+        all.iter().filter_map(|s| if let Sel::Track(i) = s { Some(*i) } else { None }).collect();
+    let mut vias: Vec<usize> = all.iter().filter_map(|s| if let Sel::Via(i) = s { Some(*i) } else { None }).collect();
+    tracks.sort_unstable();
+    tracks.dedup();
+    vias.sort_unstable();
+    vias.dedup();
+    (!tracks.is_empty() || !vias.is_empty()).then(|| ("pcb.delete", json!({ "tracks": tracks, "vias": vias })))
 }
 
 /// Ends the route in progress.
@@ -541,7 +660,12 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
     ui.colored_label(if n == 0 { pal.success } else { pal.warning }, unrouted_text(n));
     ui.separator();
     ui.horizontal(|ui| {
-        for (t, key) in [(Tool::Select, "pcb.select"), (Tool::Route, "pcb.route"), (Tool::Via, "pcb.via")] {
+        for (t, key) in [
+            (Tool::Select, "pcb.select"),
+            (Tool::Route, "pcb.route"),
+            (Tool::Via, "pcb.via"),
+            (Tool::Place, "pcb.place"),
+        ] {
             if ui.selectable_label(st.tool == t, tr(key)).clicked() {
                 st.tool = t;
                 st.track_from = None;
@@ -577,6 +701,29 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
         });
     }
     ui.checkbox(&mut st.show_ratsnest, tr("pcb.ratsnest"));
+    ui.separator();
+    ui.label(tr("pcb.library"));
+    ui.text_edit_singleline(&mut st.library);
+    if st.library_read != st.library {
+        st.library_read = st.library.clone();
+        st.library_names =
+            if st.library.trim().is_empty() { Vec::new() } else { library_footprints(&st.library, 20_000) };
+    }
+    if !st.library_names.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label("🔍");
+            ui.text_edit_singleline(&mut st.library_filter);
+        });
+        let filter = st.library_filter.to_lowercase();
+        egui::ScrollArea::vertical().id_salt("pcb_lib").max_height(140.0).show(ui, |ui| {
+            for n in st.library_names.iter().filter(|n| n.to_lowercase().contains(&filter)).take(500) {
+                if ui.selectable_label(st.footprint == *n, egui::RichText::new(n).small()).clicked() {
+                    st.footprint = n.clone();
+                    st.tool = Tool::Place;
+                }
+            }
+        });
+    }
     ui.separator();
     ui.label(tr("pcb.routing"));
     ui.horizontal(|ui| {
@@ -672,7 +819,24 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
 
     // Drags: a footprint under the pointer moves (Select tool), anything else pans.
     let middle = ui.input(|i| i.pointer.middle_down());
-    if resp.drag_started() {
+    let shift = ui.input(|i| i.modifiers.shift);
+    if resp.drag_started()
+        && st.tool == Tool::Select
+        && shift
+        && !middle
+        && let Some(p) = ui.input(|i| i.pointer.press_origin()).map(|p| map.from(p))
+    {
+        st.boxing = Some(p);
+    }
+    if st.boxing.is_some() && resp.drag_stopped() {
+        if let (Some(a), Some(b2)) = (st.boxing.take(), pointer) {
+            for x in in_box(b, a, b2, &shown) {
+                if !is_picked(st, x) {
+                    st.multi.push(x);
+                }
+            }
+        }
+    } else if resp.drag_started() && st.boxing.is_none() {
         let press = ui.input(|i| i.pointer.press_origin()).map(|p| map.from(p));
         let fp = match (st.tool, middle, press) {
             (Tool::Select, false, Some(p)) => match hit(b, p, tol, &shown) {
@@ -686,7 +850,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         }
         st.drag = Some(Drag { footprint: fp, moved: Vec2::ZERO });
     }
-    if resp.dragged() {
+    if resp.dragged() && st.boxing.is_none() {
         let d = resp.drag_delta();
         match st.drag.as_mut() {
             Some(Drag { footprint: Some(_), moved }) => *moved += d / st.zoom,
@@ -699,6 +863,19 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
             && let Some(at) = drop_place(b, i, [f64::from(moved.x), f64::from(moved.y)], st.grid)
         {
             out.commands.push(move_command(i, at));
+            // The other picked footprints move by as much.
+            if st.multi.contains(&Sel::Footprint(i)) {
+                let from = b.footprints.get(i).map_or(at, |f| f.at);
+                let d = [at[0] - from[0], at[1] - from[1]];
+                for &x in &st.multi {
+                    if let Sel::Footprint(j) = x
+                        && j != i
+                        && let Some(f) = b.footprints.get(j)
+                    {
+                        out.commands.push(move_command(j, [f.at[0] + d[0], f.at[1] + d[1]]));
+                    }
+                }
+            }
         }
     } else if !resp.dragged() {
         st.drag = None;
@@ -710,10 +887,24 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
     {
         match st.tool {
             Tool::Select => {
-                st.selected = hit(b, p, tol, &shown);
-                st.highlight = st.selected.and_then(|s| net_of(b, s));
+                let h = hit(b, p, tol, &shown);
+                if shift {
+                    // Shift-click adds or takes away.
+                    if let Some(x) = h {
+                        if let Some(k) = st.multi.iter().position(|m| *m == x) {
+                            st.multi.remove(k);
+                        } else if st.selected != Some(x) {
+                            st.multi.push(x);
+                        }
+                    }
+                } else {
+                    st.multi.clear();
+                    st.selected = h;
+                    st.highlight = st.selected.and_then(|s| net_of(b, s));
+                }
             }
             Tool::Via => out.commands.push(via_command(snap(p, st.grid))),
+            Tool::Place => out.commands.extend(place_command(st, snap(p, st.grid))),
             Tool::Route => match st.track_from {
                 None => {
                     let (q, _) = route_target(b, p, &st.active, st.grid, None);
@@ -754,6 +945,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         if esc {
             end_route(st);
             st.selected = None;
+            st.multi.clear();
             st.highlight = None;
         }
         if slash {
@@ -771,9 +963,10 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                 out.blocked = Some(a);
             }
         }
-        if del && let Some(c) = st.selected.and_then(delete_command) {
+        if del && let Some(c) = delete_picked(st) {
             out.commands.push(c);
             st.selected = None;
+            st.multi.clear();
         }
         if let Some(Sel::Footprint(i)) = st.selected {
             if r && let Some(c) = rotate_command(b, i) {
@@ -808,6 +1001,10 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
             }
         }
         painter.circle_filled(map.to(q), w / 2.0, c);
+    }
+    if let (Some(a), Some(p)) = (st.boxing, pointer) {
+        let r = Rect::from_two_pos(map.to(a), map.to(p));
+        painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_rgb(120, 200, 255)), egui::StrokeKind::Middle);
     }
     if let Some(at) = out.blocked {
         painter.circle_stroke(map.to(at), 10.0, Stroke::new(2.0, Color32::from_rgb(255, 60, 60)));
@@ -915,6 +1112,20 @@ fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &mut State, d
         for g in b.graphics.iter().filter(|g| g.layer == layer) {
             paint_shape(painter, map, &g.shape, g.width, g.filled, c, off_of(g.footprint));
         }
+        // Texts, in the UI font at their height and angle (centred on their place).
+        for t in b.texts.iter().filter(|t| t.layer == layer && !t.hidden && !t.text.is_empty()) {
+            let px = t.size as f32 * map.zoom * 1.35;
+            if !(4.0..=400.0).contains(&px) {
+                continue;
+            }
+            let shown_text: String = t.text.chars().filter(|ch| !ch.is_control()).take(200).collect();
+            let galley = painter.layout_no_wrap(shown_text, FontId::proportional(px), c);
+            let a = -(t.angle as f32).to_radians();
+            let half = galley.size() / 2.0;
+            let rot = |v: Vec2| Vec2::new(v.x * a.cos() - v.y * a.sin(), v.x * a.sin() + v.y * a.cos());
+            let pos = map.to(t.at) + off_of(t.footprint) - rot(half);
+            painter.add(egui::epaint::TextShape::new(pos, galley, c).with_angle(a));
+        }
         if !is_cu {
             continue;
         }
@@ -925,7 +1136,7 @@ fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &mut State, d
         };
         for (i, t) in b.tracks.iter().enumerate().filter(|(_, t)| t.layer == layer) {
             let w = (t.width as f32 * map.zoom).max(1.0);
-            let col = if st.selected == Some(Sel::Track(i)) { Color32::WHITE } else { lit(&t.net, c) };
+            let col = if is_picked(st, Sel::Track(i)) { Color32::WHITE } else { lit(&t.net, c) };
             match t.mid {
                 Some(m) => {
                     let pts: Vec<Pos2> = geom::arc_points(t.start, m, t.end, f64::from(0.5 / map.zoom).max(1e-3))
@@ -944,8 +1155,7 @@ fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &mut State, d
         }
         for (k, pad) in b.pads.iter().enumerate().filter(|(_, p)| b.on_layer(&p.layers, &layer)) {
             let off = off_of(pad_fp.get(k).copied().flatten());
-            let selected =
-                matches!(st.selected, Some(Sel::Footprint(i)) if pad_fp.get(k).copied().flatten() == Some(i));
+            let selected = pad_fp.get(k).copied().flatten().is_some_and(|i| is_picked(st, Sel::Footprint(i)));
             let col = if selected { Color32::WHITE.gamma_multiply(0.9) } else { lit(&pad.net, c) };
             match geom::pad_contour(pad, 0.0) {
                 Some(Contour::Circle { center, radius }) => {
@@ -969,7 +1179,7 @@ fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &mut State, d
     // Vias above the copper, holes above everything.
     let via_c = Color32::from_rgb(236, 236, 236);
     for (i, v) in b.vias.iter().enumerate() {
-        let col = if st.selected == Some(Sel::Via(i)) { Color32::WHITE } else { via_c.gamma_multiply(0.8) };
+        let col = if is_picked(st, Sel::Via(i)) { Color32::WHITE } else { via_c.gamma_multiply(0.8) };
         painter.circle_filled(map.to(v.at), v.size as f32 / 2.0 * map.zoom, col);
         painter.circle_filled(map.to(v.at), (v.drill as f32 / 2.0 * map.zoom).max(0.5), Color32::from_rgb(0, 16, 35));
     }

@@ -182,6 +182,8 @@ const EN: &[(&str, &str)] = &[
     ("pcb.arc_corners", "Arc corners"),
     ("pcb.net", "Net"),
     ("pcb.fill_zones", "Fill zones"),
+    ("pcb.place", "Place"),
+    ("pcb.library", "Footprint library folder"),
     ("ribbon.create", "Create"),
     ("ribbon.modify", "Modify"),
     ("ribbon.assemble", "Assemble"),
