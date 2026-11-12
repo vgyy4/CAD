@@ -836,9 +836,16 @@ impl Ctx<'_> {
         let k: usize = g.parse().ok().filter(|k| *k >= 1)?;
         let (r, rid) = self.blend_edge(fid, k - 1)?;
         let (Some(RecipeKind::Edge), Some(faces)) = recipe(self.d, rid) else { return None };
+        // A cap counts where the edge's two faces are of one extrude (a side and its cap meet
+        // at a convex edge of the prism, the material inside both): 67's Fillet1 rounds the
+        // four long edges of a box, between its sides and caps.
+        let one_op = match (faces.first().and_then(|f| f.first()), faces.get(1).and_then(|f| f.first())) {
+            (Some((_, o0)), Some((_, o1))) => o0.len() == 1 && o0 == o1,
+            _ => false,
+        };
         let side = |cx: &mut Self, f: &FaceName| -> Option<(V3, V3)> {
             let (g, ops) = f.first()?;
-            if !matches!(cx.face_at(g, ops, depth + 1)?, FaceG::Plane { cap: false, .. }) {
+            if !matches!(cx.face_at(g, ops, depth + 1)?, FaceG::Plane { cap, .. } if !cap || one_op) {
                 return None;
             }
             let (p, out) = cx.face_pick_at(g, ops, depth + 1)?;
