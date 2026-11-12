@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn every_ribbon_tool_is_a_registry_command_with_an_icon() {
-        for groups in [SOLID, SKETCH, DRAWING] {
+        for groups in [SOLID, SKETCH, DRAWING, PCB, SCH] {
             for g in groups {
                 for t in g.tools {
                     assert!(spec(t.id).is_some(), "ribbon tool {} is not in the command registry", t.id);

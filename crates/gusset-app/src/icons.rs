@@ -251,6 +251,32 @@ pub enum Tool {
     DrawView,
     Dimension,
     Note,
+    /// Board outline: a rectangle with a clipped corner and a vertex handle.
+    Outline,
+    /// Move a footprint or symbol: a part with a four-way arrow.
+    MoveItem,
+    /// A schematic symbol: a resistor body between two leads.
+    Symbol,
+    /// A schematic wire: a stepped line between two junctions.
+    Wire,
+    /// A net label: a flag on a stub.
+    Label,
+    /// The netlist: a few nodes joined by a tree.
+    Netlist,
+    /// Electrical rules check: a symbol with a check mark.
+    Erc,
+    /// Design rules check: a track pair with a clearance gauge and a check mark.
+    Drc,
+    /// Update PCB from the schematic: a board with an arrow into it.
+    UpdatePcb,
+    /// Route a track: a 45-degree trace between two pads.
+    Route,
+    /// A via: a ring with a drill.
+    Via,
+    /// Copper pour.
+    Zone,
+    /// A new empty document: a page with a plus.
+    NewFile,
 }
 
 impl Tool {
@@ -322,6 +348,19 @@ impl Tool {
         Tool::DrawView,
         Tool::Dimension,
         Tool::Note,
+        Tool::Outline,
+        Tool::MoveItem,
+        Tool::Symbol,
+        Tool::Wire,
+        Tool::Label,
+        Tool::Netlist,
+        Tool::Erc,
+        Tool::Drc,
+        Tool::UpdatePcb,
+        Tool::Route,
+        Tool::Via,
+        Tool::Zone,
+        Tool::NewFile,
     ];
 }
 
@@ -357,7 +396,22 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "feature.pattern_circular" => Tool::PatternCircular,
         "feature.mirror" => Tool::Mirror,
         "feature.plane" => Tool::Plane,
-        "query.measure" | "pcb.drc" | "sch.erc" => Tool::Measure,
+        "query.measure" => Tool::Measure,
+        "pcb.drc" => Tool::Drc,
+        "sch.erc" => Tool::Erc,
+        "pcb.set_outline" => Tool::Outline,
+        "pcb.move_footprint" | "sch.move" => Tool::MoveItem,
+        "sch.add_symbol" => Tool::Symbol,
+        "sch.add_wire" => Tool::Wire,
+        "sch.add_label" => Tool::Label,
+        "sch.netlist" => Tool::Netlist,
+        "pcb.update_from_schematic" => Tool::UpdatePcb,
+        "pcb.route" => Tool::Route,
+        "pcb.add_via" => Tool::Via,
+        "pcb.fill_zones" => Tool::Zone,
+        "pcb.delete" | "sch.delete" => Tool::DeleteItems,
+        "pcb.new" | "sch.new" => Tool::NewFile,
+        "pcb.info" => Tool::Info,
         "query.body" => Tool::Body,
         "query.model" | "query.sketch" | "query.interference" | "query.bom" | "query.gear_pair" | "sim.static"
         | "sim.modal" | "sim.optimize" | "feature.add" => Tool::Info,
@@ -962,6 +1016,81 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
                 ink,
             );
             pen.circle(12.0, 13.5, 4.0, pen.hole, a);
+        }
+        Tool::Outline => {
+            pen.closed(&[(4.0, 6.0), (20.0, 6.0), (20.0, 14.0), (16.0, 18.0), (4.0, 18.0)], ink);
+            pen.circle(20.0, 6.0, 1.9, pen.hole, a);
+            pen.circle(4.0, 18.0, 1.9, pen.hole, a);
+        }
+        Tool::MoveItem => {
+            pen.poly(&[(8.0, 8.0), (16.0, 8.0), (16.0, 16.0), (8.0, 16.0)], pen.fill, ink);
+            for (dx, dy) in [(0.0, -1.0), (0.0, 1.0), (-1.0, 0.0), (1.0, 0.0)] {
+                pen.arrow((12.0 + 5.0 * dx, 12.0 + 5.0 * dy), (12.0 + 10.5 * dx, 12.0 + 10.5 * dy), a);
+            }
+        }
+        Tool::Symbol => {
+            pen.line(&[(2.0, 12.0), (7.0, 12.0)], ink);
+            pen.line(&[(17.0, 12.0), (22.0, 12.0)], ink);
+            pen.poly(&[(7.0, 8.0), (17.0, 8.0), (17.0, 16.0), (7.0, 16.0)], pen.fill, ink);
+            pen.dot(2.0, 12.0, a);
+            pen.dot(22.0, 12.0, a);
+        }
+        Tool::Wire => {
+            pen.line(&[(4.0, 17.0), (4.0, 12.0), (12.0, 12.0), (12.0, 6.0), (20.0, 6.0)], ink);
+            pen.circle(4.0, 17.0, 2.0, pen.hole, a);
+            pen.circle(20.0, 6.0, 2.0, pen.hole, a);
+        }
+        Tool::Label => {
+            pen.line(&[(3.0, 12.0), (8.0, 12.0)], ink);
+            pen.poly(&[(8.0, 12.0), (11.0, 7.0), (21.0, 7.0), (21.0, 17.0), (11.0, 17.0)], pen.fill, a);
+            pen.line(&[(13.0, 12.0), (18.0, 12.0)], ink);
+        }
+        Tool::Netlist => {
+            pen.line(&[(6.0, 6.0), (12.0, 12.0), (18.0, 6.0)], ink);
+            pen.line(&[(12.0, 12.0), (12.0, 19.0)], ink);
+            for (x, y) in [(6.0, 6.0), (18.0, 6.0), (12.0, 19.0)] {
+                pen.circle(x, y, 2.4, pen.fill, ink);
+            }
+            pen.circle(12.0, 12.0, 2.4, a, a);
+        }
+        Tool::Erc => {
+            pen.line(&[(2.0, 9.0), (6.0, 9.0)], ink);
+            pen.line(&[(14.0, 9.0), (18.0, 9.0)], ink);
+            pen.poly(&[(6.0, 5.0), (14.0, 5.0), (14.0, 13.0), (6.0, 13.0)], pen.fill, ink);
+            pen.line(&[(9.0, 18.0), (12.0, 21.0), (20.0, 12.0)], a);
+        }
+        Tool::Drc => {
+            pen.line(&[(3.0, 7.0), (21.0, 7.0)], ink);
+            pen.line(&[(3.0, 15.0), (11.0, 15.0)], ink);
+            pen.line(&[(7.0, 9.0), (7.0, 13.0)], a);
+            pen.line(&[(14.0, 18.0), (17.0, 21.0), (22.0, 14.0)], a);
+        }
+        Tool::UpdatePcb => {
+            pen.poly(&[(9.0, 8.0), (21.0, 8.0), (21.0, 20.0), (9.0, 20.0)], pen.fill, ink);
+            pen.line(&[(12.0, 17.0), (16.0, 17.0), (16.0, 12.0), (19.0, 12.0)], ink);
+            pen.arrow((2.0, 6.0), (11.0, 13.0), a);
+        }
+        Tool::Route => {
+            pen.line(&[(4.0, 18.0), (10.0, 18.0), (16.0, 12.0), (20.0, 12.0)], a);
+            pen.circle(4.0, 18.0, 2.2, pen.fill, ink);
+            pen.circle(20.0, 12.0, 2.2, pen.fill, ink);
+            pen.line(&[(3.0, 6.0), (21.0, 6.0)], ink);
+        }
+        Tool::Via => {
+            pen.circle(12.0, 12.0, 8.0, pen.fill, ink);
+            pen.circle(12.0, 12.0, 3.2, pen.hole, a);
+        }
+        Tool::NewFile => {
+            pen.poly(&[(5.0, 3.0), (14.0, 3.0), (19.0, 8.0), (19.0, 21.0), (5.0, 21.0)], pen.fill, ink);
+            pen.line(&[(14.0, 3.0), (14.0, 8.0), (19.0, 8.0)], ink);
+            pen.line(&[(12.0, 12.0), (12.0, 18.0)], a);
+            pen.line(&[(9.0, 15.0), (15.0, 15.0)], a);
+        }
+        Tool::Zone => {
+            pen.poly(&[(3.0, 5.0), (21.0, 5.0), (21.0, 19.0), (3.0, 19.0)], pen.fill, ink);
+            pen.line(&[(7.0, 19.0), (15.0, 5.0)], a);
+            pen.line(&[(13.0, 19.0), (21.0, 8.0)], a);
+            pen.line(&[(3.0, 14.0), (9.0, 5.0)], a);
         }
     }
 }
