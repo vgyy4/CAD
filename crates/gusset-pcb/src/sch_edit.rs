@@ -67,6 +67,25 @@ fn yes(head: &str, on: bool) -> Node {
     kv(head, Node::sym(if on { "yes" } else { "no" }))
 }
 
+/// Sets every `(reference ...)` under an `instances` node.
+fn set_references(n: &mut Node, value: &str, depth: usize) {
+    if depth > 16 {
+        return;
+    }
+    if n.head() == Some("reference")
+        && let Some(v) = n.items_mut()
+        && let Some(slot) = v.get_mut(1)
+    {
+        *slot = Node::str(value);
+        return;
+    }
+    if let Some(v) = n.items_mut() {
+        for c in v.iter_mut().skip(1) {
+            set_references(c, value, depth + 1);
+        }
+    }
+}
+
 /// An angle as KiCad stores symbol and label angles: 0, 90, 180 or 270.
 fn right_angle(a: f64) -> Result<f64, Error> {
     let a = a.rem_euclid(360.0);
@@ -291,7 +310,8 @@ impl Schematic {
             .ok_or_else(|| bad("the item is not in the file"))
     }
 
-    /// Moves, turns or mirrors a symbol; its fields move with it. Wires are not dragged.
+    /// Moves, turns or mirrors a symbol; its fields move with it, and wire ends on its
+    /// pins follow the pins (straight to their new places).
     ///
     /// # Errors
     /// No such symbol, a bad place or angle, or a failed re-read.
@@ -308,6 +328,27 @@ impl Schematic {
         let old = self.symbols.get(index).cloned().ok_or_else(|| bad("no such symbol"))?;
         let mut new = old.clone();
         (new.at, new.angle, new.mirror) = (at, angle, mirror);
+        // Pin places before and after, by pin number.
+        let before = self.pins(&old);
+        let after = self.pins(&new);
+        let moves: Vec<(Pt, Pt)> = before
+            .iter()
+            .filter_map(|b| after.iter().find(|a| a.number == b.number).map(|a| (b.at, a.at)))
+            .filter(|(b, a)| libm::hypot(a[0] - b[0], a[1] - b[1]) > 1e-9)
+            .collect();
+        let wires: Vec<usize> = self.wires.iter().map(|w| w.node).collect();
+        for node in wires {
+            let Ok(items) = self.top_item_mut(node) else { continue };
+            let Some(pts) = items.iter_mut().find(|n| n.head() == Some("pts")).and_then(Node::items_mut) else {
+                continue;
+            };
+            for xy in pts.iter_mut().skip(1).filter(|n| n.head() == Some("xy")) {
+                let (Some(x), Some(y)) = (xy.num_arg(0), xy.num_arg(1)) else { continue };
+                if let Some((_, to)) = moves.iter().find(|(from, _)| libm::hypot(from[0] - x, from[1] - y) < 1e-6) {
+                    *xy = list(vec![Node::sym("xy"), Node::num(to[0]), Node::num(to[1])]);
+                }
+            }
+        }
         let items = self.top_item_mut(old.node)?;
         items.retain(|n| n.head() != Some("mirror"));
         let at_pos = items.iter().position(|n| n.head() == Some("at")).ok_or_else(|| bad("the symbol has no place"))?;
@@ -333,6 +374,44 @@ impl Schematic {
                     *s = Node::num(at[1] + o[1]);
                 }
             }
+        }
+        self.reread(limits)
+    }
+
+    /// Sets a field (property) of a symbol: `Value`, `Footprint` or any other; a field the
+    /// symbol lacks is added, hidden, at the symbol's place.
+    ///
+    /// # Errors
+    /// No such symbol, a bad field name or value, or a failed re-read.
+    pub fn set_field(&mut self, index: usize, key: &str, value: &str, limits: &Limits) -> Result<(), Error> {
+        check_name("a field name", key)?;
+        if value.chars().count() > 1000 || value.chars().any(char::is_control) {
+            return Err(bad("a field value is at most 1000 characters, without control characters"));
+        }
+        if key == "Reference" && value.trim().is_empty() {
+            return Err(bad("a reference cannot be empty"));
+        }
+        let sym = self.symbols.get(index).cloned().ok_or_else(|| bad("no such symbol"))?;
+        let items = self.top_item_mut(sym.node)?;
+        let existing = items.iter_mut().find(|n| n.head() == Some("property") && n.arg(0) == Some(key));
+        match existing.and_then(Node::items_mut) {
+            Some(v) => {
+                if let Some(slot) = v.get_mut(2) {
+                    *slot = Node::str(value);
+                }
+            }
+            None => {
+                let at = at_node(sym.at, Some(0.0));
+                let prop = list(vec![Node::sym("property"), Node::str(key), Node::str(value), at, effects(None, true)]);
+                let pos = items.iter().rposition(|n| n.head() == Some("property")).map_or(items.len(), |i| i + 1);
+                items.insert(pos, prop);
+            }
+        }
+        // References also live in the per-sheet-use instances.
+        if key == "Reference"
+            && let Some(inst) = items.iter_mut().find(|n| n.head() == Some("instances"))
+        {
+            set_references(inst, value, 0);
         }
         self.reread(limits)
     }

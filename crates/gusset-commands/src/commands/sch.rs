@@ -21,6 +21,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<SchSave>(),
         spec::<SchAddSymbol>(),
         spec::<SchMove>(),
+        spec::<SchSetField>(),
         spec::<SchAddWire>(),
         spec::<SchAddLabel>(),
         spec::<SchDelete>(),
@@ -406,6 +407,43 @@ impl Command for SchMove {
                 }
                 _ => Err(CommandError::args("only symbols and labels move; delete and redraw wires")),
             }
+        })
+    }
+}
+
+/// Sets a field of a symbol (value, footprint, reference or any other).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SchSetField {
+    /// Reference (R1) or symbol#i.
+    pub symbol: String,
+    /// Value, Footprint, Reference, ...
+    pub field: String,
+    pub value: String,
+    #[serde(default)]
+    pub sheet: Option<String>,
+}
+
+impl Command for SchSetField {
+    const ID: &'static str = "sch.set_field";
+    const TITLE: &'static str = "Set field";
+    const DESCRIPTION: &'static str =
+        "Set a symbol's field (Value, Footprint as Lib:Name, Reference...) in the open schematic.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let label =
+            format!("Set {} of {}", crate::paths::display_name(&self.field), crate::paths::display_name(&self.symbol));
+        sheet_edit(s, ctx, &label, self.sheet.as_deref(), |sch, _| {
+            let Some(Item::Symbol(i)) = Item::parse(sch, &self.symbol) else {
+                return Err(CommandError::not_found(format!(
+                    "no symbol '{}'",
+                    crate::paths::display_name(&self.symbol)
+                ))
+                .hint("name it by reference (R1) or symbol#i"));
+            };
+            sch.set_field(i, &self.field, &self.value, &limits()).map_err(sch_err)?;
+            Ok(json!({ "symbol": format!("symbol#{i}") }))
         })
     }
 }

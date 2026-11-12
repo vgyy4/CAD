@@ -90,6 +90,15 @@ fn a_schematic_is_drawn_checked_undone_and_saved() {
     run(&mut s, &u(13), "history.undo", json!({}));
     run(&mut s, &u(14), "history.undo", json!({}));
     assert_eq!((r2(&s).at, r2(&s).angle), ([110.0, 50.0], 0.0));
+    // Fields: value and footprint, undoable.
+    run(&mut s, &u(14), "sch.set_field", json!({"symbol": "R2", "field": "Value", "value": "22k"}));
+    run(&mut s, &u(14), "sch.set_field", json!({"symbol": "R2", "field": "Footprint", "value": "R:R_0603"}));
+    assert_eq!((r2(&s).value(), r2(&s).footprint()), ("22k", "R:R_0603"));
+    let e = execute(&mut s, &u(14), "sch.set_field", json!({"symbol": "R7", "field": "Value", "value": "1"}));
+    assert_eq!(e.unwrap_err().code, "not_found");
+    run(&mut s, &u(14), "history.undo", json!({}));
+    run(&mut s, &u(14), "history.undo", json!({}));
+    assert_eq!((r2(&s).value(), r2(&s).footprint()), ("10k", "Pads:Two"));
     // Delete the label and a wire: R1 pin 1 and R2 pin 1 come apart.
     run(&mut s, &u(15), "sch.delete", json!({"items": ["label#0", "wire#0"]}));
     let o = open(&s);

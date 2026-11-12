@@ -77,7 +77,7 @@ pub use pcb_edit::{
 pub use pcb_layout::{PcbExportDsn, PcbExportStep, PcbFillZones, PcbImportSes, PcbRoute};
 pub use sch::{
     PcbUpdateFromSchematic, SchAddLabel, SchAddSymbol, SchAddWire, SchDelete, SchErc, SchMove, SchNetlist, SchNew,
-    SchOpen, SchSave,
+    SchOpen, SchSave, SchSetField,
 };
 pub use sheet::{ContourFlange, EdgeFlange, ExportFlat, FlatPatternQuery, Tab};
 pub use sim::{FaceLoad, ModalQuery, OptimizeQuery, StaticQuery};
