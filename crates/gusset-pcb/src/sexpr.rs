@@ -75,6 +75,13 @@ pub enum Node {
     List(Vec<Node>),
 }
 
+impl Default for Node {
+    /// An empty list.
+    fn default() -> Self {
+        Node::List(Vec::new())
+    }
+}
+
 impl Node {
     /// A bare symbol or number.
     pub fn sym(t: impl Into<String>) -> Node {

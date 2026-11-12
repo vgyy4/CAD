@@ -201,3 +201,10 @@ path = "fuzz_targets/pcb_read.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "sch_read"
+path = "fuzz_targets/sch_read.rs"
+test = false
+doc = false
+bench = false

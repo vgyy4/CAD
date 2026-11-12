@@ -53,7 +53,7 @@ fn mix(mut z: u64) -> u64 {
 
 /// A UUID (version 4 layout) derived from the item's text and the board's size, so the
 /// same edit on the same board gives the same file.
-fn uuid_for(seed_text: &str, salt: usize) -> String {
+pub(crate) fn uuid_for(seed_text: &str, salt: usize) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in seed_text.bytes() {
         h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
@@ -142,7 +142,7 @@ impl Board {
 
     /// The `(net ...)` node an item of `net` gets, adding the net to the board's list when
     /// the file numbers its nets and does not know it yet. `None`: no net.
-    fn net_node(&mut self, net: Option<&str>) -> Result<Option<Node>, Error> {
+    pub(crate) fn net_node(&mut self, net: Option<&str>) -> Result<Option<Node>, Error> {
         let net = net.filter(|n| !n.is_empty());
         if !self.numbered_nets {
             return Ok(net.map(|n| kv("net", Node::str(n))));
