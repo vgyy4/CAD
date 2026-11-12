@@ -32,6 +32,7 @@ mod pcb;
 mod sketch;
 mod stream;
 mod surface;
+mod text;
 mod thin;
 mod thread;
 

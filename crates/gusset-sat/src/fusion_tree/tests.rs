@@ -2251,3 +2251,87 @@ fn a_modeled_thread_is_a_thread_feature_on_its_face() {
     assert!(feature(&Thread { offset: Some(1.3), ..t.clone() }, &f, "T", true).is_err());
     assert!(feature(&Thread { end_code: 7, ..t.clone() }, &f, "T", true).is_err());
 }
+
+/// A MetaStream whose classes are the given GUIDs, object `id` of class `class_of(id)`.
+fn meta_of(objs: &[(u64, u64)], classes: &[&str], class_of: &dyn Fn(u64) -> usize) -> Vec<u8> {
+    let mut m = s("Design");
+    m.extend(le32(0));
+    m.extend(ws(""));
+    m.extend(le32(classes.len() as u32));
+    for (k, g) in classes.iter().enumerate() {
+        m.extend(s(g));
+        m.extend(s(""));
+        m.extend(le32(1));
+        m.extend(s("Fusion"));
+        let ids: Vec<u64> = objs.iter().map(|o| o.0).filter(|i| class_of(*i) == k).collect();
+        m.extend(le32(ids.len() as u32));
+        for i in ids {
+            m.extend(le64(i));
+        }
+    }
+    m.extend(le32(0));
+    m.extend(le32(objs.len() as u32));
+    for (i, o) in objs {
+        m.extend(le64(*i));
+        m.extend(le64(*o));
+    }
+    m.extend(le32(0));
+    m.extend(vec![0; 64]);
+    m
+}
+
+/// A text record (`E0618268`, id 6) naming holder 7 and sketch 8, with the placement `m`.
+fn text_design(m: [f64; 16]) -> (Vec<u8>, Vec<u8>) {
+    let mut body = Vec::new();
+    body.extend(le64(1.0f64.to_bits()));
+    body.extend(ws("Arial"));
+    body.push(0);
+    body.extend(le64(0.3f64.to_bits()));
+    body.extend(r#ref(7));
+    body.push(0);
+    body.extend(le32(3));
+    body.extend([0, 0, 0]);
+    body.extend(ws("-"));
+    body.extend(le32(2));
+    body.push(0);
+    body.extend(le32(400));
+    body.extend([0; 5]);
+    for v in m {
+        body.extend(le64(f64::to_bits(v)));
+    }
+    body.extend(r#ref(8));
+    let r6 = record(256, 6, &body);
+    let r7 = record(257, 7, &[0]);
+    let r8 = record(258, 8, &[0]);
+    let objs = [(6, 0), (7, r6.len() as u64), (8, (r6.len() + r7.len()) as u64)];
+    let classes = [
+        "E0618268-3A06-450E-9E94-7CF4C2E66802",
+        "D91D429C-0000-0000-0000-000000000000",
+        "44A64366-0000-0000-0000-000000000000",
+    ];
+    (meta_of(&objs, &classes, &|i| (i - 6) as usize), [r6, r7, r8].concat())
+}
+
+#[test]
+fn a_sketch_text_record_gives_its_font_string_height_and_placement() {
+    use super::text::{read_text, substitute};
+    // 5998's "-": Arial, 0.3 cm, codes 3 and 2, weight 400, a turn of 0.00052 rad, the corner at
+    // (0.30188, 0.13055) cm; then the sketch.
+    let (c, sn) = (libm::cos(0.00052), libm::sin(0.00052));
+    let m = [c, -sn, 0.0, 0.30188, sn, c, 0.0, 0.13055, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+    let (meta, bulk) = text_design(m);
+    let d = Design::new(&meta, &bulk).unwrap();
+    let t = read_text(&d, 6).unwrap();
+    assert_eq!((t.text.as_str(), t.font.as_str(), t.height, t.weight, t.sketch), ("-", "Arial", 0.3, 400, 8));
+    assert_eq!(t.at, [0.30188, 0.13055]);
+    assert!((t.dir[0] - c).abs() < 1e-12 && (t.dir[1] - sn).abs() < 1e-12);
+    // A placement that scales is refused.
+    let mut scaled = m;
+    scaled[0] = 2.0;
+    let (meta, bulk) = text_design(scaled);
+    assert!(read_text(&Design::new(&meta, &bulk).unwrap(), 6).is_err());
+    assert_eq!(
+        (substitute("Arial Rounded MT Bold"), substitute("Courier New"), substitute("Consolas")),
+        ("sans", "mono", "mono")
+    );
+}

@@ -502,6 +502,141 @@ fn fine_deg(v: f64) -> String {
     if s == "-0" { "0".into() } else { s }
 }
 
+/// A text on a source sketch, extruded (Fusion's sketch text, section 51 of its format notes):
+/// `at` and `direction` in the sketch's own frame (mm), the distance along its normal from
+/// `start`. `font` is a font Gusset has (`sans`, `mono`); `source_font` the one the file names,
+/// which it does not hold.
+#[derive(Debug, Clone, Deserialize)]
+struct TextF {
+    name: String,
+    sketch: String,
+    text: String,
+    font: String,
+    #[serde(default)]
+    source_font: Option<String>,
+    height: f64,
+    at: [f64; 2],
+    direction: [f64; 2],
+    #[serde(default)]
+    align: Option<String>,
+    distance: f64,
+    #[serde(default)]
+    start: f64,
+    operation: String,
+    #[serde(default)]
+    target: Option<String>,
+    /// Kept to edit but not built (the file's own glyphs do the work in a later feature).
+    #[serde(default)]
+    suppressed: bool,
+}
+
+/// A `text` feature on the plane of a source sketch (moved by the start along its normal). The
+/// plane keeps the sketch's normal, never the reverse: text on a reversed plane would read
+/// mirrored.
+fn text_feature(g: &mut Gen, s: &Session, d: &TextF) -> Result<(), String> {
+    let chars = d.text.chars().count();
+    if chars == 0 || chars > 200 || d.text.chars().any(|c| c.is_control() || c == '"' || c == '\\') {
+        return Err("its string is empty, longer than 200 characters or holds quotes or control characters".into());
+    }
+    if !matches!(d.font.as_str(), "sans" | "mono") {
+        return Err(format!("font '{}' is not one Gusset has", short(&d.font)));
+    }
+    let align = d.align.as_deref().unwrap_or("left");
+    if !matches!(align, "left" | "center" | "right") {
+        return Err(format!("alignment '{}' is not left, center or right", short(align)));
+    }
+    let op = match d.operation.as_str() {
+        "new" => "new",
+        "join" => "add",
+        "cut" => "cut",
+        "intersect" => "intersect",
+        other => return Err(format!("operation '{}' is not new, join, cut or intersect", short(other))),
+    };
+    let (height, distance, start) =
+        (finite(d.height, "the height")?, finite(d.distance, "the distance")?, finite(d.start, "the start")?);
+    if height <= 0.0 || distance == 0.0 {
+        return Err("its height or distance is zero".into());
+    }
+    let src = g
+        .sketches
+        .get(&d.sketch)
+        .map(|m| m.src.clone())
+        .ok_or_else(|| format!("its sketch '{}' was not imported", short(&d.sketch)))?;
+    let n = cross(src.x_axis, src.y_axis);
+    let nl = norm(n);
+    if nl < 1e-9 {
+        return Err("its plane is degenerate".into());
+    }
+    let n = n.map(|c| c / nl);
+    let origin =
+        [0, 1, 2].map(|i| src.origin.get(i).copied().unwrap_or(0.0) + n.get(i).copied().unwrap_or(0.0) * start);
+    let plane = Plane { origin, x_axis: src.x_axis, y_axis: src.y_axis };
+    let name = g.fresh(&d.name, "Text");
+    let mut placed = place_sketch(&name, &plane).ok_or("its plane is degenerate")?;
+    if placed.flipped {
+        placed = tilted(&name, origin, n).ok_or("its plane cannot be placed")?;
+    }
+    let world = |u: f64, v: f64, o: V3| {
+        [0, 1, 2].map(|i| {
+            o.get(i).copied().unwrap_or(0.0)
+                + u * src.x_axis.get(i).copied().unwrap_or(0.0)
+                + v * src.y_axis.get(i).copied().unwrap_or(0.0)
+        })
+    };
+    let p = sub(world(finite(d.at[0], "a point")?, finite(d.at[1], "a point")?, origin), placed.origin);
+    let at = [dot(p, placed.x), dot(p, placed.y)];
+    let dw = world(finite(d.direction[0], "the direction")?, finite(d.direction[1], "the direction")?, [0.0; 3]);
+    let angle = libm::atan2(dot(dw, placed.y), dot(dw, placed.x)).to_degrees();
+    let body = match &d.target {
+        Some(t) if op != "new" => format!(", body: {}", g.body_named(t, "target")?),
+        None if op != "new" => return Err("the body it changes is not named".into()),
+        _ => String::new(),
+    };
+    let mut text = String::new();
+    for (dn, dl) in &placed.datums {
+        if !g.taken.insert(dn.to_ascii_lowercase()) {
+            return Err(format!("the name '{dn}' for its plane is taken"));
+        }
+        let _ = writeln!(text, "\n{dl}");
+        g.made.push(dn.clone());
+    }
+    let off = if d.suppressed { ", suppressed: true" } else { "" };
+    let _ = writeln!(
+        text,
+        "\ntext {name} (text: \"{}\", plane: {}, at: [{}, {}], height: {} mm, distance: {} mm, font: {}, align: {align}, angle: {} deg, op: {op}{body}{off})",
+        d.text,
+        placed.plane,
+        num(at[0]),
+        num(at[1]),
+        num(height),
+        num(distance),
+        d.font,
+        num(angle),
+    );
+    g.text.push_str(&text);
+    gusset_doc::text::parse(&g.text).map_err(|e| format!("it does not read back: {}", short(&e.to_string())))?;
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {
+        return Err(format!("it does not build here: {}", e.message));
+    }
+    if let Some(f) = &d.source_font {
+        let kept =
+            if d.suppressed { "; it is kept suppressed, and the glyphs the file stores make the feature" } else { "" };
+        g.warn(format!(
+            "{}: the font '{}' is not in the file; the text \"{}\" uses Gusset's {} font instead{kept}",
+            short(&d.name),
+            short(f),
+            short(&d.text),
+            d.font
+        ));
+    }
+    g.made.push(name.clone());
+    if !d.suppressed {
+        g.features.insert(d.name.clone(), name);
+    }
+    Ok(())
+}
+
 /// What the generator learnt about a source sketch.
 #[derive(Clone)]
 struct SketchMap {
@@ -895,6 +1030,9 @@ pub fn apply_with(
             "offset_face" => serde_json::from_value::<v2::OffsetFaceF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::offset_face(&mut g, s, &d)),
+            "text" => serde_json::from_value::<TextF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| text_feature(&mut g, s, &d)),
             "unsupported" => {
                 let what = f.get("original_type").and_then(Value::as_str).unwrap_or("?");
                 Err(format!("not exported by the plugin ({what})"))

@@ -1793,7 +1793,17 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             in_own_component(&mut j, "sketch", comp, &mut feats, nbefore, format!("{nm} sketch"));
             let made = op_target(&mut j, &g, d, fid, &names);
             j.insert("creates_bodies".into(), made.into());
-            feats.push(Value::Object(j));
+            // An extrude of sketch text (section 51).
+            match super::text::extrude_texts(d, fid) {
+                None => feats.push(Value::Object(j)),
+                Some(read) => match read.and_then(|ts| super::text::text_extrude(cx, fid, &j, &ts, &sketch_names)) {
+                    Ok(made) => feats.extend(made),
+                    Err(why) => {
+                        j.insert("error_text".into(), why.into());
+                        feats.push(Value::Object(j));
+                    }
+                },
+            }
         } else if d.is(fid, SWEEP) {
             let (mut j, shift) = sweep_json(cx, fid, &nm, &sketch_names);
             if let Some(sid) = j.get("sketch_source_id").and_then(Value::as_u64) {
@@ -2968,6 +2978,9 @@ fn blocker(f: &Value) -> Option<String> {
             if has("error") {
                 return Some("its layout is not recognised".into());
             }
+            if let Some(why) = text("error_text") {
+                return Some(format!("an extrude of sketch text: {why}"));
+            }
             let surface = f.get("curves").is_some_and(Value::is_array) || has("profile_face");
             if !surface && !f.get("profiles").is_some_and(Value::is_array) {
                 return Some(
@@ -3065,7 +3078,7 @@ fn blocker(f: &Value) -> Option<String> {
             None
         }
         "hole" | "mirror" | "shell" | "draft" | "offset_face" | "move_body" | "scale_body" | "remove_body"
-        | "split" | "combine" | "thread" | "thicken" => None,
+        | "split" | "combine" | "thread" | "thicken" | "text" => None,
         "component_insert" => Some("the design it inserts is not merged into the tree".into()),
         "stored_body" => (!has("brep")).then(|| "the stored body names no blob".to_string()),
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),

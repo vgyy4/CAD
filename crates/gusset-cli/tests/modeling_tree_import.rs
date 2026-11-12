@@ -1559,4 +1559,81 @@ fn a_loft_from_a_face_and_a_sweep_along_an_edge() {
     let v = volume_of(&mut s, "Spire");
     assert!(v > 25.0 * std::f64::consts::PI * 10.0 && v < 8000.0, "{v}");
     assert_vol(volume_of(&mut s, "Rail"), std::f64::consts::PI * 40.0);
+
+/// A sketch with no curves (one that only holds text).
+fn bare_sketch(name: &str, plane: Value) -> Value {
+    json!({"type": "sketch", "name": name, "plane": plane, "points": [], "curves": []})
+}
+
+#[test]
+fn a_sketch_text_is_cut_in_a_font_gusset_has_and_the_missing_font_is_named() {
+    // "GUSSET" cut 1 mm into the top of a 60 x 20 x 10 block in "Arial", which the file does not
+    // hold: the text comes in as a `text` feature in sans, with a warning that names both.
+    let mut f = box_tree(60.0, 20.0, 10.0);
+    f.push(bare_sketch("Labels", plane_at(10.0)));
+    f.push(json!({"type": "text", "name": "Label", "sketch": "Labels", "text": "GUSSET", "font": "sans",
+                  "source_font": "Arial", "height": 5, "at": [5, 7], "direction": [1, 0], "align": "left",
+                  "distance": -1, "operation": "cut", "target": "Box"}));
+    let (mut s, r) = import_v2_session(f);
+    let w = r["warnings_user_text"].to_string();
+    assert!(w.contains("'Arial' is not in the file") && w.contains("sans"), "{r}");
+    let v = body_of(&mut s, None)["volume_mm3"].as_f64().unwrap();
+    assert!(v < 12_000.0 - 10.0 && v > 12_000.0 - 150.0, "{v}");
+    let text = s.document(&CmdCtx::user(1).actor).unwrap().to_text();
+    // Sans is the default font: the text does not spell it out.
+    assert!(text.contains("text Label (text: \"GUSSET\", plane: Label_plane, at: [5, 7]"), "{text}");
+}
+
+#[test]
+fn a_text_on_a_sketch_facing_down_reads_the_right_way_round() {
+    // The sketch on the block's bottom faces down (its y runs along -y). The text's up is the
+    // sketch's y: the letters lie on the -y side of the baseline at y = 12, so the material goes
+    // from below the block's middle (y = 10) and the centroid moves up. Drawn on a plane facing
+    // up the text would read mirrored and lie above the baseline.
+    let mut f = box_tree(60.0, 20.0, 10.0);
+    f.push(bare_sketch("Under", json!({"origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, -1, 0]})));
+    f.push(json!({"type": "text", "name": "Mark", "sketch": "Under", "text": "EEE", "font": "mono",
+                  "source_font": "Courier New", "height": 5, "at": [5, -12], "direction": [1, 0],
+                  "distance": -2, "operation": "cut", "target": "Box"}));
+    let (mut s, _) = import_v2_session(f);
+    let b = body_of(&mut s, None);
+    assert!(b["volume_mm3"].as_f64().unwrap() < 12_000.0 - 10.0, "{b}");
+    assert!(b["centroid_mm"][1].as_f64().unwrap() > 10.0 + 1e-3, "{b}");
+    assert!(b["centroid_mm"][0].as_f64().unwrap() > 30.0, "{b}");
+}
+
+#[test]
+fn a_suppressed_text_is_kept_to_edit_and_changes_nothing() {
+    let mut f = box_tree(60.0, 20.0, 10.0);
+    f.push(bare_sketch("Labels", plane_at(10.0)));
+    f.push(json!({"type": "text", "name": "Label text 1", "sketch": "Labels", "text": "+", "font": "sans",
+                  "source_font": "Arial", "height": 3, "at": [5, 7], "direction": [1, 0], "align": "center",
+                  "distance": -0.4, "operation": "cut", "target": "Box", "suppressed": true}));
+    let (mut s, r) = import_v2_session(f);
+    assert!(r["warnings_user_text"].to_string().contains("kept suppressed"), "{r}");
+    assert_vol(body_of(&mut s, None)["volume_mm3"].as_f64().unwrap(), 12_000.0);
+    let text = s.document(&CmdCtx::user(1).actor).unwrap().to_text();
+    assert!(text.contains("suppressed: true"), "{text}");
+}
+
+#[test]
+fn bad_texts_are_skipped_with_a_reason() {
+    for bad in [
+        json!({"text": ""}),
+        json!({"text": "a\"b"}),
+        json!({"font": "serif"}),
+        json!({"height": 0}),
+        json!({"sketch": "Nowhere"}),
+        json!({"target": null}),
+    ] {
+        let mut f = box_tree(60.0, 20.0, 10.0);
+        f.push(bare_sketch("Labels", plane_at(10.0)));
+        let mut d = json!({"type": "text", "name": "Bad", "sketch": "Labels", "text": "A", "font": "sans",
+                           "height": 5, "at": [5, 7], "direction": [1, 0], "distance": -1, "operation": "cut",
+                           "target": "Box"});
+        d.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+        f.push(d);
+        let (_, r) = import_into_session(f);
+        assert_eq!(r["skipped_user_text"].as_array().unwrap().len(), 1, "{bad}: {r}");
+    }
 }
