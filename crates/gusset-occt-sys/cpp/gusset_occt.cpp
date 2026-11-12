@@ -2530,7 +2530,15 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, int refine, G
     tools.Append(tool->s);
   }
   if (tools.IsEmpty()) return fail("the tool is empty");
-  auto b = run_boolean_checked(op, args, tools, refine != 0);  // validated
+  std::unique_ptr<BRepAlgoAPI_BooleanOperation> b;
+  try {
+    b = run_boolean_checked(op, args, tools, refine != 0);  // validated
+  } catch (const Standard_Failure&) {
+    // An intersection is the same either way round, and OCCT can fail one way only (3777:
+    // two bars with flats on one cylinder, "Courbes non jointives" with one as the object).
+    if (op != GS_BOOL_INTERSECT) throw;
+    b = run_boolean_checked(op, tools, args, refine != 0);
+  }
   TopoDS_Shape result = b->Shape();
   if (result.IsNull()) return fail("boolean operation produced no result");
   ShapeMap out_faces;

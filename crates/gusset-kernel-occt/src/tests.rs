@@ -2018,6 +2018,31 @@ fn fillet_of_a_rim_between_two_flats_is_the_whole_rims_round() {
 }
 
 #[test]
+fn an_intersection_of_two_flatted_bars_on_one_cylinder() {
+    // A bar of radius 2.7 along z, flatted to |x| <= 1.85 and bored (r 0.975) along 7.8 mm at
+    // each end, and the same bar flatted and bored along its whole length: the second lies in
+    // the first, so their intersection is the second. (OCCT fails one way round.)
+    let bar = disc(2.7, 36.6, -18.3);
+    let flatted = |s: &Shape, z0: f64, d: f64| {
+        let s = k().boolean(BoolOp::Cut, s, &block_at(1.85, -5.0, 5.0, 10.0, z0, d).shape).unwrap();
+        k().boolean(BoolOp::Cut, &s.shape, &block_at(-6.85, -5.0, 5.0, 10.0, z0, d).shape).unwrap()
+    };
+    let mut a = bar.shape.clone();
+    for z0 in [-18.3, 10.5] {
+        a = flatted(&a, z0, 7.8).shape;
+        a = k().boolean(BoolOp::Cut, &a, &disc(0.975, 7.8, z0).shape).unwrap().shape;
+    }
+    let b = flatted(&bar.shape, -18.3, 36.6);
+    let b = k().boolean(BoolOp::Cut, &b.shape, &disc(0.975, 36.6, -18.3).shape).unwrap();
+    let want = k().mass_properties(&b.shape).unwrap().volume;
+    for (x, y) in [(&a, &b.shape), (&b.shape, &a)] {
+        let i = k().boolean(BoolOp::Intersect, x, y).unwrap();
+        let got = k().mass_properties(&i.shape).unwrap().volume;
+        assert!(close(got, want, 1e-7), "{got} vs {want}");
+    }
+}
+
+#[test]
 fn fillet_of_an_arc_that_takes_its_whole_face() {
     // A 1 mm half disc of radius 10: a 1 mm fillet of its top arc leaves nothing of the
     // cylinder (OCCT's blend fails); the corner is cut away and ends on the flat side.
