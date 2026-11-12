@@ -107,6 +107,7 @@ fn the_schematic_tab_edits_with_undo_and_cross_probes() {
             sch_view::wire_command(st, &[[100.0, 46.19], [100.0, 40.0]]).unwrap(),
             sch_view::label_command(st, [100.0, 40.0]).unwrap(),
         ],
+        blocked: None,
     };
     h.state_mut().pcb_commands(out);
     h.state_mut().wait_idle();

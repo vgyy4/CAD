@@ -4,9 +4,13 @@
 //!
 //! Tools: Select (click picks a footprint, track or via; drag moves a footprint, snapped
 //! to the grid; Delete removes tracks and vias, R turns a footprint by 90°, F flips it),
-//! Route (clicks lay track segments on the active copper layer, snapping to pad centres;
-//! Esc or a right click ends) and Via. Ratsnest lines show the connections still to route
-//! and the panel counts them; design rule markers show where `pcb.drc` found problems.
+//! Route and Via. Routing (phase 2b) starts on a pad, track end or via and takes its net;
+//! the preview walks around other nets' copper in 45° segments with the clearance rules
+//! and the net class's width ([`gusset_pcb::route`]); a click lays it, a click on a pad
+//! of the net finishes, V places a via and goes on on the other side, `/` turns the bend
+//! the other way; Esc, a right click or a double click ends. The picked item's net is
+//! highlighted. Zone fills are drawn filled (triangulated). Ratsnest lines show the
+//! connections still to route; design rule markers show where `pcb.drc` found problems.
 //!
 //! The widget never edits the board: it reports registry commands ([`Out::commands`]),
 //! which the app sends like any other command (ADR 0012), so every edit is undoable.
@@ -65,6 +69,33 @@ pub struct State {
     pub track_from: Option<Pt>,
     pub markers: Vec<Marker>,
     pub show_ratsnest: bool,
+    /// The net being routed (from where the route started).
+    pub route_net: Option<String>,
+    /// Two-segment routes take the diagonal first.
+    pub diagonal_first: bool,
+    /// Corners rounded into arcs of this radius (mm); 0 keeps them sharp.
+    pub arc_radius: f64,
+    /// A net drawn brighter than the rest.
+    pub highlight: Option<String>,
+    route_cache: Option<RouteCache>,
+    fill_cache: FillCache,
+}
+
+/// The router's obstacles for the board, layer, net and width last routed, and the last
+/// preview.
+#[derive(Debug)]
+struct RouteCache {
+    key: (String, String, Option<String>, u64),
+    obs: gusset_pcb::route::Obstacles,
+    last: Option<(Pt, Pt, bool, Option<Vec<Pt>>)>,
+}
+
+/// Triangles of zone fill polygons, by the polygon's contents (fills an edit does not
+/// touch are not triangulated again).
+#[derive(Debug, Default)]
+pub struct FillCache {
+    board: String,
+    tris: std::collections::HashMap<u64, std::sync::Arc<Vec<[u32; 3]>>>,
 }
 
 impl Default for State {
@@ -82,6 +113,12 @@ impl Default for State {
             track_from: None,
             markers: Vec::new(),
             show_ratsnest: true,
+            route_net: None,
+            diagonal_first: true,
+            arc_radius: 0.0,
+            highlight: None,
+            route_cache: None,
+            fill_cache: FillCache::default(),
         }
     }
 }
@@ -98,6 +135,14 @@ struct Drag {
 #[derive(Debug, Default, PartialEq)]
 pub struct Out {
     pub commands: Vec<(&'static str, Value)>,
+    /// A via that did not fit there (shown, nothing sent).
+    pub blocked: Option<Pt>,
+}
+
+/// Ends the route in progress.
+pub fn end_route(st: &mut State) {
+    st.track_from = None;
+    st.route_net = None;
 }
 
 /// Board mm (Y down, like the screen) to screen points and back.
@@ -281,6 +326,149 @@ pub fn via_command(at: Pt) -> (&'static str, Value) {
     ("pcb.add_via", json!({ "at": at }))
 }
 
+/// A routed path laid as it was previewed (no new search), with arc corners when asked.
+pub fn route_command(path: &[Pt], layer: &str, net: Option<&str>, arc_radius: f64) -> (&'static str, Value) {
+    let mut v = json!({ "points": path, "layer": layer, "around": false });
+    if let Some(m) = v.as_object_mut() {
+        if let Some(n) = net {
+            m.insert("net".into(), json!(n));
+        }
+        if arc_radius > 0.0 {
+            m.insert("arc_radius".into(), json!(arc_radius));
+        }
+    }
+    ("pcb.route", v)
+}
+
+/// The via a layer change while routing places (on the route's net).
+pub fn route_via_command(at: Pt, net: Option<&str>) -> (&'static str, Value) {
+    match net {
+        Some(n) => ("pcb.add_via", json!({ "at": at, "net": n })),
+        None => via_command(at),
+    }
+}
+
+/// Where a route click lands: the centre of a pad of the route's net under `p` (which
+/// ends the route), another pad's centre, or the grid point.
+pub fn route_target(board: &Board, p: Pt, layer: &str, grid: f64, net: Option<&str>) -> (Pt, bool) {
+    for pad in board.pads.iter().filter(|pad| board.on_layer(&pad.layers, layer)) {
+        let Some(c) = geom::pad_contour(pad, 0.0) else { continue };
+        let inside = match c {
+            Contour::Circle { center, radius } => libm::hypot(center[0] - p[0], center[1] - p[1]) <= radius,
+            c => geom::inside(&c.polygon(0.05), p),
+        };
+        if inside {
+            let same = net.is_some() && board.net_name(&pad.net).as_deref() == net;
+            return (pad.at, same);
+        }
+    }
+    (snap(p, grid), false)
+}
+
+/// The net of the copper where a route starts.
+pub fn net_at(board: &Board, p: Pt, layer: &str) -> Option<String> {
+    board.net_at(p, layer)
+}
+
+/// The next copper layer for a layer change while routing (front ↔ back on two layers;
+/// on more, the next one down, back to the front from the bottom).
+pub fn other_layer(board: &Board, layer: &str) -> Option<String> {
+    let cu = board.copper_layers();
+    let i = cu.iter().position(|l| l == layer)?;
+    if cu.len() < 2 {
+        return None;
+    }
+    cu.get((i + 1) % cu.len()).cloned()
+}
+
+/// The route preview from the route's start to `to`: 45° segments around other nets'
+/// copper, or `None` when there is no clear way (cached while nothing changes).
+pub fn route_preview(open: &OpenBoard, st: &mut State, to: Pt) -> Option<Vec<Pt>> {
+    let from = st.track_from?;
+    let net = st.route_net.clone();
+    let width = open.rules.track_width_of(net.as_deref());
+    let key = (open.board_hash.clone(), st.active.clone(), net.clone(), width.to_bits());
+    if st.route_cache.as_ref().is_none_or(|c| c.key != key) {
+        let obs = gusset_pcb::route::Obstacles::new(&open.board, &open.rules, &st.active, net.as_deref(), width);
+        st.route_cache = Some(RouteCache { key, obs, last: None });
+    }
+    let cache = st.route_cache.as_mut()?;
+    if let Some((f, t, d, path)) = &cache.last
+        && same_pt(*f, from)
+        && same_pt(*t, to)
+        && *d == st.diagonal_first
+    {
+        return path.clone();
+    }
+    let grid = (open.rules.clearance_of(net.as_deref()).min(width) / 2.0).clamp(0.05, 0.25);
+    let path = gusset_pcb::route::walkaround(&cache.obs, from, to, grid, st.diagonal_first);
+    cache.last = Some((from, to, st.diagonal_first, path.clone()));
+    path
+}
+
+fn same_pt(a: Pt, b: Pt) -> bool {
+    a[0].to_bits() == b[0].to_bits() && a[1].to_bits() == b[1].to_bits()
+}
+
+/// Whether a via of the route's net fits at `at` (its clearances on every layer).
+pub fn via_fits(open: &OpenBoard, at: Pt, net: Option<&str>) -> bool {
+    let (size, _) = open.rules.via_of(net);
+    gusset_pcb::route::via_clear(&open.board, &open.rules, at, net, size)
+}
+
+/// The net an item stands for, for highlighting.
+pub fn net_of(board: &Board, sel: Sel) -> Option<String> {
+    match sel {
+        Sel::Track(i) => board.tracks.get(i).and_then(|t| board.net_name(&t.net)),
+        Sel::Via(i) => board.vias.get(i).and_then(|v| board.net_name(&v.net)),
+        Sel::Footprint(_) => None,
+    }
+}
+
+/// A fill polygon and its triangles.
+pub type FillTris<'a> = (&'a [Pt], std::sync::Arc<Vec<[u32; 3]>>);
+
+/// Triangles of every zone fill on `layer` (cached by polygon contents): (polygon,
+/// triangles).
+pub fn fill_triangles<'a>(cache: &mut FillCache, board_hash: &str, board: &'a Board, layer: &str) -> Vec<FillTris<'a>> {
+    if cache.board != board_hash {
+        // Keep triangles of fills the new board still has; drop the rest below.
+        cache.board = board_hash.to_string();
+        let keep: std::collections::HashSet<u64> =
+            board.zones.iter().flat_map(|z| z.fills.iter()).map(|(l, p)| poly_key(l, p)).collect();
+        cache.tris.retain(|k, _| keep.contains(k));
+    }
+    let mut out = Vec::new();
+    for z in board.zones.iter().filter(|z| !z.keepout) {
+        for (l, p) in z.fills.iter().filter(|(l, p)| l == layer && p.len() >= 3) {
+            let k = poly_key(l, p);
+            let t = cache
+                .tris
+                .entry(k)
+                .or_insert_with(|| {
+                    std::sync::Arc::new(
+                        gusset_pcb::poly::triangulate(p, 2_000_000).into_iter().map(|t| t.map(|i| i as u32)).collect(),
+                    )
+                })
+                .clone();
+            out.push((p.as_slice(), t));
+        }
+    }
+    out
+}
+
+fn poly_key(layer: &str, p: &[Pt]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    layer.hash(&mut h);
+    p.len().hash(&mut h);
+    for q in p {
+        q[0].to_bits().hash(&mut h);
+        q[1].to_bits().hash(&mut h);
+    }
+    h.finish()
+}
+
 /// Markers from a `pcb.drc` result.
 pub fn markers_from(result: &Value) -> Vec<Marker> {
     result
@@ -390,6 +578,26 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
     }
     ui.checkbox(&mut st.show_ratsnest, tr("pcb.ratsnest"));
     ui.separator();
+    ui.label(tr("pcb.routing"));
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut st.diagonal_first, tr("pcb.diagonal_first"));
+    });
+    ui.horizontal(|ui| {
+        let mut arcs = st.arc_radius > 0.0;
+        if ui.checkbox(&mut arcs, tr("pcb.arc_corners")).changed() {
+            st.arc_radius = if arcs { 1.0 } else { 0.0 };
+        }
+        if arcs {
+            ui.add(egui::DragValue::new(&mut st.arc_radius).range(0.05..=20.0).speed(0.05).suffix(" mm"));
+        }
+    });
+    if let Some(n) = &st.route_net {
+        ui.weak(format!("{}: {n}", tr("pcb.net")));
+    }
+    ui.separator();
+    if ui.button(tr("pcb.fill_zones")).clicked() {
+        out.commands.push(("pcb.fill_zones", json!({})));
+    }
     if ui.button(tr("pcb.run_drc")).clicked() {
         out.commands.push(("pcb.drc", json!({})));
     }
@@ -501,21 +709,36 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         && let Some(p) = pointer
     {
         match st.tool {
-            Tool::Select => st.selected = hit(b, p, tol, &shown),
-            Tool::Via => out.commands.push(via_command(snap(p, st.grid))),
-            Tool::Route => {
-                let q = pad_center_at(b, p, &st.active).unwrap_or_else(|| snap(p, st.grid));
-                if let Some(a) = st.track_from
-                    && libm::hypot(q[0] - a[0], q[1] - a[1]) > 1e-6
-                {
-                    out.commands.push(track_command(a, q, &st.active));
-                }
-                st.track_from = Some(q);
+            Tool::Select => {
+                st.selected = hit(b, p, tol, &shown);
+                st.highlight = st.selected.and_then(|s| net_of(b, s));
             }
+            Tool::Via => out.commands.push(via_command(snap(p, st.grid))),
+            Tool::Route => match st.track_from {
+                None => {
+                    let (q, _) = route_target(b, p, &st.active, st.grid, None);
+                    st.route_net = net_at(b, q, &st.active);
+                    st.highlight = st.route_net.clone();
+                    st.track_from = Some(q);
+                }
+                Some(a) => {
+                    let (q, finish) = route_target(b, p, &st.active, st.grid, st.route_net.as_deref());
+                    if libm::hypot(q[0] - a[0], q[1] - a[1]) > 1e-6
+                        && let Some(path) = route_preview(open, st, q)
+                    {
+                        out.commands.push(route_command(&path, &st.active, st.route_net.as_deref(), st.arc_radius));
+                        if finish {
+                            end_route(st);
+                        } else {
+                            st.track_from = Some(q);
+                        }
+                    }
+                }
+            },
         }
     }
-    if resp.secondary_clicked() {
-        st.track_from = None;
+    if resp.secondary_clicked() || (resp.double_clicked() && st.tool == Tool::Route) {
+        end_route(st);
     }
     // Keys while the pointer is over the board.
     if resp.hovered() {
@@ -527,9 +750,26 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                 i.key_pressed(egui::Key::F),
             )
         });
+        let (v, slash) = ui.input(|i| (i.key_pressed(egui::Key::V), i.key_pressed(egui::Key::Slash)));
         if esc {
-            st.track_from = None;
+            end_route(st);
             st.selected = None;
+            st.highlight = None;
+        }
+        if slash {
+            st.diagonal_first = !st.diagonal_first;
+        }
+        // A layer change while routing: a via where the route stands, then the other side.
+        if v && st.tool == Tool::Route
+            && let Some(a) = st.track_from
+            && let Some(next) = other_layer(b, &st.active)
+        {
+            if via_fits(open, a, st.route_net.as_deref()) {
+                out.commands.push(route_via_command(a, st.route_net.as_deref()));
+                st.active = next;
+            } else {
+                out.blocked = Some(a);
+            }
         }
         if del && let Some(c) = st.selected.and_then(delete_command) {
             out.commands.push(c);
@@ -548,13 +788,29 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
     let dragged = st.drag.as_ref().and_then(|d| d.footprint.map(|i| (i, d.moved)));
     paint(&painter, &map, open, st, dragged);
 
-    // Route preview.
+    // Route preview: the way around, or a thin red line when there is none.
     if let (Tool::Route, Some(a), Some(p)) = (st.tool, st.track_from, pointer) {
-        let q = pad_center_at(b, p, &st.active).unwrap_or_else(|| snap(p, st.grid));
-        let w = (open.rules.track_width as f32 * map.zoom).max(1.0);
-        let c = layer_color(&st.active).gamma_multiply(0.7);
-        painter.line_segment([map.to(a), map.to(q)], Stroke::new(w, c));
+        let (q, _) = route_target(b, p, &st.active, st.grid, st.route_net.as_deref());
+        let width = open.rules.track_width_of(st.route_net.as_deref());
+        let w = (width as f32 * map.zoom).max(1.0);
+        let c = layer_color(&st.active).gamma_multiply(0.8);
+        match route_preview(open, st, q) {
+            Some(path) => {
+                let pts: Vec<Pos2> = path.iter().map(|x| map.to(*x)).collect();
+                for s in pts.windows(2) {
+                    if let [u, v] = s {
+                        stroke_line(&painter, *u, *v, w, c);
+                    }
+                }
+            }
+            None => {
+                painter.line_segment([map.to(a), map.to(q)], Stroke::new(1.5, Color32::from_rgb(255, 60, 60)));
+            }
+        }
         painter.circle_filled(map.to(q), w / 2.0, c);
+    }
+    if let Some(at) = out.blocked {
+        painter.circle_stroke(map.to(at), 10.0, Stroke::new(2.0, Color32::from_rgb(255, 60, 60)));
     }
     // The pointer's place on the grid.
     if let Some(p) = pointer {
@@ -610,7 +866,7 @@ fn paint_shape(painter: &egui::Painter, map: &Map, s: &BShape, width: f64, fille
     }
 }
 
-fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &State, dragged: Option<(usize, Vec2)>) {
+fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &mut State, dragged: Option<(usize, Vec2)>) {
     let b = &open.board;
     let view = painter.clip_rect();
     // Items of the dragged footprint are drawn where they would land.
@@ -642,11 +898,18 @@ fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &State, dragg
         let dim = if is_cu && layer != st.active { 0.55 } else { 1.0 };
         let c = layer_color(&layer).gamma_multiply(dim);
         if is_cu {
-            for z in b.zones.iter().filter(|z| !z.keepout) {
-                for (_, poly) in z.fills.iter().filter(|(l, _)| *l == layer) {
-                    let v: Vec<Pos2> = poly.iter().map(|p| map.to(*p)).collect();
-                    painter.add(Shape::closed_line(v, Stroke::new(1.0, c.gamma_multiply(0.6))));
-                }
+            // Zone fills, filled (triangulated) and a little darker than the tracks.
+            let fill_c = c.gamma_multiply(0.6);
+            for (poly, tris) in fill_triangles(&mut st.fill_cache, &open.board_hash, b, &layer) {
+                let mesh = egui::Mesh {
+                    vertices: poly
+                        .iter()
+                        .map(|p| egui::epaint::Vertex { pos: map.to(*p), uv: egui::epaint::WHITE_UV, color: fill_c })
+                        .collect(),
+                    indices: tris.iter().flatten().copied().collect(),
+                    ..Default::default()
+                };
+                painter.add(Shape::mesh(mesh));
             }
         }
         for g in b.graphics.iter().filter(|g| g.layer == layer) {
@@ -655,9 +918,14 @@ fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &State, dragg
         if !is_cu {
             continue;
         }
+        let lit = |net: &gusset_pcb::board::NetRef, c: Color32| match &st.highlight {
+            Some(h) if b.net_name(net).as_deref() == Some(h.as_str()) => c.lerp_to_gamma(Color32::WHITE, 0.45),
+            Some(_) => c.gamma_multiply(0.45),
+            None => c,
+        };
         for (i, t) in b.tracks.iter().enumerate().filter(|(_, t)| t.layer == layer) {
             let w = (t.width as f32 * map.zoom).max(1.0);
-            let col = if st.selected == Some(Sel::Track(i)) { Color32::WHITE } else { c };
+            let col = if st.selected == Some(Sel::Track(i)) { Color32::WHITE } else { lit(&t.net, c) };
             match t.mid {
                 Some(m) => {
                     let pts: Vec<Pos2> = geom::arc_points(t.start, m, t.end, f64::from(0.5 / map.zoom).max(1e-3))
@@ -678,7 +946,7 @@ fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &State, dragg
             let off = off_of(pad_fp.get(k).copied().flatten());
             let selected =
                 matches!(st.selected, Some(Sel::Footprint(i)) if pad_fp.get(k).copied().flatten() == Some(i));
-            let col = if selected { Color32::WHITE.gamma_multiply(0.9) } else { c };
+            let col = if selected { Color32::WHITE.gamma_multiply(0.9) } else { lit(&pad.net, c) };
             match geom::pad_contour(pad, 0.0) {
                 Some(Contour::Circle { center, radius }) => {
                     painter.circle_filled(map.to(center) + off, radius as f32 * map.zoom, col);

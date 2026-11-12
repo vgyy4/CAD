@@ -2121,7 +2121,7 @@ impl App {
                         .inner
                 })
                 .inner;
-            self.pcb_commands(crate::pcb_view::Out { commands: out.commands });
+            self.pcb_commands(crate::pcb_view::Out { commands: out.commands, blocked: None });
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             if self.active_drawing.is_some() {
@@ -2136,7 +2136,7 @@ impl App {
                 let pal = *theme::palette(self.theme);
                 let sch = self.snapshot.sch.clone();
                 let out = crate::sch_view::show(ui, &pal, sch.as_deref(), &mut self.sch_state);
-                self.pcb_commands(crate::pcb_view::Out { commands: out.commands });
+                self.pcb_commands(crate::pcb_view::Out { commands: out.commands, blocked: None });
                 self.cross_probe();
             } else {
                 self.viewport(ui);
