@@ -17,7 +17,7 @@ const MAX_INSERT_FEATURES: usize = 50_000;
 
 /// Feature kinds whose points and directions `move_feature` moves; a design with another kind
 /// is not moved to a placement that is not the identity.
-const MOVABLE: [&str; 17] = [
+const MOVABLE: [&str; 18] = [
     "sketch",
     "extrude",
     "fillet",
@@ -38,6 +38,8 @@ const MOVABLE: [&str; 17] = [
     "combine",
     // A text's point and direction are in its sketch's frame.
     "text",
+    // A bend's line is in its sketch; its kept point is moved.
+    "bend",
 ];
 
 /// Replaces each `component_insert` feature of `tree` by the features of the design it inserts.

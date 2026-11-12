@@ -15,6 +15,7 @@
 #![allow(clippy::float_cmp)]
 
 mod acis;
+mod bend;
 mod bodyops;
 mod combine;
 mod coverage;

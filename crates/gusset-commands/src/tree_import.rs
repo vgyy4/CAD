@@ -637,11 +637,95 @@ fn text_feature(g: &mut Gen, s: &Session, d: &TextF) -> Result<(), String> {
     Ok(())
 }
 
+/// A sheet-metal bend of a body along a line of a source sketch (Fusion's Bend): `angle` in
+/// degrees, negative against the sketch's normal; the side of the line that holds `keep_point`
+/// (world mm) stays; the zone lies against the line as `position` says (as in the document).
+#[derive(Debug, Clone, Deserialize)]
+struct BendF {
+    name: String,
+    target: String,
+    sketch: String,
+    line: String,
+    angle: f64,
+    bend_radius: f64,
+    k_factor: f64,
+    #[serde(default)]
+    position: Option<String>,
+    keep_point: [f64; 3],
+}
+
+fn bend_feature(g: &mut Gen, s: &Session, d: &BendF) -> Result<(), String> {
+    let sm = g
+        .sketches
+        .get(&d.sketch)
+        .cloned()
+        .ok_or_else(|| format!("its sketch '{}' was not imported", short(&d.sketch)))?;
+    let lid =
+        sm.ids.get(&d.line).filter(|i| i.starts_with('l')).cloned().ok_or("its line is not a line of its sketch")?;
+    let (p, q) = sm.line_ends.get(&d.line).copied().ok_or("its line has no end points")?;
+    let body = g.body_named(&d.target, "body")?;
+    let (angle, r, k) =
+        (finite(d.angle, "the angle")?, finite(d.bend_radius, "the radius")?, finite(d.k_factor, "the K-factor")?);
+    let position = d.position.as_deref().unwrap_or("center");
+    if !matches!(position, "center" | "start" | "end") {
+        return Err(format!("position '{}' is not center, start or end", short(position)));
+    }
+    let src = &sm.src;
+    let world = |u: f64, v: f64| {
+        [0, 1, 2].map(|i| {
+            src.origin.get(i).copied().unwrap_or(0.0)
+                + u * src.x_axis.get(i).copied().unwrap_or(0.0)
+                + v * src.y_axis.get(i).copied().unwrap_or(0.0)
+        })
+    };
+    let n = cross(src.x_axis, src.y_axis);
+    let (a, b) = (world(p[0], p[1]), world(q[0], q[1]));
+    let left = cross(n, sub(b, a));
+    let keep = [0, 1, 2].map(|i| d.keep_point.get(i).copied().unwrap_or(0.0));
+    let side = dot(sub(keep, a), left) / (norm(left) * norm(sub(b, a))).max(1e-300);
+    if !side.is_finite() || side.abs() < 1e-6 {
+        return Err("the face that stays does not lie on one side of the line".into());
+    }
+    // Against the source normal is down; a Gusset sketch facing the other way swaps up and
+    // down, and left and right.
+    let moves_left = (side < 0.0) != sm.flipped;
+    let down = (angle < 0.0) != sm.flipped;
+    let name = g.fresh(&d.name, "Bend");
+    let mut extra = String::new();
+    if !moves_left {
+        extra.push_str(", side: right");
+    }
+    if position != "center" {
+        let _ = write!(extra, ", position: {position}");
+    }
+    if down {
+        extra.push_str(", flip: true");
+    }
+    let _ = writeln!(
+        g.text,
+        "\nbend {name} (body: {body}, line: {}.{lid}, angle: {} deg, bend_radius: {} mm, k_factor: {}{extra})",
+        sm.name,
+        num(angle.abs()),
+        num(r),
+        num(k)
+    );
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {
+        return Err(format!("it does not build here: {}", e.message));
+    }
+    g.made.push(name);
+    // The bent body keeps its name.
+    g.features.insert(d.name.clone(), body);
+    Ok(())
+}
+
 /// What the generator learnt about a source sketch.
 #[derive(Clone)]
 struct SketchMap {
     name: String,
     ids: HashMap<String, String>,
+    /// Each line's start and end in the source sketch's coordinates, by source curve id.
+    line_ends: HashMap<String, ([f64; 2], [f64; 2])>,
     flipped: bool,
     origin: V3,
     x: V3,
@@ -1030,6 +1114,9 @@ pub fn apply_with(
             "offset_face" => serde_json::from_value::<v2::OffsetFaceF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::offset_face(&mut g, s, &d)),
+            "bend" => serde_json::from_value::<BendF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| bend_feature(&mut g, s, &d)),
             "text" => serde_json::from_value::<TextF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| text_feature(&mut g, s, &d)),
@@ -1153,6 +1240,7 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
     let mut map = SketchMap {
         name: name.clone(),
         ids: HashMap::new(),
+        line_ends: HashMap::new(),
         flipped: placed.flipped,
         origin: placed.origin,
         x: placed.x,
@@ -1201,6 +1289,10 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
             "line" => {
                 let id = next("l");
                 let s = format!("  {id} = line({}, {})", pid(&map, &c.start)?, pid(&map, &c.end)?);
+                let at = |k: &Option<String>| d.points.iter().find(|p| Some(&p.id) == k.as_ref()).map(|p| [p.x, p.y]);
+                if let (Some(a), Some(b)) = (at(&c.start), at(&c.end)) {
+                    map.line_ends.insert(c.id.clone(), (a, b));
+                }
                 (id, s)
             }
             "circle" => {

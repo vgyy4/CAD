@@ -1956,6 +1956,19 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             let made = op_target(&mut j, &g, d, fid, &names);
             j.insert("creates_bodies".into(), made.into());
             feats.push(Value::Object(j));
+        } else if d.is(fid, super::bend::BEND) {
+            // The body it bends: the one body its face selections name.
+            let mut makers: Vec<String> = super::bend::face_links(d, fid)
+                .into_iter()
+                .filter_map(|l| g.creator.get(&l).and_then(|c| names.get(c)).cloned())
+                .collect();
+            makers.sort();
+            makers.dedup();
+            let target = match makers.as_slice() {
+                [one] => Some(one.clone()),
+                _ => None,
+            };
+            feats.push(Value::Object(super::bend::bend_json(cx, fid, &nm, &sketch_names, target)));
         } else if d.is(fid, super::loft::PIPE) {
             let mut j = super::loft::pipe_json(cx, fid, &nm, &sketch_names, &mut feats);
             in_own_component(&mut j, "path", comp, &mut feats, nbefore, format!("{nm} path"));
@@ -2346,7 +2359,13 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         } else if c8 == "D7015B81" || c8 == DERIVED_BASE {
             // Base Feature: its visible bodies are bodies the file stores (section 13), handed
             // to the importer as `stored_body` features.
-            match base_feature_bodies(d, &g, fid, cx.acis) {
+            // A body a later Bend changes comes in as it was put in (its PM body): the DM body
+            // the history blob holds is the bent one (3502, section 51).
+            let bent = d.ids.iter().any(|b| {
+                d.is(*b, super::bend::BEND)
+                    && super::bend::face_links(d, *b).iter().any(|l| g.creator.get(l) == Some(&fid))
+            });
+            match base_feature_bodies(d, &g, fid, cx.acis, bent) {
                 Ok(bodies) if bodies.is_empty() => {
                     skipped.push(json!({"name": name, "fusion_type": fusion_type, "reason": "Base Feature that makes no body", "source_id": fid}));
                     continue;
@@ -2802,6 +2821,7 @@ fn base_feature_bodies(
     g: &Graph,
     fid: u64,
     acis: &[(&str, &[u8])],
+    as_put_in: bool,
 ) -> Result<Vec<(String, usize, usize)>, String> {
     let mut out = Vec::new();
     let mut dms = Vec::new();
@@ -2822,6 +2842,9 @@ fn base_feature_bodies(
             Some(at) => out.push((name, at, members.len())),
             None => later = true,
         }
+    }
+    if as_put_in {
+        return base_feature_pm_bodies(d, &dms, acis).ok_or_else(|| "a Base Feature body has no PM body".into());
     }
     if !later && out.iter().all(|(_, at, count)| *at + out.len() >= *count) {
         // The visible bodies are the last of the list (section 13).
@@ -3079,6 +3102,7 @@ fn blocker(f: &Value) -> Option<String> {
         }
         "hole" | "mirror" | "shell" | "draft" | "offset_face" | "move_body" | "scale_body" | "remove_body"
         | "split" | "combine" | "thread" | "thicken" | "text" => None,
+        "bend" => has("error").then(|| text("error").unwrap_or("its layout is not recognised").to_string()),
         "component_insert" => Some("the design it inserts is not merged into the tree".into()),
         "stored_body" => (!has("brep")).then(|| "the stored body names no blob".to_string()),
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),
@@ -3409,6 +3433,13 @@ pub(super) fn move_feature(f: &mut Value, pl: &crate::fusion::Placement) {
                         fc.insert(k.into(), v);
                     }
                 }
+            }
+        }
+        "bend" => {
+            if let Some(p) = pt(f.get("keep_point"))
+                && let Some(o) = f.as_object_mut()
+            {
+                o.insert("keep_point".into(), p);
             }
         }
         "stored_body" => {

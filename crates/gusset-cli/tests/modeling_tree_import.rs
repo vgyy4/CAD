@@ -1637,3 +1637,31 @@ fn bad_texts_are_skipped_with_a_reason() {
         assert_eq!(r["skipped_user_text"].as_array().unwrap().len(), 1, "{bad}: {r}");
     }
 }
+
+#[test]
+fn a_bend_keeps_the_side_its_point_names_and_turns_against_a_negative_angle() {
+    // A 60 x 40 x 2 mm plate on the XY plane, a line across it at x = 30 in a sketch facing
+    // down (its y along -y). The point at x = 10 stays; -90 deg turns the part beyond x = 30
+    // against the sketch's normal, that is up; the zone ends at the line.
+    let mut f = box_tree(60.0, 40.0, 2.0);
+    f.push(json!({"type": "sketch", "name": "Line", "plane": {"origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, -1, 0]},
+        "points": [{"id": "a", "x": 30, "y": 0}, {"id": "b", "x": 30, "y": -40}],
+        "curves": [{"id": "c1", "type": "line", "start": "a", "end": "b"}]}));
+    f.push(json!({"type": "bend", "name": "Bend1", "target": "Box", "sketch": "Line", "line": "c1", "angle": -90,
+        "bend_radius": 3, "k_factor": 0.44, "position": "end", "keep_point": [10, 20, 2]}));
+    let (mut s, _) = import_v2_session(f);
+    let b = body_of(&mut s, None);
+    let (t, r, k) = (2.0, 3.0, 0.44);
+    let ba = std::f64::consts::FRAC_PI_2 * (r + k * t);
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 4800.0 + 40.0 * std::f64::consts::FRAC_PI_2 * t * t * (0.5 - k));
+    // The zone ends at x = 30; the axis is at x = 30 - ba, 3 mm above the top; 30 mm stand up.
+    let max = &b["bbox_max_mm"];
+    assert!((max[0].as_f64().unwrap() - (30.0 - ba + r + t)).abs() < 1e-6, "{b}");
+    assert!((max[2].as_f64().unwrap() - (t + r + 30.0)).abs() < 1e-6, "{b}");
+    let text = s.document(&CmdCtx::user(1).actor).unwrap().to_text();
+    assert!(
+        text.contains("bend Bend1 (body: Box, line: Line.l3, angle: 90 deg")
+            && text.contains("side: right, position: end)"),
+        "{text}"
+    );
+}
