@@ -1687,6 +1687,7 @@ dependencies = [
  "gusset-meshio",
  "gusset-naming",
  "gusset-ole",
+ "gusset-pcb",
  "gusset-project",
  "gusset-sat",
  "gusset-scad",

@@ -35,6 +35,7 @@ mod joint;
 mod lettering;
 mod measure;
 mod ops;
+pub(crate) mod pcb;
 mod sheet;
 mod sim;
 mod sketch_ops;
@@ -63,6 +64,7 @@ pub use joint::{JointCommand, QueryJoints};
 pub use lettering::Text;
 pub use measure::QueryMeasure;
 pub use ops::{DeleteFace, Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Shell};
+pub use pcb::{PcbExportDrill, PcbExportGerbers, PcbImport, PcbInfo};
 pub use sheet::{ContourFlange, EdgeFlange, ExportFlat, FlatPatternQuery, Tab};
 pub use sim::{FaceLoad, ModalQuery, OptimizeQuery, StaticQuery};
 pub use sketch_ops::{SketchExplodePattern, SketchPattern, SketchTrim};
@@ -94,6 +96,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(image::specs());
     v.extend(configuration::specs());
     v.extend(sketch_ops::specs());
+    v.extend(pcb::specs());
     v
 }
 

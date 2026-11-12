@@ -46,6 +46,8 @@ mod tests_joint;
 #[cfg(test)]
 mod tests_ops;
 #[cfg(test)]
+mod tests_pcb;
+#[cfg(test)]
 mod tests_sheet;
 #[cfg(test)]
 mod tests_sketch;

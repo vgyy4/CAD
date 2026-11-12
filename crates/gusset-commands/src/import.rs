@@ -191,6 +191,30 @@ pub struct PreparedImport {
     tree: Option<crate::tree_import::Tree>,
 }
 
+impl PreparedImport {
+    /// Kernel-native bodies built by another command (a PCB board, ADR 0047), each with its
+    /// name and colour, for [`commit_import`].
+    pub(crate) fn native(
+        bodies: Vec<(String, Vec<u8>, Option<u32>)>,
+        file_name: String,
+        tier: &'static str,
+        warnings: Vec<String>,
+    ) -> PreparedImport {
+        let bodies = bodies
+            .into_iter()
+            .map(|(name, blob, color)| PreparedBody {
+                name,
+                blob,
+                format: ImportFormat::Brep,
+                color,
+                faces: Vec::new(),
+                scad: None,
+            })
+            .collect();
+        PreparedImport { bodies, file_name, tier, warnings, tree: None }
+    }
+}
+
 fn cancelled() -> CommandError {
     CommandError::new("cancelled", "the import was cancelled")
 }

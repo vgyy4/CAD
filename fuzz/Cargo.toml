@@ -26,6 +26,7 @@ gusset-sat = { path = "../crates/gusset-sat" }
 gusset-xt = { path = "../crates/gusset-xt" }
 gusset-sldprt = { path = "../crates/gusset-sldprt" }
 gusset-ole = { path = "../crates/gusset-ole" }
+gusset-pcb = { path = "../crates/gusset-pcb" }
 # Only the protocol codec is fuzzed; without GUSSET_OCCT_DIR the OCCT crates build as
 # stubs, so this does not need OCCT.
 gusset-worker = { path = "../crates/gusset-worker" }
@@ -190,6 +191,13 @@ bench = false
 [[bin]]
 name = "bundle_import"
 path = "fuzz_targets/bundle_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pcb_read"
+path = "fuzz_targets/pcb_read.rs"
 test = false
 doc = false
 bench = false
