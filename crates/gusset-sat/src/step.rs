@@ -425,6 +425,40 @@ fn helix_fit(c: V3, m: V3, n: V3, p: V3, ends: [f64; 2]) -> Result<Bs3, SatError
     Ok(Bs3 { degree: 3, knots, mults, points, weights: None })
 }
 
+/// A procedural surface's B-spline approximation: `nubs|nurbs <du> <dv> ...` after its own data,
+/// in the block that opens at `at`. The first that reads as a surface: a sweep's path curve or a
+/// blend's spine can come before it (their counts have no second value). Only the surface's own
+/// block counts: a blend's support surfaces and a revolved curve are nested `{ ... }` blocks with
+/// approximations of their own (1145's fillet on a revolved spline was read as the revolved
+/// surface), and a definition shared through `{ ref n }` ends at its closing brace. `None`: no
+/// candidate; else the first that reads, or the first candidate's error.
+fn own_approximation(def: &Rec, at: usize, u_fastest: bool) -> Option<Result<Bs3Surface, SatError>> {
+    let is_int = |i: usize| def.num(i).is_some_and(|v| v.fract() == 0.0 && v >= 1.0);
+    let mut depth = 0usize;
+    let mut own = Vec::new();
+    for i in at + 2..def.f.len() {
+        match def.word(i) {
+            Some("{") => depth += 1,
+            Some("}") if depth == 0 => break,
+            Some("}") => depth -= 1,
+            Some("nubs" | "nurbs") if depth == 0 && is_int(i + 1) && is_int(i + 2) => own.push(i),
+            _ => {}
+        }
+    }
+    let mut found: Option<Result<Bs3Surface, SatError>> = None;
+    for start in own.into_iter().take(MAX_SURFACE_CANDIDATES) {
+        let r = bs3_surface(def, start, u_fastest);
+        let done = r.is_ok();
+        if done || found.is_none() {
+            found = Some(r);
+        }
+        if done {
+            break;
+        }
+    }
+    found
+}
+
 /// A helical ruled surface (`spline-surface ... { helix_spl_line [version] F u0 F u1 F t0 F t1
 /// F t0 F t1 centre major minor pitch taper axis null_surface null_surface nullbs nullbs
 /// rise twist climb }`, a thread's flank): the helix of [`helix`] with its radius vectors scaled
@@ -1089,25 +1123,7 @@ impl<'a> Writer<'a> {
                     }
                     helix_surface(def, at + 2)?
                 } else {
-                    // Procedural surfaces (sweeps, blends, offsets...) carry a B-spline
-                    // approximation: `nubs|nurbs <du> <dv>` after their own data.
-                    let is_int = |i: usize| def.num(i).is_some_and(|v| v.fract() == 0.0 && v >= 1.0);
-                    // The first `nubs` that reads as a surface: a sweep's path curve or a
-                    // blend's spine can come before it (their counts have no second value).
-                    let mut starts = (at + 2..def.f.len())
-                        .filter(|i| matches!(def.word(*i), Some("nubs" | "nurbs")) && is_int(i + 1) && is_int(i + 2));
-                    let mut found: Option<Result<Bs3Surface, SatError>> = None;
-                    for start in starts.by_ref().take(MAX_SURFACE_CANDIDATES) {
-                        let r = bs3_surface(def, start, self.u_fastest);
-                        let done = r.is_ok();
-                        if done || found.is_none() {
-                            found = Some(r);
-                        }
-                        if done {
-                            break;
-                        }
-                    }
-                    let b = found.ok_or_else(|| {
+                    let b = own_approximation(def, at, self.u_fastest).ok_or_else(|| {
                         SatError::Unsupported(format!(
                             "ACIS spline surfaces of kind '{name}' without a B-spline approximation are not read"
                         ))
@@ -1606,6 +1622,20 @@ mod surface_layout_tests {
             .map(|i| bs3_surface(&r, i, false))
             .find(Result::is_ok);
         assert!(start.is_some());
+    }
+
+    #[test]
+    fn a_procedural_surfaces_own_approximation_is_not_one_of_a_nested_support() {
+        // A blend whose support is itself procedural: the support's approximation comes first,
+        // inside its own block; the blend's comes after it.
+        let a = "nubs 1 1 2 2 0 1 1 1 0 1 1 1 0 0 0 1 0 0 0 1 0 1 1 0";
+        let b = "nubs 1 1 2 2 0 1 1 1 0 1 1 1 0 0 5 1 0 5 0 1 5 1 1 5";
+        let r = rec(&format!("{{ rb_blend_spl_sur 1 spline T {{ rot_spl_sur {a} }} 0.5 {b} }} {a}"));
+        let own = own_approximation(&r, 0, false).unwrap().unwrap();
+        assert!(own.points.iter().flatten().all(|p| (p[2] - 5.0).abs() < 1e-12));
+        // A shared definition ends at its brace: what follows is another record's.
+        let r = rec(&format!("{{ rot_spl_sur 1 }} {a}"));
+        assert!(own_approximation(&r, 0, false).is_none());
     }
 
     #[test]
