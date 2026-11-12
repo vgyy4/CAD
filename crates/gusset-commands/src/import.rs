@@ -2100,23 +2100,26 @@ fn fusion_end_blobs_kept(
     }
     let same = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
     let last = vols.len().saturating_sub(1);
+    // Whether the blob's bodies are, one for one, bodies (or solids) of the model after step `k`.
+    let one_for_one = |bodies: &[f64], k: usize| {
+        let mut pool: Vec<f64> = per_body.get(k).into_iter().chain(per_solid.get(k)).flatten().copied().collect();
+        bodies.iter().all(|b| match pool.iter().position(|p| same(*p, *b)) {
+            Some(at) => {
+                pool.swap_remove(at);
+                true
+            }
+            None => false,
+        })
+    };
     let snapshot = |bodies: &[f64]| {
         (1..last).any(|k| {
             let total: f64 = bodies.iter().sum();
-            if !vols.get(k).is_some_and(|v| same(*v, total)) {
-                return false;
-            }
-            let mut pool: Vec<f64> = per_body.get(k).into_iter().chain(per_solid.get(k)).flatten().copied().collect();
-            bodies.iter().all(|b| match pool.iter().position(|p| same(*p, *b)) {
-                Some(at) => {
-                    pool.swap_remove(at);
-                    true
-                }
-                None => false,
-            })
+            vols.get(k).is_some_and(|v| same(*v, total)) && one_for_one(bodies, k)
         })
     };
-    let kept: Vec<EndBlob> = blobs.iter().filter(|(b, _)| !snapshot(b)).cloned().collect();
+    // A blob that is also finished bodies stays (the Pins variant of 5360: the housing, unchanged
+    // since the step where it was the only body, is both that step's model and a finished body).
+    let kept: Vec<EndBlob> = blobs.iter().filter(|(b, _)| !snapshot(b) || one_for_one(b, last)).cloned().collect();
     if kept.is_empty() { blobs.to_vec() } else { kept }
 }
 
@@ -4475,6 +4478,15 @@ mod fusion_steps_tests {
         assert_eq!(fusion_end_blobs_kept(&last, true, &vols, &per_body, &per_solid), last);
         let part = vec![(vec![175.0, 26.0], b), (vec![1.0], b)];
         assert_eq!(fusion_end_blobs_kept(&part, true, &vols, &per_body, &per_solid), part);
+        // A housing never changed after step 1: its blob is that state and a finished body, and
+        // stays; the root's snapshot (taken before a magnet was rounded) still goes.
+        let vols = [0.0, 175.0, 226.0, 225.5, 232.5];
+        let per_body = vec![vec![], vec![175.0], vec![175.0, 51.0], vec![175.0, 50.5], vec![175.0, 50.5, 7.0]];
+        let per_solid = vec![vec![], vec![], vec![25.0, 26.0], vec![25.0, 25.5], vec![25.0, 25.5]];
+        let comps = vec![(vec![175.0], b), (vec![25.0, 25.5], b), (vec![7.0], b)];
+        let mut all = vec![root];
+        all.extend(comps.iter().cloned());
+        assert_eq!(fusion_end_blobs_kept(&all, true, &vols, &per_body, &per_solid), comps);
     }
 
     #[test]
