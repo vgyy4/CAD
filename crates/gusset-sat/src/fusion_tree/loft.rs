@@ -183,7 +183,8 @@ fn path_start(s: &sketch::Sketch, curves: &[u64]) -> Option<(V3, V3)> {
             let (pa, pb) = (s.points.get(&a)?, s.points.get(&b)?);
             ends.push((a, [pb[0] - pa[0], pb[1] - pa[1]]));
             ends.push((b, [pa[0] - pb[0], pa[1] - pb[1]]));
-        } else if let Some(a) = s.arcs.get(q) {
+        } else {
+            let a = s.arcs.get(q)?;
             let c = a.center;
             let n = unit(a.normal)?;
             let x = unit(a.xdir)?;
@@ -202,8 +203,6 @@ fn path_start(s: &sketch::Sketch, curves: &[u64]) -> Option<(V3, V3)> {
                 }
                 ends.push((*r, t));
             }
-        } else {
-            return None;
         }
     }
     let mut count: HashMap<u64, usize> = HashMap::new();
@@ -404,4 +403,64 @@ pub(super) fn profile_of_a_loft_cap(cx: &mut Ctx, fid: u64, j: &mut Map<String, 
     j.insert("sketch".into(), (*sketch).clone());
     j.insert("profiles".into(), json!([{ "point": point }]));
     j.insert("profile_from".into(), "the end face of a loft: the loft's section on that face's plane".into());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::path_start;
+    use crate::fusion_tree::geom::Plane;
+    use crate::fusion_tree::sketch::{Arc, Line, Sketch};
+
+    /// A path of a line from (0, 0) to (2, 0) and a quarter arc on to (3, 1) about (2, 1), on a
+    /// sketch plane turned to the world's XZ: it starts at a free end, leaving along its curve.
+    #[test]
+    fn a_path_starts_at_a_free_end_along_its_curve() {
+        let mut s = Sketch {
+            plane: Some(Plane { x: [1.0, 0.0, 0.0], y: [0.0, 0.0, 1.0], z: [0.0, -1.0, 0.0], origin: [0.0, 5.0, 0.0] }),
+            ..Sketch::default()
+        };
+        for (k, p) in [(1, [0.0, 0.0, 0.0]), (2, [2.0, 0.0, 0.0]), (3, [2.0, 1.0, 0.0]), (4, [3.0, 1.0, 0.0])] {
+            s.points.insert(k, p);
+        }
+        s.lines.insert(10, Line { origin: [0.0; 3], vector: [2.0, 0.0, 0.0], end_ref: Some(2), start_ref: Some(1) });
+        let half_pi = std::f64::consts::FRAC_PI_2;
+        let arc = Arc {
+            center: [2.0, 1.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            xdir: [1.0, 0.0, 0.0],
+            radius: 1.0,
+            a0: -half_pi,
+            a1: 0.0,
+            refs: vec![3, 4, 2],
+        };
+        s.arcs.insert(11, arc);
+        let (o, t) = path_start(&s, &[10, 11]).expect("an open chain");
+        // The line's free end (0, 0) leaves along +x; the arc's (3, 1) leaves along -y in the sketch.
+        let line_end = (o, t) == ([0.0, 5.0, 0.0], [1.0, 0.0, 0.0]);
+        let arc_end = (o, t) == ([3.0, 5.0, 1.0], [0.0, 0.0, -1.0]);
+        assert!(line_end || arc_end, "{o:?} {t:?}");
+        // A closed chain has no start.
+        s.lines.insert(12, Line { origin: [0.0; 3], vector: [3.0, 1.0, 0.0], end_ref: Some(4), start_ref: Some(1) });
+        assert!(path_start(&s, &[10, 11, 12]).is_none());
+    }
+
+    /// A loft or pipe that does not read names its reason; one that reads changes a body of one
+    /// feature.
+    #[test]
+    fn lofts_are_checked_like_sweeps() {
+        use crate::fusion_tree::json::check;
+        use serde_json::json;
+        let loft = |extra: serde_json::Value| {
+            let mut f = json!({"type": "loft", "name": "Loft1", "sketches": ["A", "B"], "operation": "join"});
+            if let (Some(o), Some(e)) = (f.as_object_mut(), extra.as_object()) {
+                o.extend(e.clone());
+            }
+            let e = json!({"type": "extrude", "name": "Extrude1", "profiles": [], "distance": 1.0, "operation": "new"});
+            json!({"features": [e, f]})
+        };
+        assert!(check(&loft(json!({"target": "Extrude1"}))).is_ok());
+        assert!(check(&loft(json!({"target": ["Extrude1", "Pipe1"]}))).unwrap_err().contains("not one body"));
+        let why = check(&loft(json!({"error": "a loft section is not a sketch profile (a point or a face)"})));
+        assert!(why.unwrap_err().contains("not a sketch profile"));
+    }
 }
