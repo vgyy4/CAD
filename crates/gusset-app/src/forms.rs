@@ -333,8 +333,10 @@ pub fn show(ui: &mut egui::Ui, form: &mut Form) -> bool {
                     // A colour picker beside the "#rrggbb" text (ADR 0045).
                     _ if form.command == "body.appearance" && f.name == "color" => {
                         ui.horizontal(|ui| {
-                            let r = ui
-                                .add(egui::TextEdit::singleline(&mut f.value).desired_width(180.0).hint_text(&f.help));
+                            let r = crate::theme::text_field(
+                                ui,
+                                egui::TextEdit::singleline(&mut f.value).desired_width(180.0).hint_text(&f.help),
+                            );
                             let mut rgb =
                                 gusset_doc::text::parse_color(f.value.trim()).map_or([0xb4, 0xbc, 0xc8], |c| {
                                     let [_, r, g, b] = c.to_be_bytes();
@@ -350,10 +352,14 @@ pub fn show(ui: &mut egui::Ui, form: &mut Form) -> bool {
                     _ => {
                         let known = suggestions(form.command, &f.name);
                         if known.is_empty() {
-                            ui.add(egui::TextEdit::singleline(&mut f.value).desired_width(220.0).hint_text(&f.help))
+                            crate::theme::text_field(
+                                ui,
+                                egui::TextEdit::singleline(&mut f.value).desired_width(220.0).hint_text(&f.help),
+                            )
                         } else {
                             ui.horizontal(|ui| {
-                                let r = ui.add(
+                                let r = crate::theme::text_field(
+                                    ui,
                                     egui::TextEdit::singleline(&mut f.value).desired_width(180.0).hint_text(&f.help),
                                 );
                                 egui::ComboBox::from_id_salt(("form-suggest", form.command, &f.name))

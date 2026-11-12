@@ -289,7 +289,7 @@ pub fn show(ui: &mut Ui, st: &mut State, pal: &Palette) -> Option<String> {
             .hint_text(crate::i18n::tr("cmdline.hint"))
             .lock_focus(true)
             .desired_width((ui.available_width() - hint_width - theme::SPACE[3]).max(160.0));
-        let r = ui.add(edit);
+        let r = crate::theme::text_field(ui, edit);
         let text = st.text.clone();
         r.widget_info(|| {
             egui::WidgetInfo::text_edit(true, text.as_str(), text.as_str(), crate::i18n::tr("cmdline.label"))

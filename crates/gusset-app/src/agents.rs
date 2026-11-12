@@ -678,7 +678,10 @@ impl App {
             });
         }
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.agents.new_key_name).hint_text("cad-bot").desired_width(120.0));
+            crate::theme::text_field(
+                ui,
+                egui::TextEdit::singleline(&mut self.agents.new_key_name).hint_text("cad-bot").desired_width(120.0),
+            );
             if ui.button(tr("agents.key_add")).clicked() {
                 let name = self.agents.new_key_name.trim().to_string();
                 match self.agents.keys.create(&name, crate::app::now_unix()) {
@@ -693,7 +696,10 @@ impl App {
         if let Some((name, token)) = &self.agents.new_key_token {
             ui.colored_label(pal.warning, format!("{} {name}:", tr("agents.key_shown_once")));
             let mut t = token.clone();
-            ui.add(egui::TextEdit::singleline(&mut t).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
+            crate::theme::text_field(
+                ui,
+                egui::TextEdit::singleline(&mut t).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY),
+            );
         }
         if let Some(n) = notice {
             self.notice = Some(n);

@@ -119,8 +119,10 @@ pub fn show(ctx: &egui::Context, at: egui::Pos2, e: &mut Entry, error: Option<&s
                 egui::Grid::new("value_entry_grid").num_columns(2).show(ui, |ui| {
                     for (i, (label, text)) in e.fields.iter_mut().enumerate() {
                         ui.label(*label);
-                        let r =
-                            ui.add(egui::TextEdit::singleline(text).desired_width(110.0).id_salt(("value_entry", i)));
+                        let r = crate::theme::text_field(
+                            ui,
+                            egui::TextEdit::singleline(text).desired_width(110.0).id_salt(("value_entry", i)),
+                        );
                         if i == 0 && !ctx.memory(|m| m.focused().is_some()) {
                             r.request_focus();
                         }

@@ -170,6 +170,33 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str, min_width: f32) -> egui::Re
     )
 }
 
+/// The palette of the theme the UI is drawn in.
+pub fn palette_of(ui: &egui::Ui) -> &'static Palette {
+    if ui.visuals().dark_mode { &DARK } else { &LIGHT }
+}
+
+/// A single-line text field with a visible edge in both themes: `bg-raised` in the light
+/// theme (egui's default there is the grey app background, which reads as disabled) and a
+/// `border` that turns `accent` on focus (egui's own focus edge is `accent-text`, white in
+/// the light theme, so it vanished on the white fill).
+pub fn text_field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> egui::Response {
+    let pal = palette_of(ui);
+    let fill = if ui.visuals().dark_mode { pal.bg_app } else { pal.bg_raised };
+    let edge = pal.border.lerp_to_gamma(pal.text_muted, 0.45);
+    let mut frame = egui::Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0, edge))
+        .corner_radius(CornerRadius::same(RADIUS_SM))
+        .inner_margin(Margin::symmetric(4, 2))
+        .begin(ui);
+    let resp = frame.content_ui.add(edit.frame(egui::Frame::NONE).margin(Margin::ZERO));
+    if resp.has_focus() {
+        frame.frame.stroke = Stroke::new(1.0, pal.accent);
+    }
+    frame.end(ui);
+    resp
+}
+
 /// WCAG relative luminance.
 pub fn luminance(c: Color32) -> f64 {
     let ch = |v: u8| {
