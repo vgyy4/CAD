@@ -1172,6 +1172,7 @@ impl Evaluator {
             FeatureKind::MoveFace(d) => self.run_move_face(s, name, d, units, params),
             FeatureKind::Text(d) => self.run_text(s, name, d, units, params),
             FeatureKind::Mirror(d) => self.run_mirror(s, name, d, units, params),
+            FeatureKind::Split(d) => self.run_split(s, name, d),
             FeatureKind::PatternLinear(d) => self.run_pattern_linear(s, name, d, units, params),
             FeatureKind::PatternCircular(d) => self.run_pattern_circular(s, name, d, units, params),
             FeatureKind::Plane(d) => self.run_plane(s, name, d, units, params),

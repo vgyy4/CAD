@@ -71,6 +71,7 @@ fn access(kind: &FeatureKind) -> Access {
         FeatureKind::DeleteFace(d) => target(d.body.as_ref()),
         FeatureKind::MoveFace(d) => target(d.body.as_ref()),
         FeatureKind::Mirror(d) => target(d.body.as_ref()),
+        FeatureKind::Split(d) => target(d.body.as_ref()),
         FeatureKind::PatternLinear(d) => target(d.body.as_ref()),
         FeatureKind::PatternCircular(d) => target(d.body.as_ref()),
         FeatureKind::Move(d) => target(d.body.as_ref()),

@@ -56,6 +56,10 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             body_of(&mut d.body);
             d.plane.rename_feature(from, to);
         }
+        FeatureKind::Split(d) => {
+            body_of(&mut d.body);
+            d.plane.rename_feature(from, to);
+        }
         FeatureKind::DeleteFace(d) => {
             body_of(&mut d.body);
             for f in &mut d.faces {

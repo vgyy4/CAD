@@ -3,9 +3,9 @@
 use super::*;
 use gusset_doc::{
     CombineDef, DirRef, DraftDef, MirrorDef, MoveDef, MoveFaceDef, MoveRotation, OffsetFaceDef, PatternCircularDef,
-    PatternLinearDef, ShellDef,
+    PatternLinearDef, ShellDef, SplitDef,
 };
-use gusset_kernel::{DraftSpec, FaceOrigin, KernelError, Transform};
+use gusset_kernel::{DraftSpec, FaceOrigin, KernelError, Loop2, Profile, ProfileEdge, Region2, Seg2, Transform};
 use gusset_naming::BodyNames;
 
 /// Most instances one pattern may create (the evaluation's work limits also apply,
@@ -320,6 +320,66 @@ impl Evaluator {
             d.refine,
         )?;
         replace_body(s, bi, &body, united.0, united.1, united.2);
+        Ok(())
+    }
+
+    /// Divides a body by a plane: the part on the side the normal points away from stays the
+    /// body, the part on the side it points to becomes a new body named after the feature.
+    pub(crate) fn run_split(&self, s: &mut State, name: &str, d: &SplitDef) -> Result<(), EvalError> {
+        let k = self.kernel.as_ref();
+        let (bi, body) = target_body(s, name, d.body.as_deref())?;
+        let (origin, normal) = mirror_plane(name, &d.plane, s)?;
+        let n = gusset_kernel::normalize(normal)
+            .ok_or_else(|| EvalError::new(name, ErrorCode::InvalidReference, "the split plane has no normal"))?;
+        let bb = k.bbox(&body.shape).map_err(|ke| kernel_err(name, "bounding box", ke))?;
+        let c = [0.5 * (bb.min[0] + bb.max[0]), 0.5 * (bb.min[1] + bb.max[1]), 0.5 * (bb.min[2] + bb.max[2])];
+        let h = gusset_kernel::dot(gusset_kernel::sub(c, origin), n);
+        // A block on the plane, on the normal's side, wider and deeper than the body.
+        let reach = 2.0 * (gusset_kernel::norm(bb.size()) + h.abs()) + 1.0;
+        let along = if n[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+        let x = gusset_kernel::normalize(gusset_kernel::cross(n, along))
+            .ok_or_else(|| EvalError::new(name, ErrorCode::InvalidReference, "the split plane has no normal"))?;
+        let y = gusset_kernel::cross(n, x);
+        let frame = Frame { origin: gusset_kernel::sub(c, [n[0] * h, n[1] * h, n[2] * h]), x, y };
+        let sq = [[-reach, -reach], [reach, -reach], [reach, reach], [-reach, reach]];
+        let edges: Vec<ProfileEdge> = sq
+            .iter()
+            .zip(sq.iter().cycle().skip(1))
+            .map(|(a, b)| ProfileEdge { seg: Seg2::Line { a: *a, b: *b }, tag: 0 })
+            .collect();
+        let distance = if gusset_kernel::dot(frame.normal(), n) >= 0.0 { reach } else { -reach };
+        let block = k
+            .extrude(
+                &Profile { frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: Vec::new() }] },
+                &ExtrudeSpec { distance, symmetric: false },
+            )
+            .map_err(|ke| kernel_err(name, "split", ke))?;
+        let block_topo = k.topology(&block.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
+        let block_names = name_body(&OpContext::Import { feature: name }, &block.face_origins, &block_topo)
+            .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
+        self.charge(s, name, "the split", 2, body.topology.faces.len() as u64 + block_topo.faces.len() as u64)?;
+        let tool = [Tool { shape: block.shape, names: block_names }];
+        let on_error = |_: Option<usize>, ke: KernelError| kernel_err(name, "split", ke);
+        let empty = "the split plane does not cross the body";
+        let hint = |e: EvalError| {
+            if e.code == ErrorCode::EmptyResult { e.with_hint("pick a plane that runs through the body") } else { e }
+        };
+        let kept = self
+            .boolean_tools_refined(name, BoolOp::Cut, (&body.shape, &body.names), &tool, empty, &on_error, true)
+            .map_err(hint)?;
+        let made = self
+            .boolean_tools_refined(name, BoolOp::Intersect, (&body.shape, &body.names), &tool, empty, &on_error, true)
+            .map_err(hint)?;
+        replace_body(s, bi, &body, kept.0, kept.1, kept.2);
+        s.bodies.push(Arc::new(Body {
+            name: name.to_string(),
+            feature: name.to_string(),
+            shape: made.0,
+            names: made.1,
+            topology: made.2,
+            holes: Vec::new(),
+            sheet: None,
+        }));
         Ok(())
     }
 

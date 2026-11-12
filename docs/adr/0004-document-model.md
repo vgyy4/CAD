@@ -320,3 +320,14 @@ like a copy of such a pattern; `merge: false` with `features:` is refused. Depen
 (gusset-eval `deps.rs`): a copy no feature has changed yet was written by its pattern. The
 `pattern_linear` / `pattern_circular` commands keep merging (no new parameter: MCP tool
 budget); the code view and tree import write `merge: false`.
+
+## Amendment (2026-11-12): `split` and closed shells
+`split <Name> (plane: <Plane>, [body: <Feature>])` divides a body by a plane (a base plane, a datum
+plane or a planar face): what lies on the side the plane's normal points away from stays the body
+(its feature, name and records), what lies on the side it points to becomes a new body whose
+name and feature are `<Name>`. The kernel cuts and intersects the body with a block on the
+plane (named like an import, `OpContext::Import`), refined; a plane that does not cross the body
+is an error (empty result). Validation treats it as a feature that creates a body. There is no
+command for it yet: it comes from the Fusion tree import (Split Body) and the code view.
+`shell` with `faces: []` and `body:` hollows the whole body: the body keeps its skin and gets the
+offset skin as a closed void (`thickness < 0`: the offset skin outside, the old body the void).

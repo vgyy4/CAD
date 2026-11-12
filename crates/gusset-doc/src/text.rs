@@ -629,6 +629,10 @@ fn print_feature(out: &mut String, f: &Feature) {
                 args.push("flip: true".into());
             }
         }
+        FeatureKind::Split(d) => {
+            push_body(&mut args, &d.body);
+            args.push(format!("plane: {}", print_plane(&d.plane)));
+        }
         FeatureKind::Mirror(d) => {
             push_body(&mut args, &d.body);
             args.push(format!("plane: {}", print_plane(&d.plane)));
@@ -1008,9 +1012,9 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 doc.params.push(Param { name, expr, comment: notes.join("\n"), range });
             }
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
-            | "draft" | "offset_face" | "delete_face" | "move_face" | "text" | "mirror" | "pattern_linear"
-            | "pattern_circular" | "plane" | "move" | "scale" | "remove" | "combine" | "hole" | "joint"
-            | "component" | "surface_extrude" | "patch" | "thicken" | "stitch" | "contour_flange" | "tab"
+            | "draft" | "offset_face" | "delete_face" | "move_face" | "text" | "mirror" | "split"
+            | "pattern_linear" | "pattern_circular" | "plane" | "move" | "scale" | "remove" | "combine" | "hole"
+            | "joint" | "component" | "surface_extrude" | "patch" | "thicken" | "stitch" | "contour_flange" | "tab"
             | "edge_flange" | "cam_job" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
@@ -1026,6 +1030,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                         | "offset_face"
                         | "delete_face"
                         | "mirror"
+                        | "split"
                         | "pattern_linear"
                         | "pattern_circular"
                 ) {
@@ -1398,6 +1403,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
         "offset_face" => "body, faces, distance, rules, label, group, suppressed",
         "delete_face" => "body, faces, label, group, suppressed",
         "mirror" => "body, plane, merge, refine, label, group, suppressed",
+        "split" => "body, plane, label, group, suppressed",
         "pattern_linear" => "body, direction, count, spacing, features, refine, merge, label, group, suppressed",
         _ => "body, axis, through, count, angle, features, refine, merge, label, group, suppressed",
     };
@@ -1409,7 +1415,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             (_, "body") => body = Some(c.ident()?.to_string()),
             ("shell" | "draft" | "offset_face" | "delete_face", "faces") => faces = Some(parse_face_list(c)?),
             ("shell", "thickness") => thickness = Some(c.expr()?),
-            ("mirror" | "draft", "plane") => plane = Some(parse_plane(c)?),
+            ("mirror" | "draft" | "split", "plane") => plane = Some(parse_plane(c)?),
             ("draft", "flip") => flip = parse_bool(c)?,
             ("offset_face", "rules") => rules = parse_bool(c)?,
             ("mirror", "merge") => merge = parse_bool(c)?,
@@ -1459,6 +1465,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             angle: angle.ok_or_else(|| missing(c, kw, "angle"))?,
             flip,
         }),
+        "split" => FeatureKind::Split(SplitDef { body, plane: plane.ok_or_else(|| missing(c, kw, "plane"))? }),
         "mirror" => {
             FeatureKind::Mirror(MirrorDef { body, plane: plane.ok_or_else(|| missing(c, kw, "plane"))?, merge, refine })
         }

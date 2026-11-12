@@ -223,3 +223,51 @@ fn commands_drive_the_real_kernel() {
     let r = run("feature.mirror", json!({"plane": "XY", "merge": true}));
     assert_eq!(r["rebuild_ok"], true, "{r}");
 }
+
+#[test]
+fn shell_of_a_whole_body_is_hollow() {
+    let (ev, r) = eval(BOX, "shell Shell1 (body: Extrude1, faces: [], thickness: 2 mm)");
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    // 40x20x10 with a closed 36x16x6 void.
+    assert!(near(volume(&ev, &r, "Extrude1"), 8000.0 - 3456.0), "{}", volume(&ev, &r, "Extrude1"));
+    let n = names(&r, "Extrude1");
+    assert_eq!(n.len(), 12, "{n:?}");
+    assert!(n.contains(&"Extrude1/cap(end)".to_string()), "{n:?}");
+    assert!(n.contains(&"Shell1/inner(Extrude1/cap(end))".to_string()), "{n:?}");
+}
+
+#[test]
+fn split_divides_a_body_by_a_plane() {
+    let (ev, r) = eval(
+        BOX,
+        "plane Plane1 (base: YZ, offset: 15 mm)
+split Split1 (body: Extrude1, plane: Plane1)",
+    );
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert_eq!(r.bodies.len(), 2);
+    // x 0..15 stays the body; x 15..40 (the side the normal +X points to) is the new body.
+    assert!(near(volume(&ev, &r, "Extrude1"), 15.0 * 200.0), "{}", volume(&ev, &r, "Extrude1"));
+    assert!(near(volume(&ev, &r, "Split1"), 25.0 * 200.0), "{}", volume(&ev, &r, "Split1"));
+    let bb = ev.kernel().bbox(&r.body("Split1").unwrap().shape).unwrap();
+    assert!(near(bb.min[0], 15.0) && near(bb.max[0], 40.0));
+    assert_eq!(names(&r, "Extrude1").len(), 6);
+    assert_eq!(names(&r, "Split1").len(), 6);
+    // A later feature can target the new body.
+    let (_, r) = eval(
+        BOX,
+        "plane Plane1 (base: YZ, offset: 15 mm)
+split Split1 (body: Extrude1, plane: Plane1)
+remove Remove1 (body: Split1)",
+    );
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert_eq!(r.bodies.len(), 1);
+    // A plane that misses the body is an error.
+    let (_, r) = eval(
+        BOX,
+        "plane Plane1 (base: YZ, offset: 50 mm)
+split Split1 (body: Extrude1, plane: Plane1)",
+    );
+    assert_eq!(r.errors().len(), 1, "{:?}", r.errors());
+    let doc = gusset_doc::Document::from_text(&format!("{BOX}\nsplit Split1 (body: Extrude1, plane: YZ)\n")).unwrap();
+    assert!(doc.to_text().contains("split Split1 (body: Extrude1, plane: YZ)"));
+}

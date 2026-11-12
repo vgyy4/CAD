@@ -58,6 +58,7 @@ pub fn creates_body(f: &Feature) -> bool {
         FeatureKind::Text(d) => d.op == BodyOp::New,
         FeatureKind::Import(_) | FeatureKind::Component(_) => true,
         FeatureKind::Mirror(m) => !m.merge,
+        FeatureKind::Split(_) => true,
         FeatureKind::Move(m) => m.copy,
         FeatureKind::Surface(d) => !matches!(d.op, SurfaceOp::Thicken { .. }),
         FeatureKind::Sheet(d) => !matches!(d.op, SheetOp::EdgeFlange { .. }),
@@ -78,6 +79,7 @@ pub fn created_body_name(f: &Feature) -> Option<&str> {
         FeatureKind::Text(d) if d.op == BodyOp::New => Some(d.body_name.as_deref().unwrap_or(&f.name)),
         FeatureKind::Import(_) | FeatureKind::Component(_) => Some(&f.name),
         FeatureKind::Mirror(m) if !m.merge => Some(&f.name),
+        FeatureKind::Split(_) => Some(&f.name),
         FeatureKind::Move(m) if m.copy => Some(&f.name),
         FeatureKind::Surface(d) if !matches!(d.op, SurfaceOp::Thicken { .. }) => {
             Some(d.body_name.as_deref().unwrap_or(&f.name))
@@ -325,6 +327,10 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
             }
             FeatureKind::Mirror(d) => {
+                check_plane(n, &d.plane, &seen, &mut out);
+                check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
+            }
+            FeatureKind::Split(d) => {
                 check_plane(n, &d.plane, &seen, &mut out);
                 check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
             }

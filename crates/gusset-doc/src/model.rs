@@ -197,6 +197,8 @@ pub enum FeatureKind {
     Scale(ScaleDef),
     /// Drops a body from the result (ADR 0004 amendment).
     Remove(RemoveDef),
+    /// Divides a body by a plane into two bodies (ADR 0004 amendment).
+    Split(SplitDef),
     Combine(CombineDef),
     Hole(HoleDef),
     Joint(Box<JointDef>),
@@ -234,6 +236,7 @@ impl FeatureKind {
             FeatureKind::Move(_) => "move",
             FeatureKind::Scale(_) => "scale",
             FeatureKind::Remove(_) => "remove",
+            FeatureKind::Split(_) => "split",
             FeatureKind::Combine(_) => "combine",
             FeatureKind::Hole(_) => "hole",
             FeatureKind::Joint(_) => "joint",
@@ -367,6 +370,10 @@ impl FeatureKind {
             FeatureKind::Move(d) => add_body(&mut add, &d.body),
             FeatureKind::Scale(d) => add_body(&mut add, &d.body),
             FeatureKind::Remove(d) => add(&d.body),
+            FeatureKind::Split(d) => {
+                add_body(&mut add, &d.body);
+                d.plane.features(&mut add);
+            }
             FeatureKind::Combine(d) => {
                 add_body(&mut add, &d.body);
                 d.tools.iter().for_each(|t| add(t));
@@ -482,7 +489,7 @@ impl FeatureKind {
             FeatureKind::Move(d) => motion_exprs(&d.translate, &d.rotation).into_iter().for_each(&mut take),
             FeatureKind::MoveFace(d) => motion_exprs(&d.translate, &d.rotation).into_iter().for_each(&mut take),
             FeatureKind::Scale(d) => d.exprs().into_iter().for_each(&mut take),
-            FeatureKind::Remove(_) => {}
+            FeatureKind::Remove(_) | FeatureKind::Split(_) => {}
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => d.exprs().into_iter().for_each(&mut take),
             FeatureKind::Joint(d) => d.exprs().into_iter().for_each(&mut take),
@@ -590,7 +597,7 @@ impl FeatureKind {
             FeatureKind::Move(d) => motion_exprs_mut(&mut d.translate, &mut d.rotation, &mut out),
             FeatureKind::MoveFace(d) => motion_exprs_mut(&mut d.translate, &mut d.rotation, &mut out),
             FeatureKind::Scale(d) => out.extend(d.exprs_mut()),
-            FeatureKind::Remove(_) => {}
+            FeatureKind::Remove(_) | FeatureKind::Split(_) => {}
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => out.extend(d.exprs_mut()),
             FeatureKind::Joint(d) => out.extend(d.exprs_mut()),
@@ -1673,6 +1680,17 @@ impl ScaleDef {
 pub struct RemoveDef {
     /// The body to drop (named after the feature that created it).
     pub body: String,
+}
+
+/// Divides a body by a plane (ADR 0004 amendment): what lies on the side the plane's normal
+/// points away from stays the body; what lies on the side it points to becomes a new body named
+/// after this feature. The plane must cross the body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SplitDef {
+    /// The body to split; `None` = the most recent body.
+    pub body: Option<String>,
+    /// A base plane, a datum plane or a planar face.
+    pub plane: PlaneRef,
 }
 
 /// The kind of a joint (ADR 0026): which motions it leaves free.
