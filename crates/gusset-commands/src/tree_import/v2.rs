@@ -1418,12 +1418,55 @@ pub(super) fn split(g: &mut Gen, s: &Session, d: &SplitF) -> Result<(), String> 
     let o = finite3(d.plane.origin, "the plane origin")?;
     let n = unit(finite3(d.plane.normal, "the plane normal")?).ok_or("the plane normal is zero")?;
     let name = g.fresh(&d.name, "Split");
-    let plane = datum_plane(g, &name, o, n)?;
+    let plane = facing_plane(g, &name, o, n)?;
     let _ = writeln!(g.text, "\nsplit {name} (body: {target}, plane: {plane})");
     builds(g, s, &name)?;
     g.made.push(name.clone());
     g.features.insert(d.name.clone(), name);
     Ok(())
+}
+
+/// A plane through `o` whose normal, as the document evaluates it, is `n`: a split makes the
+/// new body of the side the normal points to, so the side matters (770's Split1 faces down,
+/// and the feet a later extrude joins to the split's body stand under the plane). The bare
+/// base planes face +z, +y and +x; a datum plane on one faces as its frame (x cross y: -y on
+/// XZ); a base turned half a turn about its own x faces the other way.
+fn facing_plane(g: &mut Gen, name: &str, o: V3, n: V3) -> Result<String, String> {
+    for (base, x, y) in BASES {
+        let frame_n = cross(x, y);
+        if (dot(n, frame_n).abs() - 1.0).abs() >= 1e-9 {
+            continue;
+        }
+        let bare_n = match base {
+            "XY" => [0.0, 0.0, 1.0],
+            "XZ" => [0.0, 1.0, 0.0],
+            _ => [1.0, 0.0, 0.0],
+        };
+        let h = dot(o, n);
+        if h.abs() < 1e-9 && dot(n, bare_n) > 0.0 {
+            return Ok(base.to_string());
+        }
+        let base = if dot(n, frame_n) > 0.0 {
+            base.to_string()
+        } else {
+            let axis = if x == [1.0, 0.0, 0.0] { "X" } else { "Y" };
+            let pn = g.fresh(&format!("{name}_turned"), "Plane");
+            let _ = writeln!(g.text, "\nplane {pn} (base: {base}, axis: {axis}, angle: 180 deg)");
+            g.made.push(pn.clone());
+            pn
+        };
+        if h.abs() < 1e-9 {
+            return Ok(base);
+        }
+        let pn = g.fresh(&format!("{name}_plane"), "Plane");
+        let _ = writeln!(g.text, "\nplane {pn} (base: {base}, offset: {} mm)", num(h));
+        g.made.push(pn.clone());
+        return Ok(pn);
+    }
+    match datum_plane_facing(g, name, o, n)? {
+        (p, false) => Ok(p),
+        (_, true) => Err("its plane faces against the tilted datum plane made for it".into()),
+    }
 }
 
 /// Push or pull faces along their normals (ADR 0042 amendment).
