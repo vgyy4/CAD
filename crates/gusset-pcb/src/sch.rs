@@ -422,7 +422,7 @@ pub struct Schematic {
     pub lib_symbols: Vec<LibSymbol>,
     pub symbols: Vec<Symbol>,
     pub wires: Vec<Wire>,
-    /// Kept and drawn; bus member connectivity is not modelled.
+    /// Bus segments: members join through sheet pins on them (see [`crate::netlist`]).
     pub buses: Vec<Wire>,
     /// Bus entries: (position, size).
     pub bus_entries: Vec<(Pt, Pt)>,

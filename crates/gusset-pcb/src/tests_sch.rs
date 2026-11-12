@@ -245,6 +245,68 @@ fn hierarchical_sheets_join_through_sheet_pins() {
 }
 
 #[test]
+fn bus_members_join_through_sheet_pins_and_buses() {
+    use crate::netlist::bus_members;
+    assert_eq!(bus_members("D[0..2]"), ["D0", "D1", "D2"]);
+    assert_eq!(bus_members("A[3..1]"), ["A1", "A2", "A3"]);
+    assert_eq!(bus_members("{SDA SCL}"), ["SDA", "SCL"]);
+    assert_eq!(bus_members("I2C{SDA D[0..1]}"), ["I2C.SDA", "I2C.D0", "I2C.D1"]);
+    assert!(bus_members("PLAIN").is_empty() && bus_members("X[0..99999]").is_empty());
+    let lim = Limits::default();
+    // Two sheets, each an R whose pins carry the local labels P0 and P1 (P = D or Q).
+    let sub = |p: &str| {
+        let mut s = Schematic::new_empty(p).unwrap();
+        place(&mut s, "R", [50.0, 50.0], 0.0, Mirror::None, 1, if p == "D" { "R10" } else { "R20" });
+        s.add_label(LabelKind::Local, &format!("{p}0"), [50.0, 46.19], 0.0, None, &lim).unwrap();
+        s.add_label(LabelKind::Local, &format!("{p}1"), [50.0, 53.81], 0.0, None, &lim).unwrap();
+        s.add_label(LabelKind::Hierarchical, &format!("{p}[0..1]"), [30.0, 30.0], 0.0, Some("input"), &lim).unwrap();
+        s
+    };
+    // The root: sheet pins D[0..1] and Q[0..1] on one bus labelled B[0..1].
+    let mut root = Schematic::new_empty("root").unwrap();
+    let items = root.tree.items_mut().unwrap();
+    for (u, f, pin, y) in [("aaaa", "d.kicad_sch", "D[0..1]", 10.0), ("bbbb", "q.kicad_sch", "Q[0..1]", 40.0)] {
+        let t = format!(
+            r#"(sheet (at 40 {y}) (size 20 10) (uuid "{u}")
+                 (property "Sheetname" "{u}" (at 40 {y} 0)) (property "Sheetfile" "{f}" (at 40 {y} 0))
+                 (pin "{pin}" input (at 40 {} 180) (uuid "{u}-p")))"#,
+            y + 5.0
+        );
+        items.push(sexpr::parse(&t, &Default::default()).unwrap());
+    }
+    for (a, b) in [([40.0, 15.0], [30.0, 15.0]), ([30.0, 15.0], [30.0, 45.0]), ([30.0, 45.0], [40.0, 45.0])] {
+        let t = format!("(bus (pts (xy {} {}) (xy {} {})))", a[0], a[1], b[0], b[1]);
+        items.push(sexpr::parse(&t, &Default::default()).unwrap());
+    }
+    let mut root = Schematic::from_tree(std::mem::take(&mut root.tree), &lim).unwrap();
+    root.add_label(LabelKind::Local, "B[0..1]", [30.0, 30.0], 0.0, None, &lim).unwrap();
+    let d = Design {
+        sheets: vec![
+            ("root.kicad_sch".into(), root.clone()),
+            ("d.kicad_sch".into(), sub("D")),
+            ("q.kicad_sch".into(), sub("Q")),
+        ],
+    };
+    let pins = netlist(&d).pin_map();
+    // Member by member, in order, named by the root's bus label.
+    assert_eq!(pins[&("R10".into(), "1".into())], "/B0");
+    assert_eq!(pins[&("R20".into(), "1".into())], "/B0");
+    assert_eq!(pins[&("R10".into(), "2".into())], "/B1");
+    assert_eq!(pins[&("R20".into(), "2".into())], "/B1");
+    // Without the bus the sheets stay apart.
+    root.buses.clear();
+    let d = Design {
+        sheets: vec![
+            ("root.kicad_sch".into(), root),
+            ("d.kicad_sch".into(), sub("D")),
+            ("q.kicad_sch".into(), sub("Q")),
+        ],
+    };
+    let pins = netlist(&d).pin_map();
+    assert_ne!(pins[&("R10".into(), "1".into())], pins[&("R20".into(), "1".into())]);
+}
+
+#[test]
 fn erc_finds_the_simple_problems() {
     let lim = Limits::default();
     let mut s = Schematic::new_empty("e").unwrap();

@@ -11,6 +11,12 @@
 //! parent sheet's pin of the same name, and hidden power-input pins of ordinary symbols
 //! join the global net of their pin name.
 //!
+//! Buses (phase 2b): a bus sheet pin (`D[0..7]`, `{SDA SCL}`, `I2C{SDA SCL}`) joins the
+//! child sheet's members (its local labels `D0`..`D7`) to the parent's members of the
+//! same names. Sheet pins on one bus of the parent join member by member in order (vectors
+//! of one width; other widths by name), named by the bus's own label when it has one (as
+//! a local label of the parent sheet), else by its first pin.
+//!
 //! Net names follow KiCad's: a power or global name as written; a local label as the
 //! sheet path plus the label (`/sub/SDA`, `/SDA` on the root sheet); otherwise
 //! `Net-(R1-Pad2)` (or the pin name, `Net-(U1-CLK)`), or `unconnected-(…-PadN)` for a
@@ -305,6 +311,56 @@ impl Grid {
 }
 
 /// Escapes a name part the way KiCad writes net names (`/` → `{slash}`).
+/// For each bus segment, a representative of the segments it touches (end to end or an
+/// end on another segment).
+fn bus_groups(buses: &[crate::sch::Wire]) -> Vec<usize> {
+    let mut dsu = Dsu::new(buses.len());
+    for (i, a) in buses.iter().enumerate() {
+        for (j, b) in buses.iter().enumerate().skip(i + 1) {
+            let touch = [a.a, a.b].iter().any(|p| point_segment(*p, b.a, b.b) < 1e-6)
+                || [b.a, b.b].iter().any(|p| point_segment(*p, a.a, a.b) < 1e-6);
+            if touch {
+                dsu.union(i, j);
+            }
+        }
+    }
+    (0..buses.len()).map(|i| dsu.find(i)).collect()
+}
+
+/// The members of a bus name: `D[0..7]` gives `D0`..`D7`, `{SDA SCL}` gives `SDA` and
+/// `SCL`, `I2C{SDA SCL}` gives `I2C.SDA` and `I2C.SCL`, groups may hold vectors. Plain
+/// names have none. At most 1024 members.
+pub fn bus_members(name: &str) -> Vec<String> {
+    const MAX: usize = 1024;
+    let vector = |t: &str| -> Option<Vec<String>> {
+        let (prefix, rest) = t.split_once('[')?;
+        let range = rest.strip_suffix(']')?;
+        let (a, b) = range.split_once("..")?;
+        let (a, b): (i64, i64) = (a.trim().parse().ok()?, b.trim().parse().ok()?);
+        if (a - b).unsigned_abs() >= MAX as u64 {
+            return None;
+        }
+        let (lo, hi) = (a.min(b), a.max(b));
+        Some((lo..=hi).map(|i| format!("{prefix}{i}")).collect())
+    };
+    if let Some(open) = name.find('{')
+        && let Some(inner) = name.get(open + 1..).and_then(|r| r.strip_suffix('}'))
+    {
+        let group = name.get(..open).unwrap_or_default();
+        let mut out = Vec::new();
+        for part in inner.split_whitespace() {
+            let members = vector(part).unwrap_or_else(|| vec![part.to_string()]);
+            for m in members {
+                if out.len() < MAX {
+                    out.push(if group.is_empty() { m } else { format!("{group}.{m}") });
+                }
+            }
+        }
+        return out;
+    }
+    vector(name).unwrap_or_default()
+}
+
 fn escape(s: &str) -> String {
     s.replace('/', "{slash}")
 }
@@ -455,12 +511,87 @@ pub fn netlist(design: &Design) -> Netlist {
             _ => {}
         }
     }
-    for (u, sheet, name, it) in sheet_pins {
+    // Bus members named on a sheet by its bus (not by a label there): (an item of the
+    // member's net, the sheet use, the member's name), offered as names like local labels.
+    let mut bus_names: Vec<(usize, usize, String)> = Vec::new();
+    // A child's bus member `item` takes the parent-sheet name `name` (joined like a local
+    // label of that sheet use).
+    let mut name_member =
+        |dsu: &mut Dsu, by_name: &mut HashMap<(Option<usize>, String), usize>, u: usize, name: String, item: usize| {
+            match by_name.get(&(Some(u), name.clone())) {
+                Some(&a) => dsu.union(a, item),
+                None => {
+                    by_name.insert((Some(u), name.clone()), item);
+                    if bus_names.len() < 100_000 {
+                        bus_names.push((item, u, name));
+                    }
+                }
+            }
+        };
+    // Buses on each sheet use: groups of touching segments, the vector bus labels on them,
+    // the sheet pins on them.
+    let mut on_bus: std::collections::HashSet<(usize, usize, String)> = std::collections::HashSet::new();
+    for (u, su) in uses.iter().enumerate() {
+        let Some((_, s)) = design.sheets.get(su.sheet) else { continue };
+        if s.buses.is_empty() || s.buses.len() > 20_000 {
+            continue;
+        }
+        let groups = bus_groups(&s.buses);
+        let group_at =
+            |p: Pt| s.buses.iter().position(|b| point_segment(p, b.a, b.b) < 1e-6).and_then(|g| groups.get(g).copied());
+        let mut labels: HashMap<usize, Vec<String>> = HashMap::new();
+        for l in s.labels.iter().filter(|l| l.kind == LabelKind::Local) {
+            if let Some(g) = group_at(l.at)
+                && !bus_members(&escape(&l.text)).is_empty()
+            {
+                labels.entry(g).or_default().push(escape(&l.text));
+            }
+        }
+        let mut pins: HashMap<usize, Vec<(usize, String)>> = HashMap::new();
+        for (si, sh) in s.sheets.iter().enumerate() {
+            let Some(child) = uses.iter().position(|c| c.parent == Some((u, si))) else { continue };
+            for pin in &sh.pins {
+                if let Some(g) = group_at(pin.at) {
+                    on_bus.insert((u, si, escape(&pin.name)));
+                    pins.entry(g).or_default().push((child, escape(&pin.name)));
+                }
+            }
+        }
+        for (g, ps) in &mut pins {
+            ps.sort();
+            // The bus's own name: its label (the first in name order), else its first pin.
+            let mut names = labels.get(g).cloned().unwrap_or_default();
+            names.sort();
+            let naming = names.first().or_else(|| ps.first().map(|p| &p.1)).map(|n| bus_members(n)).unwrap_or_default();
+            for (child, pname) in ps.iter() {
+                let ms = bus_members(pname);
+                // Vectors of one width join member by member, in order; others by name.
+                let positional = ms.len() == naming.len();
+                for (k, m) in ms.iter().enumerate() {
+                    let Some(&item) = by_name.get(&(Some(*child), m.clone())) else { continue };
+                    let target =
+                        if positional { naming.get(k).cloned().unwrap_or_else(|| m.clone()) } else { m.clone() };
+                    name_member(&mut dsu, &mut by_name, u, target, item);
+                }
+            }
+        }
+    }
+    for (u, sheet, name, it) in &sheet_pins {
+        let (u, sheet) = (*u, *sheet);
         // The use of that sheet item under use `u`.
-        if let Some(child) = uses.iter().position(|c| c.parent == Some((u, sheet)))
-            && let Some(&l) = hier.get(&(child, name))
-        {
-            dsu.union(l, it);
+        let Some(child) = uses.iter().position(|c| c.parent == Some((u, sheet))) else { continue };
+        if let Some(&l) = hier.get(&(child, name.clone())) {
+            dsu.union(l, *it);
+        }
+        // A bus pin not on a bus of the parent: its members join the parent's labels of
+        // the same names.
+        if on_bus.contains(&(u, sheet, name.clone())) {
+            continue;
+        }
+        for m in bus_members(name) {
+            if let Some(&b) = by_name.get(&(Some(child), m.clone())) {
+                name_member(&mut dsu, &mut by_name, u, m, b);
+            }
         }
     }
     // Components.
@@ -496,6 +627,10 @@ pub fn netlist(design: &Design) -> Netlist {
         let r = dsu.find(it);
         groups.entry(r).or_default().push(it);
     }
+    let mut bus_named: HashMap<usize, Vec<(usize, String)>> = HashMap::new();
+    for (it, u, m) in bus_names {
+        bus_named.entry(dsu.find(it)).or_default().push((u, m));
+    }
     let mut net_of_root: HashMap<usize, usize> = HashMap::new();
     let unit_of = |n: &Node| {
         uses.get(n.sheet_use)
@@ -530,6 +665,9 @@ pub fn netlist(design: &Design) -> Netlist {
         };
         let depth_of = |u: usize| uses.get(u).map_or(0, |su| su.name_path.matches('/').count());
         let path_of = |u: usize| uses.get(u).map_or_else(|| "/".to_string(), |su| su.name_path.clone());
+        for (u, m) in bus_named.get(&root).into_iter().flatten() {
+            offer(4, depth_of(*u), format!("{}{m}", path_of(*u)));
+        }
         for &it in &members {
             match items.get(it) {
                 Some(Item::Pin { u, sym, number, name, kind, at, power, hidden }) => {
