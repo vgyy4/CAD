@@ -2558,6 +2558,79 @@ BoxPrimitive record, three (2831, 3093, 3221) at the body-move records of sectio
   box's faces, one drafted); 3093 Combine1 (target a pattern copy); 3221 Pipe1; 3802 Extrude4 (a join naming two
   bodies that stay apart); 5907 the mirrored component (occurrences the bodies reader does not read).
 
+## 44. Round 25 T: blends that use up a face, a rim round cut by flats, offsets of cylinders (2026-11-12)
+Kernel: `crates/gusset-occt-sys/cpp/gusset_occt.cpp` (`mixed_corners`, `ring_turns`, `offset_cylinders`, `gs_boolean`);
+import: `tree_import/v2.rs` (`find_face_by_points`). Four designs stopped in the geometry kernel, not the reader.
+
+### A convex and a concave round across one face (2278 Fillet1)
+* 16 vertical edges of two pockets, r 3 mm. The pocket has a 6 mm notch: its convex corner (x 115.5) and its concave
+  corner (x 121.5) on the face z = 20 mm are both rounded by 3 mm, which leaves nothing of that face. OCCT's blend fails
+  (it cannot end a blend on a face it uses up), and the corner fallback (section 34) took only corners of one kind.
+* The fallback now cuts the convex corners away, then fills the concave ones: two booleans, each checked against its
+  corners' exact volume, the face history merged across both (golden test
+  `a_convex_and_a_concave_round_that_use_up_their_face`). 2278 now comes in as history.
+
+### The two arcs of a rim between flats (3777 Fillet4)
+* A disc of radius 9.95 mm with flats at y = 8.1 and y = -6.9 mm: its foot is two arcs, rounded by 2.5 mm. Fusion's
+  stored body (end blob, its coordinates three times the model's) has one torus face, R 7.45 r 2.5, the round of the
+  whole rim: under the flats it goes on round the axis, and the flats end on the torus (their foot edges are the
+  plane's curves on it, z down to -50.514 mm, not the disc's foot at -50.6).
+* OCCT's blend fails at the flats. Each arc's own corner, revolved just past the plane at its ends (section 40), left
+  out the material under the flats that the whole rim's round takes (47.30 of 52.92 mm3 found). The arcs of one circle
+  rounded alike now have their corners revolved on to the middle of the gap on each side, where they meet; each is
+  trimmed by the planes at its ends as before. Together they are the whole rim's corner cut off by the flats. The
+  rebuild matches the stored body to the boolean (no volume either way); its round is two torus faces, Fusion's one.
+* One whole-ring corner (revolved once, trimmed by the flats) was tried first: its cut depends on the boolean's
+  handling of the round's tangent faces, and gave the right solid, a second solid left in the cut tool, or an invalid
+  one, depending only on where the revolve's seam fell (and between two builds of the same code). Not kept.
+* The corner volumes are now measured as `gs_mass` measures them (adaptive integration on tori): the default
+  quadrature was 2e-4 to 6e-4 mm3 off here, more than the check's 1e-7 of the volume.
+* 3777 then stopped at an intersection (`Courbes non jointives`) of two flatted bars on one cylinder, one of them
+  bored at its ends and the other along its length; OCCT throws with the first as the object and gives the right
+  common (559.8247 mm3, a stored solid) the other way round. A failed intersection is now retried with its inputs
+  swapped. 3777 comes in as history.
+
+### Offsets of cylindrical faces (3350 and 1054 OffsetFaces1)
+* BRepOffset fails on both: on 3350's threaded body it builds offset surfaces of every face and throws on the thread
+  flanks ("Geom_BSplineSurface: Weights values too small"), after some 45 s; on 1054 it returns no shape.
+* 3350's two faces are the walls of an annular pocket (r 4.9 and 6.0 mm, z 1.1 .. 1.3), each with a 0.2 mm round
+  at its top rim. Fusion's end body has the walls at 4.8 and 6.1 and the rounds moved with them: tori R 4.6 and 6.3
+  r 0.2, still tangent to the top plane z = 1.5, which stays (the areas of all four faces match the rebuild to 1e-4
+  mm2). BRepOffset, where it does build such a case, carries the offset on along the tangent rounds to the top plane
+  and lowers the whole top (a test body lost 23.3 mm3 where Fusion's rule takes 2.74).
+* `offset_cylinders`: a cylinder whose edges end it on planes across its axis (or on tangent rounds about the axis
+  that end on such planes) or run along the axis beside planes along it, is offset as a boolean: the section between
+  the face (with its rounds) and its offset place (the rounds moved by the same amount, as a round of the moved edge
+  is) is turned about the axis and cut away (an offset into the material) or added. The material taken (the empty
+  space filled) must be bounded on the old surfaces by exactly the face and its rounds (their areas), and the volume
+  change must be that material's. Faces of the result left beside a plane that grows take that plane's origin (on
+  3350 the boolean's unification is refused: the threaded body is itself invalid to BRepCheck). Used first where a
+  face carries a round, else after BRepOffset fails (golden tests `a_hole_beside_slots_is_widened`,
+  `a_pocket_wall_offset_carries_its_round`). 3350's offset now builds, without the 45 s BRepOffset attempt.
+* 1054: the offset's face lies on two bodies: the hole of `Extrude2` and the side of `Extrude5`'s plug (r 1.5, 1 mm).
+  The plug was extruded from three regions of the circle and keeps its side in four faces, each holding a part of the
+  pick's 65 points; the hole's one face holds them all and took the offset, though the record names the plug's body.
+  Where faces of the body the record names hold every point between them, the offset now takes those faces (test
+  `an_offset_on_a_body_whose_face_is_in_pieces_offsets_the_pieces`). The plug is then 1.4 mm, as the end blob has it.
+
+### Where the designs stop now
+* 3350: every feature builds; the step check finds a stored solid of 135.93 mm3 that is neither a state nor a cut
+  tool: a ring r 8.6 .. 11.5 mm with a `rot_spl_sur` face, read as its B-spline approximation (the stored blob's
+  135.988 mm3), likely a revolve's cut tool. Not the offset's.
+* 1054: `Fillet1` (r 0.6 on `Extrude5`) names a whole circle of radius 1.5 at the plug's foot; after the offset the
+  foot is 1.4, so the pick lands on the hole's mouth in `Extrude2` (two arcs between the slots), where the blend fails.
+  `Chamfer1` (on `Extrude2`) likewise names a whole circle r 1.5 at z = 0, which the slots of `Extrude4` cut. The
+  stored edges look recorded before the offset and the slots were in place (features put earlier in the timeline):
+  a reader question, not examined.
+* 4632 (`Extrude11`, a surface extruded up to a face, then Thicken1 and a pattern of both): not attempted.
+
+### Result
+* adafruit-next: 119 of 150 as history (2278 and 3777 gained; none lost; 117 before). adafruit-more: 133 of 150
+  (unchanged, none lost). adafruit: 13 of 18 (unchanged, none lost).
+* First blockers of the round's designs now: 2278 and 3777 pass; 3350 the step check (a 135.93 mm3 stored solid,
+  likely a revolve's cut tool with a `rot_spl_sur` face); 1054 `Fillet1` (edges recorded at the plug's radius
+  before the offset); 4632 `Extrude11` (the reader: "profile is not a sketch profile").
+
 ## 45. Round 25 U: occurrences of streams without class tags, a mirror of drafted faces, stale profile loops (2026-11-12)
 Readers: `fusion_tree/joint.rs` (`paths`), `fusion_tree/mod.rs` (`occurrence_placements`), `fusion_tree/pcb.rs`
 (`box_primitive`), `fusion_tree/sketch.rs` and `geom.rs` (`cycle_of_curves`), `fusion_tree/bodyops.rs` (`draft_json`),

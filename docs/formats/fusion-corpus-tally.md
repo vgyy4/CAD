@@ -371,3 +371,10 @@ set), R (extrude layouts, profile loops, revolve axes, a mirrored sweep) and S (
 body moves of several bodies, body copies), each verified on a clean copy: adafruit-more 133 of 150 (1145 added),
 adafruit 13 of 18, adafruit-next 117 of 150 (67, 5360 Pins, 2831, 2895, 3010, 3923, 4300 added). None lost on any
 set. Sections 40-43 list the new first blockers of the designs still left.
+
+## Re-run after round 25 T (2026-11-12)
+
+Round 25 T (kernel: convex and concave corners blended together, a rim's arcs rounded as the whole rim, offsets of
+cylinders between planes as a boolean ring with their rounds carried, intersections retried the other way round;
+import: an offset's face in pieces on its own body): adafruit-next 119 of 150 (2278, 3777 added), adafruit-more 133
+of 150, adafruit 13 of 18. None lost on any set. 3350 and 1054 now read past OffsetFaces1 (section 44).
