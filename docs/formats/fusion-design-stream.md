@@ -2488,3 +2488,72 @@ in extrude layouts, profile regions, revolve axes and sweeps. Decoded from the s
   1313 `Extrude1` (B-spline region), 1119 `Mirror1` (a sweep mirrored with a cut), 1264 `Extrude8` (thin), 1833 and
   4222 (profiles that name curves the sketch no longer has), 2530 (open-curve extrudes), 6002 `Sweep1` (body-edge
   path).
+
+## 43. Round 24 S: box primitives that join or cut, body moves of several bodies, body copies (2026-11-12)
+Reader: `fusion_tree/pcb.rs` (`box_primitive`), `fusion_tree/bodyops.rs` (`carry_moved_bodies`), `fusion_tree/json.rs`.
+Seven adafruit-next designs stopped at a body operation. Shared causes: two of them (2354, 3000) at the
+BoxPrimitive record, three (2831, 3093, 3221) at the body-move records of section 30.
+
+### BoxPrimitive `F193B033`: the operation and the placement's pad
+* **Operation.** The record body (after the header) is `01`, a `u32` operation and `01` before the first reference,
+  with the extrude's numbers: 1 join, 2 cut, 4 new body. The 60 boxes of the other designs (PCB generators of nine
+  designs) are all 4. 2354 has 17 boxes: 6 new bodies, 5 joins, 6 cuts; 3000's one box is a join. A join or cut names
+  a body selection (`2CA5A1CD` -> `9716F783` -> the target's `D26351F0` link) and a face selection (`5662F619`, the
+  face it was placed on); most name no body link of their own (2354's 1665 and 10314 do).
+* **The pad before the matrix.** The 4 x 4 stands behind the fifth `D91D429C` holder reference: two bytes behind a
+  plain reference (`01 u64 00`), three behind a typed one (`01 u64` + the class GUID as text, with no zero byte of its
+  own: the first reference to a class in a typed stream). Each reference in that list is followed by one more zero
+  byte, then one byte (0) before the matrix. 3000's box was read two bytes in and refused as "not a rigid frame".
+* **Height.** `DistanceZ` is signed (2354's cuts into the board: -0.05 cm, -0.06 cm; a join -0.6 cm). A new box keeps
+  its rule (the side on which its stored body lies; all 60 have a positive height and lie on the +z side). A join or cut has no stored body of its own: it is extruded `DistanceZ` along the frame's z (sign
+  included) and acts on the body its selection names (`op_target`). Not yet confirmed by a rebuild: neither design
+  reaches the step check (below).
+* **2354's new boxes and their state list.** BoxPrimitive1's body names a state list of one body whose `.smbh` holds
+  three solids, all the same (16 vertices, z 0.125..0.5 cm), while the box is 16.5 x 10 x 0.5 cm from z = 0: the
+  stored body is a later state of the box (cut by later features), so it cannot confirm the box's side. Left refused.
+  With the box taken by its sign (experiment only), 2354 then stops at `Extrude1 (2)`, whose profile is a face.
+
+### Body moves of several bodies (2831)
+* `CutPasteBodies1` (twice in 2831) moves two bodies at once: one Base Feature making two bodies (two `D26351F0` links)
+  and two RemoveBodies of one body each. Each made body pairs with the removed body whose body record (`D3937028`)
+  has the same name (`Base0`, `Sensor0`; `Collector0`, `Emitter0`); a name that is missing or not unique on either
+  side is refused, as is a Base Feature whose body count is not the RemoveBodies'. One body keeps the old rule.
+* 2831 now comes in as history.
+* 3093's `CutPasteBodies` (`27061`) moves twelve bodies whose body records have no name: refused. They are copies of a
+  body pattern (R-Pattern2), whose copies the tree cannot tell apart either.
+
+### Body copies (3221)
+* `CopyPasteBodies` has the record class of CutPasteBodies (`BA3059E4`) with a Base Feature and no RemoveBody: the
+  body stays and the Base Feature holds a copy. The Base Feature is read as any Base Feature (its body a stored body
+  of the tree) and comes into the tree right after the copy record (Base Features are off the timeline and were read
+  after every feature: `Move1`, which moves the copy, found no maker).
+* 3221 now stops at `Pipe1` (Pipe is not supported; `Loft1` follows).
+
+### Not finished
+* **3000**: the box now reads; `Mirror1` mirrors two faces: the box's face `6` (operation 318) and face `2` of
+  operations [318, -319] (the box's side, drafted by `Draft1`). A mirror of faces takes one operation per face and
+  extrudes only (section 38): a box with a draft is not converted. With the mirror left out (experiment only) the
+  design stops at `Extrude10`, whose profile regions are not decoded (curve piece 2/3 not reproduced).
+* **3093**: `Combine1`'s target (the selection list of one) is a copy of `R-Pattern1` (link `26330`), its tools the
+  pattern's source body (Extrude5) and the other two copies. Which copy a link is, the record does not say (section
+  31); later features (Sketch12, R-Pattern2, the Body->Comp) name the combined body by that copy's link. With the
+  combine and the twelve-body move let through (experiment only) it stops at `R-Pattern2` (a pattern of that body).
+* **3802**: `Extrude4` (join, 1.92 mm, one region of Sketch1) names the bodies of Extrude1 and Extrude2, and later
+  features (Extrude5, Split1, Extrude14) still name both apart: the join did not merge them, so the rule of section
+  31 (one body after the join) does not apply. Which of the two the tool joins is not decided by the reader; with
+  either (experiment only) the design stops at `Fillet2` (four edges unresolved) before any step check.
+* **5907**: the bodies reader (`fusion.rs`) reads no occurrence record in this stream (its occurrences are
+  `CE2913AA`; the reader looks for `FF415D89`), so the mirrored component's source (`Material-077`, a Base Feature
+  of ten pins) is placed by a block matrix that follows its blob: a quarter turn about x at (26.035, 10.16, 0.785) mm
+  (the board's centre, half its thickness). The occurrence itself stores (1.9, 1.3, 1.57) mm, unturned, and the new
+  occurrence diag(1, -1, -1) at (1.9, 19.02, 1.57) mm: the reflection in the plane y = 10.16 mm, the mirror's plane;
+  the new blob is the source's reflected in its own z = 0. The new component's blob is placed nowhere. The map from
+  the placed source to the new component is then a reflection composed with that quarter turn, not a reflection.
+  Fixing it means reading these occurrences in `fusion.rs`, which places every body of the file: not done here.
+
+### Result
+* adafruit-next: 111 of 150 as history (2831 gained; none lost; 110 before). adafruit-more: 133 of 150 (unchanged,
+  none lost). adafruit: 13 of 18 (unchanged, none lost).
+* First blockers: 2831 passes; 2354 BoxPrimitive1 (its stored body is a later state); 3000 Mirror1 (a mirror of a
+  box's faces, one drafted); 3093 Combine1 (target a pattern copy); 3221 Pipe1; 3802 Extrude4 (a join naming two
+  bodies that stay apart); 5907 the mirrored component (occurrences the bodies reader does not read).
