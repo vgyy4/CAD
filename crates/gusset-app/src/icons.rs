@@ -364,9 +364,9 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "query.draft_analysis" => Tool::Draft,
         "feature.bake" => Tool::Body,
         "query.joints" => Tool::Joint,
-        "import.file" | "pcb.import" | "pcb.open" | "sch.open" => Tool::Import,
+        "import.file" | "pcb.import" | "pcb.open" | "sch.open" | "pcb.import_ses" => Tool::Import,
         "export.step" | "export.mesh" | "pcb.save" | "pcb.export_gerbers" | "pcb.export_drill" | "pcb.export_pos"
-        | "pcb.export_bom" | "sch.save" => Tool::Export,
+        | "pcb.export_bom" | "pcb.export_step" | "pcb.export_dsn" | "sch.save" => Tool::Export,
         "export.image" => Tool::RenderImage,
         "body.appearance" => Tool::Appearance,
         "history.undo" => Tool::Undo,
