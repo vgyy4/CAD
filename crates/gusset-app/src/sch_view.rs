@@ -49,6 +49,10 @@ pub struct Marker {
 pub struct State {
     zoom: f32,
     offset: Vec2,
+    /// The view still shows the fit and the canvas had this size then: a canvas that
+    /// changes size (the panels settle in the first frames) fits again; a pan or zoom by
+    /// the user ends this.
+    auto_fit: Option<Vec2>,
     /// The sheet the view was fitted for.
     fitted: Option<String>,
     /// The shown sheet's file (`None`: the root).
@@ -79,6 +83,7 @@ impl Default for State {
         State {
             zoom: 0.0,
             offset: Vec2::ZERO,
+            auto_fit: None,
             fitted: None,
             sheet: None,
             tool: Tool::Select,
@@ -390,6 +395,7 @@ impl State {
         self.zoom = ((rect.width() - 40.0) / w).min((rect.height() - 40.0) / h).clamp(0.2, 400.0).min(24.0);
         let c = Vec2::new((lo[0] + hi[0]) as f32 / 2.0, (lo[1] + hi[1]) as f32 / 2.0);
         self.offset = rect.size() / 2.0 - c * self.zoom;
+        self.auto_fit = Some(rect.size());
     }
 }
 
@@ -469,11 +475,13 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &m
         if let Some((_, value, fp)) = st.fields.as_mut() {
             ui.horizontal(|ui| {
                 ui.label(tr("sch.value"));
-                apply |= ui.text_edit_singleline(value).lost_focus() && ui.input(|x| x.key_pressed(egui::Key::Enter));
+                apply |= crate::theme::text_field(ui, egui::TextEdit::singleline(value)).lost_focus()
+                    && ui.input(|x| x.key_pressed(egui::Key::Enter));
             });
             ui.horizontal(|ui| {
                 ui.label(tr("sch.footprint"));
-                apply |= ui.text_edit_singleline(fp).lost_focus() && ui.input(|x| x.key_pressed(egui::Key::Enter));
+                apply |= crate::theme::text_field(ui, egui::TextEdit::singleline(fp)).lost_focus()
+                    && ui.input(|x| x.key_pressed(egui::Key::Enter));
             });
         }
         if (ui.small_button(tr("sch.apply")).clicked() || apply)
@@ -486,7 +494,10 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &m
     }
     ui.separator();
     ui.label(tr("sch.label"));
-    ui.add(egui::TextEdit::singleline(&mut st.label_text).hint_text(tr("sch.label_hint")).desired_width(f32::INFINITY));
+    crate::theme::text_field(
+        ui,
+        egui::TextEdit::singleline(&mut st.label_text).hint_text(tr("sch.label_hint")).desired_width(f32::INFINITY),
+    );
     ui.horizontal(|ui| {
         for (k, key) in
             [(LabelKind::Local, "sch.local"), (LabelKind::Global, "sch.global"), (LabelKind::Hierarchical, "sch.hier")]
@@ -496,9 +507,15 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &m
     });
     ui.separator();
     ui.label(tr("sch.library"));
-    ui.add(egui::TextEdit::singleline(&mut st.library).hint_text(tr("sch.library_hint")).desired_width(f32::INFINITY));
+    crate::theme::text_field(
+        ui,
+        egui::TextEdit::singleline(&mut st.library).hint_text(tr("sch.library_hint")).desired_width(f32::INFINITY),
+    );
     ui.label(tr("sch.symbol"));
-    ui.add(egui::TextEdit::singleline(&mut st.symbol).hint_text(tr("sch.symbol_hint")).desired_width(f32::INFINITY));
+    crate::theme::text_field(
+        ui,
+        egui::TextEdit::singleline(&mut st.symbol).hint_text(tr("sch.symbol_hint")).desired_width(f32::INFINITY),
+    );
     ui.separator();
     ui.checkbox(&mut st.show_markers, tr("sch.markers"));
     if ui.button(tr("sch.run_erc")).clicked() {
@@ -513,6 +530,61 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &m
         });
     }
     out
+}
+
+/// The sheet tree in the left panel (instead of the solid-model browser): symbols, labels,
+/// sheets and nets. A click on a symbol or label picks it, on a net highlights it.
+pub fn tree(ui: &mut Ui, open: Option<&OpenSchematic>, st: &mut State) {
+    let Some(open) = open else {
+        ui.weak(tr("tree.none_sch"));
+        return;
+    };
+    let Some((_, sch)) = shown_sheet(open, st) else { return };
+    egui::CollapsingHeader::new(format!("{} ({})", tr("tree.symbols"), sch.symbols.len()))
+        .id_salt("tree_sym")
+        .default_open(true)
+        .show(ui, |ui| {
+            for (i, s) in sch.symbols.iter().enumerate() {
+                let label = format!("{}  {}", s.reference(), s.value());
+                if ui.selectable_label(st.selected == Some(Item::Symbol(i)), label).clicked() {
+                    st.selected = Some(Item::Symbol(i));
+                }
+            }
+        });
+    egui::CollapsingHeader::new(format!("{} ({})", tr("tree.labels"), sch.labels.len()))
+        .id_salt("tree_lbl")
+        .default_open(true)
+        .show(ui, |ui| {
+            for (i, l) in sch.labels.iter().enumerate().take(300) {
+                if ui.selectable_label(st.selected == Some(Item::Label(i)), &l.text).clicked() {
+                    st.selected = Some(Item::Label(i));
+                }
+            }
+        });
+    egui::CollapsingHeader::new(format!("{} ({})", tr("tree.sheets"), open.design.sheets.len()))
+        .id_salt("tree_sheets")
+        .default_open(true)
+        .show(ui, |ui| {
+            for (k, (f, _)) in open.design.sheets.iter().enumerate() {
+                let v = (k > 0).then(|| f.clone());
+                if ui.selectable_label(st.sheet == v, f.as_str()).clicked() {
+                    st.sheet = v;
+                    st.selected = None;
+                    st.wire.clear();
+                }
+            }
+        });
+    egui::CollapsingHeader::new(format!("{} ({})", tr("tree.nets"), open.netlist.nets.len()))
+        .id_salt("tree_snets")
+        .default_open(false)
+        .show(ui, |ui| {
+            for n in open.netlist.nets.iter().take(300) {
+                let on = st.highlight.as_deref() == Some(n.name.as_str());
+                if ui.selectable_label(on, &n.name).clicked() {
+                    st.highlight = if on { None } else { Some(n.name.clone()) };
+                }
+            }
+        });
 }
 
 /// Draws the shown sheet and handles the editing tools.
@@ -542,7 +614,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
     }
     // A selection past the lists (after an undo) is dropped.
     st.selected = st.selected.filter(|s| Item::parse(sch, &s.name()).is_some());
-    if resp.double_clicked() && st.tool == Tool::Select {
+    if resp.double_clicked() && st.tool == Tool::Select || st.auto_fit.is_some_and(|s| s != rect.size()) {
         st.fit(rect, sch);
     }
     if resp.hovered() {
@@ -554,6 +626,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
             let rel = p - rect.min - st.offset;
             st.offset = p - rect.min - rel * (new / st.zoom);
             st.zoom = new;
+            st.auto_fit = None;
         }
     }
     let map = Map { origin: rect.min + st.offset, zoom: st.zoom };
@@ -579,7 +652,10 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
         let d = resp.drag_delta();
         match st.drag.as_mut() {
             Some(Drag { item: Some(_), moved }) => *moved += d / st.zoom,
-            _ => st.offset += d,
+            _ => {
+                st.offset += d;
+                st.auto_fit = None;
+            }
         }
     }
     if resp.drag_stopped() {
@@ -816,9 +892,12 @@ fn paint_symbol(painter: &egui::Painter, map: &Map, s: &Symbol, lib: &LibSymbol,
             let horizontal = dir.x.abs() > dir.y.abs();
             let angle = if horizontal { 0.0 } else { 90.0 };
             if !lib.hide_pin_numbers {
-                let mid = a + (b - a) / 2.0 + if horizontal { Vec2::new(0.0, -2.0) } else { Vec2::new(-2.0, 0.0) };
-                let align = if horizontal { egui::Align2::CENTER_BOTTOM } else { egui::Align2::RIGHT_CENTER };
-                text(painter, map, mid, &p.number, 1.0, angle, align, PIN_TEXT);
+                // Beside the pin (above a horizontal one, left of a vertical one), clear of
+                // its stroke, and no bigger than the pin is long.
+                let gap = w(0.152) / 2.0 + 2.0;
+                let mid = a + (b - a) / 2.0 + if horizontal { Vec2::new(0.0, -gap) } else { Vec2::new(-gap, 0.0) };
+                let size = (p.length * 0.7).min(0.9);
+                text(painter, map, mid, &p.number, size, angle, egui::Align2::CENTER_BOTTOM, PIN_TEXT);
             }
             if !lib.hide_pin_names && !p.name.is_empty() && p.name != "~" {
                 let gap = (lib.pin_name_offset.max(0.3) as f32) * map.zoom;
@@ -841,6 +920,38 @@ fn paint_symbol(painter: &egui::Painter, map: &Map, s: &Symbol, lib: &LibSymbol,
         let a = if (f.angle - 90.0).abs() < 1.0 || (f.angle - 270.0).abs() < 1.0 { 90.0 } else { 0.0 };
         text(painter, map, map.to(f.at) + off, &f.value, 1.27, a, egui::Align2::CENTER_CENTER, FIELD);
     }
+}
+
+/// The directions (unit vectors, y down) the wires and pins that end at `at` run away from
+/// it: where a label there has things attached.
+fn attach_dirs(sch: &Schematic, at: Pt) -> Vec<[f32; 2]> {
+    let near = |p: Pt| (p[0] - at[0]).abs() < 1e-3 && (p[1] - at[1]).abs() < 1e-3;
+    let unit = |from: Pt, to: Pt| {
+        let (dx, dy) = ((to[0] - from[0]) as f32, (to[1] - from[1]) as f32);
+        let n = dx.hypot(dy).max(1e-6);
+        [dx / n, dy / n]
+    };
+    let mut out = Vec::new();
+    for w in &sch.wires {
+        if near(w.a) {
+            out.push(unit(w.a, w.b));
+        } else if near(w.b) {
+            out.push(unit(w.b, w.a));
+        }
+    }
+    for s in &sch.symbols {
+        let Some(lib) = sch.lib_symbol(s) else { continue };
+        for u in lib.units_of(s.unit, s.style) {
+            for p in u.pins.iter().filter(|p| !p.hidden && p.length > 0.0) {
+                let (sn, cs) = gusset_pcb::sch::sin_cos(p.angle);
+                let (a, b) = (s.place(p.at), s.place([p.at[0] + cs * p.length, p.at[1] + sn * p.length]));
+                if near(a) {
+                    out.push(unit(a, b));
+                }
+            }
+        }
+    }
+    out
 }
 
 fn paint(painter: &egui::Painter, map: &Map, sch: &Schematic, st: &State, dragged: Option<(Item, Vec2)>) {
@@ -924,20 +1035,42 @@ fn paint(painter: &egui::Painter, map: &Map, sch: &Schematic, st: &State, dragge
     for (i, l) in sch.labels.iter().enumerate() {
         let item = Item::Label(i);
         let c = if sel(item) { SELECT } else { LABEL };
-        let p = map.to(l.at) + off_of(item);
+        let anchor = map.to(l.at) + off_of(item);
+        let p = anchor;
         let vertical = (l.angle.rem_euclid(180.0) - 90.0).abs() < 1.0;
         let right = l.angle > 135.0;
-        let align = match (vertical, right) {
+        let mut align = match (vertical, right) {
             (false, false) => egui::Align2::LEFT_BOTTOM,
             (false, true) => egui::Align2::RIGHT_BOTTOM,
             (true, _) => egui::Align2::LEFT_BOTTOM,
         };
+        // Clear of the wire or pin the label hangs on: the text goes to the side the
+        // connection does not use.
+        let gap = lw / 2.0 + 2.5;
+        let mut p = p;
+        if !vertical {
+            let dirs = attach_dirs(sch, l.at);
+            let up = dirs.iter().any(|d| d[1] < -0.5);
+            let rightward = dirs.iter().any(|d| d[0] > 0.5);
+            if rightward && !right {
+                align = egui::Align2::RIGHT_BOTTOM;
+            }
+            let x_away = if matches!(align, egui::Align2::RIGHT_BOTTOM | egui::Align2::RIGHT_TOP) { -gap } else { gap };
+            if up {
+                align = if align.x() == egui::Align::Max { egui::Align2::RIGHT_TOP } else { egui::Align2::LEFT_TOP };
+                p += Vec2::new(x_away, gap);
+            } else {
+                p += Vec2::new(x_away, -gap);
+            }
+        } else {
+            p += Vec2::new(gap, 0.0);
+        }
         let shown = match l.kind {
             LabelKind::Local => l.text.clone(),
             LabelKind::Global => format!("◆ {}", l.text),
             LabelKind::Hierarchical => format!("▶ {}", l.text),
         };
         text(painter, map, p, &shown, 1.27, if vertical { 90.0 } else { 0.0 }, align, c);
-        painter.circle_filled(p, 1.5, c);
+        painter.circle_filled(anchor, 1.5, c);
     }
 }

@@ -2035,8 +2035,12 @@ impl App {
             if main != swapped { egui::Panel::left(id) } else { egui::Panel::right(id) }
         };
         let before = self.prefs();
+        // The feature timeline is for solid models: the PCB and Schematic tabs have none.
+        let board_tab = self.pcb_view_shown() || self.sch_view_shown();
         if !full {
-            if self.timeline_collapsed {
+            if board_tab {
+                // Nothing at the bottom.
+            } else if self.timeline_collapsed {
                 egui::Panel::bottom("timeline_rail").resizable(false).frame(bar(pal.bg_panel, 1, 1)).show(ui, |ui| {
                     if ui.small_button(format!("+ {}", tr("panel.timeline"))).clicked() {
                         self.timeline_collapsed = false;
@@ -2108,6 +2112,8 @@ impl App {
                 .default_size(230.0)
                 .resizable(true)
                 .show(ui, |ui| {
+                    // A scroll bar that is always there: the panel is longer than it looks.
+                    ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
                     egui::ScrollArea::vertical()
                         .show(ui, |ui| crate::pcb_view::controls(ui, &pal, pcb.as_deref(), &mut self.pcb_state))
                         .inner
@@ -2122,6 +2128,7 @@ impl App {
                 .default_size(230.0)
                 .resizable(true)
                 .show(ui, |ui| {
+                    ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
                     egui::ScrollArea::vertical()
                         .show(ui, |ui| crate::sch_view::controls(ui, &pal, sch.as_deref(), &mut self.sch_state))
                         .inner
@@ -2994,6 +3001,21 @@ impl App {
     }
 
     fn browser(&mut self, ui: &mut Ui) {
+        // The PCB and Schematic tabs show their own tree, not the solid-model browser.
+        if self.pcb_view_shown() || self.sch_view_shown() {
+            let pal = *theme::palette(self.theme);
+            ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                if self.pcb_view_shown() {
+                    let pcb = self.snapshot.pcb.clone();
+                    crate::pcb_view::tree(ui, &pal, pcb.as_deref(), &mut self.pcb_state);
+                } else {
+                    let sch = self.snapshot.sch.clone();
+                    crate::sch_view::tree(ui, sch.as_deref(), &mut self.sch_state);
+                }
+            });
+            return;
+        }
         let doc = self.snapshot.doc.clone();
         let eval = self.scene.as_ref().map(|s| s.eval.clone());
         let pal = *theme::palette(self.theme);
@@ -3586,8 +3608,10 @@ impl App {
         let recent = &self.recent;
         egui::Modal::new(egui::Id::new("palette")).show(ctx, |ui| {
             ui.set_width(460.0);
-            let r = ui
-                .add(egui::TextEdit::singleline(&mut query).hint_text(tr("search.hint")).desired_width(f32::INFINITY));
+            let r = crate::theme::text_field(
+                ui,
+                egui::TextEdit::singleline(&mut query).hint_text(tr("search.hint")).desired_width(f32::INFINITY),
+            );
             r.request_focus();
             let matches = crate::palette::entries(&query, doc, recent);
             if matches.is_empty() {
@@ -3633,11 +3657,17 @@ impl App {
                 let last = rows.len().saturating_sub(1);
                 for (i, (name, expr, _)) in rows.iter_mut().enumerate() {
                     if i == last {
-                        ui.add(egui::TextEdit::singleline(name).hint_text(tr("params.new")).desired_width(110.0));
+                        crate::theme::text_field(
+                            ui,
+                            egui::TextEdit::singleline(name).hint_text(tr("params.new")).desired_width(110.0),
+                        );
                     } else {
                         ui.monospace(name.as_str());
                     }
-                    ui.add(egui::TextEdit::singleline(expr).desired_width(180.0).font(egui::TextStyle::Monospace));
+                    crate::theme::text_field(
+                        ui,
+                        egui::TextEdit::singleline(expr).desired_width(180.0).font(egui::TextStyle::Monospace),
+                    );
                     let shown = match values.get(name.as_str()) {
                         Some(Ok(q)) => q.to_string(),
                         Some(Err(e)) => format!("error: {e}"),
@@ -3924,7 +3954,7 @@ impl App {
                         PathPurpose::Open => tr("menu.open"),
                         _ => tr("menu.export"),
                     });
-                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(360.0));
+                    let r = crate::theme::text_field(ui, egui::TextEdit::singleline(&mut text).desired_width(360.0));
                     if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         submit = true;
                     }

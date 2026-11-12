@@ -58,6 +58,10 @@ pub const GRIDS: [f64; 6] = [0.1, 0.25, 0.5, 1.0, 1.27, 2.54];
 pub struct State {
     zoom: f32,
     offset: Vec2,
+    /// The view still shows the fit and the canvas had this size then: a canvas that
+    /// changes size (the panels settle in the first frames) fits again; a pan or zoom by
+    /// the user ends this.
+    auto_fit: Option<Vec2>,
     /// The board the view was fitted for (its file name).
     fitted: Option<String>,
     pub hidden: BTreeSet<String>,
@@ -116,6 +120,7 @@ impl Default for State {
         State {
             zoom: 0.0,
             offset: Vec2::ZERO,
+            auto_fit: None,
             fitted: None,
             hidden: BTreeSet::new(),
             active: "F.Cu".into(),
@@ -628,6 +633,7 @@ impl State {
         self.zoom = ((rect.width() - 40.0) / w).min((rect.height() - 40.0) / h).clamp(0.05, 2000.0).min(40.0);
         let c = Vec2::new((lo[0] + hi[0]) as f32 / 2.0, (lo[1] + hi[1]) as f32 / 2.0);
         self.offset = rect.size() / 2.0 - c * self.zoom;
+        self.auto_fit = Some(rect.size());
     }
 
     fn shown(&self, layer: &str) -> bool {
@@ -685,35 +691,66 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
     ui.label(tr("pcb.layers"));
     let cu = b.copper_layers();
     for l in panel_layers(b) {
-        ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-            ui.painter().rect_filled(r, 2.0, layer_color(&l));
-            let mut on = st.shown(&l);
-            if ui.checkbox(&mut on, l.as_str()).changed() {
-                if on {
-                    st.hidden.remove(&l);
-                } else {
-                    st.hidden.insert(l.clone());
-                }
-            }
-            if cu.contains(&l)
-                && ui.selectable_label(st.active == l, tr("pcb.active")).on_hover_text(tr("pcb.tip_active")).clicked()
-            {
-                st.active = l.clone();
-            }
-        });
+        let is_cu = cu.contains(&l);
+        let active = is_cu && st.active == l;
+        // The active copper layer: a filled radio dot and a tinted row. Other copper layers
+        // show an empty ring (click to make active); non-copper layers have no choice.
+        egui::Frame::new()
+            .fill(if active { pal.accent.gamma_multiply(0.18) } else { Color32::TRANSPARENT })
+            .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_SM))
+            .inner_margin(egui::Margin::symmetric(4, 1))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (r, resp) =
+                        ui.allocate_exact_size(Vec2::splat(14.0), if is_cu { Sense::click() } else { Sense::hover() });
+                    if is_cu {
+                        let c = if active { pal.accent } else { pal.text_muted };
+                        ui.painter().circle_stroke(r.center(), 5.5, Stroke::new(1.2, c));
+                        if active {
+                            ui.painter().circle_filled(r.center(), 3.0, c);
+                        }
+                        resp.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::RadioButton,
+                                true,
+                                active,
+                                format!("{l} {}", tr("pcb.active")),
+                            )
+                        });
+                        if resp.on_hover_text(tr("pcb.tip_active")).clicked() {
+                            st.active = l.clone();
+                        }
+                    }
+                    let (sw, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+                    ui.painter().rect_filled(sw, 2.0, layer_color(&l));
+                    let mut on = st.shown(&l);
+                    let name =
+                        if active { egui::RichText::new(l.as_str()).strong() } else { egui::RichText::new(l.as_str()) };
+                    if ui.checkbox(&mut on, name).changed() {
+                        if on {
+                            st.hidden.remove(&l);
+                        } else {
+                            st.hidden.insert(l.clone());
+                        }
+                    }
+                });
+            });
     }
     ui.checkbox(&mut st.show_ratsnest, tr("pcb.ratsnest"));
     ui.separator();
     ui.label(tr("pcb.library"));
-    ui.add(egui::TextEdit::singleline(&mut st.library).hint_text(tr("pcb.library_hint")).desired_width(f32::INFINITY));
+    crate::theme::text_field(
+        ui,
+        egui::TextEdit::singleline(&mut st.library).hint_text(tr("pcb.library_hint")).desired_width(f32::INFINITY),
+    );
     if st.library_read != st.library {
         st.library_read = st.library.clone();
         st.library_names =
             if st.library.trim().is_empty() { Vec::new() } else { library_footprints(&st.library, 20_000) };
     }
     if !st.library_names.is_empty() {
-        ui.add(
+        crate::theme::text_field(
+            ui,
             egui::TextEdit::singleline(&mut st.library_filter)
                 .hint_text(tr("pcb.filter_hint"))
                 .desired_width(f32::INFINITY),
@@ -766,6 +803,64 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
     out
 }
 
+/// The board tree in the left panel (instead of the solid-model browser): footprints, nets
+/// and layers. A click on a footprint picks it, on a net highlights it, on a layer shows or
+/// hides it.
+pub fn tree(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State) {
+    let Some(open) = open else {
+        ui.weak(tr("tree.none_pcb"));
+        return;
+    };
+    let b = &open.board;
+    egui::CollapsingHeader::new(format!("{} ({})", tr("tree.footprints"), b.footprints.len()))
+        .id_salt("tree_fp")
+        .default_open(true)
+        .show(ui, |ui| {
+            for (i, f) in b.footprints.iter().enumerate() {
+                let label = format!("{}  {}", f.reference, f.value);
+                if ui.selectable_label(is_picked(st, Sel::Footprint(i)), label).clicked() {
+                    st.selected = Some(Sel::Footprint(i));
+                    st.multi.clear();
+                }
+            }
+        });
+    egui::CollapsingHeader::new(format!(
+        "{} ({})",
+        tr("tree.nets"),
+        b.nets.iter().filter(|n| !n.name.is_empty()).count()
+    ))
+    .id_salt("tree_nets")
+    .default_open(true)
+    .show(ui, |ui| {
+        for n in b.nets.iter().filter(|n| !n.name.is_empty()).take(300) {
+            let on = st.highlight.as_deref() == Some(n.name.as_str());
+            if ui.selectable_label(on, &n.name).clicked() {
+                st.highlight = if on { None } else { Some(n.name.clone()) };
+            }
+        }
+    });
+    egui::CollapsingHeader::new(format!("{} ({})", tr("pcb.layers"), b.copper_layers().len()))
+        .id_salt("tree_layers")
+        .default_open(false)
+        .show(ui, |ui| {
+            for l in panel_layers(b) {
+                ui.horizontal(|ui| {
+                    let (sw, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                    ui.painter().rect_filled(sw, 2.0, layer_color(&l));
+                    let shown = st.shown(&l);
+                    let t = egui::RichText::new(l.as_str()).color(if shown { pal.text } else { pal.text_muted });
+                    if ui.add(egui::Label::new(t).sense(Sense::click())).clicked() {
+                        if shown {
+                            st.hidden.insert(l.clone());
+                        } else {
+                            st.hidden.remove(&l);
+                        }
+                    }
+                });
+            }
+        });
+}
+
 /// Draws the board and handles the editing tools.
 pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State) -> Out {
     let mut out = Out::default();
@@ -802,7 +897,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         Sel::Track(i) => i < b.tracks.len(),
         Sel::Via(i) => i < b.vias.len(),
     });
-    if resp.double_clicked() && st.tool == Tool::Select {
+    if resp.double_clicked() && st.tool == Tool::Select || st.auto_fit.is_some_and(|s| s != rect.size()) {
         st.fit(rect, b);
     }
     if resp.hovered() {
@@ -814,6 +909,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
             let rel = p - rect.min - st.offset;
             st.offset = p - rect.min - rel * (new / st.zoom);
             st.zoom = new;
+            st.auto_fit = None;
         }
     }
     let map = Map { origin: rect.min + st.offset, zoom: st.zoom };
@@ -859,7 +955,10 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         let d = resp.drag_delta();
         match st.drag.as_mut() {
             Some(Drag { footprint: Some(_), moved }) => *moved += d / st.zoom,
-            _ => st.offset += d,
+            _ => {
+                st.offset += d;
+                st.auto_fit = None;
+            }
         }
     }
     if resp.drag_stopped() {
@@ -1119,7 +1218,7 @@ fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &mut State, d
         }
         // Texts, in the UI font at their height and angle (centred on their place).
         for t in b.texts.iter().filter(|t| t.layer == layer && !t.hidden && !t.text.is_empty()) {
-            let px = t.size as f32 * map.zoom * 1.35;
+            let px = t.size as f32 * map.zoom;
             if !(4.0..=400.0).contains(&px) {
                 continue;
             }
