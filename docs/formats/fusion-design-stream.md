@@ -1911,3 +1911,75 @@ Readers: `fusion_tree/json.rs` (patterns, mirrors, shells, extrudes); blends: `b
 * adafruit-more: 122 of 150 as history (2348 gained; none lost; 121 before). adafruit: 13 of 18 (unchanged).
 * First blockers now: 858 `Fillet3` (tool faces Fusion keeps apart), 6299 `Extrude17` (a body face as profile),
   5358 `Chamfer2`, 5360 the step check.
+
+## 37. Round 22 M: the magnetic connectors' last steps (2026-11-11)
+
+### 5360: the step check (three faults, each shown by the stored shapes)
+* **A sweep's tool.** The 3.8705 mm3 stored solid (x -3.04..-2.04, y -3.85..0.5, z -1.9..0) is the tool of
+  `Sweep - Pin Right Angle`, which joins the pin: the sweep adds 3.7920 mm3 and its tool holds 0.0785 mm3 more, the
+  pin's bottom disc (`Extrude - Pin Bottom`, r 0.5 x 0.1 mm) that it overlaps. The check knew no copy count for a
+  sweep, so no rule could give it the tool. A sweep that joins or cuts now makes one tool (one profile), as a
+  one-profile extrude does; the placed-tool rule then finds 0.0785 mm3 of it in the pin before and all of it after.
+* **A blend edge on two bodies at once.** The off-timeline `Fillet1` (component Magnet, body link
+  `Extrude - Magnets`) rounds the left magnet's rims, which lie on the rims of its pocket in the housing. Each pick's
+  nearest edge was the housing's (the first body searched), so all picks landed on one body and the body link was
+  not consulted: the housing lost 0.0096 mm3 instead of the magnet (25.5176 -> 25.5081 mm3, as the end blobs store
+  it). A pick whose nearest edge lies equally near in two bodies now lets the body link decide, as picks on two
+  bodies already did.
+* **The end blob a body move leaves.** The design moves the housing and the magnets out of the root
+  (`Body->Comp1 - Housing`, `Body->Comp2 - Magnets`, `CutPasteBodies1 - Magnet 2`). Its four `.smbh` blobs hold: the
+  pins (3 x 7.1176), the housing (172.4527), the two magnets (2 x 25.5081), and a fourth blob of 174.9762, 25.5176
+  and 25.5081 mm3: exactly the model after `Fillet - Magnets` (226.0019 mm3 in all, body for body), the root's
+  bodies as they were when they left it. Where the tree moved bodies between components (a skipped `Body->Comp` or
+  `CutPasteBodies`), an end blob whose bodies are one for one the bodies (or solids) of the model after an earlier
+  step, adding up to that step's whole volume, is now left out of the end bodies; the other blobs must still be the
+  finished bodies, volume for volume, and their box still bounds the model.
+* 5360 comes in as history: 9 stored solids are states, 12 cut tools, and the end bodies are the finished bodies.
+
+### 5358: a chamfer next to a chamfer's slope
+* `Extrude3` is a tab under the housing (x -1.25..1.25, y 1.9..2.5, z -0.5..0). `Chamfer1` takes 0.3 mm of its cap
+  and the whole 0.5 mm of its front (y 1.9); `Chamfer2` takes 0.2 mm of the cap and the whole 0.5 mm height of both
+  sides (x +-1.25), whose cap edges now run from the slope (y 2.2) to the back. OCCT refuses both edges at once and
+  each alone (the chamfer reaches the side's far edge); the corner fallback cut each corner only along its edge,
+  which left a triangle across the edge's end at y 2.2 (the body goes on above the slope inside the corner), a face
+  with no naming origin.
+* A blend ended by a slanting third face is trimmed by it: the corner runs on past the edge's end until it leaves
+  the body (here a tetrahedron of 0.2 x 0.5 / 2 x 0.3 / 3 = 0.005 mm3 per side). The fallback now does so where its
+  first cut leaves a face across an edge's end, and keeps the result only if the longer cut still removes the whole
+  corner along the edge and leaves no face without an origin (so it ran out of the body before its far end). The
+  stored end body of the housing is 311.94552 mm3, the model's to 1e-5 mm3; cutting only along the edges gives
+  311.95552 (0.01 mm3 more, outside the check's tolerance of 0.0062 mm3). Golden test:
+  `a_chamfer_next_to_a_chamfers_slope_runs_on_to_it`.
+* 5358 comes in as history (9 states, 14 cut tools, end bodies = finished bodies). The end blobs agree without the
+  move-snapshot rule.
+* The corner fallback now sits beside round 21 J's concave and arc corners: the extension applies to convex
+  straight corners only, and the overlap test of chamfers whose edges do not meet still uses the corners along
+  their edges.
+
+### 610: Fillet3 and the revolve that intersects
+* `Fillet3` (r 0.75 mm) names the edge between `Extrude2`'s end cap `2 [303]` and the side `5 [301]` it shares with
+  `Extrude1` (`("5", [301]), ("3", [303])`), with no faces at its ends. `Extrude1`'s profile is a disc and a ring
+  (circles r 3 and r 7), a profile with holes whose generator numbering no stored face confirms, so side `5` is
+  not modelled; the stored bodies have it as one cylinder r 7 mm about z. A closed edge between a plane and a
+  cylinder known only from the stored bodies, about an axis across the plane, is now that whole circle, given as
+  points all round it (chords within 0.005 mm), which the import matches against the model's edge.
+* Then the step check refused a stored solid of 493.2727 mm3: the tool of `Revolve1`, an intersect of
+  `Extrude4` (117.5563 -> 113.1542 mm3). The rules knew tools of cuts and joins only. A feature with no tool count
+  that removes material now owns the one unexplained tool that holds, of the bodies it changes, exactly what they
+  are after it, both before and after it (113.1542 mm3 here): what an intersect keeps is body and tool.
+* 610 comes in as history (8 states, 4 tools, end bodies = finished bodies).
+
+### 5981: negative generators (not decoded)
+* `Chamfer2`'s edge joins `-1 [367]` (`Extrude4`, the post r 1.4 mm under the slot, z 6.8..10) and the post's
+  side merged with the wall's arc side, ended by the post's bottom cap `2 [367]`. No stored face carries `-1` (the
+  post's tool has `1`, `2`, `3`). The stored state after the chamfer has the bottom cap at r 1.0 and the merged
+  cylinder down to z 7.2 at the seam, which reads as the whole bottom rim chamfered by 0.4 mm, but then the edge
+  would be between `2` and the cylinder, not `-1`. Over adafruit-more, negative generators name a blend edge's own
+  face only in 5981's `Chamfer2` and `Chamfer6` (`-3`, `-6`, `-8` of the thin extrude); in the other blend recipes
+  that hold them (thin-wall extrudes) they only bound an edge's ends, and those edges resolve without them. Too
+  few cases to decode them from the bytes: 5981 stays at `Chamfer2`.
+
+### Result
+* adafruit-more: 130 of 150 as history (5358, 5360 and 610 gained; none lost; 127 before). adafruit: 13 of 18
+  (unchanged, none lost).
+* First blocker of the four: 5981 `Chamfer2` (negative generator `-1`, not decoded); 5358, 5360 and 610 pass.
