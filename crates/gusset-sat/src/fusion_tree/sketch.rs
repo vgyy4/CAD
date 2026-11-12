@@ -886,6 +886,9 @@ impl RegionCache {
                             all.iter().filter(|(kk, _)| kk != q).filter_map(|(_, v)| v.as_deref()).collect();
                         pc = geom::piece(&pl, closed, &everything, c.a, c.b);
                     }
+                    if pc.is_none() {
+                        pc = geom::piece_touching(&pl, closed, &own, c.a, c.b);
+                    }
                     if pc.is_none() && !closed {
                         let prev = if n > 1 { full.get((k + n - 1) % n).map(|f| f.2.as_slice()) } else { None };
                         let next = if n > 1 { full.get((k + 1) % n).map(|f| f.2.as_slice()) } else { None };

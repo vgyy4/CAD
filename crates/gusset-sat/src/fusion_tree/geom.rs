@@ -236,14 +236,40 @@ pub(super) fn piece_ex(
     b: u32,
     collinear: bool,
 ) -> Option<Vec<P2>> {
+    piece_at(poly, closed, split_params_ex(poly, others, collinear), a, b)
+}
+
+/// [`piece_ex`] with `collinear`, where an open curve of `others` that neither crosses nor
+/// touches `poly` but ends on the curve `poly` stands for (within its chords' sag) cuts it at
+/// that end too: a line from outside that ends on a circle misses the circle's inscribed
+/// polyline (471's ring segments: two lines between two circles).
+pub(super) fn piece_touching(poly: &[P2], closed: bool, others: &[&[P2]], a: u32, b: u32) -> Option<Vec<P2>> {
+    let l = cumulative(poly);
+    let tot = match l.last().copied() {
+        Some(t) if t != 0.0 => t,
+        _ => 1.0,
+    };
+    let mut fs = Vec::new();
+    for o in others {
+        let own = split_params_ex(poly, &[o], true);
+        if own.is_empty() && o.first().zip(o.last()).is_some_and(|(x, y)| dist(*x, *y) > 1e-9) {
+            fs.extend([o.first(), o.last()].into_iter().flatten().filter_map(|e| point_param(poly, &l, tot, *e)));
+        } else {
+            fs.extend(own);
+        }
+    }
+    fs.sort_by(f64::total_cmp);
+    fs.dedup_by(|x, y| (*x - *y).abs() <= 1e-6);
+    piece_at(poly, closed, fs, a, b)
+}
+
+/// Piece `a` of `b` of `poly` cut at the arc-length fractions `fs` (see [`piece_ex`]).
+fn piece_at(poly: &[P2], closed: bool, fs: Vec<f64>, a: u32, b: u32) -> Option<Vec<P2>> {
     if a == 0 || a > b {
         return None;
     }
     let (a, b) = (a as usize, b as usize);
-    let fs: Vec<f64> = split_params_ex(poly, others, collinear)
-        .into_iter()
-        .filter(|f| (*f > 1e-6 && *f < 1.0 - 1e-6) || closed)
-        .collect();
+    let fs: Vec<f64> = fs.into_iter().filter(|f| (*f > 1e-6 && *f < 1.0 - 1e-6) || closed).collect();
     if closed {
         let mut fs: Vec<f64> =
             fs.into_iter().map(|f| round9(f.rem_euclid(1.0))).map(|f| if f >= 1.0 { 0.0 } else { f }).collect();
