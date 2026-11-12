@@ -32,6 +32,11 @@ fn kv(head: &str, v: Node) -> Node {
     list(vec![Node::sym(head), v])
 }
 
+/// A route to add: pieces, width, layer, net.
+pub type NewRoute = (Vec<crate::route::Seg>, f64, String, Option<String>);
+/// A via to add: place, size, drill, net.
+pub type NewVia = (Pt, f64, f64, Option<String>);
+
 /// The F/B counterpart of a layer name (`F.SilkS` ↔ `B.SilkS`); others unchanged.
 pub fn flip_layer(name: &str) -> String {
     if let Some(r) = name.strip_prefix("F.") {
@@ -225,6 +230,41 @@ impl Board {
         net: Option<&str>,
         limits: &Limits,
     ) -> Result<usize, Error> {
+        let first = self.tracks.len();
+        self.push_route(segs, width, layer, net)?;
+        self.reread(limits)?;
+        Ok(first)
+    }
+
+    /// Adds several routes (pieces, width, layer, net) and through vias (place, size,
+    /// drill, net) in one edit.
+    ///
+    /// # Errors
+    /// As [`Board::add_route`] and [`Board::add_via`].
+    pub fn add_batch(&mut self, routes: &[NewRoute], vias: &[NewVia], limits: &Limits) -> Result<(), Error> {
+        if routes.len() + vias.len() > self.limits_items(limits) {
+            return Err(bad("too many items at once"));
+        }
+        for (segs, width, layer, net) in routes {
+            self.push_route(segs, *width, layer, net.as_deref())?;
+        }
+        for (at, size, drill, net) in vias {
+            self.push_via(*at, *size, *drill, net.as_deref())?;
+        }
+        self.reread(limits)
+    }
+
+    fn limits_items(&self, limits: &Limits) -> usize {
+        limits.max_items.saturating_sub(self.tracks.len() + self.vias.len())
+    }
+
+    fn push_route(
+        &mut self,
+        segs: &[crate::route::Seg],
+        width: f64,
+        layer: &str,
+        net: Option<&str>,
+    ) -> Result<(), Error> {
         if !(width.is_finite() && width > 0.0 && width <= 100.0) {
             return Err(bad("the track width must be above 0 and at most 100 mm"));
         }
@@ -232,7 +272,6 @@ impl Board {
             return Err(bad("a route has 1 to 100000 pieces"));
         }
         self.copper_layer(layer)?;
-        let first = self.tracks.len();
         let net_node = self.net_node(net)?;
         for s in segs {
             check_pt(s.start)?;
@@ -250,15 +289,35 @@ impl Board {
             items.push(kv("width", Node::num(width)));
             items.push(kv("layer", Node::str(layer)));
             items.extend(net_node.clone());
-            if self.writes_uuids() {
-                let n = self.tree.items().len();
-                let text = sexpr::write(&list(items.clone()));
-                items.push(kv("uuid", Node::str(uuid_for(&text, n))));
-            }
-            self.tree.items_mut().ok_or_else(|| bad("not a board"))?.push(list(items));
+            self.push_raw(items)?;
         }
-        self.reread(limits)?;
-        Ok(first)
+        Ok(())
+    }
+
+    fn push_via(&mut self, at: Pt, size: f64, drill: f64, net: Option<&str>) -> Result<(), Error> {
+        check_pt(at)?;
+        if !(size.is_finite() && drill.is_finite() && drill > 0.0 && size > drill && size <= 50.0) {
+            return Err(bad("a via needs a drill above 0 and a size above the drill (at most 50 mm)"));
+        }
+        let cu = self.copper_layers();
+        let (Some(a), Some(b)) = (cu.first(), cu.last()) else { return Err(bad("the board has no copper layers")) };
+        let layers = list(vec![Node::sym("layers"), Node::str(a.clone()), Node::str(b.clone())]);
+        let mut items =
+            vec![Node::sym("via"), xy("at", at), kv("size", Node::num(size)), kv("drill", Node::num(drill))];
+        items.push(layers);
+        items.extend(self.net_node(net)?);
+        self.push_raw(items)
+    }
+
+    /// Appends an item (with a uuid in KiCad 6+ files) without re-reading.
+    fn push_raw(&mut self, mut items: Vec<Node>) -> Result<(), Error> {
+        if self.writes_uuids() {
+            let n = self.tree.items().len();
+            let text = sexpr::write(&list(items.clone()));
+            items.push(kv("uuid", Node::str(uuid_for(&text, n))));
+        }
+        self.tree.items_mut().ok_or_else(|| bad("not a board"))?.push(list(items));
+        Ok(())
     }
 
     /// Adds a through via; returns its index in [`Board::vias`].
@@ -273,18 +332,8 @@ impl Board {
         net: Option<&str>,
         limits: &Limits,
     ) -> Result<usize, Error> {
-        check_pt(at)?;
-        if !(size.is_finite() && drill.is_finite() && drill > 0.0 && size > drill && size <= 50.0) {
-            return Err(bad("a via needs a drill above 0 and a size above the drill (at most 50 mm)"));
-        }
-        let cu = self.copper_layers();
-        let (Some(a), Some(b)) = (cu.first(), cu.last()) else { return Err(bad("the board has no copper layers")) };
-        let layers = list(vec![Node::sym("layers"), Node::str(a.clone()), Node::str(b.clone())]);
-        let mut items =
-            vec![Node::sym("via"), xy("at", at), kv("size", Node::num(size)), kv("drill", Node::num(drill))];
-        items.push(layers);
-        items.extend(self.net_node(net)?);
-        self.push_item(items, limits)?;
+        self.push_via(at, size, drill, net)?;
+        self.reread(limits)?;
         Ok(self.vias.len().saturating_sub(1))
     }
 

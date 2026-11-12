@@ -5,10 +5,17 @@ use super::pcb::{PcbImport, board_source, no_board, write_outputs};
 use super::pcb_edit::commit_board;
 use super::*;
 use crate::pcb_session;
-use gusset_pcb::{Limits, route, zones};
+use gusset_pcb::{Limits, route, specctra, zones};
+use std::sync::atomic::AtomicBool;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<PcbFillZones>(), spec::<PcbRoute>(), spec::<PcbExportStep>()]
+    vec![
+        spec::<PcbFillZones>(),
+        spec::<PcbRoute>(),
+        spec::<PcbExportStep>(),
+        spec::<PcbExportDsn>(),
+        spec::<PcbImportSes>(),
+    ]
 }
 
 fn pcb_err(e: gusset_pcb::board::Error) -> CommandError {
@@ -198,5 +205,93 @@ impl Command for PcbExportStep {
         let text = String::from_utf8(bytes).map_err(|_| CommandError::new("io", "the STEP writer gave binary data"))?;
         let written = write_outputs(s, ctx, folder, self.overwrite, ext, &[(name.to_string(), text)])?;
         Ok(json!({ "written": written, "bodies": list.len(), "notes_user_text": notes }))
+    }
+}
+
+/// Largest session file read.
+const MAX_SES_BYTES: u64 = 64 << 20;
+
+/// Writes the open board as a Specctra DSN design for an external autorouter.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PcbExportDsn {
+    /// Output .dsn.
+    pub file: String,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+impl Command for PcbExportDsn {
+    const ID: &'static str = "pcb.export_dsn";
+    const TITLE: &'static str = "Export DSN";
+    const DESCRIPTION: &'static str =
+        "Write the open board as Specctra DSN for an external autorouter; read its .ses back with pcb.import_ses.";
+    const CATEGORY: Category = Category::Exchange;
+    const FLAGS: Flags = WRITE_FILE;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if !self.file.to_ascii_lowercase().ends_with(".dsn") {
+            return Err(CommandError::args("the file name ends in .dsn"));
+        }
+        let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
+        let (folder, name) = self.file.rsplit_once(['/', '\\']).unwrap_or(("", &self.file));
+        let text = specctra::write_dsn(&open.board, &open.rules, name);
+        let written = write_outputs(s, ctx, folder, self.overwrite, "dsn", &[(name.to_string(), text)])?;
+        Ok(json!({
+            "written": written,
+            "nets": open.board.nets.len(),
+            "unrouted": open.ratsnest.unrouted(),
+        }))
+    }
+}
+
+/// Lays the routes of a Specctra session file on the open board.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PcbImportSes {
+    /// .ses from the autorouter.
+    pub path: String,
+    /// Keep the board's tracks and vias (default: replaced).
+    #[serde(default)]
+    pub keep_routes: bool,
+}
+
+impl Command for PcbImportSes {
+    const ID: &'static str = "pcb.import_ses";
+    const TITLE: &'static str = "Import SES";
+    const DESCRIPTION: &'static str =
+        "Lay an autorouter's Specctra session (.ses) on the open board, replacing its tracks and vias (undoable).";
+    const CATEGORY: Category = Category::Exchange;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if !self.path.to_ascii_lowercase().ends_with(".ses") {
+            return Err(CommandError::args("pcb.import_ses reads .ses files"));
+        }
+        let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
+        crate::paths::refuse_remote(&self.path)?;
+        let full = crate::paths::read_target(s.project_dir.as_deref(), &self.path, &ctx.actor)?;
+        let f = crate::import::open_regular(&full, &self.path, MAX_SES_BYTES)?;
+        let bytes = crate::import::read_capped(f, MAX_SES_BYTES, &AtomicBool::new(false))?;
+        let text =
+            String::from_utf8(bytes).map_err(|_| CommandError::new("io", "the session file is not UTF-8 text"))?;
+        let ses = specctra::read_ses(&text, &specctra::Limits::default())
+            .map_err(|e| CommandError::new("io", format!("Specctra session: {e}")))?;
+        let unknown: Vec<String> = ses
+            .nets
+            .iter()
+            .filter(|n| !open.board.nets.iter().any(|b| b.name == n.name))
+            .map(|n| n.name.chars().take(80).collect())
+            .take(20)
+            .collect();
+        let mut b = open.board.clone();
+        let (tracks, vias) =
+            b.apply_session(&ses, &open.rules, !self.keep_routes, &Limits::default()).map_err(pcb_err)?;
+        let after = gusset_pcb::ratsnest::ratsnest(&b).unrouted();
+        let extra = json!({
+            "tracks": tracks,
+            "vias": vias,
+            "unrouted_after": after,
+            "unknown_nets_user_text": unknown,
+        });
+        commit_board(s, ctx, "Import routes", open.file.clone(), &b, None, extra)
     }
 }

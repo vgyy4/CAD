@@ -14,6 +14,7 @@
 //! * [`fab`]: pick-and-place and BOM CSV files.
 //! * [`route`]: interactive routing in 45° segments around other nets' copper, with
 //!   arc corners.
+//! * [`specctra`]: Specctra DSN out and SES in, for an external autorouter.
 //! * [`zones`]: zone fills (clearances, thermal reliefs, minimum width, islands) over
 //!   [`poly`] (polygon booleans and offsets, holes bridged in, triangles for drawing).
 //! * [`sch`]: KiCad schematics (`.kicad_sch`) and symbol libraries (`.kicad_sym`), read
@@ -43,6 +44,7 @@ pub mod rules;
 pub mod sch;
 pub mod sch_edit;
 pub mod sexpr;
+pub mod specctra;
 pub mod sync;
 pub mod zones;
 
@@ -50,6 +52,8 @@ pub use board::{Board, Limits};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_dsn;
 #[cfg(test)]
 mod tests_edit;
 #[cfg(test)]

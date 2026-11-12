@@ -114,3 +114,42 @@ fn a_route_walks_around_the_via_and_completes_the_connection() {
     let e = execute(&mut s, &u(5), "pcb.route", json!({"points": [[6, 10], [9, 9]], "layer": "F.SilkS"})).unwrap_err();
     assert_eq!(e.code, "invalid_args");
 }
+
+#[test]
+fn dsn_out_and_session_in_with_undo() {
+    let mut s = layout_session();
+    let a = CmdCtx::agent("bot", 1);
+    run(&mut s, &u(1), "pcb.open", json!({"path": "layout.kicad_pcb"}));
+    let r = run(&mut s, &a, "pcb.export_dsn", json!({"file": "layout.dsn"}));
+    assert_eq!(r["unrouted"], 3, "{r}");
+    let dir = s.project_dir.clone().unwrap();
+    let dsn = std::fs::read_to_string(dir.join("layout.dsn")).unwrap();
+    assert!(dsn.starts_with("(pcb layout.dsn") && dsn.contains("(pins R1-2 R2-1)"), "{dsn}");
+    let e = execute(&mut s, &a, "pcb.export_dsn", json!({"file": "../x.dsn"})).unwrap_err();
+    assert_eq!(e.code, "not_allowed");
+    // An autorouter's answer: net A on F.Cu round the via (Y up, µm / 10).
+    let ses = r#"(session layout.ses (base_design layout.dsn)
+      (routes (resolution um 10) (parser (host_cad "x"))
+        (network_out
+          (net A
+            (wire (path F.Cu 2500 60000 -100000 80000 -100000 100000 -120000 140000 -120000))
+            (wire (path F.Cu 2500 140000 -120000 160000 -120000 180000 -100000 240000 -100000)))
+          (net NOPE (wire (path F.Cu 2500 0 0 10 10))))))"#;
+    std::fs::write(dir.join("r.ses"), ses).unwrap();
+    let r = run(&mut s, &u(2), "pcb.import_ses", json!({"path": "r.ses"}));
+    assert_eq!((r["tracks"].as_u64(), r["vias"].as_u64()), (Some(7), Some(0)), "{r}");
+    assert_eq!(r["unrouted_after"], 1, "A is routed; GND (the via went) once: {r}");
+    assert_eq!(r["unknown_nets_user_text"], json!(["NOPE"]));
+    let b = open(&mut s);
+    assert_eq!((b.board.vias.len(), b.board.tracks.len()), (0, 7), "the vias were replaced");
+    run(&mut s, &u(2), "history.undo", json!({}));
+    assert_eq!(open(&mut s).board.vias.len(), 2);
+    // Kept routes; bad files.
+    let r = run(&mut s, &u(3), "pcb.import_ses", json!({"path": "r.ses", "keep_routes": true}));
+    assert_eq!(r["unrouted_after"], 2, "{r}");
+    std::fs::write(dir.join("bad.ses"), "(session x (routes").unwrap();
+    let e = execute(&mut s, &u(4), "pcb.import_ses", json!({"path": "bad.ses"})).unwrap_err();
+    assert_eq!(e.code, "io");
+    let e = execute(&mut s, &a, "pcb.import_ses", json!({"path": "/etc/passwd.ses"})).unwrap_err();
+    assert_eq!(e.code, "not_allowed", "{e:?}");
+}

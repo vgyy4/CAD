@@ -208,3 +208,10 @@ path = "fuzz_targets/sch_read.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ses_read"
+path = "fuzz_targets/ses_read.rs"
+test = false
+doc = false
+bench = false
