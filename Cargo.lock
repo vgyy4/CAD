@@ -1625,6 +1625,7 @@ dependencies = [
  "gusset-kernel-occt",
  "gusset-kernel-worker",
  "gusset-mcp",
+ "gusset-meshio",
  "gusset-occt-sys",
  "gusset-pcb",
  "gusset-project",

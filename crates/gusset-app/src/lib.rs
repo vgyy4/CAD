@@ -37,6 +37,8 @@ mod screenshots;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_import_history;
+#[cfg(test)]
 mod tests_lifecycle;
 #[cfg(test)]
 mod tests_panels;

@@ -367,3 +367,16 @@ fn generate_gallery_pcb_sch() {
         shoot(&dir, &format!("27-schematic-empty-{t}"), a, |_| {});
     }
 }
+
+/// The import's history question for a FreeCAD part whose history does not rebuild exactly
+/// (ADR 0042 amendment). Mock shapes, whatever kernel this build has.
+#[test]
+fn generate_import_history_dialog() {
+    let Some(dir) = std::env::var_os("GUSSET_SCREENSHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&dir).ok();
+    for (theme, t) in [(ThemeKind::Dark, "dark"), (ThemeKind::Light, "light")] {
+        let mut a = crate::tests_import_history::importing(12.0, "Part::Box");
+        a.theme = theme;
+        shoot(&dir, &format!("28-import-history-{t}"), a, |_| {});
+    }
+}

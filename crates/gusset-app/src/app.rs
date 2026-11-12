@@ -81,6 +81,12 @@ pub enum Dialog {
         title: String,
         body: String,
     },
+    /// A parsed native CAD file whose feature history the user decides on (ADR 0042
+    /// amendment): with editable history or the final shape only.
+    ImportHistory {
+        prepared: Box<gusset_commands::import::PreparedImport>,
+        then: Then,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +208,12 @@ pub(crate) enum Done {
     },
     /// "Keep both" wrote the recovered work to this file.
     KeptBoth(Result<PathBuf, String>),
+    /// An import parsed off the model thread, not committed yet: `Err` when the file could not
+    /// be opened (already audited), else the parse result for `complete_import`.
+    ImportParsed {
+        then: Then,
+        result: Result<Result<Box<gusset_commands::import::PreparedImport>, CommandError>, CommandError>,
+    },
     /// A job whose result needs no handling beyond refreshing the snapshot.
     Refresh(Result<(), CommandError>),
 }
@@ -361,6 +373,9 @@ pub struct App {
     save: SaveScheduler,
     /// The running import's cancel flag (the status bar offers Cancel).
     import_cancel: Option<gusset_commands::import::CancelFlag>,
+    /// The status-bar notice of a feature history imported although it differs from the file:
+    /// it stays with an Undo button until the next notice.
+    pub(crate) import_undo: Option<String>,
     /// Continue with this action after the save that is running.
     after_save: Option<Pending>,
     /// Continue with this action once no job is running ("Wait" in the busy dialog).
@@ -493,6 +508,7 @@ impl App {
             preview_since: None,
             save: SaveScheduler::new(settings),
             import_cancel: None,
+            import_undo: None,
             after_save: None,
             after_idle: None,
             send_close: false,
@@ -621,8 +637,10 @@ impl App {
             self.import_cancel = Some(cancel.clone());
             let (tx, waker) = (self.done_tx.clone(), self.waker.clone());
             self.in_flight += 1;
-            let started = self.host.import_detached(ctx, args, cancel, move |r| {
-                let _ = tx.send(Done::Command { id: "import.file".into(), then, result: r });
+            // Parsed first, so the user can choose what to do with a feature history before
+            // anything is committed.
+            let started = self.host.import_prepare_detached(ctx, args, cancel, move |r| {
+                let _ = tx.send(Done::ImportParsed { then, result: r.map(|p| p.map(Box::new)) });
                 waker.wake();
             });
             if let Err(e) = started {
@@ -640,6 +658,55 @@ impl App {
             move |s, _| gusset_commands::execute(s, &ctx, &id2, args),
             move |r| Done::Command { id, then, result: r.and_then(|x| x) },
         );
+    }
+
+    /// A parsed import: asks what to do with a feature history the file holds (perfect or
+    /// imperfect), says when it holds one that cannot be read, then commits.
+    fn import_parsed(&mut self, parsed: Result<gusset_commands::import::PreparedImport, CommandError>, then: Then) {
+        use gusset_commands::import::{HistoryChoice, HistoryClass};
+        self.import_cancel = None;
+        let info = parsed
+            .as_ref()
+            .ok()
+            .filter(|p| p.history_choice() == HistoryChoice::Auto)
+            .and_then(|p| p.history().cloned());
+        match (info, parsed) {
+            (Some(h), Ok(p)) if h.class != HistoryClass::None => {
+                self.dialog = Some(Dialog::ImportHistory { prepared: Box::new(p), then });
+            }
+            (Some(h), parsed) => {
+                self.dialog = Some(Dialog::Message {
+                    title: tr("import_history.none_title").into(),
+                    body: format!("{}\n\n{}", plain(&h.why, 400), tr("import_history.none_body")),
+                });
+                self.commit_import(parsed, then);
+            }
+            (None, parsed) => self.commit_import(parsed, then),
+        }
+    }
+
+    /// Commits a parsed import on the model thread (also a failed or cancelled one, so it is
+    /// audited).
+    fn commit_import(&mut self, parsed: Result<gusset_commands::import::PreparedImport, CommandError>, then: Then) {
+        let ctx = Self::ctx();
+        self.submit(
+            move |s, _| gusset_commands::import::complete_import(s, &ctx, parsed),
+            move |r| Done::Command { id: "import.file".into(), then, result: r.and_then(|x| x) },
+        );
+    }
+
+    /// Sets the session's import worker (tests stand in for the sandboxed worker).
+    #[cfg(test)]
+    pub(crate) fn set_importer(&mut self, importer: Arc<dyn gusset_commands::session::Importer>) {
+        let _ = self.host.exec(move |s, _| s.importer = Some(importer));
+    }
+
+    /// The document as code-view text (tests).
+    #[cfg(test)]
+    pub(crate) fn document_text(&self) -> String {
+        self.host
+            .exec(|s, _| s.document(&gusset_history::Actor::User).map(|d| d.to_text()).unwrap_or_default())
+            .unwrap_or_default()
     }
 
     /// Points the session's project folder at `dir` (screenshot demos read their libraries there).
@@ -826,10 +893,23 @@ impl App {
         match done {
             Done::Command { id, then, result } => {
                 self.stale = true;
+                // A feature history imported although it differs from the file: the notice
+                // says so and offers Undo.
+                let partial = id == "import.file"
+                    && result.as_ref().is_ok_and(|v| {
+                        v.pointer("/history/class").and_then(Value::as_str) == Some("imperfect")
+                            && v.pointer("/history/imported").and_then(Value::as_str) == Some("history")
+                    });
                 if id == "import.file" {
                     self.import_cancel = None;
+                    self.import_undo = None;
                 }
                 self.apply_command(&id, then, result);
+                if partial {
+                    let text = tr("import_history.partial_done").to_string();
+                    self.notice = Some(Notice { text: text.clone(), hint: None, error: false });
+                    self.import_undo = Some(text);
+                }
             }
             Done::Preview(key, r) => {
                 self.preview_requested = None;
@@ -930,6 +1010,10 @@ impl App {
                 Err(e) => {
                     self.dialog = Some(Dialog::Message { title: tr("open.failed").into(), body: e });
                 }
+            },
+            Done::ImportParsed { then, result } => match result {
+                Err(e) => self.apply_done(Done::Command { id: "import.file".into(), then, result: Err(e) }),
+                Ok(parsed) => self.import_parsed(parsed.map(|p| *p), then),
             },
             Done::KeptBoth(r) => match r {
                 Ok(p) => {
@@ -2923,7 +3007,9 @@ impl App {
             // Confirmations ("saved", "done") go away after a few seconds; errors stay.
             let now = ui.input(|i| i.time);
             match &self.notice {
-                Some(n) if !n.error => match &self.notice_since {
+                // The notice of a history imported although it differs keeps its Undo.
+                Some(n) if !n.error && self.import_undo.as_deref() != Some(n.text.as_str()) => match &self.notice_since
+                {
                     Some((text, t)) if *text == n.text => {
                         if now - t > NOTICE_SECONDS {
                             self.notice = None;
@@ -2941,6 +3027,8 @@ impl App {
                 },
                 _ => self.notice_since = None,
             }
+            // Undo (`true`) or dismiss (`false`) of a partial history import.
+            let mut undo_action = None;
             if let Some(n) = &self.notice {
                 ui.separator();
                 let col = if n.error { pal.danger } else { pal.text_muted };
@@ -2948,6 +3036,23 @@ impl App {
                 if let Some(h) = &n.hint {
                     r.on_hover_text(format!("{}: {h}", tr("error.fix")));
                 }
+                if self.import_undo.as_deref() == Some(n.text.as_str()) {
+                    let undo = ui.small_button(tr("import_history.undo")).on_hover_text(tr("import_history.undo_hint"));
+                    undo_action = Some(undo.clicked())
+                        .filter(|c| *c)
+                        .or(ui.small_button(tr("dialog.close")).clicked().then_some(false));
+                }
+            }
+            match undo_action {
+                Some(true) => {
+                    self.import_undo = None;
+                    self.submit_command("history.undo", json!({}), Then::Notice);
+                }
+                Some(false) => {
+                    self.import_undo = None;
+                    self.notice = None;
+                }
+                None => {}
             }
             if let Some(k) = &self.kernel_note {
                 ui.separator();
@@ -3976,6 +4081,71 @@ impl App {
                     }
                 }
                 self.dialog = Some(Dialog::Path { purpose, text, error });
+            }
+            Dialog::ImportHistory { prepared, then } => {
+                use gusset_commands::import::{HistoryChoice, HistoryClass};
+                let pal = theme::palette(self.theme);
+                let why = prepared.history().map(|h| plain(&h.why, 600)).unwrap_or_default();
+                let imperfect = prepared.history().is_some_and(|h| h.class == HistoryClass::Imperfect);
+                let name = plain(prepared.file_name(), 120);
+                // `Some(None)`: cancelled.
+                let mut action: Option<Option<HistoryChoice>> = None;
+                modal.show(ctx, |ui| {
+                    ui.set_max_width(520.0);
+                    ui.heading(tr(if imperfect {
+                        "import_history.imperfect_title"
+                    } else {
+                        "import_history.perfect_title"
+                    }));
+                    ui.label(format!("• {name}"));
+                    ui.add_space(theme::SPACE[2]);
+                    ui.label(tr(if imperfect {
+                        "import_history.imperfect_body"
+                    } else {
+                        "import_history.perfect_body"
+                    }));
+                    if imperfect && !why.is_empty() {
+                        ui.add_space(theme::SPACE[2]);
+                        egui::ScrollArea::vertical()
+                            .max_height(140.0)
+                            .show(ui, |ui| icons::labeled(ui, Icon::Warning, pal.warning, &why));
+                    }
+                    ui.add_space(theme::SPACE[4]);
+                    ui.horizontal(|ui| {
+                        let (first, second) = if imperfect {
+                            (
+                                (tr("import_history.final"), HistoryChoice::Final),
+                                (tr("import_history.try"), HistoryChoice::Rebuild),
+                            )
+                        } else {
+                            (
+                                (tr("import_history.rebuild"), HistoryChoice::Rebuild),
+                                (tr("import_history.final"), HistoryChoice::Final),
+                            )
+                        };
+                        // The default is the primary button.
+                        if theme::primary_button(ui, first.0, 72.0).clicked() {
+                            action = Some(Some(first.1));
+                        }
+                        if ui.button(second.0).clicked() {
+                            action = Some(Some(second.1));
+                        }
+                        if ui.button(tr("dialog.cancel")).clicked() {
+                            action = Some(None);
+                        }
+                    });
+                });
+                match action {
+                    Some(Some(choice)) => {
+                        let mut p = *prepared;
+                        p.set_history_choice(choice);
+                        self.commit_import(Ok(p), then);
+                    }
+                    Some(None) => {
+                        self.commit_import(Err(CommandError::new("cancelled", "the import was cancelled")), then);
+                    }
+                    None => self.dialog = Some(Dialog::ImportHistory { prepared, then }),
+                }
             }
             Dialog::Message { title, body } => {
                 let mut keep = true;

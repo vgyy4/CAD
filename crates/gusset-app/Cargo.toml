@@ -41,6 +41,7 @@ eframe.workspace = true
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["eframe"] }
+gusset-meshio.workspace = true
 
 [lints]
 workspace = true
