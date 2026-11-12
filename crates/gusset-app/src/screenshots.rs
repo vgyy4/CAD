@@ -333,8 +333,12 @@ fn generate_gallery_pcb_sch() {
         for at in [[12, 10], [28, 20]] {
             a.run("pcb.add_footprint", json!({"library": "fp", "footprint": "Pads:R_0603", "at": at})).ok();
         }
-        a.run("pcb.add_track", json!({"start": [12.8, 10], "end": [27.2, 20], "width": 0.25})).ok();
-        a.run("pcb.add_via", json!({"at": [20, 15]})).ok();
+        // The route command in 45-degree legs from pad to pad (the router's own search treats
+        // these net-less demo pads as obstacles, so the corner is given, not searched).
+        let pts = json!([[12.8, 10], [22.8, 20], [27.2, 20]]);
+        let r = a.run("pcb.route", json!({"points": pts, "width": 0.25, "around": false}));
+        assert!(r.is_ok(), "{r:?}");
+        a.run("pcb.add_via", json!({"at": [17.8, 15]})).ok();
         a.wait_idle();
         a.ribbon_action(crate::ribbon::Action::PcbTab);
         shoot(&dir, &format!("24-pcb-{t}"), a, |h| h.run_steps(4));
@@ -343,6 +347,10 @@ fn generate_gallery_pcb_sch() {
         a.run("sch.new", json!({"name": "demo"})).ok();
         for (sym, at) in [("R", [100, 50]), ("R", [110, 50]), ("GND", [100, 60])] {
             a.run("sch.add_symbol", json!({"library": "demo.kicad_sym", "symbol": sym, "at": at})).ok();
+        }
+        // Footprints assigned, so the ERC has nothing to say about them.
+        for r in ["R1", "R2"] {
+            a.run("sch.set_field", json!({"symbol": r, "field": "Footprint", "value": "Pads:R_0603"})).ok();
         }
         a.run("sch.add_wire", json!({"points": [[100, 46.19], [110, 46.19]]})).ok();
         a.run("sch.add_wire", json!({"points": [[100, 53.81], [100, 60]]})).ok();
