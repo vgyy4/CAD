@@ -2710,3 +2710,93 @@ Readers: `fusion_tree/joint.rs` (`paths`), `fusion_tree/mod.rs` (`occurrence_pla
   (unchanged, none lost; every history among the streams whose placements changed stays one). adafruit: 13 of 18
   (unchanged, none lost).
 * First blockers: 3000 and 5907 pass; 3722 `CoilPrimitive1` (not attempted).
+
+## 46. Round 25 V: extrudes from construction planes, the side of a split, coils, thin walls round arcs (2026-11-12)
+Readers: `fusion_tree/feature.rs` (`extrude_start`), `fusion_tree/pcb.rs` (`coil_primitive`), `fusion_tree/combine.rs`,
+`fusion_tree/naming.rs` (`line_on_cylinder`), `fusion_tree/thin.rs`; importer: `tree_import/v2.rs` (`facing_plane`).
+
+### 817: an extrude that starts from a construction plane
+* `Extrude2` and `Extrude3` (symmetric, 4.2 and 4.7 mm) have the start kind 2 ("from an object") after the enum
+  block's flags, `ProfileOffset` 0, no face recipe, and a selection `2CA5A1CD` -> `5A1BF548` -> `CC54ECAD`: a plane
+  through (13.9, 7.95, 5.15) mm with x and y the world's (a work plane through the middle of `Extrude1`'s
+  27.8 x 15.9 x 10.3 mm box). The stored tab (`Extrude2`) spans z 3.05..7.25 mm and `Extrude3`'s bodies 2.8..7.5 mm:
+  both are centred on that plane. The reader started them on the sketch plane (z -2.1..2.1), so the tab's side was
+  cut in two by the box's bottom and `Fillet3`'s edge midpoint (3.4, 15.9, 0) mm was the reader's own wrong place.
+* An extrude of start kind 2 with no face recipe and no to-object end now starts on that plane (its distance along
+  the sketch normal, plus the offset); a plane not parallel to the sketch, or more than one, is refused. 817 comes
+  in as history.
+
+### 770: the side a split keeps
+* `Split1`'s plane is z = 5 mm with the normal (0, 0, -1); the split's new body is the side the normal points to: the
+  lower one (`Extrude3` joins feet to `Split1`'s body, and the stored lower body, z 0..5 mm, carries them). The
+  importer wrote the plane as `plane (base: XY, offset: 5 mm)`, whose normal is +z, so the document's new body was
+  the upper half and the feet were joined to it; the lower body kept no rim at x 3..15 mm (`Fillet3`'s pick
+  (9, 33, 0) mm). A split's plane is now written facing the tree's normal: a base plane turned half a turn about its
+  own x (`X` on XY and XZ, `Y` on YZ), then offset along that; a tilted plane facing the other way is refused. 770
+  comes in as history.
+
+### 3722: the coil
+* **Frame and hand.** The coil's origin snapshot (`7B6C3C2D`) in the root has no matrix (where the Cap's holds a
+  typed reference to `F670456D` and a 4 x 4, it holds `cd f0 00 01` and zeros); the Cap's is diag(-1, -1, 1), a
+  half turn about z. The stored helices (`helix_spl_line`, `helix_int_cur`: centre, major, minor, pitch vector, then
+  `t` 0..3 pi) are: root, major (3.55, 0, 0) cm, minor (0, 3.55, 0), pitch 0.4333 along +z; Cap, major (-3.55, 0, 0),
+  minor (0, -3.55, 0). Both are right-handed (minor = z x major); the root's starts on +x, the Cap's on -x. So the
+  coil climbs its snapshot's z from the snapshot's origin and starts on its x. The hand is not read: both coils
+  have `u8 1, u8 0` after the `Height` holder, and no sample is left-handed. Coil 1 also selects the XY plane at
+  the origin (`5A1BF548` -> `CC54ECAD`), coil 2 a face of the Cap (`5662F619`); both coils stand at their
+  component's origin, and neither that selection nor the `DA1231DE` entity is used.
+* **Section.** Position and type as section 40 read them: (3, 3) the triangle's side on the diameter, its apex out;
+  (1, 4) its apex in; other pairs are refused. Pitch = `Height` / `Revolutions` (a coil with a `Pitch` parameter, a
+  taper or an operation other than a new body is refused).
+* **The tree.** A sketch in the axial plane at the start (x along the frame's x, y along its z) holding the triangle,
+  and a `sweep` along a helix of that pitch and height. The document builds coil 1 to 743.658 mm3 (stored
+  743.6554). Where the history blob holds the coil's body, its vertex box must have the size of the coil's ends; the
+  state lists of 3722's coils do not name their own bodies ("a body is not in its own state list"), so there the
+  importer's state checks alone confirm the coil.
+* `Move1` then reads (the coil is a one-body sweep); `Combine1`'s target is `Revolve2`: a revolve that makes one
+  body now counts as a combine's target or tool. `Chamfer1`'s second edge joins the coil's end face `2 [312, 314]`
+  and the revolve's cylinder `5 [307]` (r 33.5 mm, stored only), ended by the coil's helical faces. No stored state
+  holds the joined body before the chamfer, and the stored end face is what the 1.99 mm chamfer left of a 2 mm
+  triangle (points at r 35.49..35.5 mm). A plane along a stored cylinder's axis meets it in two lines; the edge is
+  the one on the side of the plane face's stored points, given as a 0.2 mm piece about their middle projected onto
+  it, which the model's edge must hold (`line_on_cylinder`).
+* **Rebuild (not reached).** Three features fail in OCCT:
+  - `Shell3` (2 mm inside, the bottom opened), which comes before the coil: `Revolve2`'s dome is an arc of r 54 mm
+    about (0.658, 61.865) mm, so the surface is a spindle torus meeting the axis at z 115.861 mm, 0.7 deg off
+    square. A standalone experiment (the revolve, with and without `Fillet2`) fails in all four `MakeThickSolidByJoin`
+    modes (arc or intersection joins, with or without the thorough intersection); the same body with the arc centred
+    on the axis (a sphere) shells; built on an exact `Geom_ToroidalSurface` it throws in
+    `Geom_OffsetSurface::EvalD0`; as NURBS it fails. Fusion's stored inner face is the torus of minor radius 52 mm,
+    meeting the axis at z 113.861 mm. An offset of a cone point on the axis is what OCCT cannot do here.
+  - `Chamfer1` and `Chamfer1 (2)` (1.99 mm): OCCT chamfers either edge of the coil alone (740.59 mm3), but on the
+    joined body it fails even at 1 mm with "ChFi3d_Builder: only 2 faces": the coil's side on r 33.5 mm is a B-spline
+    face of the sweep that the join does not unify with the revolve's cylinder, so the chamfer ends at a vertex
+    between tangent faces. Sweeping a line parallel to the axis into an exact cylinder face (a helix is a straight
+    line in the cylinder's parameter plane) would let the join merge them; not done (the helical sweep is shared with
+    the modeled threads).
+  3722's first blocker is now `Shell3`.
+
+### 5998: the side of a thin wall round an arc
+* `Extrude6 (2)` is a thin cut (0.4 mm, location 2) along a U: a line up the right leg, an arc of r 1.4 mm about
+  (-5, 4.6) mm, a line down the left leg. Its stored faces: the sides on the chain `10 [384, 385]` and
+  `12 [384, 385]` on the sketch's lines, the others `10 [384]` and `12 [384]` 0.4 mm outside, the round end
+  `11 [384]` r 1.8 mm. The wall lies outside the U; the reader had put it inside (left of the chain), so `Chamfer7`'s
+  edges on the outer sides and the legs' round ends (`Fillet5`'s r 0.2 mm faces `[386]`) were not where the stored
+  cylinders are.
+* The selections' own geometry (`50AEE8B4` lines: point and vector; `B0B3FA59` the arc: centre, normal, reference
+  direction, radius, sweep) runs the chain the reader runs: up the right leg, counter-clockwise about +z, down the
+  left leg. The wall is to its right. 5981's `Extrude3` (its stored edges) and 6299's `Extrude7 (2)` (its stored
+  vertices at x -2.8 and -6.8 mm about legs at -3.4 and -6.2 mm) also lie outside their arcs, and their chains run
+  the arc clockwise (to the left). The extrude's direction does not decide it (5981 goes against its sketch's normal,
+  6299 and 5998 along it). Location 2 is now the side outside the chain's arcs; a chain of lines keeps the left (no
+  sample tells), one whose arcs turn both ways is refused.
+* `Chamfer7` now resolves; 5998 stops at `Loft1` (not read): `B6678572` with two `2F3200BA` sections, each a
+  `2CA5A1CD` -> `4BD53E5A` profile (`Sketch6`'s circle r 1.4 mm about (-3.54, 5) at z 7.8 mm, and `Sketch5 (2)`'s
+  circle about (-5, 4.6) at z 10 mm), a `9716F783` body selection and a `B0387387`. `Extrude7 (2)` after it extrudes
+  a face with a -45 deg taper. Not attempted.
+
+### Result
+* adafruit-next: 121 of 150 as history (817 and 770 gained; none lost; 119 before). adafruit-more: 133 of 150
+  (unchanged, none lost). adafruit: 13 of 18 (unchanged, none lost).
+* First blockers: 817 and 770 pass; 3722 `Shell3` (OCCT cannot offset the spindle torus's point on the axis), then
+  `Chamfer1` and `Chamfer1 (2)` (the coil's side is not one face with the revolve's cylinder); 5998 `Loft1` (not read).
