@@ -17,6 +17,8 @@ use crate::parse::{Rec, Sat};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+mod exact;
+
 type V3 = [f64; 3];
 
 fn len(a: V3) -> f64 {
@@ -111,6 +113,11 @@ const MAX_SURFACE_CANDIDATES: usize = 8;
 const MAX_DEGREE: usize = 25;
 
 fn bs3_curve(r: &Rec, from: usize) -> Result<Bs3, SatError> {
+    bs3_curve_end(r, from).map(|(b, _)| b)
+}
+
+/// As [`bs3_curve`], with the field after the curve's data.
+fn bs3_curve_end(r: &Rec, from: usize) -> Result<(Bs3, usize), SatError> {
     let bad = |m: &str| SatError::Malformed(format!("{}: {m}", r.ty));
     let mut k = from;
     // Skip to the representation word.
@@ -176,7 +183,25 @@ fn bs3_curve(r: &Rec, from: usize) -> Result<Bs3, SatError> {
     if mults.iter().sum::<usize>() != points.len() + degree + 1 {
         return Err(bad("knots and control points do not match"));
     }
-    Ok(Bs3 { degree, knots, mults, points, weights })
+    Ok((Bs3 { degree, knots, mults, points, weights }, k))
+}
+
+/// The field of the `}` that closes the block opening at field `open`.
+fn block_end(r: &Rec, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for i in open..r.f.len() {
+        match r.word(i) {
+            Some("{") => depth += 1,
+            Some("}") => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// A B-spline's knots one by one (each repeated by its multiplicity).
@@ -1011,6 +1036,64 @@ impl<'a> Writer<'a> {
         Ok((def, fi))
     }
 
+    /// The block (`{ ...` or the definition a `{ ref n }` names) that opens at field `at`.
+    fn block(&self, r: &'a Rec, at: usize) -> Option<(&'a Rec, usize)> {
+        if r.word(at) != Some("{") {
+            return None;
+        }
+        if r.word(at + 1) != Some("ref") {
+            return Some((r, at));
+        }
+        let n = r.num(at + 2).filter(|n| *n >= 0.0)? as usize;
+        let (ri, fi) = *self.sat.subtypes.get(n)?;
+        let sat: &'a Sat = self.sat;
+        Some((sat.recs.get(ri)?, fi))
+    }
+
+    /// An `int_int_cur`'s fit `fit` rebuilt on its two surfaces where both are planes or
+    /// revolved exact B-splines (see [`exact`]); `end` is the field after the fit's data (its
+    /// fit tolerance, then the surfaces). `None`: the fit is used as it is.
+    fn exact_intersection(&self, def: &'a Rec, end: usize, fit: &Bs3) -> Option<Bs3> {
+        let (a, next) = self.exact_surface(def, end + 1)?;
+        // The second surface follows the first one's flag and range bounds.
+        let at = (next..next + 12).find(|i| matches!(def.word(*i), Some("plane" | "spline")))?;
+        let (b, _) = self.exact_surface(def, at)?;
+        exact::refit(fit, &a, &b)
+    }
+
+    /// A plane or a `rot_spl_sur` spline surface of an exact curve, written inline at field
+    /// `at`, and the field after its data.
+    fn exact_surface(&self, def: &'a Rec, at: usize) -> Option<(exact::Exact, usize)> {
+        match def.word(at)? {
+            "plane" => Some((exact::Exact::plane(def.vec3(at + 1)?, def.vec3(at + 4)?)?, at + 10)),
+            "spline" => {
+                let open = (at + 1..at + 4).find(|i| def.word(*i) == Some("{"))?;
+                let next = block_end(def, open)? + 1;
+                let (sdef, sopen) = self.block(def, open)?;
+                if sdef.word(sopen + 1) != Some("rot_spl_sur") {
+                    return None;
+                }
+                // `rot_spl_sur <version> intcurve <flag> { exact_int_cur ... } <range> <axis>`
+                let popen = (sopen + 2..sopen + 6).find(|i| sdef.word(*i) == Some("{"))?;
+                let (pdef, pat) = self.block(sdef, popen)?;
+                if !matches!(pdef.word(pat + 1), Some("exact_int_cur" | "exactcur")) {
+                    return None;
+                }
+                let profile = bs3_curve(pdef, pat + 1).ok()?;
+                let mut k = block_end(sdef, popen)? + 1;
+                for _ in 0..2 {
+                    k += match sdef.word(k)? {
+                        "I" => 1,
+                        "T" | "F" => 2,
+                        _ => return None,
+                    };
+                }
+                Some((exact::Exact::revolution(sdef.vec3(k)?, sdef.vec3(k + 3)?, profile)?, next))
+            }
+            _ => None,
+        }
+    }
+
     fn point(&mut self, p: V3) -> usize {
         let p = self.xf.point(p);
         self.add(&format!("CARTESIAN_POINT('',({},{},{}))", real(p[0]), real(p[1]), real(p[2])))
@@ -1084,6 +1167,9 @@ impl<'a> Writer<'a> {
                 let (def, open) = self.subtype(r)?;
                 let b = if def.word(open + 1) == Some("helix_int_cur") {
                     helix(def, open + 2)?
+                } else if def.word(open + 1) == Some("int_int_cur") {
+                    let (b, end) = bs3_curve_end(def, open + 1)?;
+                    self.exact_intersection(def, end, &b).unwrap_or(b)
                 } else {
                     bs3_curve(def, open + 1)?
                 };
