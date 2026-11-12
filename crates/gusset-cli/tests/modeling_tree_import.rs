@@ -1444,3 +1444,31 @@ fn an_unmerged_pattern_leaves_copies_that_later_features_target() {
     let (_, r) = import_into_session(f);
     assert!(r["skipped_user_text"].to_string().contains("merge: false"), "{r}");
 }
+
+#[test]
+fn a_tree_thread_cuts_its_groove_or_records_a_cosmetic_one() {
+    // A 16.4 mm rod 13 mm up Z with 1145's M16x1 thread, 9 mm from 4 mm: the rod cut down to
+    // the major diameter, the groove's section turned about the axis per pitch over 9 mm.
+    let rod = || vec![disc("S", plane_at(0.0), 0.0, 0.0, 8.2), extrude("Rod", "S", 13.0, "new")];
+    let thread = |modeled: bool| {
+        json!({"type": "thread", "name": "Thread1", "face": {"point": [8.2, 0, 6.5], "normal": [1, 0, 0]},
+            "pitch": 1, "major": 15.884, "minor": 14.741, "angle": 60, "length": 9, "offset": 4,
+            "along": [0, 0, 1], "modeled": modeled, "designation": "M16x1 6g"})
+    };
+    let (rmaj, rmin, p) = (7.942_f64, 7.3705_f64, 1.0_f64);
+    let w = (rmaj - rmin) * libm::tan(30f64.to_radians());
+    // The groove's width at r is linear (7P/8 at the major radius): Simpson's rule is exact.
+    let width = |r: f64| 7.0 * p / 8.0 - 2.0 * w * (rmaj - r) / (rmaj - rmin);
+    let m = |r: f64| r * width(r);
+    let moment = (rmaj - rmin) / 6.0 * (m(rmin) + 4.0 * m((rmaj + rmin) / 2.0) + m(rmaj));
+    let want = std::f64::consts::PI * rmaj * rmaj * 13.0 - 9.0 * moment * std::f64::consts::TAU / p;
+    let mut f = rod();
+    f.push(thread(true));
+    let (r, v) = import_v2(f);
+    assert!((v - want).abs() < 2e-5 * want, "volume {v}, expected {want}");
+    assert!(r["features"].to_string().contains("Thread1"), "{r}");
+    let mut f = rod();
+    f.push(thread(false));
+    let (_, v) = import_v2(f);
+    assert_vol(v, std::f64::consts::PI * 8.2 * 8.2 * 13.0);
+}

@@ -2207,8 +2207,8 @@ fn a_thread_is_modeled_when_a_stored_body_holds_its_helix() {
 }
 
 #[test]
-fn a_modeled_thread_is_the_face_moved_and_a_groove_cut_square() {
-    use super::thread::{Face, Thread, features, moved_edges};
+fn a_modeled_thread_is_a_thread_feature_on_its_face() {
+    use super::thread::{Face, Thread, feature, moved_edges};
     // 1145: M16x1 6g, 9 mm from 4 mm, on the side of a 16.4 mm rod extruded 13 mm up Z.
     let t = Thread {
         angle: 60.0,
@@ -2223,28 +2223,22 @@ fn a_modeled_thread_is_the_face_moved_and_a_groove_cut_square() {
         end_code: 2,
     };
     let f = Face { centre: [0.0; 3], normal: [0.0, 0.0, 1.0], x: [1.0, 0.0, 0.0], t0: 0.0, t1: 1.3, radius: 0.82 };
-    let fs = features(&t, &f, "Thread1", "Extrude1").unwrap();
-    let face = &fs[1];
+    let j = feature(&t, &f, "Thread1", true).unwrap();
+    assert_eq!(j["type"], "thread");
+    assert_eq!(j["designation"], "M16x1 6g");
+    assert_eq!(j["face"]["point"], json!([8.2, 0.0, 6.5]));
     assert_eq!(
-        (face["type"].as_str(), face["operation"].as_str(), face["distance"].as_f64()),
-        (Some("extrude"), Some("cut"), Some(13.0))
+        (j["pitch"].as_f64(), j["major"].as_f64(), j["minor"].as_f64()),
+        (Some(1.0), Some(15.884), Some(14.741))
     );
-    assert_eq!(fs[0]["curves"][0]["radius"], 7.942);
-    // Grooves a turn each from a pitch below the start; the first is cut off at z = 4 mm, the
-    // last runs out through the top face.
-    let sweeps: Vec<&serde_json::Value> = fs.iter().filter(|f| f["type"] == "sweep").collect();
-    assert_eq!(sweeps.len(), 11);
-    assert_eq!(sweeps[0]["operation"], "new");
-    assert_eq!(sweeps[10]["operation"], "cut");
-    let ends = fs.iter().find(|f| f["name"] == "Thread1 groove 1 ends sketch").unwrap();
-    assert_eq!(ends["plane"]["origin"][2], 4.0);
-    // At the sketch's x the groove's flat at the major diameter starts at 0 mod P.
-    let p = &fs[2]["points"];
-    let (r, z) = (p[0]["x"].as_f64().unwrap(), p[0]["y"].as_f64().unwrap());
-    let at_major = (z + (r - 7.942) * libm::tan(30f64.to_radians())).rem_euclid(1.0);
-    assert!(at_major.min(1.0 - at_major) < 1e-6, "{z} {r}");
+    assert_eq!((j["length"].as_f64(), j["offset"].as_f64()), (Some(9.0), Some(4.0)));
+    // The offset from the extrude's start: the thread runs up the axis.
+    assert_eq!(j["along"], json!([0.0, 0.0, 1.0]));
+    // Measured from the extrude's end: it runs down.
+    let down = feature(&Thread { end_code: 1, ..t.clone() }, &f, "Thread1", true).unwrap();
+    assert_eq!(down["along"], json!([0.0, 0.0, -1.0]));
     // A later fillet's edge on the old face follows it to the major diameter.
-    let mut feats = fs.clone();
+    let mut feats = vec![j];
     feats.push(json!({"type": "fillet", "edges": [{"midpoint": [-8.2, 0.0, 0.0], "path": [[8.2, 0.0, 0.0]]},
         {"midpoint": [-6.5, 0.0, 18.2]}]}));
     moved_edges(&mut feats);
@@ -2253,7 +2247,7 @@ fn a_modeled_thread_is_the_face_moved_and_a_groove_cut_square() {
     assert_eq!(last["edges"][0]["path"], json!([[7.942, 0.0, 0.0]]));
     assert_eq!(last["edges"][1]["midpoint"], json!([-6.5, 0.0, 18.2]));
     assert!(feats.iter().all(|f| f.get("moves_face").is_none()));
-    // A face narrower than the thread, an unknown offset end: refused.
-    assert!(features(&t, &Face { radius: 0.7, ..f.clone() }, "T", "E").is_err());
-    assert!(features(&Thread { end_code: 7, ..t.clone() }, &f, "T", "E").is_err());
+    // An unknown offset end, an offset past the face: refused.
+    assert!(feature(&Thread { offset: Some(1.3), ..t.clone() }, &f, "T", true).is_err());
+    assert!(feature(&Thread { end_code: 7, ..t.clone() }, &f, "T", true).is_err());
 }

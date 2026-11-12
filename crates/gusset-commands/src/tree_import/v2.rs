@@ -1526,6 +1526,94 @@ pub(super) fn offset_face(g: &mut Gen, s: &Session, d: &OffsetFaceF) -> Result<(
     Ok(())
 }
 
+/// A thread on a cylindrical face (ADR 0034 amendment): modeled (its groove cut) or cosmetic.
+/// Lengths in mm, the flank angle in degrees; `along` is the way the thread runs from the
+/// face's end that comes first that way (its offset is measured from there).
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct ThreadF {
+    name: String,
+    face: FacePick,
+    pitch: f64,
+    #[serde(default)]
+    designation: Option<String>,
+    #[serde(default)]
+    modeled: bool,
+    #[serde(default)]
+    major: Option<f64>,
+    #[serde(default)]
+    minor: Option<f64>,
+    #[serde(default)]
+    angle: Option<f64>,
+    #[serde(default)]
+    length: Option<f64>,
+    #[serde(default)]
+    offset: Option<f64>,
+    #[serde(default)]
+    along: Option<V3>,
+    #[serde(default)]
+    left: bool,
+}
+
+pub(super) fn thread(g: &mut Gen, s: &Session, d: &ThreadF) -> Result<(), String> {
+    let mut args = Vec::new();
+    if let Some(t) = &d.designation {
+        let t: String = t.chars().filter(|c| !c.is_control() && *c != '"' && *c != '\\').take(32).collect();
+        if !t.trim().is_empty() {
+            args.push(format!("designation: \"{}\"", t.trim()));
+        }
+    }
+    args.push(format!("pitch: {} mm", num(positive(Some(d.pitch), "the pitch")?)));
+    if d.modeled {
+        args.push("modeled: true".into());
+    }
+    for (k, v) in [("major", d.major), ("minor", d.minor), ("length", d.length)] {
+        if let Some(v) = v {
+            args.push(format!("{k}: {} mm", num(positive(Some(v), k)?)));
+        }
+    }
+    if let Some(a) = d.angle {
+        let a = finite(a, "the flank angle")?;
+        if !(a > 0.0 && a < 180.0) {
+            return Err("the flank angle is not in 0..180".into());
+        }
+        args.push(format!("angle: {} deg", num(a)));
+    }
+    if let Some(o) = d.offset.filter(|o| *o != 0.0) {
+        let o = finite(o, "the offset")?;
+        if !(0.0..MAX_LENGTH).contains(&o) {
+            return Err("the offset is negative or too large".into());
+        }
+        args.push(format!("offset: {} mm", num(o)));
+    }
+    if let Some(a) = d.along {
+        let a = unit(finite3(a, "the thread's direction")?).ok_or("the thread's direction has no length")?;
+        args.push(format!("along: [{}, {}, {}]", fine(a[0]), fine(a[1]), fine(a[2])));
+    }
+    if d.left {
+        args.push("left: true".into());
+    }
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    let (text_len, made_len) = (g.text.len(), g.made.len());
+    let placed = pick_face_name(g, s, &ev, &d.face).and_then(|(body, face)| {
+        let name = g.fresh(&d.name, "Thread");
+        let _ = writeln!(g.text, "\nthread {name} (face: {face}, {})", args.join(", "));
+        builds(g, s, &name)?;
+        g.made.push(name);
+        g.features.insert(d.name.clone(), body);
+        Ok(())
+    });
+    match placed {
+        // A cosmetic thread changes no geometry: one that cannot be placed is left out.
+        Err(why) if !d.modeled => {
+            g.text.truncate(text_len);
+            g.made.truncate(made_len);
+            g.warn(format!("the cosmetic thread {} is left out: {why}", short(&d.name)));
+            Ok(())
+        }
+        r => r,
+    }
+}
+
 /// Taper faces for molding about their line on a neutral plane.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct DraftF {

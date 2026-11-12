@@ -7,7 +7,7 @@
 use super::Ctx;
 use super::acis;
 use super::feature::{params_of, pget};
-use super::geom::{V3, cross, dot, mul, norm, sub, unit, world};
+use super::geom::{V3, dot, mul, norm, sub, unit, world};
 use super::naming::FaceG;
 use super::stream::{Rd, f64_at, parse_header};
 use crate::cover;
@@ -34,22 +34,29 @@ pub(super) struct Thread {
     pub end_code: u32,
 }
 
-/// The record body: `f64` angle, `u8`, four `wstr` (class, designation, size, form name), `u8`
-/// internal, `u32`, `f64` major and minor diameter, `u8`, `f64` pitch and pitch diameter.
+/// The record body: `f64` angle, `u8` external (1) or internal (0), four `wstr` (class,
+/// designation, size, form name), `u8` (1 for every full-length thread of the corpus, 0 for
+/// every one with a length; not read), `u32`, `f64` major and minor diameter, `u8`, `f64` pitch
+/// and pitch diameter. The side byte follows the class in all ten records of the three sets (6g
+/// and 2A external, 6H internal); the byte after the form name had been read as it, and 3692's
+/// external 1/4-56 UNS 2A thread, full length, came in as an internal one.
 pub(super) fn read(cx: &Ctx, fid: u64) -> Option<Thread> {
     let rec = cx.d.rec(fid);
     let body = parse_header(rec)?.body;
     let angle = f64_at(rec, body)?;
+    let internal = match rec.get(body + 8)? {
+        0 => true,
+        1 => false,
+        _ => return None,
+    };
     let mut r = Rd::new(rec, body + 9);
     let class = r.wstr()?;
     let designation = r.wstr()?;
     let _size = r.wstr()?;
     let _form = r.wstr()?;
-    let internal = match rec.get(r.i)? {
-        0 => false,
-        1 => true,
-        _ => return None,
-    };
+    if *rec.get(r.i)? > 1 {
+        return None;
+    }
     let end_code = u32::from_le_bytes(rec.get(r.i + 1..r.i + 5)?.try_into().ok()?);
     let at = r.i + 5;
     let (major, minor) = (f64_at(rec, at)?, f64_at(rec, at + 8)?);
@@ -62,7 +69,8 @@ pub(super) fn read(cx: &Ctx, fid: u64) -> Option<Thread> {
         return None;
     }
     cover::field(rec, body, 8, "thread.angle");
-    cover::field(rec, r.i, 1, "thread.internal");
+    cover::field(rec, body + 8, 1, "thread.external");
+    cover::field(rec, r.i, 1, "thread.full-length");
     cover::field(rec, r.i + 1, 4, "thread.offset-end");
     cover::field(rec, at, 16, "thread.major-minor");
     cover::field(rec, at + 17, 16, "thread.pitch-pitch-diameter");
@@ -100,9 +108,10 @@ pub(super) enum Word {
     Features(Vec<Value>),
 }
 
-/// The tree's word on a thread: cosmetic (left out), the features of a modeled one on an
-/// extruded cylinder of the body `body` (the feature that made it), or `Err(feature)` for one
-/// the tree cannot hold.
+/// The tree's word on a thread: a `thread` feature (modeled where a stored body holds its
+/// helices, else cosmetic) on the face it names, or `Err(feature)` for a modeled one the tree
+/// cannot place. A cosmetic thread whose face is not found is left out with a note (it changes
+/// no geometry).
 pub(super) fn json(
     cx: &mut Ctx,
     fid: u64,
@@ -129,24 +138,24 @@ pub(super) fn json(
             _ => "full length".to_string(),
         }
     );
-    if !modeled(cx, &t) {
-        return Ok(Word::Cosmetic(format!(
-            "a cosmetic thread ({what}): no helical face of it is stored, it changes no geometry"
-        )));
-    }
-    let fail = |why: &str| {
-        json!({"type": "unsupported", "fusion_type": fusion_type, "name": name, "class_guid": class,
-            "source_id": fid, "thread": what.clone(), "error": format!("a modeled thread ({what}): {why}")})
-    };
-    let body = body.ok_or_else(|| fail("the body it is on is not one feature's"))?;
-    let face = face_of(cx, fid).map_err(fail)?;
-    let mut feats = features(&t, &face, name, body).map_err(fail)?;
-    for f in &mut feats {
-        if let Some(o) = f.as_object_mut() {
-            o.insert("source_id".into(), fid.into());
+    let is_modeled = modeled(cx, &t);
+    let placed = body
+        .ok_or("the body it is on is not one feature's")
+        .and_then(|_| face_of(cx, fid))
+        .and_then(|face| feature(&t, &face, name, is_modeled));
+    match placed {
+        Ok(mut f) => {
+            if let Some(o) = f.as_object_mut() {
+                o.insert("source_id".into(), fid.into());
+            }
+            Ok(Word::Features(vec![f]))
         }
+        Err(why) if !is_modeled => Ok(Word::Cosmetic(format!(
+            "a cosmetic thread ({what}): no helical face of it is stored, it changes no geometry ({why})"
+        ))),
+        Err(why) => Err(json!({"type": "unsupported", "fusion_type": fusion_type, "name": name, "class_guid": class,
+            "source_id": fid, "thread": what, "error": format!("a modeled thread ({what}): {why}")})),
     }
-    Ok(Word::Features(feats))
 }
 
 /// The threaded face, the side of a whole extruded circle (cm): its axis point on the sketch
@@ -228,14 +237,13 @@ fn stored_side(cx: &mut Ctx, g: &str, ops: &[i32]) -> Option<Face> {
     found
 }
 
-/// The tree features of a modeled thread (mm). Fusion's form, read from the stored bodies of
-/// 1145 and 3350 (section 36): the whole face moved to the major diameter (external) or the
-/// minor one (internal); then the groove, its flat at the major diameter centred P/16 before
-/// the face's start modulo P along the face's axis (the flat at the minor diameter 7P/16 after
-/// it), the crest flat P/8 wide, the flanks at half the flank angle to the radial; the groove
-/// ends square on the planes across the axis where the thread starts and ends (no run-out, no
-/// chamfer), and runs out past a face end it reaches.
-pub(super) fn features(t: &Thread, f: &Face, name: &str, body: &str) -> Result<Vec<Value>, &'static str> {
+/// The tree's `thread` feature (mm): the face picked at its middle, the thread's diameters,
+/// pitch and flank angle, where it lies (`along` runs from the end its offset is measured from)
+/// and, for a modeled thread that moves the face, where the face was and went (`moves_face`,
+/// for later blends, taken out by [`moved_edges`]). Fusion's form (section 36) is the
+/// document's: the whole face moved to the major (external) or minor (internal) diameter, the
+/// groove square at the ends inside the face.
+pub(super) fn feature(t: &Thread, f: &Face, name: &str, modeled: bool) -> Result<Value, &'static str> {
     let cm = 10.0;
     let (p, rmaj, rmin, r0) = (t.pitch * cm, t.major * cm / 2.0, t.minor * cm / 2.0, f.radius * cm);
     if !(rmin > 0.0 && rmin < rmaj && p > 0.0 && t.angle > 0.0 && t.angle < 180.0 && r0 > 0.0) {
@@ -244,164 +252,51 @@ pub(super) fn features(t: &Thread, f: &Face, name: &str, body: &str) -> Result<V
     // The face's axis runs the way its extrude went, from the extrude's start.
     let len = (f.t1 - f.t0).abs() * cm;
     let axis = mul(f.normal, if f.t1 >= f.t0 { 1.0 } else { -1.0 });
-    // The document's helix climbs a world axis through the origin.
-    let k = (0..3)
-        .find(|k| axis.get(*k).is_some_and(|c| (c.abs() - 1.0).abs() < 1e-9))
-        .ok_or("its axis is not along a world axis")?;
-    let along = |v: V3| v.get(k).copied().unwrap_or(0.0);
-    let s = along(axis).signum();
-    if (0..3).any(|i| i != k && f.centre.get(i).is_some_and(|v| v.abs() > 1e-9)) {
-        return Err("its axis does not pass through the origin");
-    }
-    // Positions along the world axis (mm) of the face's start and of offsets along the face.
-    let start = (along(f.centre) + f.t0 * along(f.normal)) * cm;
-    let at = |u: f64| start + s * u;
-    let (u0, u1) = match (t.length, t.offset) {
-        (Some(l), Some(o)) => match t.end_code {
-            2 => (o * cm, (o + l) * cm),
-            1 => (len - (o + l) * cm, len - o * cm),
+    let x = unit(sub(f.x, mul(axis, dot(f.x, axis)))).ok_or("its sketch has no direction across the axis")?;
+    let start = add(mul(f.centre, cm), mul(f.normal, f.t0 * cm));
+    let along = match (t.length, t.offset) {
+        (Some(_), Some(_)) => match t.end_code {
+            2 => axis,
+            1 => mul(axis, -1.0),
             _ => return Err("the end its offset is measured from is not known"),
         },
-        (None, None) => (0.0, len),
+        (None, None) => axis,
         _ => return Err("it has a length or an offset without the other"),
     };
-    let (u0, u1) = (u0.max(0.0), u1.min(len));
-    if u1 - u0 < 1e-6 {
+    if t.offset.is_some_and(|o| o * cm >= len - 1e-6) {
         return Err("it does not reach its face");
     }
-    let (face_lo, face_hi) = (at(0.0).min(at(len)), at(0.0).max(at(len)));
-    let (lo, hi) = (at(u0).min(at(u1)), at(u0).max(at(u1)));
-    let (clip_lo, clip_hi) = (lo > face_lo + 1e-6, hi < face_hi - 1e-6);
-    let tn = libm::tan(t.angle.to_radians() / 2.0);
-    let w = (rmaj - rmin) * tn;
-    if 2.0 * w >= 7.0 * p / 8.0 {
-        return Err("its flanks meet before its root");
-    }
-    let mut e = [0.0; 3];
-    if let Some(v) = e.get_mut(k) {
-        *v = 1.0;
-    }
-    let x = unit(sub(f.x, mul(e, dot(f.x, e)))).ok_or("its sketch has no direction across the axis")?;
-    let y = cross(e, x);
-    let v3 = |v: V3| json!([r9(v[0]), r9(v[1]), r9(v[2])]);
-    let mut out = Vec::new();
-    // A disc or ring across the axis from `from` (along it, mm) `depth` up: joined to or cut
-    // from `target`, or a body of its own.
-    let ring =
-        |out: &mut Vec<Value>, tag: &str, radii: &[f64], from: f64, depth: f64, op: &str, target: Option<&str>| {
-            let curves: Vec<Value> = radii
-                .iter()
-                .enumerate()
-                .map(|(i, r)| json!({"id": format!("c{i}"), "type": "circle", "center": "o", "radius": r9(*r)}))
-                .collect();
-            let pick = match radii {
-                [a, b] => (a + b) / 2.0,
-                _ => 0.0,
-            };
-            let sketch = format!("{name} {tag} sketch");
-            out.push(json!({"type": "sketch", "name": sketch, "plane": {"origin": v3(mul(e, from)), "x_axis": v3(x),
-            "y_axis": v3(y)}, "points": [{"id": "o", "x": 0.0, "y": 0.0}], "curves": curves}));
-            let mut j = json!({"type": "extrude", "name": format!("{name} {tag}"), "sketch": sketch,
-            "profiles": [{"point": [r9(pick), 0.0]}], "distance": r9(depth), "symmetric": false, "operation": op});
-            if let (Some(o), Some(tg)) = (j.as_object_mut(), target) {
-                o.insert("target".into(), tg.into());
-            }
-            out.push(j);
-        };
-    // 1. The face moved to the thread's diameter.
-    if t.internal {
-        // The hole filled in to the minor diameter (3350's Thread2: 8 mm to 7.51775 mm), or
-        // opened out to it.
-        if r0 < rmin - 1e-6 {
-            return Err("its hole is narrower than the thread's minor diameter");
+    let mid = add(start, mul(axis, len / 2.0));
+    let point = add(mid, mul(x, r0));
+    let normal = if t.internal { mul(x, -1.0) } else { x };
+    let mut j = json!({"type": "thread", "name": name, "face": {"point": v3(point), "normal": v3(normal)},
+        "pitch": r9(p), "major": r9(2.0 * rmaj), "minor": r9(2.0 * rmin), "angle": r9(t.angle),
+        "along": v3(along), "modeled": modeled});
+    if let Some(o) = j.as_object_mut() {
+        let designation = format!("{} {}", t.designation, t.class);
+        o.insert("designation".into(), designation.trim().into());
+        if let (Some(l), Some(off)) = (t.length, t.offset) {
+            o.insert("length".into(), r9(l * cm).into());
+            o.insert("offset".into(), r9(off * cm).into());
         }
-        if r0 > rmin + 1e-6 {
-            ring(&mut out, "face", &[rmin, r0], face_lo, face_hi - face_lo, "join", Some(body));
-            moved(&mut out, k, r0, rmin, face_lo, face_hi);
-        }
-    } else {
-        if r0 < rmaj - 1e-6 {
-            return Err("its face is narrower than the thread's major diameter");
-        }
-        if r0 > rmaj + 1e-6 {
-            ring(&mut out, "face", &[rmaj, r0 + p.max(0.1 * r0)], face_lo, face_hi - face_lo, "cut", Some(body));
-            moved(&mut out, k, r0, rmaj, face_lo, face_hi);
-        }
-    }
-    // 2. The groove at the sketch's x direction, as (radius, offset along the face's axis from
-    // its start), run past the surface it cuts so that no edge of it lies there.
-    let ext = 0.03 * p / tn;
-    let prof: [(f64, f64); 4] = if t.internal {
-        [
-            (rmin - ext, p / 2.0 - ext * tn),
-            (rmaj, p / 2.0 + w),
-            (rmaj, 11.0 * p / 8.0 - w),
-            (rmin - ext, 11.0 * p / 8.0 + ext * tn),
-        ]
-    } else {
-        [(rmaj + ext, -ext * tn), (rmin, w), (rmin, 7.0 * p / 8.0 - w), (rmaj + ext, 7.0 * p / 8.0 + ext * tn)]
-    };
-    if prof.iter().any(|(r, _)| *r <= 0.0) {
-        return Err("its groove reaches the axis");
-    }
-    let outer = rmaj + ext + p;
-    let world_prof: Vec<(f64, f64)> = prof.iter().map(|(r, u)| (*r, at(*u))).collect();
-    let low = world_prof.iter().map(|q| q.1).fold(f64::INFINITY, f64::min);
-    // The first copy a pitch or more below where the thread starts, so that every angle is
-    // covered from there; one turn a sweep: OCCT cut a ten-turn groove through 1145's end face
-    // not at all and failed on one of two turns there, one turn at a time it cuts exactly.
-    let turns = 1.0;
-    let mut z = ((lo - p - low) / p).floor() * p;
-    let mut i = 0usize;
-    while low + z <= hi + 1e-9 {
-        i += 1;
-        if i > 1000 {
-            return Err("it has too many turns");
-        }
-        let (bottom, top) = (low + z, low + z + (turns + 1.0) * p);
-        let tag = format!("groove {i}");
-        let sk = format!("{name} {tag} sketch");
-        let points: Vec<Value> = world_prof
-            .iter()
-            .enumerate()
-            .map(|(j, (r, h))| json!({"id": format!("p{j}"), "x": r9(*r), "y": r9(h + z)}))
-            .collect();
-        let curves: Vec<Value> = (0..4)
-            .map(|j| {
-                json!({"id": format!("l{j}"), "type": "line", "start": format!("p{j}"), "end": format!("p{}", (j + 1) % 4)})
-            })
-            .collect();
-        out.push(json!({"type": "sketch", "name": sk, "plane": {"origin": v3([0.0; 3]), "x_axis": v3(x),
-            "y_axis": v3(e)}, "points": points, "curves": curves}));
-        let helix = json!({"origin": [0.0, 0.0, 0.0], "axis": v3(e), "x": v3(x), "radius": r9(rmaj),
-            "pitch": r9(p), "height": r9(turns * p)});
-        let groove = format!("{name} {tag}");
-        let (cl, ch) = (clip_lo && bottom < lo, clip_hi && top > hi);
-        if cl || ch {
-            out.push(json!({"type": "sweep", "name": groove, "sketch": sk, "helix": helix, "operation": "new"}));
-            let from = if cl { lo } else { bottom - p };
-            let to = if ch { hi } else { top + p };
-            ring(&mut out, &format!("{tag} ends"), &[outer], from, to - from, "new", None);
-            out.push(json!({"type": "combine", "name": format!("{groove} cut off"), "target": groove,
-                "tools": [format!("{name} {tag} ends")], "operation": "intersect"}));
-            out.push(json!({"type": "combine", "name": format!("{groove} cut"), "target": body,
-                "tools": [groove], "operation": "cut"}));
-        } else {
-            out.push(
-                json!({"type": "sweep", "name": groove, "sketch": sk, "helix": helix, "operation": "cut", "target": body}),
+        let to = if t.internal { rmin } else { rmaj };
+        if modeled && (r0 - to).abs() > 1e-6 {
+            o.insert(
+                "moves_face".into(),
+                json!({"origin": v3(start), "axis": v3(axis), "radius": r9(r0), "to": r9(to), "from": 0.0,
+                    "until": r9(len)}),
             );
         }
-        z += turns * p;
     }
-    Ok(out)
+    Ok(j)
 }
 
-/// Marks the last feature (the face's move) with where the face was and went: the world axis,
-/// the radius before and after, and the face's extent along the axis (mm).
-fn moved(out: &mut [Value], k: usize, from: f64, to: f64, lo: f64, hi: f64) {
-    if let Some(o) = out.last_mut().and_then(Value::as_object_mut) {
-        o.insert("moves_face".into(), json!({"axis": k, "radius": from, "to": to, "from": lo, "until": hi}));
-    }
+fn v3(v: V3) -> Value {
+    json!([r9(v[0]), r9(v[1]), r9(v[2])])
+}
+
+fn add(a: V3, b: V3) -> V3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 /// Edges a later blend picks on a face a thread moved: Fusion names them as before, and their
@@ -409,16 +304,21 @@ fn moved(out: &mut [Value], k: usize, from: f64, to: f64, lo: f64, hi: f64) {
 /// with the face, across the axis to its new radius (1145's Fillet1 rounds the bottom edge of
 /// the threaded rod, at the major diameter since the thread). The marks are taken out.
 pub(super) fn moved_edges(feats: &mut [Value]) {
-    let mut moves: Vec<(usize, f64, f64, f64, f64)> = Vec::new();
+    // (axis origin, axis, radius before, after, extent along the axis from the origin)
+    let mut moves: Vec<(V3, V3, f64, f64, f64, f64)> = Vec::new();
     for f in feats.iter_mut() {
         let Some(o) = f.as_object_mut() else { continue };
         if let Some(m) = o.remove("moves_face") {
             let num = |key: &str| m.get(key).and_then(Value::as_f64);
-            if let (Some(k), Some(r), Some(to), Some(lo), Some(hi)) =
-                (m.get("axis").and_then(Value::as_u64), num("radius"), num("to"), num("from"), num("until"))
-                && let Ok(k) = usize::try_from(k)
-            {
-                moves.push((k, r, to, lo, hi));
+            if let (Some(c), Some(a), Some(r), Some(to), Some(lo), Some(hi)) = (
+                m.get("origin").and_then(get3),
+                m.get("axis").and_then(get3).and_then(unit),
+                num("radius"),
+                num("to"),
+                num("from"),
+                num("until"),
+            ) {
+                moves.push((c, a, r, to, lo, hi));
             }
             continue;
         }
@@ -433,23 +333,16 @@ pub(super) fn moved_edges(feats: &mut [Value]) {
             if let Some(path) = eo.get("path").and_then(Value::as_array) {
                 all.extend(path.iter().filter_map(get3));
             }
-            let Some(&(k, _, to, _, _)) = moves
-                .iter()
-                .find(|(k, r, _, lo, hi)| !all.is_empty() && all.iter().all(|q| on_cylinder(*q, *k, *r, *lo, *hi)))
-            else {
+            let Some(&(c, a, _, to, _, _)) = moves.iter().find(|(c, a, r, _, lo, hi)| {
+                !all.is_empty() && all.iter().all(|q| on_cylinder(*q, *c, *a, *r, *lo, *hi))
+            }) else {
                 continue;
             };
             let shift = |q: V3| -> Value {
-                let mut a = q;
-                if let Some(v) = a.get_mut(k) {
-                    *v = 0.0;
-                }
-                let r = norm(a);
-                let mut out = mul(a, if r > 0.0 { to / r } else { 1.0 });
-                if let (Some(d), Some(v)) = (out.get_mut(k), q.get(k)) {
-                    *d = *v;
-                }
-                json!([r9(out[0]), r9(out[1]), r9(out[2])])
+                let foot = add(c, mul(a, dot(sub(q, c), a)));
+                let w = sub(q, foot);
+                let r = norm(w);
+                v3(add(foot, mul(w, if r > 0.0 { to / r } else { 1.0 })))
             };
             if let Some(m) = eo.get("midpoint").and_then(get3) {
                 eo.insert("midpoint".into(), shift(m));
@@ -467,14 +360,12 @@ fn get3(v: &Value) -> Option<V3> {
     Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
 }
 
-/// Whether `q` (mm) lies on the cylinder of radius `r` about world axis `k` within `lo..hi`.
-fn on_cylinder(q: V3, k: usize, r: f64, lo: f64, hi: f64) -> bool {
-    let mut a = q;
-    let h = a.get(k).copied().unwrap_or(0.0);
-    if let Some(v) = a.get_mut(k) {
-        *v = 0.0;
-    }
-    (norm(a) - r).abs() < 1e-4 && h > lo - 1e-4 && h < hi + 1e-4
+/// Whether `q` (mm) lies on the cylinder of radius `r` about the axis through `c` along `a`
+/// within `lo..hi` of `c`.
+fn on_cylinder(q: V3, c: V3, a: V3, r: f64, lo: f64, hi: f64) -> bool {
+    let h = dot(sub(q, c), a);
+    let w = sub(sub(q, c), mul(a, h));
+    (norm(w) - r).abs() < 1e-4 && h > lo - 1e-4 && h < hi + 1e-4
 }
 
 fn r9(v: f64) -> f64 {
@@ -512,15 +403,20 @@ mod tests {
             t1: 0.3,
             radius: r,
         };
-        let out = features(&m16(true), &face(0.8), "Thread2", "Extrude8").unwrap();
-        let ring = &out[1];
-        assert_eq!(ring["operation"], "join");
-        assert_eq!(ring["target"], "Extrude8");
-        let radii: Vec<f64> =
-            out[0]["curves"].as_array().unwrap().iter().map(|c| c["radius"].as_f64().unwrap()).collect();
-        assert_eq!(radii, vec![7.51775, 8.0]);
-        assert!((ring["moves_face"]["to"].as_f64().unwrap() - 7.51775).abs() < 1e-9);
-        // A hole already narrower than the thread's minor diameter is not filled.
-        assert!(features(&m16(true), &face(0.7), "Thread2", "Extrude8").is_err());
+        let f = feature(&m16(true), &face(0.8), "Thread2", true).unwrap();
+        assert_eq!(f["type"], "thread");
+        // Picked on the hole's wall at its middle, its normal towards the axis.
+        assert_eq!(f["face"]["point"], json!([8.0, 0.0, -3.5]));
+        assert_eq!(f["face"]["normal"], json!([-1.0, 0.0, 0.0]));
+        assert_eq!((f["major"].as_f64(), f["minor"].as_f64()), (Some(16.1522), Some(15.0355)));
+        assert!((f["moves_face"]["to"].as_f64().unwrap() - 7.51775).abs() < 1e-9);
+        // A hole narrower than the thread's minor diameter is opened out to it (as 3692's shaft,
+        // narrower than its thread, is built up to the major diameter).
+        let narrow = feature(&m16(true), &face(0.7), "Thread2", true).unwrap();
+        assert!((narrow["moves_face"]["to"].as_f64().unwrap() - 7.51775).abs() < 1e-9);
+        // A cosmetic thread there is only recorded.
+        let c = feature(&m16(true), &face(0.7), "Thread2", false).unwrap();
+        assert_eq!(c["modeled"], false);
+        assert!(c.get("moves_face").is_none());
     }
 }

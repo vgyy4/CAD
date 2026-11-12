@@ -2948,7 +2948,7 @@ fn blocker(f: &Value) -> Option<String> {
             None
         }
         "hole" | "mirror" | "shell" | "draft" | "offset_face" | "move_body" | "scale_body" | "remove_body"
-        | "split" | "combine" => None,
+        | "split" | "combine" | "thread" => None,
         "component_insert" => Some("the design it inserts is not merged into the tree".into()),
         "stored_body" => (!has("brep")).then(|| "the stored body names no blob".to_string()),
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),
@@ -3229,6 +3229,16 @@ pub(super) fn move_feature(f: &mut Value, pl: &crate::fusion::Placement) {
                         *p = m;
                     }
                 }
+            }
+        }
+        "thread" => {
+            if let Some(fc) = f.get_mut("face").and_then(Value::as_object_mut) {
+                move_pick(fc, &pl);
+            }
+            if let Some(a) = dir(f.get("along"))
+                && let Some(o) = f.as_object_mut()
+            {
+                o.insert("along".into(), a);
             }
         }
         "mirror" | "split" => {

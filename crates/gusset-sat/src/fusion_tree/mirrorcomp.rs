@@ -180,7 +180,7 @@ pub(super) fn component_bodies_so_far(feats: &[Value], comp: u64) -> Result<Vec<
         let merge = f.get("merge").and_then(Value::as_bool);
         let no_features = f.get("features").and_then(Value::as_array).is_none_or(Vec::is_empty);
         match ty.as_str() {
-            "sketch" | "fillet" | "chamfer" | "shell" | "draft" | "offset_face" | "hole" | "scale_body" => {}
+            "sketch" | "fillet" | "chamfer" | "shell" | "draft" | "offset_face" | "hole" | "scale_body" | "thread" => {}
             "split" => out.push(name),
             "extrude" | "revolve" | "sweep" | "loft" => {
                 let op = s(f, "operation").unwrap_or_default();
