@@ -4248,6 +4248,18 @@ mod fusion_steps_tests {
     }
 
     #[test]
+    fn a_revolve_of_several_loops_makes_a_tool_per_loop() {
+        // 3350's Revolve3 cuts two rings from the nut and stores a tool for each.
+        let t = vec![
+            json!({"type": "revolve", "name": "R1", "operation": "new", "profiles": [{}]}),
+            json!({"type": "revolve", "name": "R2", "operation": "cut", "profiles": [{}, {}]}),
+            json!({"type": "revolve", "name": "R3", "operation": "join", "profiles": [{}]}),
+        ];
+        assert_eq!(fusion_instances(&t), vec![None, Some(2), Some(1)]);
+        assert_eq!(fusion_loose(&t), vec![false, true, false]);
+    }
+
+    #[test]
     fn states_are_per_body_and_a_loose_cut_is_the_sum_of_its_tools() {
         // A board (100), a part (7), then a cut of three loops that made two tools (1 and 2.5).
         let t = vec![
