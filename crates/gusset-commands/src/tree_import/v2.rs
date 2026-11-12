@@ -946,15 +946,22 @@ pub(super) fn mirror(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value]) -> 
     if d.features.is_empty() {
         return mirror_body(g, s, d, o, n);
     }
-    // A mirror of one sweep that made a new body is a mirrored copy of that body (3923's
-    // Mirror1): a sweep is not built again reflected.
-    if let [one] = d.features.as_slice()
-        && let Some(f) = feats.iter().find(|f| f.get("name").and_then(Value::as_str) == Some(one.as_str()))
-        && f.get("type").and_then(Value::as_str) == Some("sweep")
-        && f.get("operation").and_then(Value::as_str) == Some("new")
-    {
-        let copy = MirrorF { features: Vec::new(), target: Some(one.clone()), merge: Some(false), ..d.clone() };
-        return mirror_body(g, s, &copy, o, n);
+    // A mirror of sweeps that made new bodies is a mirrored copy of each body (3923's Mirror1):
+    // a sweep is not built again reflected. So are mirrors among the features that copied such
+    // bodies, and cuts of those bodies the list holds (1119's legs: `Mirror1` of a sweep and a
+    // notch cut in it, `Mirror2` of the sweep, `Mirror1` and the notch), whose effect the
+    // copies of the bodies carry.
+    if let Some(bodies) = new_body_copies(g, d, feats) {
+        let mut last = None;
+        for b in bodies {
+            let copy = MirrorF { features: Vec::new(), target: Some(b), merge: Some(false), ..d.clone() };
+            mirror_body(g, s, &copy, o, n)?;
+            last = g.features.get(&d.name).cloned();
+        }
+        if let Some(l) = last {
+            g.features.insert(d.name.clone(), l);
+        }
+        return Ok(());
     }
     // Gusset mirrors bodies, so each listed feature is built again, reflected.
     let before: (HashSet<String>, HashSet<String>) =
@@ -965,6 +972,38 @@ pub(super) fn mirror(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value]) -> 
         g.features.retain(|k, _| before.1.contains(k));
     }
     r
+}
+
+/// The bodies a mirror of features copies, where each listed feature made a new body of its
+/// own as a sweep, or is an imported mirror of such features, or is a cut whose targets include
+/// one of those bodies (the copy carries its effect); `None` otherwise (the features are built
+/// again, reflected).
+fn new_body_copies(g: &Gen, d: &MirrorF, feats: &[Value]) -> Option<Vec<String>> {
+    let find = |n: &str| feats.iter().find(|f| f.get("name").and_then(Value::as_str) == Some(n));
+    let kind = |f: &Value| f.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+    let op = |f: &Value| f.get("operation").and_then(Value::as_str).unwrap_or("").to_string();
+    let mut bodies = Vec::new();
+    let mut cuts = Vec::new();
+    for name in &d.features {
+        let f = find(name)?;
+        match (kind(f).as_str(), op(f).as_str()) {
+            ("sweep", "new") => bodies.push(name.clone()),
+            ("mirror", _) if g.features.contains_key(name) && f.get("features").is_some() => bodies.push(name.clone()),
+            ("extrude", "cut") => cuts.push(f),
+            _ => return None,
+        }
+    }
+    if bodies.is_empty() {
+        return None;
+    }
+    let targets = |f: &Value| -> Vec<String> {
+        match f.get("target") {
+            Some(Value::String(t)) => vec![t.clone()],
+            Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+            _ => Vec::new(),
+        }
+    };
+    cuts.iter().all(|c| targets(c).iter().any(|t| bodies.contains(t))).then_some(bodies)
 }
 
 /// The text name of the plane through `o` with normal `n`: a base plane when it is one, else
