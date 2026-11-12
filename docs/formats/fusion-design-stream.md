@@ -2292,3 +2292,101 @@ kernel: `gs_shell` with no opened face.
   adafruit-next: 110 of 150 (unchanged, none lost).
 * First blockers: 1145 passes; 3350 OffsetFaces1 (OCCT's offset throws on the threaded rod); 3722 CoilPrimitive1
   (axis, start and hand not decoded; Shell3 and a chamfer of the coil's ends follow); 916 Fillet1.
+
+## 41. Round 24 Q: blend edges of the adafruit-next set (2026-11-12)
+The adafruit-next set (150 designs the reader was never tuned on) stopped at fillets and chamfers in nine designs.
+Readers: `fusion_tree/naming.rs` (edge midpoints), `feature.rs` (blend sets); the end-blob rule in `import.rs`.
+
+### Fillet faces on a box's convex edges (67)
+* 67 Fillet1 rounds the four long edges of a box, each between a side and a cap of `Extrude1`; Fillet2 then rounds
+  the box's two end outlines, eight straight edges and eight arcs between an end face and Fillet1's faces
+  (`5 [301]` and `4 [303]`, ended by `6 [301]` and `1 [301]`). The fillet face model (a rolling ball between two
+  planes) only took two sides, so the arcs were not resolved. A side and a cap of one extrude meet at a convex edge
+  of the prism (the material inside both), so a cap now counts as a fillet's side where the edge's two faces are of
+  one extrude. 67 comes in as history.
+
+### Edges of a mirror's copy (770)
+* 770's `Mirror1` copies two join extrudes (tabs); `Fillet2` rounds the end edges of the original tabs and of the
+  copies. The copies' faces are named with three operations: the face's own extrude, the mirror's, and one
+  `AD719C1A` record per copy (`9 [308, 313, 314]`). The tabs' end faces (8 mm wide, rounded by 4 mm) vanish under
+  the fillet and no stored state holds the copies before it, so their edges were not resolved. An edge every face
+  of which carries `[own, mirror, copy]` is now the same edge of the original (the operations cut to `[own]`),
+  reflected in the mirror plane.
+* `Fillet3` (unnamed, r 2 mm, 18 edges) names the bottom rim of the box `6 [301]` / `1 [301] + 1 [316]` twice,
+  once ended by the side `21 [316]` (x 15 mm) of a foot `Extrude3` joined at the bottom and Fillet1's corner face
+  `4 [303]`, once by the foot's other side `6 [316]` (x 47 mm) and the other corner face. The only stored edge
+  between those two faces is a piece of a later state (ended by `4 [316]` and `23 [316]`), which both recipes took:
+  one edge at x 31 mm instead of two at x 9 and 56 mm. A straight edge between two planes ended by a fillet face
+  that rounds the corner of one of its planes now ends where the fillet leaves that plane, `r` from the other
+  side's plane (the modelled answer comes before the stored edges).
+* 770 then stops at that fillet's import: Gusset's model has no edge at (9, 33, 0) mm (the nearest is 5 mm away);
+  the bottom of the box is split by `Split1` and `Extrude3` joins feet to `Extrude1`, and the model's lower body
+  carries the rim from x 15 mm on only. Not examined further.
+
+### A closed edge where a cone meets a cylinder (6118)
+* 6118 Fillet2 names the edge between an extrude's round side `3 [306]` (r 11.75 mm about y) and `5 [309]` of a
+  revolve, with no faces at its ends. The stored bodies hold `5 [309]` as a 45 degree cone about the same axis.
+  A closed edge between a cylinder and a coaxial cone, both stored, is now the circle where the cone reaches the
+  cylinder's radius (radius at height h: `r + h sin / cos`, section 28), given as points round it.
+* 6118 then stops at the step check: a stored solid of 2477.0412 mm3 is neither a state nor a tool (the features
+  give 6330.8 mm3 of the 23848.4 stored; the design inserts components that are not merged).
+
+### Pockets whose corners a fillet rounded (6252)
+* 6252 Chamfer3 chamfers the rim of a notch in a wall (`4 [306]`); the notch's corners were rounded by a fillet
+  (`[325]`, r 1 mm) whose sides are a chamfer face and a cut's side, so its faces are not modelled; the stored
+  bodies have them as cylinders about an axis across the wall. Two kinds of edges are now resolved by the stored
+  cylinders: a line where two planes meet, ended by a plane or by a stored cylinder about an axis across the line
+  that the line touches (it ends at the touching point), and an arc where a plane meets a stored cylinder about an
+  axis across it, ended by two planes the cylinder touches (the shorter arc between the touching points). An end
+  may also be a modelled fillet face (a fillet of `[324]` rounds the notch's other corners).
+* Where the two touching points are opposite (a half circle, the round end of a thin wall: 5998's `Chamfer7`), the
+  arc bulges to the side of the cylinder's stored points.
+
+### Generator -1 (6252, 5981)
+* 6252 `Chamfer1 (2)` names an edge by `-1 [351]`, the side `3 [351]` of a round boss and its end cap `2 [351]`.
+  No stored face carries `-1`. The stored state after the chamfer holds the chamfer face `1 [353]` from cap `2`
+  (z 7.4 mm, r 1.1 mm) to the side (z 7.8 mm): the rim of cap `2` is chamfered by 0.4 mm. adafruit-more 5981's
+  `Chamfer2` (section 37) has the same recipe shape (`-1`, the post's side, its cap `2`), and its stored state too
+  shows the rim of cap `2` chamfered. An edge named by `-1`, a side and cap `2` of one extrude is now the edge
+  between the side and cap `2`. (Two samples; what `-1` encodes is not decoded.) In 5981 the side is merged with the
+  wall's arc side (`11 [363, 364]` + `3 [367]`): the side's entry of the same extrude is taken.
+* 6252 then stops at `Extrude6` (layout not recognised); 5981 reads past `Chamfer2` and stops at `Chamfer6`, whose
+  edges are bounded by the thin extrude's `-3`, `-6` and `-8` (not decoded).
+
+### A face picked whole (5998, 5360)
+* 5998 `Chamfer2` names no edge: its selection hangs under the value holder `0D383DB2` (the holder of two-distance
+  chamfers, section 30) and holds one **bounded-face** recipe: the bottom cap `1 [305]` of the box and the eight faces
+  round it (four sides, two faces of `Fillet1`, two of `Chamfer1`). Fusion blends every edge of a face picked whole.
+  The faces round it are not listed in loop order (`2 [308], 5, 6, 2 [307], 4, 1 [307], 3, 1 [308]`), so each edge
+  where the face meets a plane `B` round it runs along their common line between the nearest ends on either side of
+  a point of `B` (a modelled side's middle, else the mean of `B`'s stored points) that the other faces make (planes
+  crossing the line, fillets leaving the face or `B`); a fillet face round it meets it along the fillet's arc. The
+  reader now also looks for a blend's selection under `0D383DB2` where none hangs under the feature itself.
+* 5360 (the Pins variant) `Fillet - Contacts` has a set (`4A557CE2`) whose selection names no feature back (every
+  set read so far named its feature), so it was not taken as the fillet's own; it is taken now where its selections
+  name no other blend. Its one recipe is a bounded face with one face round it: the end cap `2 [338]` of a round pin
+  and its side `5 [338]`, the closed rim between them.
+* 5998 then stops at `Chamfer7` (five edges of a thin wall's round ends and fillet faces `[386]` whose stored
+  cylinders lie at the other end of the wall: the recipe pairs are not understood).
+
+### An end blob that is both an earlier state and a finished body (5360)
+* With the fillet read, the Pins variant of 5360 stopped at the end bodies: the stored end bodies lacked the housing.
+  Its housing (174.9762 mm3) is not changed after the step where it was the model's only body, so its component's
+  blob matched that state and was left out as a move snapshot (section 37). A blob that is also, one for one, bodies
+  of the finished model now stays among the end bodies; the root's snapshot (taken before `Fillet - Magnets`
+  rounded a magnet, 25.5176 against 25.5081 mm3) still goes. This keeps more blobs to check against the finished
+  bodies, never fewer. 5360's Pins variant comes in as history.
+
+### Not converted
+* 2278 `Fillet1` (16 vertical edges of two pockets, r 3 mm) and 3777 `Fillet4` (two arcs of a disc's rim, r 2.5 mm):
+  OCCT's blend and the corner fallback fail. In 2278 a convex and a concave corner 6 mm apart (x 115.5 and 121.5 mm
+  at z = 20 mm) are both rounded by 3 mm, which uses up the side face between them; not examined further.
+* 2315 `Fillet3` (r 1 mm on the tops of posts): Fusion's picks are quarter arcs about centres 4 mm from the model's
+  half circles (the model's posts are rounded on the other side), likely the regions of `Extrude12`; not examined.
+
+### Result
+* adafruit-next: 112 of 150 as history (67 and the Pins variant of 5360 gained; none lost; 110 before).
+  adafruit-more: 132 of 150 (unchanged, none lost). adafruit: 13 of 18 (unchanged, none lost).
+* First blockers now: 770 the unnamed `Fillet3`'s import (the model's lower body has no rim at x 9 mm); 6118 the step
+  check (a 2477.0412 mm3 stored solid); 6252 `Extrude6` (layout); 5998 `Chamfer7`; 2278 and 3777 OCCT's fillet;
+  2315 `Fillet3` (picks on quarter arcs the model does not have).
