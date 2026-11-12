@@ -2390,3 +2390,101 @@ Readers: `fusion_tree/naming.rs` (edge midpoints), `feature.rs` (blend sets); th
 * First blockers now: 770 the unnamed `Fillet3`'s import (the model's lower body has no rim at x 9 mm); 6118 the step
   check (a 2477.0412 mm3 stored solid); 6252 `Extrude6` (layout); 5998 `Chamfer7`; 2278 and 3777 OCCT's fillet;
   2315 `Fillet3` (picks on quarter arcs the model does not have).
+
+## 42. Round 24 R: the new set's extrude layouts, profile loops, revolve axes and a mirrored sweep (2026-11-12)
+
+The adafruit-next set (150 designs the reader was never tuned on, 110 as history in its first run) left reader gaps
+in extrude layouts, profile regions, revolve axes and sweeps. Decoded from the samples' bytes only.
+
+### Extrude enum block: a second flag of 0
+* The block is `u32 op, u32 extent, u32 kind, u8, u8 01`, then a `u32` start kind (0 profile plane, 1 offset,
+  2 from an object; section 7). In three records with a `ProfileOffset` (2530's `Extrude2` and `Extrude3`, 4632's
+  record 5067 in adafruit-more) the second flag byte is `00`, the start kind 1 or 2. Over the three adafruit sets:
+  3889 records `00 01 | 0`, 34 `01 01 | 0`, 42 `00 01 | 1`, 133 `00 01 | 2`, 6 `01 01 | 2`, and these 3 `00 00 | 1..2`.
+  The reader takes a `00` second flag when a start kind 1 or 2 follows. (Both designs stop later: 2530's extrudes
+  select open sketch curves, which make surfaces that a Thicken uses; 4632's selects a face.)
+
+### Symmetric extrudes: the measure further on, and none for through-all
+* 817's `Extrude2` and `Extrude3` (class version 388, typed references, distances `( 4.2 / 2 ) * 1 mm` and
+  `( 4.7 / 2 ) * 1 mm`) hold the measure (`02`: each side's) 236 bytes after the direction, past five typed
+  references; the reader looked 200 bytes far and now looks 320. The chamfer `Chamfer1` of `Extrude3` sits at
+  z = +-2.35 mm, so each side's 2.35 mm is right.
+* 1264's `Extrude2` and `Extrude3` are symmetric and through all (kind 0, no `AlongDistance`): the record has no
+  measure (24 zero bytes, then the selection list), and none is needed. The reach is taken from the stored bodies as
+  for one-sided through-all cuts, and the whole length is twice the farther reach.
+
+### Profile loops
+* **Construction-flagged curves in a loop.** Of the 534 lines of the 396-byte layout whose construction byte (section
+  18) is 1, eleven are named by a profile loop of their sketch (2895's `Extrude4`, 3010's board, 817, 4128). Read as
+  construction, the loop named an unknown curve or did not close. A flagged curve that a loop of its sketch names
+  is now a profile curve (the loops are read only for sketches that have a flagged curve).
+* **Slits.** A hole loop of one whole open curve (3010: the line between two mounting holes, inside the outline)
+  bounds no area and is left out. A hole loop of closed curves joined by open pieces that end on them (the two
+  r = 2.9 mm circles and the middle piece of that line) is those circles as holes.
+* **A curve listed in all its pieces.** 4300's board outline lists a line and an arc both as pieces 1/2 and 2/2:
+  they overrun each other by 1.9 um where they meet (each one's end lies on the other), so Fusion cuts each in two
+  and walks both pieces. The pieces could not be cut out; a curve whose pieces cannot be cut out but whose every
+  piece the loop lists now stands whole, once. (Only then: 2348's board lists all six pieces of its left edge, which
+  other lines lying on it cut, and the whole edge would overlap them.)
+* **Ends that Fusion joins.** In the same outline an arc's end and the next line's start are 2.8e-6 mm apart (two
+  sketch points), and the overrunning line and arc above leave a 1.9 um overlap; the model's sketch merges ends only
+  within 1e-6 mm, so the board had no region. The tree's sketch now maps points less than 1e-6 cm apart onto one
+  point, and maps a line's end that lies on an arc's circle within 1e-3 cm of the arc's end (the arc's end lying on
+  the line) onto that end.
+
+### Chamfers of a left and a right distance
+* 2895's `Chamfer2` names `leftDistance` 2 mm and `rightDistance` 3 mm (older records; newer ones `Distance 1` and
+  `Distance 2`, section 30); it was read as a 2 mm chamfer. It now takes the two-distance path. Its reference face is
+  decided from the stored faces as in section 30, but `Fillet2` later rounds the 2 mm line across the top, so only the
+  3 mm line down the side remains: the stored faces show one of the two lines of one assignment and neither of the
+  other, which now decides it.
+
+### Revolve axes
+* **A construction line.** 1313's `Revolve1` names line `prim 200` of its sketch, a construction line (dropped from the
+  sketch's curves). The axis is now given by its place (origin and direction) when the line is construction.
+* **A cylindrical face.** 1054's `Revolve1` selects (`2CA5A1CD` -> `5662F619` -> `7ACC2A03`) a face recipe, generator
+  `3` of `Extrude1`, a cylinder; no sketch curve and no origin axis. The axis is the stored cylinder's axis (a whole
+  turn, so its sense does not matter).
+
+### A mirror of a sweep
+* 3923's `Mirror1` mirrors `Sweep1`, a sweep that made a new body. Gusset builds mirrored features again reflected,
+  which sweeps are not; a mirror of one new-body sweep is now a mirrored copy of its body (no merge). 1119 mirrors a
+  sweep together with a cut that cuts it and a body of its own (`Mirror1`: `Extrude3`, `Sweep1`; `Mirror2`: the
+  sweep, `Mirror1` and the cut), which this does not cover.
+
+### Profile pieces: a curve that ends on another
+* 471's ring segments: two lines run from an inner circle (r 10.65 mm) out to an outer one, and each circle's
+  piece between them is a loop piece. The lines end on the true circles; the inner circle's inscribed polyline
+  lies inside its circle, so a line from outside never meets it and the circle was not cut there. As a last
+  resort the open curves of the loop that neither cross nor touch a curve now cut it where they end on it (within
+  its chords' sag). 471 then stops at `Chamfer1`, a chamfer of a left and a right distance on an edge whose face
+  is not planar.
+
+### Where the reader now reads further but the design stops
+* 817: `Fillet3` picks the edge at (3.4, 15.9, 0) mm, where the stored fillet runs along the whole side of
+  `Extrude2`'s tab (z -2.1..2.1); the rebuilt model has two edges there, split at z = 0 by `Extrude1`'s bottom
+  face (a convex and a concave one on one line). Edge resolution, not the extrudes.
+* 1054: `OffsetFaces1` (-0.1 mm on `Extrude5`'s cylinder, r 1.5 mm) does not build here ("offset produced no
+  result"); the revolve about the cylinder's axis builds.
+* 1313: `Extrude1`'s region is bounded by four B-spline pieces that cut one another near the corners (each is
+  piece 2/3); the model's sketch does not form that region.
+
+### Not reached
+* 4222's `Extrude1 (2)`: a loop names curves `148` and `142` (pieces 2/3), which no record of the file holds; the
+  sketch was changed after the profile was computed.
+* 1833's `Extrude2`: the loop lists the rectangle's bottom twice (curve `556` whole and `543` piece 2/3), its two
+  sides in lower pieces (1/2, 2/2) and no top; nothing in the sketch cuts the sides. The profile names a curve the
+  sketch no longer has.
+* 6002's `Sweep1` runs along three body edges (a `5662F619` edge selection, not sketch curves); the design has a dozen
+  more blockers (thin extrudes of wall location 1, unresolved fillet edges, a `MoveFace`).
+* 2530: its extrudes of open curves make surfaces for a `Thicken`.
+* 1264: `Extrude8` is a thin extrude of wall location 1 (section 33, not confirmed) whose curves are not one open
+  chain; Base Feature copies follow.
+
+### Result
+* adafruit-next: 114 of 150 as history (110 before; 2895, 3010, 3923 and 4300 gained; none lost). adafruit-more:
+  132 of 150 (unchanged, none lost). adafruit: 13 of 18 (unchanged, none lost).
+* First blockers of the round's designs now: 817 `Fillet3` (edge pick), 1054 `OffsetFaces1` (does not build),
+  1313 `Extrude1` (B-spline region), 1119 `Mirror1` (a sweep mirrored with a cut), 1264 `Extrude8` (thin), 1833 and
+  4222 (profiles that name curves the sketch no longer has), 2530 (open-curve extrudes), 6002 `Sweep1` (body-edge
+  path).
