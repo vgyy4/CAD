@@ -11,6 +11,7 @@
 
 use super::Ctx;
 use super::geom::{self, V3, cross, mm, round9, unit};
+use super::naming;
 use super::sketch;
 use super::stream::{self, ref_ids, ref_lists};
 use crate::cover;
@@ -338,4 +339,69 @@ fn section_kind(d: &stream::Design, rec: &[u8]) -> Option<Section> {
         }
         _ => None,
     }
+}
+
+/// An extrude whose profile is an end face of a loft (5998's `Extrude7 (2)`: the loft's top
+/// circle, 0.4 mm on with a -45 deg taper): the loft's section that lies on that face's plane,
+/// as the stored bodies hold it. Nothing changes where the face is not one such end.
+pub(super) fn profile_of_a_loft_cap(cx: &mut Ctx, fid: u64, j: &mut Map<String, Value>, feats: &[Value]) {
+    if !j.contains_key("profile_note") || !j.get("sketch").is_some_and(Value::is_null) || j.contains_key("start") {
+        return;
+    }
+    let d = cx.d;
+    let faces: Vec<Vec<naming::FaceName>> = cx
+        .edge_recipes_of(fid)
+        .into_iter()
+        .filter_map(|r| match naming::recipe(d, r) {
+            (Some(naming::RecipeKind::BoundedFace | naming::RecipeKind::Face), Some(names)) => Some(names),
+            _ => None,
+        })
+        .collect();
+    let [names] = faces.as_slice() else { return };
+    let Some([(g, ops)]) = names.first().map(Vec::as_slice) else { return };
+    let [op] = ops.as_slice() else { return };
+    let Some(x) = u64::try_from(*op).ok().and_then(|o| cx.opmap.get(&o).copied()) else { return };
+    if !d.is(x, LOFT) {
+        return;
+    }
+    let Some(loft) = feats.iter().find(|f| {
+        f.get("type").and_then(Value::as_str) == Some("loft") && f.get("source_id").and_then(Value::as_u64) == Some(x)
+    }) else {
+        return;
+    };
+    let (Some(sketches), Some(points)) =
+        (loft.get("sketches").and_then(Value::as_array), loft.get("section_points").and_then(Value::as_array))
+    else {
+        return;
+    };
+    let (g, ops) = (g.clone(), ops.clone());
+    let Some(naming::FaceG::Plane { n, p, .. }) = cx.face(&g, &ops) else { return };
+    let v3 = |v: Option<&Value>| -> Option<V3> {
+        let a = v?.as_array()?;
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+    };
+    // The sections whose plane is the face's (mm in the tree, cm in the face).
+    let on: Vec<(&Value, &Value)> = sketches
+        .iter()
+        .zip(points)
+        .filter(|(s, _)| {
+            let Some(sk) = feats
+                .iter()
+                .find(|f| f.get("type").and_then(Value::as_str) == Some("sketch") && f.get("name") == Some(*s))
+            else {
+                return false;
+            };
+            let pl = sk.get("plane");
+            let at = |k: &str| v3(pl.and_then(|p| p.get(k)));
+            let (Some(o), Some(xa), Some(ya)) = (at("origin"), at("x_axis"), at("y_axis")) else { return false };
+            let z = cross(xa, ya);
+            let off = geom::dot(z, geom::sub(p.map(mm), o));
+            (geom::dot(z, n).abs() - 1.0).abs() < 1e-9 && off.abs() < 1e-6
+        })
+        .collect();
+    let [(sketch, point)] = on.as_slice() else { return };
+    j.remove("profile_note");
+    j.insert("sketch".into(), (*sketch).clone());
+    j.insert("profiles".into(), json!([{ "point": point }]));
+    j.insert("profile_from".into(), "the end face of a loft: the loft's section on that face's plane".into());
 }
