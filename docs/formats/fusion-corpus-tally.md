@@ -363,3 +363,11 @@ Round 23 P (a procedural surface's own approximation, rolling-ball blends round 
 its distance, threads on holes the stored faces place, concave-first fillets, offset picks by body link):
 adafruit-more 133 of 150 as history (1145 added; none lost), adafruit 13 of 18, adafruit-next 110 of 150 (none lost).
 3350 stops at OffsetFaces1 (OCCT's offset of the threaded rod), 3722 at its coil, 916 at Fillet1 (section 40).
+
+## Re-run after round 24 (2026-11-12)
+
+Rounds 23 P (stored blends on procedural supports, extrude sides, threads on holes), 24 Q (blend edges of the new
+set), R (extrude layouts, profile loops, revolve axes, a mirrored sweep) and S (box primitives that join or cut,
+body moves of several bodies, body copies), each verified on a clean copy: adafruit-more 133 of 150 (1145 added),
+adafruit 13 of 18, adafruit-next 117 of 150 (67, 5360 Pins, 2831, 2895, 3010, 3923, 4300 added). None lost on any
+set. Sections 40-43 list the new first blockers of the designs still left.
