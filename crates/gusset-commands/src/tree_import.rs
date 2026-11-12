@@ -529,8 +529,14 @@ fn loop_points(edges: &[gusset_kernel::ProfileEdge]) -> Vec<[f64; 2]> {
                 if !ccw && sw >= 0.0 {
                     sw -= std::f64::consts::TAU;
                 }
-                for i in 0..16 {
-                    let t = a0 + sw * f64::from(i) / 16.0;
+                // At least 16 chords, and at most 3.75 degrees each: a board outline that is a
+                // circle less a notch, one arc of 343 degrees, lay up to 0.44 mm outside its 16
+                // chords, and a pick in the 0.5 mm between it and a hole near the rim fell
+                // outside the region (3000's Extrude1).
+                let turns = sw.abs() / std::f64::consts::TAU * 96.0;
+                let n = (16..=96u32).find(|k| f64::from(*k) >= turns).unwrap_or(96);
+                for i in 0..n {
+                    let t = a0 + sw * f64::from(i) / f64::from(n);
                     out.push([center[0] + r * libm::cos(t), center[1] + r * libm::sin(t)]);
                 }
             }
