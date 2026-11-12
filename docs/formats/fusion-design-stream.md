@@ -2060,6 +2060,77 @@ Read from the end bodies of 1145's and 3350's history blobs (`.smbh`; the `.smb`
   (unchanged, none lost).
 * First blocker of the four: 5981 `Chamfer2` (negative generator `-1`, not decoded); 5358, 5360 and 610 pass.
 
+## 38. Round 23 N: Split Body, the shell of a whole body, mirror planes on faces (2026-11-12)
+Reader: `split_json`, `mirror_face_plane` and the whole-body branch of `shell_json` in `fusion_tree/json.rs`;
+importer: `split` and `shell` in `gusset-commands/src/tree_import/v2.rs`; document: `split` (ADR 0004 amendment);
+kernel: `gs_shell` with no opened face.
+
+### Split Body `65CA3206` (3651)
+* 3651 Split1 (component `FPC-50pin v1`): the record holds `u32 1` + a `2CA5A1CD` selection of the tool (here
+  a `5A1BF548` -> `CC54ECAD` construction plane, WorkPlane2: origin (1.525, 0.11, 0.09) cm, x (1, 0, 0),
+  y (0, 0, -1), so the plane y = 1.1 mm), `u32 1` + the one `D26351F0` body link it makes (its creator is the
+  split; a `D3937028` holder follows it), `u32 1` + the selection of the body it splits (`9716F783` -> the link
+  of `Extrude1 (3)`, the connector's base, x 0.6..29.9, y 0..5.75 mm after its cuts), then the four input refs
+  (tool selection, plane, body selection, body recipe). Section 29's order (body first) was from another
+  record version; the reader goes by the classes, not the order.
+* One new link and a plane that crosses the body (y 0..5.75 across y = 1.1): the selected body keeps its own
+  link and the split makes one more body. The model now has both: 150.801 mm3 (y 1.1..5.75) and 58.014 mm3
+  (y 0..1.1), 208.815 mm3 in all, the body's volume before the split.
+* Gusset had no operation for it. The document language now has `split <Name> (plane: <Plane>, [body: <B>])`
+  (ADR 0004 amendment): the kernel cuts and intersects the body with a block on the plane; the part on the
+  side the plane's normal points to becomes the body `<Name>`, the rest stays the body. The tree's `split`
+  names the body, the plane (placed like a mirror plane) and `creates_bodies: 1`; later features that name
+  the split's body reach the new body.
+* Not confirmed by the stored bodies: no stored solid of 3651 holds either piece or the whole after the
+  connector's cuts (its blob holds Extrude1 (3) at 274.5 mm3 and the cut tools), so which piece keeps the old
+  link is not known. Nothing in the design names either piece afterwards. A split that makes more than one
+  new link (324: two), or whose tool is a face, is refused.
+
+### A mirror plane that is a face (the 2x12 header part: 3651, 3900, 4200, 4242, 4400)
+* With the split read, 3651 still stopped at the box check (the features reached z = -4.0 mm, the stored
+  solids -3.7). The header part's `Mirror1` has no construction plane: its plane holder (`C444E6AD`) selects a
+  face (`2CA5A1CD` -> `5662F619` -> face recipe `6 [484]`, Extrude1's side x = 0). The reader took the first
+  `CC54ECAD` anywhere below the record, the component's XY plane, and mirrored in z = 0. The stored state of
+  the pin pair (48.6155 mm3, x -2.54..2.54, y 0..2.54, z 0..4) shows the plane x = 0; the volume is the same
+  either way, so only the box saw it. The face's plane (`Ctx::face`) is now the mirror plane where the holder
+  selects one planar face; the header (583.3856 mm3) then lies at x -2.54..2.54, y -15.24..15.24, z 0..4, as
+  stored.
+* **3651** comes in as history: 123 stored solids are states of the rebuilt model and 51 are cut tools.
+
+### Shell of a whole body (4632)
+* `Shell1` selects a body (`9716F783`) and no face. The shim's thick solid with no removed face gives OCCT's
+  offset solid only; `gs_shell` now builds the hollow solid: the body's own skin with the offset skin as a
+  closed void (thickness < 0: the offset skin outside, the body's skin the void), each skin turned to face out
+  or in by the sign of its own volume. The body's faces keep their names, the offset faces are
+  `<shell>/inner(<face>)`. Golden tests: `shell_with_no_opened_face_is_a_hollow_solid` (30 x 20 x 10 box, wall
+  2 mm: 3504 mm3; outward: 34 x 24 x 14 - 6000) and `shell_of_a_whole_body_is_hollow` (through the document).
+* The reader writes the shell with `body` and `faces: []`. 4632 then reads past Shell1 and Split1 (a split of
+  `Extrude1` by the origin plane XZ) but stops reading at `Extrude11`, so neither is yet confirmed by a
+  rebuild of 4632's stored states: an extrude whose profile is a sketch curve
+  (`2CA5A1CD` -> `5A1BF548`, no `4BD53E5A`; parameters `AlongDistance` 5 mm, `TaperAngle`, `ProfileOffset`,
+  extent to a face `5662F619`), i.e. a surface extrude of an open curve; then `Thicken1` (`BCE0AD0E`, a body
+  selection of Extrude11's surface and one thickness holder) and `C-Pattern1`, 12 copies of both about the fan
+  axis. Each is a feature the tree does not write yet (surface extrude to a face, thicken, a pattern of a
+  surface feature); 4632 is several features away.
+
+### ACIS binary tag `0x17` (3502)
+* 3502's derived bodies (Derived Base Feature, the display's glass, polarizers and flex) carry a
+  `FusionDeriveSrcEntId` attribute whose value is tag `17` followed by 8 bytes (`17 38 00 .. 00`, then the
+  record terminator `11`): a 64-bit integer. The SAB reader refused the blobs ("unknown binary tag 0x17"); it
+  now reads the value as an integer (test `a_64_bit_integer_tag_reads_as_an_integer`).
+* With the bends left out (a local experiment only), the step check then reaches the flex: one stored solid of
+  5.077285 mm3 (x 0..9.47, y 0..0.05, z -14.63..0 mm, a 0.05 mm sheet in the XZ plane) is not a state of the
+  model; the derived flex body itself is 5.0808 mm3. The bends (`BendRadius` 0.45 mm, `BendAngle` -90 deg,
+  `Thickness` 0.05 mm) change the volume by -0.0035 mm3, which with a neutral layer at K x t gives
+  w (0.5 - K) = -0.45 mm for the bent width w: the K factor and where the bend zone lies against the line are
+  not read from the record yet. A bend is a kernel operation of its own; 3502 stays at Bend1.
+
+### Result
+* adafruit-more: 131 of 150 as history (3651 gained, none lost; 130 before). adafruit: 13 of 18 (unchanged, none
+  lost).
+* First blockers: 3651 passes; 3502 `Bend1` (a sheet-metal bend: not converted); 4632 `Extrude11` (a surface
+  extrude of a sketch curve to a face, then `Thicken1` and its circular pattern).
+
 ## 39. Round 23 O: a draft of a slanted face, Base Feature bodies from the PM blob (2026-11-12)
 
 ### A draft of a face at a slant to the pull (258)
