@@ -459,6 +459,192 @@ fn own_approximation(def: &Rec, at: usize, u_fastest: bool) -> Option<Result<Bs3
     found
 }
 
+/// The point at `t` of a B-spline given by flat knots and homogeneous points (de Boor).
+fn de_boor(p: usize, flat: &[f64], hom: &[[f64; 4]], t: f64) -> Option<[f64; 4]> {
+    let n = hom.len();
+    if flat.len() != n + p + 1 || n <= p {
+        return None;
+    }
+    let t = t.clamp(*flat.get(p)?, *flat.get(n)?);
+    // The span: the last non-empty [flat[k], flat[k + 1]) that starts at or before t.
+    let k = (p..n).rev().find(|k| flat.get(*k).zip(flat.get(k + 1)).is_some_and(|(a, b)| *a <= t && a < b))?;
+    let mut d: Vec<[f64; 4]> = hom.get(k - p..=k)?.to_vec();
+    for r in 1..=p {
+        for j in (r..=p).rev() {
+            let i = j + k - p;
+            let (a0, a1) = (*flat.get(i)?, *flat.get(i + p + 1 - r)?);
+            let alpha = if a1 > a0 { (t - a0) / (a1 - a0) } else { 0.0 };
+            let (lo, hi) = (*d.get(j - 1)?, *d.get(j)?);
+            let mut q = [0.0; 4];
+            for ((q, x0), x1) in q.iter_mut().zip(lo).zip(hi) {
+                *q = (1.0 - alpha) * x0 + alpha * x1;
+            }
+            *d.get_mut(j)? = q;
+        }
+    }
+    d.get(p).copied()
+}
+
+fn homogeneous(p: V3, w: f64) -> [f64; 4] {
+    [p[0] * w, p[1] * w, p[2] * w, w]
+}
+
+fn cartesian(h: [f64; 4]) -> Option<V3> {
+    (h[3] > 0.0).then(|| [h[0] / h[3], h[1] / h[3], h[2] / h[3]])
+}
+
+/// A curve's point at `t`.
+fn bs3_point(b: &Bs3, t: f64) -> Option<V3> {
+    let hom: Vec<[f64; 4]> = b
+        .points
+        .iter()
+        .enumerate()
+        .map(|(i, p)| homogeneous(*p, b.weights.as_ref().and_then(|w| w.get(i).copied()).unwrap_or(1.0)))
+        .collect();
+    cartesian(de_boor(b.degree, &flat_knots(b), &hom, t)?)
+}
+
+/// A surface's point at `(u, v)`.
+fn bs3_surface_point(s: &Bs3Surface, u: f64, v: f64) -> Option<V3> {
+    let flat = |knots: &[f64], mults: &[usize]| -> Vec<f64> {
+        knots.iter().zip(mults).flat_map(|(k, m)| std::iter::repeat_n(*k, *m)).collect()
+    };
+    let [ku, kv] = &s.knots;
+    let [mu, mv] = &s.mults;
+    let (fu, fv) = (flat(ku, mu), flat(kv, mv));
+    let mut column = Vec::with_capacity(s.points.len());
+    for (iu, row) in s.points.iter().enumerate() {
+        let w = |iv: usize| s.weights.as_ref().and_then(|w| w.get(iu)?.get(iv).copied()).unwrap_or(1.0);
+        let hom: Vec<[f64; 4]> = row.iter().enumerate().map(|(iv, p)| homogeneous(*p, w(iv))).collect();
+        column.push(de_boor(s.degree[1], &fv, &hom, v)?);
+    }
+    cartesian(de_boor(s.degree[0], &fu, &column, u)?)
+}
+
+fn sub(a: V3, b: V3) -> V3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+/// `a + k b`.
+fn axpy(a: V3, k: f64, b: V3) -> V3 {
+    [a[0] + k * b[0], a[1] + k * b[1], a[2] + k * b[2]]
+}
+fn dot(a: V3, b: V3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn cross(a: V3, b: V3) -> V3 {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+/// A torus as a rolling-ball blend can be one: centre, axis, the direction to the centre
+/// circle's start (the blend's own seam), major and minor radius, and whether the blend's
+/// approximation faces into the tube (a fillet) rather than out of it.
+struct BlendTorus {
+    centre: V3,
+    axis: V3,
+    start: V3,
+    major: f64,
+    minor: f64,
+    inward: bool,
+}
+
+/// A constant-radius rolling-ball blend (`rb_blend_spl_sur`) whose ball centre runs round a
+/// circle is a piece of a torus: the envelope of one sphere moved round a circle. Fusion keeps
+/// such blends procedural where a support is itself procedural (1145: the fillet between a
+/// cylinder and a revolved spline about the same axis), with a coarse approximation (cubic, three
+/// spans across: 3.4 um off the torus, 0.05 mm3 of the body). The ball centre is the blend's
+/// defining curve (`intcurve { off_int_cur ... }` in the blend's own block); it must lie on one
+/// circle, the approximation's four corners at one distance from it and its other points near
+/// that distance. `None` where any of it fails: the approximation is used.
+fn blend_torus(def: &Rec, at: usize, approx: &Bs3Surface) -> Option<BlendTorus> {
+    // The defining curve: the first `intcurve { <x>_int_cur ... }` of the blend's own block.
+    let mut depth = 0usize;
+    let mut spine = None;
+    for i in at + 2..def.f.len() {
+        match def.word(i) {
+            Some("{") => depth += 1,
+            Some("}") if depth == 0 => break,
+            Some("}") => depth -= 1,
+            Some("intcurve") if depth == 0 => {
+                let open = (i + 1..i + 3).find(|j| def.word(*j) == Some("{"))?;
+                if def.word(open + 1).is_some_and(|w| w.ends_with("_int_cur")) {
+                    spine = bs3_curve(def, open + 2).ok();
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let spine = spine?;
+    let (t0, t1) = (*spine.knots.first()?, *spine.knots.last()?);
+    let at_t = |f: f64| bs3_point(&spine, t0 + (t1 - t0) * f);
+    let (a, b, c) = (at_t(0.0)?, at_t(1.0 / 3.0)?, at_t(2.0 / 3.0)?);
+    // The circle through three points.
+    let (ab, ac) = (sub(b, a), sub(c, a));
+    let n = cross(ab, ac);
+    let nn = dot(n, n);
+    if nn <= 1e-300 {
+        return None;
+    }
+    let (s1, s2) = (cross(n, ab), cross(ac, n));
+    let k = 0.5 / nn;
+    let o = axpy(axpy(a, k * dot(ac, ac), s1), k * dot(ab, ab), s2);
+    let axis = unit(n)?;
+    let major = len(sub(a, o));
+    let on_circle = |p: V3| {
+        let d = sub(p, o);
+        let h = dot(d, axis);
+        let rho = len(axpy(d, -h, axis));
+        (rho, h)
+    };
+    let tol = 1e-5 * major.max(1.0);
+    for i in 0..=16 {
+        let (rho, h) = on_circle(at_t(f64::from(i) / 16.0)?);
+        if (rho - major).abs() > tol || h.abs() > tol {
+            return None;
+        }
+    }
+    let tube = |p: V3| {
+        let (rho, h) = on_circle(p);
+        libm::hypot(rho - major, h)
+    };
+    let range = |i: usize| -> Option<(f64, f64)> {
+        let ks = approx.knots.get(i)?;
+        Some((*ks.first()?, *ks.last()?))
+    };
+    let ((u0, u1), (v0, v1)) = (range(0)?, range(1)?);
+    let corners = [(u0, v0), (u0, v1), (u1, v0), (u1, v1)];
+    let ds: Vec<f64> =
+        corners.iter().map(|(u, v)| bs3_surface_point(approx, *u, *v).map(tube)).collect::<Option<_>>()?;
+    let minor = *ds.first()?;
+    if minor <= tol || ds.iter().any(|d| (d - minor).abs() > 1e-5 * minor.max(major)) {
+        return None;
+    }
+    for i in 0..=4 {
+        for j in 0..=8 {
+            let (u, v) = (u0 + (u1 - u0) * f64::from(i) / 4.0, v0 + (v1 - v0) * f64::from(j) / 8.0);
+            if (tube(bs3_surface_point(approx, u, v)?) - minor).abs() > 0.02 * minor {
+                return None;
+            }
+        }
+    }
+    // Which way the approximation faces: its normal at the middle against the tube's outward one.
+    let (um, vm) = ((u0 + u1) / 2.0, (v0 + v1) / 2.0);
+    let (du, dv) = ((u1 - u0) * 1e-4, (v1 - v0) * 1e-4);
+    let p = bs3_surface_point(approx, um, vm)?;
+    let su = sub(bs3_surface_point(approx, um + du, vm)?, bs3_surface_point(approx, um - du, vm)?);
+    let sv = sub(bs3_surface_point(approx, um, vm + dv)?, bs3_surface_point(approx, um, vm - dv)?);
+    let d = sub(p, o);
+    let h = dot(d, axis);
+    let radial = unit(axpy(d, -h, axis))?;
+    let centre_at = axpy(o, major, radial);
+    let outward = sub(p, centre_at);
+    let facing = dot(cross(su, sv), outward);
+    if facing.abs() <= 1e-300 {
+        return None;
+    }
+    Some(BlendTorus { centre: o, axis, start: unit(sub(a, o))?, major, minor, inward: facing < 0.0 })
+}
+
 /// A helical ruled surface (`spline-surface ... { helix_spl_line [version] F u0 F u1 F t0 F t1
 /// F t0 F t1 centre major minor pitch taper axis null_surface null_surface nullbs nullbs
 /// rise twist climb }`, a thread's flank): the helix of [`helix`] with its radius vectors scaled
@@ -1128,6 +1314,18 @@ impl<'a> Writer<'a> {
                             "ACIS spline surfaces of kind '{name}' without a B-spline approximation are not read"
                         ))
                     })??;
+                    if name == "rb_blend_spl_sur"
+                        && let Some(t) = blend_torus(def, at, &b)
+                    {
+                        let pl = self.placement(t.centre, t.axis, t.start)?;
+                        let (big, small) = (self.xf.length(t.major), self.xf.length(t.minor));
+                        let v = (
+                            self.add(&format!("TOROIDAL_SURFACE('',#{pl},{},{})", real(big), real(small))),
+                            against != t.inward,
+                        );
+                        self.surfaces.insert(s, v);
+                        return Ok(v);
+                    }
                     let note = format!("'{name}' surfaces are read as their stored B-spline approximation");
                     if !self.warnings.contains(&note) {
                         self.warn(note);
@@ -1636,6 +1834,77 @@ mod surface_layout_tests {
         // A shared definition ends at its brace: what follows is another record's.
         let r = rec(&format!("{{ rot_spl_sur 1 }} {a}"));
         assert!(own_approximation(&r, 0, false).is_none());
+    }
+
+    /// A rational quadratic full circle (ACIS's curve layout): radius `rad` about z at height `z`.
+    fn circle_curve(rad: f64, z: f64) -> String {
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let pts =
+            [(1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (-1.0, 1.0), (-1.0, 0.0), (-1.0, -1.0), (0.0, -1.0), (1.0, -1.0)];
+        let mut s = String::from("nurbs 2 open 5 0 2 0.25 2 0.5 2 0.75 2 1 2");
+        for (i, (x, y)) in pts.iter().chain([(1.0, 0.0)].iter()).enumerate() {
+            let w = if i % 2 == 1 { h } else { 1.0 };
+            s += &format!(" {} {} {z} {w}", x * rad, y * rad);
+        }
+        s
+    }
+
+    /// A quarter of the tube of a torus (major `big`, minor `small`, about z): its outer upper
+    /// quarter, from the outer equator up, all round, at height `z0`; `flip` runs across the other way.
+    fn torus_patch(big: f64, small: f64, z0: f64, flip: bool) -> Bs3Surface {
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let mut profile = [(big + small, 0.0, 1.0), (big + small, small, h), (big, small, 1.0)];
+        if flip {
+            profile.reverse();
+        }
+        let ring =
+            [(1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (-1.0, 1.0), (-1.0, 0.0), (-1.0, -1.0), (0.0, -1.0), (1.0, -1.0)];
+        let ring: Vec<(f64, f64, f64)> = ring
+            .iter()
+            .chain([(1.0, 0.0)].iter())
+            .enumerate()
+            .map(|(i, (x, y))| (*x, *y, if i % 2 == 1 { h } else { 1.0 }))
+            .collect();
+        let points = profile
+            .iter()
+            .map(|(rho, z, _)| ring.iter().map(|(x, y, _)| [x * rho, y * rho, z + z0]).collect())
+            .collect();
+        let weights = profile.iter().map(|(_, _, wu)| ring.iter().map(|(_, _, wv)| wu * wv).collect()).collect();
+        Bs3Surface {
+            degree: [2, 2],
+            knots: [vec![0.0, 1.0], vec![0.0, 0.25, 0.5, 0.75, 1.0]],
+            mults: [vec![3, 3], vec![3, 2, 2, 2, 3]],
+            points,
+            weights: Some(weights),
+        }
+    }
+
+    #[test]
+    fn a_rolling_ball_blend_round_a_circle_is_a_torus() {
+        let r = rec(&format!(
+            "{{ rb_blend_spl_sur 1 intcurve T {{ off_int_cur 1 0 {} }} -0.5 -0.5 }}",
+            circle_curve(5.0, 2.0)
+        ));
+        let patch = torus_patch(5.0, 0.5, 2.0, false);
+        // The evaluator: the patch's middle is on the tube.
+        let p = bs3_surface_point(&patch, 0.5, 0.3).unwrap();
+        assert!((libm::hypot(libm::hypot(p[0], p[1]) - 5.0, p[2] - 2.0) - 0.5).abs() < 1e-12);
+        let t = blend_torus(&r, 0, &patch).unwrap();
+        assert!((t.major - 5.0).abs() < 1e-9 && (t.minor - 0.5).abs() < 1e-9, "{} {}", t.major, t.minor);
+        assert!(len(sub(t.centre, [0.0, 0.0, 2.0])) < 1e-9);
+        assert!((t.axis[2].abs() - 1.0).abs() < 1e-12);
+        assert!(len(sub(t.start, [1.0, 0.0, 0.0])) < 1e-9);
+        // Across the other way, the approximation faces the other way.
+        let flipped = blend_torus(&r, 0, &torus_patch(5.0, 0.5, 2.0, true)).unwrap();
+        assert_ne!(t.inward, flipped.inward);
+        // A blend whose ball centre does not run round its tube, or a spine that is no circle:
+        // the approximation stays.
+        assert!(blend_torus(&r, 0, &torus_patch(5.0, 0.8, 2.3, false)).is_none());
+        let oval = rec(&format!(
+            "{{ rb_blend_spl_sur 1 intcurve T {{ off_int_cur 1 0 {} }} }}",
+            circle_curve(5.0, 2.0).replacen(" 5 5 2 ", " 5 6 2 ", 1)
+        ));
+        assert!(blend_torus(&oval, 0, &patch).is_none());
     }
 
     #[test]
