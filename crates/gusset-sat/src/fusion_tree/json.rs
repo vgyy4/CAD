@@ -1538,7 +1538,24 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
     let g = g;
     let mut names: HashMap<u64, String> = HashMap::new();
     let mut comps: Vec<(u64, Option<String>, Vec<String>)> = Vec::new();
+    // The Base Feature of a body copy holds the copy from the copy's place in the timeline on
+    // (3221: Move1 moves the copy right after CopyPasteBodies1), not after every feature.
+    let copy_base = |m: u64| match moves.get(&m) {
+        Some(Ok(h)) if h.is_empty() => ref_ids(d, d.rec(m)).into_iter().find(|q| d.is(*q, "D7015B81")),
+        _ => None,
+    };
+    let copies: Vec<u64> = tl.iter().filter_map(|m| copy_base(*m)).collect();
+    let mut order: Vec<u64> = Vec::with_capacity(tl.len() + extra.len());
     for &fid in tl.iter().chain(extra.iter()) {
+        if copies.contains(&fid) {
+            continue;
+        }
+        order.push(fid);
+        if let Some(b) = copy_base(fid) {
+            order.push(b);
+        }
+    }
+    for &fid in &order {
         let (base, name0) = feature_name(d, fid);
         let class = d.cls(fid);
         let c8 = class.get(..8).unwrap_or("").to_string();
@@ -1576,6 +1593,8 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         }
         if let Some(r) = moves.get(&fid) {
             match r {
+                Ok(h) if h.is_empty() => skipped.push(json!({"name": name, "fusion_type": fusion_type,
+                    "source_id": fid, "reason": "copies a body: its Base Feature holds the copy"})),
                 Ok(_) => skipped.push(json!({"name": name, "fusion_type": fusion_type, "source_id": fid,
                     "reason": "moves a body to another component: the body is carried on"})),
                 Err(why) => feats.push(json!({"type": "unsupported", "fusion_type": fusion_type, "name": nm,

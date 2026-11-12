@@ -459,8 +459,10 @@ pub(super) fn carry_moved_bodies(d: &Design, g: &mut Graph) -> HashMap<u64, Resu
                     removes.len()
                 ));
             };
+            // A copy (CopyPasteBodies, 3221): no RemoveBody, the body stays where it was and the
+            // Base Feature holds the copy, a stored body of the tree like any Base Feature's.
             if removes.is_empty() {
-                return Err("it names a Base Feature and no RemoveBody (a copy, not a move)".to_string());
+                return Ok(Vec::new());
             }
             let mut made: Vec<u64> = g.creator.iter().filter(|(_, f)| **f == *base).map(|(l, _)| *l).collect();
             made.sort_unstable();
