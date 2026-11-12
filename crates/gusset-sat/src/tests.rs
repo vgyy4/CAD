@@ -72,6 +72,22 @@ fn the_binary_form_converts_like_the_text() {
 }
 
 #[test]
+fn a_64_bit_integer_tag_reads_as_an_integer() {
+    // Fusion's derived bodies write `17` and 8 bytes (an attribute's source entity id).
+    let text = box_sat(700, [10.0, 20.0, 30.0]);
+    let bin = to_binary(&text);
+    let int_minus_one = [&[0x04u8][..], &(-1i64).to_le_bytes()].concat();
+    let at = bin.windows(9).position(|w| w == int_minus_one.as_slice()).unwrap();
+    let mut wide = bin.clone();
+    if let Some(x) = wide.get_mut(at) {
+        *x = 0x17;
+    }
+    let a = to_step(&bin, "box", &Limits::default()).unwrap();
+    let b = to_step(&wide, "box", &Limits::default()).unwrap();
+    assert_eq!(a.step, b.step);
+}
+
+#[test]
 fn an_end_record_without_terminator_ends_the_file() {
     // Inventor writes the history section's end and the file's end as bare type names with
     // no record terminator, then other data (here: a tag the reader does not know).

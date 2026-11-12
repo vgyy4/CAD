@@ -273,6 +273,13 @@ fn parse_binary(b: &[u8], limits: &Limits) -> Result<Sat, SatError> {
             0x0a => cur.push(Tok::Word("T".into())),
             0x0b => cur.push(Tok::Word("I".into())),
             0x0c => cur.push(Tok::Ptr(rd.int()?)),
+            // A 64-bit integer (Fusion's derived bodies: the source entity id of a
+            // `FusionDeriveSrcEntId` attribute, `17` then 8 bytes, in BinaryFile8 blobs).
+            0x17 => {
+                let s = rd.take(8)?;
+                let v = i64::from_le_bytes(s.try_into().map_err(|_| bad("a short 64-bit integer".into()))?);
+                cur.push(Tok::Word(v.to_string()));
+            }
             0x0f => cur.push(Tok::Word("{".into())),
             0x10 => cur.push(Tok::Word("}".into())),
             0x13 | 0x14 => {
