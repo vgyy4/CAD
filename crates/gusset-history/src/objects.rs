@@ -1,7 +1,7 @@
 //! Content-addressed immutable objects: features, parameter tables, snapshots, blobs.
 
 use gusset_doc::drawing::{parse_drawing_object, print_drawing_object};
-use gusset_doc::text::{parse_feature_object, parse_params_object, print_feature_object, print_params_object};
+use gusset_doc::text::{parse_feature_object, parse_params_object, print_feature_object, print_params_object_with};
 use gusset_doc::{Document, Feature, ParseError};
 use gusset_units::LengthUnit;
 use std::collections::BTreeMap;
@@ -321,7 +321,7 @@ impl ObjectStore {
         let params = stage(
             ObjectKind::Params,
             &|| "the parameter table".into(),
-            print_params_object(&doc.params, &doc.configurations, &doc.appearances),
+            print_params_object_with(&doc.params, &doc.configurations, &doc.appearances, doc.pcb.as_ref()),
         )?;
         let mut features = Vec::with_capacity(doc.features.len());
         for f in &doc.features {
@@ -425,7 +425,7 @@ impl ObjectStore {
     /// Materializes the document of a snapshot.
     pub fn document(&self, snapshot: Hash) -> Result<Document, ObjectError> {
         let snap = self.snapshot(snapshot)?;
-        let gusset_doc::text::ParamsObject { params, configurations, appearances } =
+        let gusset_doc::text::ParamsObject { params, configurations, appearances, pcb } =
             parse_params_object(self.text(snap.params)?)
                 .map_err(|e| ObjectError::Corrupt { hash: snap.params, reason: e.to_string() })?;
         let features = snap.features.iter().map(|h| self.feature(*h)).collect::<Result<Vec<_>, _>>()?;
@@ -437,7 +437,7 @@ impl ObjectStore {
                     .map_err(|e| ObjectError::Corrupt { hash: *h, reason: e.to_string() })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Document { units: snap.units, params, configurations, features, drawings, appearances })
+        Ok(Document { units: snap.units, params, configurations, features, drawings, appearances, pcb })
     }
 
     /// Hashes of every object a snapshot references (including itself). Returns false
@@ -451,6 +451,17 @@ impl ObjectStore {
             return false;
         };
         out.insert(s.params);
+        // The open board's file and project (ADR 0047) live in the parameter object.
+        match self.text(s.params).map(parse_params_object) {
+            Ok(Ok(p)) => {
+                for h in p.pcb.iter().flat_map(|b| std::iter::once(&b.board).chain(&b.project)) {
+                    if let Some(h) = Hash::from_hex(h) {
+                        out.insert(h);
+                    }
+                }
+            }
+            _ => return false,
+        }
         out.extend(s.chunks.iter().copied());
         out.extend(s.drawings.iter().copied());
         out.extend(s.features.iter().copied());

@@ -16,6 +16,7 @@ configuration <Name> (set: [<param> = <expr>, ...])            # a named paramet
 sketch <Name> (<args>) { ... }
 extrude|revolve|sweep|loft|fillet|chamfer|hole|import <Name> (<args>)
 appearance <Body> (color: "#rrggbb", finish: plastic|metal|glass|rubber, faces: {"#rrggbb": [<face>, ...], ...}, texture: wood|brushed|carbon|speckle, texture_size: <n> mm)   # ADR 0045
+pcb (file: "<name>.kicad_pcb", board: "<hash>", project: "<hash>")   # ADR 0047, at most one
 ```
 
 - `appearance` sets how a body looks in the viewport and in path-traced renders; it changes
@@ -27,6 +28,9 @@ appearance <Body> (color: "#rrggbb", finish: plastic|metal|glass|rubber, faces: 
   body's own coordinates; `texture_size` (0.01 to 10000 mm, a literal in mm) scales it and is
   printed only when it differs from the texture's default (wood 6, brushed 2, carbon 3,
   speckle 1.5 mm).
+- `pcb` is the printed circuit board open in the project: the KiCad board file (and its
+  project file, optional) stored by hash. It changes no body; the `pcb.*` commands edit it,
+  each edit storing a new board, so undo and branches work on it like on features.
 
 - One statement per line. `#` starts a comment: a comment on its own line(s) before a
   statement becomes that statement's note, a trailing `# text` on a `param` its comment.

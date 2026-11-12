@@ -53,11 +53,60 @@ pub fn print(doc: &Document) -> String {
             print_appearance(&mut out, a);
         }
     }
+    if let Some(p) = &doc.pcb {
+        out.push('\n');
+        print_pcb(&mut out, p);
+    }
     for d in &doc.drawings {
         out.push('\n');
         crate::drawing::print_drawing(&mut out, d);
     }
     out
+}
+
+fn print_pcb(out: &mut String, p: &PcbBoard) {
+    let mut args = format!("file: {}, board: {}", quote(&p.file), quote(&p.board));
+    if let Some(h) = &p.project {
+        let _ = write!(args, ", project: {}", quote(h));
+    }
+    let _ = writeln!(out, "pcb ({args})");
+}
+
+/// A stored blob's hash: hex digits only.
+fn blob_hash(c: &mut Cursor<'_>, what: &str) -> Result<String, ParseError> {
+    let h = c.string()?;
+    if h.is_empty() || h.len() > 128 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(c.err(format!("{what} must be a stored blob's hash (hex digits)")));
+    }
+    Ok(h)
+}
+
+/// `pcb (file: "<name>", board: "<hash>", project: "<hash>")` (ADR 0047).
+fn parse_pcb(c: &mut Cursor<'_>) -> Result<PcbBoard, ParseError> {
+    let (mut file, mut board, mut project) = (None, None, None);
+    parse_args(c, |key, c| {
+        match key {
+            "file" => {
+                let f = c.string()?;
+                if f.chars().count() > 255 {
+                    return Err(c.err("the file name is longer than 255 characters"));
+                }
+                file = Some(f);
+            }
+            "board" => board = Some(blob_hash(c, "board")?),
+            "project" => project = Some(blob_hash(c, "project")?),
+            key => return Err(unknown_arg(c, "pcb", key, "file, board, project")),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    Ok(PcbBoard {
+        file: file.ok_or_else(|| missing(c, "pcb", "file"))?,
+        board: board.ok_or_else(|| missing(c, "pcb", "board"))?,
+        project,
+    })
 }
 
 fn print_appearance(out: &mut String, a: &Appearance) {
@@ -959,6 +1008,13 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     return Err(c.err("unexpected text after units"));
                 }
                 seen_units = true;
+                pending_note.clear();
+            }
+            "pcb" => {
+                if doc.pcb.is_some() {
+                    return Err(c.err("'pcb' appears twice"));
+                }
+                doc.pcb = Some(parse_pcb(&mut c)?);
                 pending_note.clear();
             }
             "appearance" => {
@@ -2799,11 +2855,24 @@ pub struct ParamsObject {
     pub configurations: Vec<Configuration>,
     /// Body appearances (ADR 0045).
     pub appearances: Vec<Appearance>,
+    /// The open board (ADR 0047).
+    pub pcb: Option<PcbBoard>,
 }
 
 /// Canonical text of a parameter table with the configurations and appearances (a history
 /// object).
 pub fn print_params_object(params: &[Param], configurations: &[Configuration], appearances: &[Appearance]) -> String {
+    print_params_object_with(params, configurations, appearances, None)
+}
+
+/// [`print_params_object`] with the open board (ADR 0047), which the history stores in
+/// the same object.
+pub fn print_params_object_with(
+    params: &[Param],
+    configurations: &[Configuration],
+    appearances: &[Appearance],
+    pcb: Option<&PcbBoard>,
+) -> String {
     let mut s = String::new();
     for p in params {
         print_param(&mut s, p);
@@ -2814,6 +2883,9 @@ pub fn print_params_object(params: &[Param], configurations: &[Configuration], a
     for a in appearances {
         print_appearance(&mut s, a);
     }
+    if let Some(p) = pcb {
+        print_pcb(&mut s, p);
+    }
     s
 }
 
@@ -2823,7 +2895,12 @@ pub fn parse_params_object(s: &str) -> Result<ParamsObject, ParseError> {
     if !doc.features.is_empty() {
         return Err(perr(1, "a parameter object must not contain features"));
     }
-    Ok(ParamsObject { params: doc.params, configurations: doc.configurations, appearances: doc.appearances })
+    Ok(ParamsObject {
+        params: doc.params,
+        configurations: doc.configurations,
+        appearances: doc.appearances,
+        pcb: doc.pcb,
+    })
 }
 
 /// Sheet-metal statements (ADR 0037).

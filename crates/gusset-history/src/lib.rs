@@ -452,6 +452,31 @@ mod tests {
     }
 
     #[test]
+    fn the_open_board_is_stored_compared_merged_and_kept() {
+        // ADR 0047: the board file is a blob named in the parameter object.
+        let mut store = ObjectStore::default();
+        let mut blob = |b: &[u8]| store.put(crate::objects::ObjectKind::Blob, b);
+        let (b1, b2, pro) = (blob(b"(kicad_pcb 1)"), blob(b"(kicad_pcb 2)"), blob(b"{}"));
+        let t = |board: Option<Hash>| {
+            let line = board.map(|h| format!("pcb (file: \"a.kicad_pcb\", board: \"{h}\", project: \"{pro}\")\n"));
+            Document::from_text(&format!("gusset 1\nunits mm\n\nparam w = 4 mm\n{}", line.unwrap_or_default())).unwrap()
+        };
+        let (base, ours, theirs) = (t(None), t(Some(b1)), t(Some(b2)));
+        assert_eq!(Document::from_text(&ours.to_text()).unwrap(), ours);
+        let h = store.put_document(&ours);
+        assert_eq!(store.document(h).unwrap(), ours);
+        let mut closure = std::collections::BTreeSet::new();
+        assert!(store.snapshot_closure(h, &mut closure));
+        assert!(closure.contains(&b1) && closure.contains(&pro) && !closure.contains(&b2));
+        let d = diff::diff_documents(&ours, &theirs);
+        assert!(matches!(&d.pcb[..], [ItemChange { change: Change::Modified { .. }, .. }]), "{d:?}");
+        assert_eq!(merge_documents(&base, &ours, &theirs, None).conflicts.len(), 1);
+        let m = merge_documents(&ours, &ours, &theirs, None);
+        assert!(m.conflicts.is_empty() && m.doc.pcb == theirs.pcb);
+        assert!(Document::from_text("gusset 1\npcb (file: \"a\", board: \"not hex\")\n").is_err());
+    }
+
+    #[test]
     fn appearances_are_stored_compared_and_merged() {
         // ADR 0045: per body, like configurations.
         let t = |extra: &str| Document::from_text(&format!("gusset 1\nunits mm\n\nparam w = 4 mm\n{extra}")).unwrap();

@@ -37,6 +37,8 @@ pub struct DocDiff {
     pub drawings: Vec<ItemChange>,
     /// Body appearances (ADR 0045), by body.
     pub appearances: Vec<ItemChange>,
+    /// The open board (ADR 0047): at most one entry, named by its file.
+    pub pcb: Vec<ItemChange>,
 }
 
 impl DocDiff {
@@ -47,6 +49,7 @@ impl DocDiff {
             && self.features.is_empty()
             && self.drawings.is_empty()
             && self.appearances.is_empty()
+            && self.pcb.is_empty()
     }
 }
 
@@ -114,6 +117,15 @@ pub fn diff_documents(a: &Document, b: &Document) -> DocDiff {
         if !ab.contains_key(x.body.as_str()) {
             d.appearances.push(ItemChange { name: x.body.clone(), change: Change::Removed });
         }
+    }
+    let board = |p: &gusset_doc::PcbBoard| format!("{} ({})", p.file, p.board.get(..12).unwrap_or(&p.board));
+    match (&a.pcb, &b.pcb) {
+        (None, Some(n)) => d.pcb.push(ItemChange { name: n.file.clone(), change: Change::Added }),
+        (Some(o), None) => d.pcb.push(ItemChange { name: o.file.clone(), change: Change::Removed }),
+        (Some(o), Some(n)) if o != n => {
+            d.pcb.push(ItemChange { name: n.file.clone(), change: Change::Modified { old: board(o), new: board(n) } })
+        }
+        _ => {}
     }
     let (da, db): (HashMap<_, _>, HashMap<_, _>) = (
         a.drawings.iter().map(|x| (x.name.as_str(), x)).collect(),

@@ -20,6 +20,21 @@ pub struct Document {
     pub drawings: Vec<crate::drawing::Drawing>,
     /// How bodies look (ADR 0045); they change no geometry.
     pub appearances: Vec<Appearance>,
+    /// The printed circuit board open in the document (ADR 0047); it changes no body.
+    pub pcb: Option<PcbBoard>,
+}
+
+/// A KiCad board kept in the project: `pcb (file: "main.kicad_pcb", board: "<hash>")`.
+/// The board file's bytes are a stored blob, so every edit is a new blob and undo goes
+/// back to the previous one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PcbBoard {
+    /// The file name it was opened from or is saved to (shown, never a path to read).
+    pub file: String,
+    /// Hash of the `.kicad_pcb` text blob.
+    pub board: String,
+    /// Hash of the KiCad project file (`.kicad_pro`, its net classes and rules), if read.
+    pub project: Option<String>,
 }
 
 /// A body's look: `appearance Extrude1 (color: "#8a9bb0", finish: metal)`.

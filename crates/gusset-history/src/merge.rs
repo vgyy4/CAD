@@ -293,7 +293,21 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
         }
         drawings.extend(r);
     }
-    Merged { doc: Document { units, params, configurations, features, drawings, appearances }, conflicts, from_theirs }
+    // The open board (ADR 0047): one item, the board file as a whole.
+    let show_p = |p: &Option<gusset_doc::PcbBoard>| p.as_ref().map(|b| format!("{} ({})", b.file, b.board));
+    let pcb = match pick(base.pcb.as_ref(), ours.pcb.as_ref(), theirs.pcb.as_ref()) {
+        Ok(r) => r,
+        Err(()) if resolve("pcb", "board", show_p(&ours.pcb), show_p(&theirs.pcb)) => theirs.pcb.clone(),
+        Err(()) => ours.pcb.clone(),
+    };
+    if pcb != ours.pcb {
+        from_theirs.push("pcb".into());
+    }
+    Merged {
+        doc: Document { units, params, configurations, features, drawings, appearances, pcb },
+        conflicts,
+        from_theirs,
+    }
 }
 
 fn param_map(d: &Document) -> HashMap<&str, &Param> {
