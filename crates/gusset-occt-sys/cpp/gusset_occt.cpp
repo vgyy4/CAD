@@ -5118,6 +5118,14 @@ int gs_thicken(const GsShape* s, double thickness, int both, GsShape** out, GsBu
     }
     o.swap(kept);
   }
+  // MakeThickSolid's solid can come out inside out (its faces' normals inward: a negative
+  // volume) depending on the side the sheet's normals face; turn it the right way out. The face
+  // and edge indices are unchanged (shape maps ignore orientation).
+  {
+    GProp_GProps vol;
+    BRepGProp::VolumeProperties(result, vol);
+    if (vol.Mass() < 0) result.Reverse();
+  }
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;

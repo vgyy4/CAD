@@ -83,3 +83,27 @@ fn a_sheet_thickens_into_a_solid_and_open_curves_make_sheets() {
     assert!(near(m.area, (40.0 + 20.0) * 5.0), "{}", m.area);
     assert_eq!(f.topology.solids, 0);
 }
+
+#[test]
+fn a_thickened_sheet_is_never_inside_out() {
+    // Each side and both sides: the solid's volume is positive (OCCT's thick solid can come out
+    // with its faces turned inward), so it unites with other bodies.
+    for (t, both) in [("2 mm", false), ("-2 mm", false), ("2 mm", true), ("-2 mm", true)] {
+        let extra = format!(
+            "surface_extrude Fence (curves: Sketch1.curves(l5), distance: 5 mm)\n\nthicken Thick (body: Fence, thickness: {t}, both_sides: {both})\n\nextrude Post (profile: Sketch1, distance: 3 mm, op: new)\n\ncombine Join (body: Post, tools: [Fence], op: add)"
+        );
+        let (ev, r) = eval(&extra);
+        assert!(r.errors().is_empty(), "{t} {both}: {:?}", r.errors());
+        let post = r.body("Post").unwrap();
+        let v = ev.kernel().mass_properties(&post.shape).unwrap().volume;
+        // The post (2400) and the wall along its side y = 0 (40 x 5 mm, 2 mm thick): inside the
+        // post up to its top (2 mm of the wall's 5 mm height above it), outside it all of it, or
+        // half and half.
+        let wall = match (t, both) {
+            (_, true) => 40.0 * 1.0 * 5.0 + 40.0 * 1.0 * 2.0,
+            ("2 mm", false) => 40.0 * 2.0 * 2.0,
+            _ => 40.0 * 2.0 * 5.0,
+        };
+        assert!(near(v, 2400.0 + wall), "{t} {both}: {v}");
+    }
+}
