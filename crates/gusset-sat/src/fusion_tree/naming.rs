@@ -1199,6 +1199,11 @@ impl Ctx<'_> {
     /// it make (planes it crosses, fillets that leave the face or `B`). A fillet face round it
     /// meets the face along the fillet's arc.
     pub(super) fn face_loop_edges(&mut self, face: &FaceName, ring: &[FaceName]) -> Vec<Option<EdgeAt>> {
+        // One face round it (5360's `Fillet - Contacts`: the end cap of a round pin): a closed
+        // edge.
+        if let [b] = ring {
+            return vec![self.edge_midpoint(&[face.clone(), b.clone()])];
+        }
         let Some((n0, p0)) = self.plane_of(face) else { return vec![None; ring.len()] };
         let gs: Vec<Option<FaceG>> = ring.iter().map(|f| f.first().and_then(|(g, ops)| self.face(g, ops))).collect();
         let mut out = Vec::new();

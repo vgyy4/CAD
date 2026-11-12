@@ -400,7 +400,21 @@ impl Ctx<'_> {
         let own = |q: &u64| {
             ref_ids(d, d.rec(*q)).into_iter().any(|s| d.is(s, "2CA5A1CD") && ref_ids(d, d.rec(s)).contains(&fid))
         };
-        let sets: Vec<u64> = ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "4A557CE2") && own(q)).collect();
+        let mut sets: Vec<u64> =
+            ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "4A557CE2") && own(q)).collect();
+        if sets.is_empty() {
+            // A set whose selection names no feature back (5360's `Fillet - Contacts`): this
+            // feature's, where its selections name no other blend either.
+            let other = |q: &u64| {
+                ref_ids(d, d.rec(*q)).into_iter().filter(|s| d.is(*s, "2CA5A1CD")).any(|s| {
+                    ref_ids(d, d.rec(s)).into_iter().any(|f| f != fid && (d.is(f, "A07D5F17") || d.is(f, "F757D611")))
+                })
+            };
+            sets = ref_ids(d, d.rec(fid))
+                .into_iter()
+                .filter(|q| d.is(*q, "4A557CE2") && !other(q) && !self.input_recipes(*q).is_empty())
+                .collect();
+        }
         if sets.is_empty() {
             let mut recs = self.input_recipes(fid);
             if recs.is_empty() {
@@ -516,7 +530,7 @@ impl Ctx<'_> {
                         let e = self.edge_midpoint(&faces);
                         vec![(faces, e)]
                     }
-                    (Some(RecipeKind::BoundedFace), Some(faces)) if faces.len() >= 3 => {
+                    (Some(RecipeKind::BoundedFace), Some(faces)) if faces.len() >= 2 => {
                         let Some((face, ring)) = faces.split_first() else { continue };
                         let es = self.face_loop_edges(face, ring);
                         ring.iter().zip(es).map(|(b, e)| (vec![face.clone(), b.clone()], e)).collect()
