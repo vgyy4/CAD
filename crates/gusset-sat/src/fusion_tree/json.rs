@@ -2123,7 +2123,17 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             feats.push(insert_json(d, fid, &nm, &fusion_type, class));
         } else if matches!(c8.as_str(), super::pcb::BOX | super::pcb::LAYER | super::pcb::COPPER) {
             let read = match c8.as_str() {
-                super::pcb::BOX => cx.box_primitive(&g, fid, &nm).map(Some),
+                super::pcb::BOX => cx.box_primitive(&g, fid, &nm).map(|mut made| {
+                    // A box joined to or cut from a body acts on the body its selection names.
+                    for f in &mut made {
+                        if let Some(j) = f.as_object_mut().filter(|j| j.get("type") == Some(&json!("extrude")))
+                            && j.get("operation").and_then(Value::as_str) != Some("new")
+                        {
+                            op_target(j, &g, d, fid, &names);
+                        }
+                    }
+                    Some(made)
+                }),
                 super::pcb::COPPER => cx.copper(&g, fid, &nm, &mut used_names).map(Some),
                 _ => cx.layer(&g, fid, &nm, &names, &feats, &mut used_names),
             };

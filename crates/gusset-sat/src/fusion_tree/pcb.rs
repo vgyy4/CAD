@@ -15,7 +15,7 @@
 use super::acis::{self, BodyShape};
 use super::feature::{params_of, pget};
 use super::geom::{self, V3, mm, round9};
-use super::stream::{f64_at, ref_end, ref_ids, refs_at, u32_at, wstrings_all};
+use super::stream::{f64_at, parse_header, ref_end, ref_ids, refs_at, u32_at, wstrings_all};
 use super::{Ctx, Graph, component_bodies};
 use crate::cover;
 use serde_json::{Value, json};
@@ -263,22 +263,42 @@ impl Ctx<'_> {
         let ps = params_of(d, fid);
         let val = |n: &str| pget(&ps, n).and_then(|p| p.value).ok_or_else(|| format!("the box has no {n}"));
         let size = [val("DistanceX")?, val("DistanceY")?, val("DistanceZ")?];
-        if size.iter().any(|v| !(v.is_finite() && *v > 0.0)) {
+        if size.iter().take(2).any(|v| !(v.is_finite() && *v > 0.0)) {
             return Err("a size of the box is not positive".into());
         }
+        // The height is signed: a box joined to or cut from a body stands on the side of its
+        // frame's z the sign names (2354: -0.05 cm for a cut into a board, section 43).
+        let dz = size[2];
+        if !(dz.is_finite() && dz != 0.0) {
+            return Err("the box has no height".into());
+        }
+        // The record's body: `01`, the operation (`u32`, the extrude's numbers: 1 join, 2 cut,
+        // 4 new body), `01` and the first reference.
+        let h = parse_header(rec).ok_or("the box's record is not recognised")?;
+        cover::field(rec, h.body + 1, 4, "box.operation");
+        let op = match (rec.get(h.body), u32_at(rec, h.body + 1)) {
+            (Some(1), Some(1)) => "join",
+            (Some(1), Some(2)) => "cut",
+            (Some(1), Some(4)) => "new",
+            _ => return Err("the box's operation is not a known value".into()),
+        };
         // The 4x4 (row-major, cm) stands two bytes behind the last of the five parameter holders.
+        // A plain reference ends in its own zero byte; a typed one (the class GUID spelled out,
+        // the first reference to a class in the stream: 3000) does not, and is followed by
+        // three bytes (section 43).
         let holders: Vec<usize> =
             refs_at(d, rec, 0).into_iter().filter(|(_, q)| d.is(*q, "D91D429C")).map(|(o, _)| o).take(5).collect();
-        let at = holders
+        let (start, end) = holders
             .get(4)
-            .and_then(|o| ref_end(d, rec, *o))
-            .map(|(_, e)| e + 2)
+            .and_then(|o| ref_end(d, rec, *o).map(|(_, e)| (*o, e)))
             .ok_or("the box does not name five parameters")?;
+        let pad = if end - start > 10 { 3 } else { 2 };
+        let at = end + pad;
         let mut m = [0.0f64; 16];
         for (k, v) in m.iter_mut().enumerate() {
             *v = f64_at(rec, at + 8 * k).filter(|v| v.is_finite()).ok_or("the box has no placement")?;
         }
-        cover::skip(rec, at - 2, 2, "box.pad");
+        cover::skip(rec, end, pad, "box.pad");
         cover::field(rec, at, 128, "box.placement");
         let frame = (column(&m, 0), column(&m, 1), column(&m, 2), column(&m, 3));
         let (Some(x), Some(y), Some(z), Some(o)) = frame else { return Err("the box has no placement".into()) };
@@ -291,11 +311,16 @@ impl Ctx<'_> {
         {
             return Err("the box's placement is not a rigid frame".into());
         }
-        let made = self.made(g, fid)?;
-        let [one] = made.as_slice() else { return Err(format!("the box makes {} bodies, not one", made.len())) };
-        let stored = one.shape.vertex_box.ok_or("the box's stored body has no vertices")?;
-        let height = box_height(&m, size, stored)
-            .ok_or("the box of its parameters and placement is not the box of its stored body")?;
+        let (height, from) = if op == "new" {
+            let made = self.made(g, fid)?;
+            let [one] = made.as_slice() else { return Err(format!("the box makes {} bodies, not one", made.len())) };
+            let stored = one.shape.vertex_box.ok_or("the box's stored body has no vertices")?;
+            let height = box_height(&m, [size[0], size[1], dz.abs()], stored)
+                .ok_or("the box of its parameters and placement is not the box of its stored body")?;
+            (height, "the side of the corner frame on which the stored body lies")
+        } else {
+            (dz, "the sign of the box's height along the corner frame's z")
+        };
         let sketch = format!("{name} profile");
         let dir = |v: V3| json!([round9(v[0]), round9(v[1]), round9(v[2])]);
         let (w, h) = (mm(size[0]), mm(size[1]));
@@ -312,9 +337,8 @@ impl Ctx<'_> {
             // The sketch normal is x cross y: the frame's z or its opposite.
             json!({"type": "extrude", "name": name, "source_id": fid, "sketch": sketch,
                 "profiles": [{"point": [mm(size[0] / 2.0), mm(size[1] / 2.0)]}],
-                "distance": mm(height * right), "symmetric": false, "operation": "new", "target": null,
-                "creates_bodies": 1,
-                "direction_from": "the side of the corner frame on which the stored body lies"}),
+                "distance": mm(height * right), "symmetric": false, "operation": op, "target": null,
+                "creates_bodies": u64::from(op == "new"), "direction_from": from}),
         ])
     }
 
