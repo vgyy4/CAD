@@ -427,7 +427,7 @@ fn find_pick(
     if pick.points.is_empty() {
         return find_face(kernel, ev, meshes, finite3(pick.point, "a face point")?, pick.normal);
     }
-    find_face_by_points(kernel, ev, meshes, pick, None)
+    find_face_by_points(kernel, ev, meshes, pick, None).map(|mut v| v.swap_remove(0))
 }
 
 /// The face of the model that lies on the pick's surface (every node of its tessellation within
@@ -435,13 +435,16 @@ fn find_pick(
 /// tessellation's deflection). Exactly one face must hold the most, and at least one point; or,
 /// where faces of several bodies tie, exactly one of them on the body `tie` names (an offset of a
 /// face that another body's face lies on: 3350's insert in the pocket cut by the same profile).
+/// Where another body's face holds the most but faces of the body `tie` names hold every one of
+/// those points between them, those faces (1054: a plug extruded from three regions of a circle
+/// keeps its side in pieces, where Fusion's is one face; the hole it sits in has one).
 fn find_face_by_points(
     kernel: &dyn gusset_kernel::Kernel,
     ev: &gusset_eval::Evaluation,
     meshes: &mut Meshes,
     pick: &FacePick,
     tie: Option<&str>,
-) -> Result<FaceHit, String> {
+) -> Result<Vec<FaceHit>, String> {
     if pick.points.len() > MAX_FACE_POINTS {
         return Err(format!("a face pick has more than {MAX_FACE_POINTS} points"));
     }
@@ -454,6 +457,8 @@ fn find_face_by_points(
     meshes.resize_with(ev.bodies.len(), || None);
     // (points held, face hit); ties are kept to refuse them.
     let mut best: Vec<(usize, FaceHit)> = Vec::new();
+    // The faces of the body `tie` names that hold points, and which points.
+    let mut pieces: Vec<(Vec<bool>, FaceHit)> = Vec::new();
     for (bi, b) in ev.bodies.iter().enumerate() {
         if meshes.get(bi).is_some_and(Option::is_none) {
             let m = kernel.tessellate(&b.shape, &gusset_kernel::TessellationParams::default()).ok();
@@ -480,34 +485,44 @@ fn find_face_by_points(
             if !on_surface {
                 continue;
             }
-            let held = pts.iter().filter(|p| mesh_face_holds(mesh, i, **p, tol)).count();
+            let holds: Vec<bool> = pts.iter().map(|p| mesh_face_holds(mesh, i, *p, tol)).collect();
+            let held = holds.iter().filter(|h| **h).count();
+            let hit = FaceHit {
+                body: b.feature.clone(),
+                name: name.to_string(),
+                planar: f.kind == gusset_kernel::SurfaceKind::Plane,
+                normal: unit(f.normal).unwrap_or([0.0, 0.0, 1.0]),
+                centroid: f.centroid,
+                fallback: false,
+            };
+            if held > 0 && tie == Some(b.feature.as_str()) {
+                pieces.push((holds, hit.clone()));
+            }
             if held == 0 || best.first().is_some_and(|(h, _)| held < *h) {
                 continue;
             }
             if best.first().is_some_and(|(h, _)| held > *h) {
                 best.clear();
             }
-            best.push((
-                held,
-                FaceHit {
-                    body: b.feature.clone(),
-                    name: name.to_string(),
-                    planar: f.kind == gusset_kernel::SurfaceKind::Plane,
-                    normal: unit(f.normal).unwrap_or([0.0, 0.0, 1.0]),
-                    centroid: f.centroid,
-                    fallback: false,
-                },
-            ));
+            best.push((held, hit));
         }
     }
     if best.len() > 1
         && let Some(t) = tie
         && let [(_, one)] = best.iter().filter(|(_, h)| h.body == t).collect::<Vec<_>>().as_slice()
     {
-        return Ok((*one).clone());
+        return Ok(vec![(*one).clone()]);
+    }
+    if let Some(t) = tie
+        && let Some((most, _)) = best.first()
+        && pieces.len() > 1
+        && !best.iter().any(|(_, h)| h.body == t)
+        && (0..pts.len()).filter(|k| pieces.iter().any(|(holds, _)| holds.get(*k) == Some(&true))).count() >= *most
+    {
+        return Ok(pieces.into_iter().map(|(_, h)| h).collect());
     }
     match best.as_slice() {
-        [(_, one)] => Ok(one.clone()),
+        [(_, one)] => Ok(vec![one.clone()]),
         [] => Err(format!("no face of the model holds the points of a face pick (first {:?})", pts.first())),
         [(_, a), (_, b), ..] => {
             Err(format!("the face pick is ambiguous: {} and {} hold as many of its points", a.name, b.name))
@@ -1437,19 +1452,21 @@ pub(super) fn offset_face(g: &mut Gen, s: &Session, d: &OffsetFaceF) -> Result<(
     let mut meshes: Meshes = Vec::new();
     for pick in &d.faces {
         let tie = d.on_body.as_deref().and_then(|b| g.features.get(b)).map(String::as_str);
-        let f = if pick.points.is_empty() {
-            find_pick(s.kernel().as_ref(), &ev, &mut meshes, pick)?
+        let hits = if pick.points.is_empty() {
+            vec![find_pick(s.kernel().as_ref(), &ev, &mut meshes, pick)?]
         } else {
             find_face_by_points(s.kernel().as_ref(), &ev, &mut meshes, pick, tie)?
         };
-        warn_fallback(g, &f, finite3(pick.point, "the face point")?);
-        let (b, face) = (f.body, f.name);
-        if body.as_ref().is_some_and(|x| *x != b) {
-            return Err("its faces are on several bodies".into());
-        }
-        body = Some(b);
-        if !names.contains(&face) {
-            names.push(face);
+        for f in hits {
+            warn_fallback(g, &f, finite3(pick.point, "the face point")?);
+            let (b, face) = (f.body, f.name);
+            if body.as_ref().is_some_and(|x| *x != b) {
+                return Err("its faces are on several bodies".into());
+            }
+            body = Some(b);
+            if !names.contains(&face) {
+                names.push(face);
+            }
         }
     }
     let body = body.ok_or("no faces")?;

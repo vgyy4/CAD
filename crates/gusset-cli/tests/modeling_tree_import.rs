@@ -259,6 +259,39 @@ fn import_v2_session(features: Vec<Value>) -> (Session, Value) {
 }
 
 #[test]
+fn an_offset_on_a_body_whose_face_is_in_pieces_offsets_the_pieces() {
+    // A 10 mm block, and beside it a plug made of two regions whose side on x = 10 stays in two
+    // pieces. The offset's points are the plug side's corners and its body is the plug: the
+    // block's side holds them all in one face, the plug's two pieces hold them between them.
+    let two = json!({
+        "type": "sketch", "name": "Two", "plane": {"origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]},
+        "points": [
+            {"id": "a", "x": 10, "y": 0}, {"id": "b", "x": 15, "y": 0}, {"id": "c", "x": 15, "y": 5},
+            {"id": "d", "x": 15, "y": 10}, {"id": "e", "x": 10, "y": 10}, {"id": "f", "x": 10, "y": 5}
+        ],
+        "curves": [
+            {"id": "l1", "type": "line", "start": "a", "end": "b"}, {"id": "l2", "type": "line", "start": "b", "end": "c"},
+            {"id": "l3", "type": "line", "start": "c", "end": "d"}, {"id": "l4", "type": "line", "start": "d", "end": "e"},
+            {"id": "l5", "type": "line", "start": "e", "end": "f"}, {"id": "l6", "type": "line", "start": "f", "end": "a"},
+            {"id": "l7", "type": "line", "start": "f", "end": "c"}
+        ]
+    });
+    let corners = json!([[10, 0, 0], [10, 10, 0], [10, 10, 5], [10, 0, 5], [10, 5, 0], [10, 5, 5]]);
+    let (mut s, _) = import_v2_session(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 10.0, 10.0),
+        extrude("Block", "Sketch1", 10.0, "new"),
+        two,
+        extrude("Plug", "Two", 5.0, "new"),
+        json!({"type": "offset_face", "name": "Thinner", "distance": -1, "on_body": "Plug",
+               "faces": [{"point": [10, 5, 2.5], "points": corners,
+                          "surface": {"type": "plane", "origin": [10, 0, 0], "normal": [-1, 0, 0]}}]}),
+    ]);
+    // The plug (the body made last) loses 1 x 10 x 5; on the block it would keep its 250.
+    let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 200.0);
+}
+
+#[test]
 fn a_hole_picked_on_one_of_two_coplanar_tops_lands_on_that_one() {
     // Two bars on a plate with tops in the plane z = 9. A point on the second (short) bar is
     // nearer the first bar's centre than its own: the point-in-face test picks the second.
