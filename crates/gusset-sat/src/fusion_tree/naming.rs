@@ -412,6 +412,18 @@ fn fillet_centre(r: f64, a: (V3, V3), b: (V3, V3), w: (V3, V3)) -> Option<V3> {
     Some(mul(x, 1.0 / det))
 }
 
+/// Where a line `pp + t u` lying in one of the two planes `on` ends at a fillet face (radius
+/// `r`, sides `a`, `b` with normals towards its axis) that rounds the corner of that plane with
+/// another: `r` from the other side's plane.
+fn fillet_end(r: f64, a: (V3, V3), b: (V3, V3), on: [(V3, V3); 2], pp: V3, u: V3) -> Option<f64> {
+    let lies = |q: &(V3, V3), n: V3, p: V3| {
+        (dot(unit(q.1).unwrap_or(q.1), n).abs() - 1.0).abs() < 1e-9 && dot(n, sub(q.0, p)).abs() < 1e-7
+    };
+    let (op, on_) =
+        [(a, b), (b, a)].into_iter().find_map(|(s, o)| on.iter().any(|(n, p)| lies(&s, *n, *p)).then_some(o))?;
+    (dot(on_, u).abs() > 1e-9).then(|| (r - dot(on_, sub(pp, op))) / dot(on_, u))
+}
+
 /// The midpoint of an edge that touches fillet faces. Either the arc where a fillet meets a
 /// plane (the middle of the arc, at the point of the circle nearest the corner), or the straight
 /// line where two planes meet between two fillets (the middle of the two tangent points).
@@ -1081,6 +1093,7 @@ impl Ctx<'_> {
             .or_else(|| self.side_at_cap(faces))
             .or_else(|| self.rim_at_plane(faces))
             .or_else(|| self.rim_at_cone(faces))
+            .or_else(|| self.edge_by_round_ends(faces))
             .or_else(|| self.mirrored_edge(faces))
     }
 
@@ -1154,6 +1167,120 @@ impl Ctx<'_> {
             return Some((at(std::f64::consts::PI), true, path));
         }
         None
+    }
+
+    /// A planar face, modelled or stored: its unit normal and a point.
+    fn plane_of(&mut self, f: &FaceName) -> Option<(V3, V3)> {
+        let (g, ops) = f.first()?;
+        match self.face(g, ops) {
+            Some(FaceG::Plane { n, p, .. }) => Some((unit(n)?, p)),
+            _ => None,
+        }
+    }
+
+    /// A cylindrical face the model does not give, as the stored bodies hold it: axis point,
+    /// unit axis and radius (a fillet's round face where its sides are not modelled planes).
+    fn stored_cylinder(&mut self, f: &FaceName) -> Option<(V3, V3, f64)> {
+        let (g, ops) = f.first()?;
+        if self.face(g, ops).is_some() {
+            return None;
+        }
+        match self.stored_face(g, ops)?.surface {
+            Surface::Cylinder { origin, axis, radius } if radius.is_finite() && radius > 0.0 => {
+                Some((origin, unit(axis)?, radius))
+            }
+            _ => None,
+        }
+    }
+
+    /// The edges round a pocket whose corners a fillet rounded, where the fillet's faces are
+    /// known only as the stored cylinders (6252's Chamfer3: the rim of a notch in a wall whose
+    /// corners Fillet rounds by 1 mm, the notch's sides a cut and a chamfer face). Two kinds:
+    /// * a line where two planes meet, each end a plane or a stored cylinder about an axis
+    ///   across the line that the line touches (`r` from its axis): it ends at the touching point;
+    /// * an arc where a plane meets a stored cylinder about an axis across it, ended by two planes
+    ///   the cylinder touches: the shorter arc between the touching points, given with its points.
+    fn edge_by_round_ends(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
+        let (f0, f1) = (faces.first()?, faces.get(1)?);
+        let ends: Vec<&FaceName> = faces.iter().skip(2).collect();
+        if ends.len() != 2 {
+            return None;
+        }
+        let cyls: Vec<Option<(V3, V3, f64)>> = faces.iter().map(|f| self.stored_cylinder(f)).collect();
+        if !cyls.iter().any(Option::is_some) {
+            return None;
+        }
+        if let (Some((n0, p0)), Some((n1, p1))) = (self.plane_of(f0), self.plane_of(f1)) {
+            let (pp, u) = plane_plane(n0, p0, n1, p1)?;
+            let mut ts = Vec::new();
+            for (k, e) in ends.iter().enumerate() {
+                if let Some((o, a, r)) = cyls.get(k + 2).copied().flatten() {
+                    if dot(a, u).abs() > 1e-6 {
+                        return None;
+                    }
+                    let t = dot(u, sub(o, pp));
+                    // The line touches the cylinder: its distance from the axis is the radius.
+                    let w = sub(add(pp, mul(u, t)), o);
+                    if (norm(sub(w, mul(a, dot(w, a)))) - r).abs() > 1e-6 {
+                        return None;
+                    }
+                    ts.push(t);
+                } else if let Some((e0, eops)) = e.first()
+                    && let Some(FaceG::Fillet { r, a, b }) = self.face(e0, eops)
+                {
+                    ts.push(fillet_end(r, a, b, [(n0, p0), (n1, p1)], pp, u)?);
+                } else {
+                    let (n, p) = self.plane_of(e)?;
+                    if dot(n, u).abs() < 1e-9 {
+                        return None;
+                    }
+                    ts.push(dot(n, sub(p, pp)) / dot(n, u));
+                }
+            }
+            let [t0, t1] = ts.as_slice() else { return None };
+            if (t1 - t0).abs() < 1e-7 {
+                return None;
+            }
+            return Some((add(pp, mul(u, (t0 + t1) / 2.0)), false, Vec::new()));
+        }
+        // A plane and a stored cylinder about an axis across it.
+        let ((n, p), (o, a, r)) = match (cyls.first().copied().flatten(), cyls.get(1).copied().flatten()) {
+            (None, Some(c)) => (self.plane_of(f0)?, c),
+            (Some(c), None) => (self.plane_of(f1)?, c),
+            _ => return None,
+        };
+        if (dot(n, a).abs() - 1.0).abs() > 1e-9 {
+            return None;
+        }
+        let c = add(o, mul(a, dot(n, sub(p, o)) / dot(n, a)));
+        let mut touch = Vec::new();
+        for e in &ends {
+            let (m, q) = self.plane_of(e)?;
+            let d = dot(m, sub(c, q));
+            if dot(m, a).abs() > 1e-9 || (d.abs() - r).abs() > 1e-6 {
+                return None;
+            }
+            touch.push(sub(c, mul(m, d)));
+        }
+        let [t0, t1] = touch.as_slice() else { return None };
+        let (v0, v1) = (sub(*t0, c), sub(*t1, c));
+        let bis = add(v0, v1);
+        if norm(bis) < 1e-6 * r {
+            return None;
+        }
+        let mid = add(c, mul(unit(bis)?, r));
+        let ang = libm::acos((dot(v0, v1) / (r * r)).clamp(-1.0, 1.0));
+        let w = unit(cross(a, v0))?;
+        // The turn from v0 towards v1 about the axis.
+        let sgn = if dot(cross(v0, v1), a) >= 0.0 { 1.0 } else { -1.0 };
+        let k = 16;
+        let path: Vec<V3> = (0..=k)
+            .map(|i| {
+                let t = ang * f64::from(i) / f64::from(k);
+                add(c, add(mul(v0, libm::cos(t)), mul(w, sgn * r * libm::sin(t))))
+            })
+            .collect();
+        Some((mid, true, path))
     }
 
     /// A closed edge (no faces bound its ends) between a cylinder and a cone about the same axis,
@@ -1260,18 +1387,10 @@ impl Ctx<'_> {
                 // plane: the line ends where the fillet leaves that plane, `r` from the other
                 // (770: the bottom rim of a box between its side, rounded at the corners, and a
                 // later join that interrupts it).
-                if let FaceG::Fillet { r, a, b } = f {
-                    let on = |q: &(V3, V3), n: V3, p: V3| {
-                        (dot(unit(q.1).unwrap_or(q.1), n).abs() - 1.0).abs() < 1e-9 && dot(n, sub(q.0, p)).abs() < 1e-7
-                    };
-                    let other = [(a, b), (b, a)]
-                        .into_iter()
-                        .find_map(|(s, o)| (on(s, *n0, *p0) || on(s, *n1, *p1)).then_some(*o));
-                    if let Some((op, on_)) = other
-                        && dot(on_, u).abs() > 1e-9
-                    {
-                        ts.push((r - dot(on_, sub(pp, op))) / dot(on_, u));
-                    }
+                if let FaceG::Fillet { r, a, b } = f
+                    && let Some(t) = fillet_end(*r, *a, *b, [(*n0, *p0), (*n1, *p1)], pp, u)
+                {
+                    ts.push(t);
                 }
             }
             if ts.len() >= 2 {
