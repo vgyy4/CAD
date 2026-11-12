@@ -934,6 +934,13 @@ impl Ctx<'_> {
         thin(points)
     }
 
+    /// The surfaces of the stored faces whose name starts with exactly (g, ops), one per state
+    /// that holds such a face (a later feature that moves the face keeps its name: a thread).
+    pub(super) fn stored_surfaces(&mut self, g: &str, ops: &[i32]) -> Vec<Surface> {
+        let want = (g.to_string(), ops.to_vec());
+        self.named_faces().iter().filter(|f| f.name.first() == Some(&want)).filter_map(Surface::of).collect()
+    }
+
     /// A face named (generator, operation ids), of any surface, as the stored bodies hold it:
     /// every stored face whose name starts with exactly that entry must lie on one surface, and
     /// the pick is that surface with the points of those faces' edges (cm). A later feature

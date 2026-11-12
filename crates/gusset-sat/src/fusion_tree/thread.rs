@@ -186,22 +186,30 @@ fn face_of(cx: &mut Ctx, fid: u64) -> Result<Face, &'static str> {
 
 /// The side of a whole extruded circle known from the stored bodies where the extrude's
 /// generator numbering is not (a profile with holes the stored faces do not confirm: 3350's
-/// Thread2 is on the 8 mm hole of a hexagon, generator 10 of `Extrude8`): the stored faces named
-/// (generator, the extrude) lie on one cylinder, whose axis is the extrude's direction through
-/// the centre of exactly one whole circle of the profile with that radius.
+/// Thread2 is on the 8 mm hole of a hexagon, generator 10 of `Extrude8`): every stored face named
+/// (generator, the extrude) lies on a cylinder about one axis, the extrude's direction through
+/// the centre of exactly one whole circle of the profile that has the radius of one of them (a
+/// state after the thread holds the face moved to the thread's diameter under the same name).
 fn stored_side(cx: &mut Ctx, g: &str, ops: &[i32]) -> Option<Face> {
     let [op] = ops else { return None };
     let fid = *cx.opmap.get(&u64::try_from(*op).ok()?)?;
     if !cx.d.is(fid, super::EXTRUDE) {
         return None;
     }
-    let super::naming::Surface::Cylinder { origin, axis, radius } = cx.stored_face(g, ops)?.surface else {
-        return None;
-    };
+    let mut cyls = Vec::new();
+    for s in cx.stored_surfaces(g, ops) {
+        let super::naming::Surface::Cylinder { origin, axis, radius } = s else { return None };
+        cyls.push((origin, unit(axis)?, radius));
+    }
+    let &(origin, _, _) = cyls.first()?;
     let eg = cx.ext_geom(fid)?;
     let (Some(t0), Some(t1)) = (eg.t0, eg.t1) else { return None };
     let pl = eg.pl;
-    if eg.tapered || (dot(unit(axis)?, pl.z).abs() - 1.0).abs() > 1e-9 {
+    let across = |p: V3| {
+        let w = sub(p, origin);
+        norm(sub(w, mul(pl.z, dot(w, pl.z))))
+    };
+    if eg.tapered || cyls.iter().any(|(o, a, _)| (dot(*a, pl.z).abs() - 1.0).abs() > 1e-9 || across(*o) > 1e-7) {
         return None;
     }
     let mut found = None;
@@ -209,9 +217,8 @@ fn stored_side(cx: &mut Ctx, g: &str, ops: &[i32]) -> Option<Face> {
         let Some(arc) = eg.sketch.arcs.get(&seg.curve) else { continue };
         let closed = seg.poly.first().zip(seg.poly.last()).is_some_and(|(a, b)| super::geom::dist(*a, *b) < 1e-9);
         let centre = world(&pl, [arc.center[0], arc.center[1]], 0.0);
-        let w = sub(centre, origin);
-        let off = norm(sub(w, mul(pl.z, dot(w, pl.z))));
-        if closed && seg.poly.len() >= 3 && (arc.radius - radius).abs() < 1e-7 && off < 1e-7 {
+        let named = cyls.iter().any(|(_, _, r)| (arc.radius - r).abs() < 1e-7);
+        if closed && seg.poly.len() >= 3 && named && across(centre) < 1e-7 {
             if found.is_some() {
                 return None;
             }
