@@ -41,7 +41,29 @@ impl Edit<'_> {
             .feats
             .iter()
             .find(|f| f.get("source_id").and_then(Value::as_u64) == Some(m) && f.get("name").is_some())?;
-        Some((m, e))
+        if e.get("type").and_then(Value::as_str) != Some("stored_body") {
+            return Some((m, e));
+        }
+        // A Base Feature's bodies are a stored body each, in the order of its body links (4431:
+        // the Combine's tool is the connector's first body).
+        let mine: Vec<u64> = ref_ids(self.d, self.d.rec(m))
+            .into_iter()
+            .filter(|l| self.d.is(*l, "D26351F0") && self.g.creator.get(l) == Some(&m))
+            .collect();
+        let stored: Vec<&Value> = self
+            .feats
+            .iter()
+            .filter(|f| {
+                f.get("source_id").and_then(Value::as_u64) == Some(m)
+                    && f.get("type").and_then(Value::as_str) == Some("stored_body")
+            })
+            .collect();
+        if stored.len() != mine.len() {
+            // Not one stored body per link (lumps): only a feature of one body is that body.
+            return (e.get("creates_bodies").and_then(Value::as_u64) == Some(1)).then_some((m, e));
+        }
+        let at = mine.iter().position(|l| *l == link)?;
+        Some((m, stored.get(at)?))
     }
 
     pub(super) fn combine(&self, fid: u64, name: &str) -> Combined {
@@ -66,9 +88,11 @@ impl Edit<'_> {
         let (Some(tool_sels), Some([target_sel])) = (lists.first(), lists.get(1).map(Vec::as_slice)) else {
             return refuse("the Combine's tools and target are not where the known layout has them");
         };
-        let one_body = |f: &Value| {
-            matches!(f.get("type").and_then(Value::as_str), Some("extrude" | "sweep" | "stored_body" | "mirror"))
-                && f.get("creates_bodies").and_then(Value::as_u64) == Some(1)
+        // A stored body is one body of its Base Feature (`maker` picks it).
+        let one_body = |f: &Value| match f.get("type").and_then(Value::as_str) {
+            Some("stored_body") => true,
+            Some("extrude" | "sweep" | "mirror") => f.get("creates_bodies").and_then(Value::as_u64) == Some(1),
+            _ => false,
         };
         let target = match self.links_of(*target_sel).as_slice() {
             [l] => match self.maker(*l) {
