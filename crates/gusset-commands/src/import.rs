@@ -2235,8 +2235,9 @@ fn fusion_instances(features: &[Value]) -> Vec<Option<u64>> {
         };
         let n = match get("type") {
             Some("hole") => f.get("positions").and_then(Value::as_array).map(|p| p.len() as u64).filter(|n| *n > 0),
-            // One tool per profile loop the extrude names (none where it takes "all" of its sketch).
-            Some("extrude") if matches!(get("operation"), Some("cut" | "join")) => {
+            // One tool per profile loop the extrude or revolve names (none where it takes "all" of
+            // its sketch; 3350's Revolve3 cuts two rings and stores a tool for each).
+            Some("extrude" | "revolve") if matches!(get("operation"), Some("cut" | "join")) => {
                 Some(f.get("profiles").and_then(Value::as_array).map_or(1, |p| p.len().max(1)) as u64)
             }
             // A sweep's one profile makes one tool (5360: the pin's sweep joins the pin over its
@@ -2257,7 +2258,7 @@ fn fusion_instances(features: &[Value]) -> Vec<Option<u64>> {
     out
 }
 
-/// Which features may make fewer tools than they have profile loops: a cut or join extrude of
+/// Which features may make fewer tools than they have profile loops: a cut or join extrude (or revolve) of
 /// several loops makes no tool for a loop that lies where there is no material to change (an
 /// outline the board already has). Those are explained by the sum of their tools, not one tool
 /// times the copies.
@@ -2265,7 +2266,7 @@ fn fusion_loose(features: &[Value]) -> Vec<bool> {
     features
         .iter()
         .map(|f| {
-            f.get("type").and_then(Value::as_str) == Some("extrude")
+            matches!(f.get("type").and_then(Value::as_str), Some("extrude" | "revolve"))
                 && matches!(f.get("operation").and_then(Value::as_str), Some("cut" | "join"))
                 && f.get("profiles").and_then(Value::as_array).is_some_and(|p| p.len() > 1)
         })
