@@ -2624,6 +2624,8 @@ int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thic
   std::vector<TopoDS_Shape> parts;
   // The maker that shelled each input face's solid (-1: the solid was kept).
   std::vector<int> maker_of(size_t(in_faces.Extent()), -1);
+  // Whether each maker's part is a hollow solid built from its closed offset (no face opened).
+  std::vector<bool> hollow_maker;
   auto shell_part = [&](const TopoDS_Shape& part, const ShapeList& open) -> int {
     auto mk = std::make_unique<BRepOffsetAPI_MakeThickSolid>();
     mk->MakeThickSolidByJoin(part, open, -thickness, 1e-4, BRepOffset_Skin, false, false, GeomAbs_Intersection);
@@ -2634,7 +2636,37 @@ int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thic
       mk->MakeThickSolidByJoin(part, open, -thickness, 1e-4, BRepOffset_Skin, true, false, GeomAbs_Intersection);
     }
     if (!mk->IsDone() || mk->Shape().IsNull()) return -1;
-    parts.push_back(mk->Shape());
+    if (open.IsEmpty()) {
+      // No face opened: OCCT gives the offset solid alone. The shell of a whole body is a
+      // hollow solid: the outer of the two closed skins with the inner one as its void
+      // (thickness > 0: the body's own skin outside, the offset one inside; < 0 the other way).
+      TopoDS_Shape off = mk->Shape();
+      std::vector<TopoDS_Shell> own, offs;
+      for (TopExp_Explorer ex(part, TopAbs_SHELL); ex.More(); ex.Next()) own.push_back(TopoDS::Shell(ex.Current()));
+      for (TopExp_Explorer ex(off, TopAbs_SHELL); ex.More(); ex.Next()) offs.push_back(TopoDS::Shell(ex.Current()));
+      if (own.size() != 1 || offs.size() != 1) return -1;
+      BRep_Builder hb;
+      // A skin facing out (`out`) or in: a solid of it alone has a positive volume or a negative one.
+      auto facing = [&hb](const TopoDS_Shell& sh, bool out) {
+        TopoDS_Solid one;
+        hb.MakeSolid(one);
+        hb.Add(one, sh);
+        GProp_GProps gp;
+        BRepGProp::VolumeProperties(one, gp);
+        return (gp.Mass() > 0) == out ? sh : TopoDS::Shell(sh.Reversed());
+      };
+      const TopoDS_Shell outer = facing(thickness > 0 ? own[0] : offs[0], true);
+      const TopoDS_Shell inner = facing(thickness > 0 ? offs[0] : own[0], false);
+      TopoDS_Solid hollow;
+      hb.MakeSolid(hollow);
+      hb.Add(hollow, outer);
+      hb.Add(hollow, inner);
+      parts.push_back(hollow);
+      hollow_maker.push_back(true);
+    } else {
+      parts.push_back(mk->Shape());
+      hollow_maker.push_back(false);
+    }
     mks.push_back(std::move(mk));
     return int(mks.size()) - 1;
   };
@@ -2687,6 +2719,20 @@ int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thic
       continue;
     }
     BRepOffsetAPI_MakeThickSolid& mk = *mks[size_t(k)];
+    if (hollow_maker[size_t(k)]) {
+      // The body's own face stays as it is; what the offset made of it is the other skin's face.
+      int idx = out_faces.FindIndex(g);
+      if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
+      ShapeMap made;
+      for (ShapeList::Iterator it(mk.Modified(g)); it.More(); it.Next()) made.Add(it.Value());
+      for (ShapeList::Iterator it(mk.Generated(g)); it.More(); it.Next()) made.Add(it.Value());
+      for (int m = 1; m <= made.Extent(); ++m) {
+        if (made(m).ShapeType() != TopAbs_FACE || made(m).IsSame(g)) continue;
+        int j = out_faces.FindIndex(made(m));
+        if (j > 0) push_origin(o, j - 1, GS_ORIGIN_OFFSET, 0, i - 1);
+      }
+      continue;
+    }
     if (removed) {
       // The ring left where a removed face was inherits that face's identity.
       const ShapeList& mods = mk.Modified(g);

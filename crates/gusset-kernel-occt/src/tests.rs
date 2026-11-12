@@ -404,6 +404,25 @@ fn plain_box(w: f64, h: f64, d: f64) -> OpResult {
 }
 
 #[test]
+fn shell_with_no_opened_face_is_a_hollow_solid() {
+    let b = plain_box(30.0, 20.0, 10.0);
+    let r = k().shell(&b.shape, &[], 2.0).unwrap();
+    // The body with a closed void: 30x20x10 minus the 26x16x6 cavity.
+    let m = k().mass_properties(&r.shape).unwrap();
+    assert!(close(m.volume, 6000.0 - 2496.0, 1e-9), "{}", m.volume);
+    let rt = k().topology(&r.shape).unwrap();
+    assert_eq!((rt.solids, rt.faces.len()), (1, 12));
+    assert_eq!(r.face_origins.len(), rt.faces.len());
+    let offset = r.face_origins.iter().filter(|o| matches!(o.as_slice(), [FaceOrigin::Offset { .. }])).count();
+    let kept = r.face_origins.iter().filter(|o| matches!(o.as_slice(), [FaceOrigin::Input { .. }])).count();
+    assert_eq!((offset, kept), (6, 6));
+    // Outward: the body itself is the void of a skin 2 mm outside it.
+    let g = k().shell(&b.shape, &[], -2.0).unwrap();
+    let gm = k().mass_properties(&g.shape).unwrap();
+    assert!(close(gm.volume, 34.0 * 24.0 * 14.0 - 6000.0, 1e-9), "{}", gm.volume);
+}
+
+#[test]
 fn shell_box_golden() {
     let b = plain_box(40.0, 20.0, 10.0);
     let t = k().topology(&b.shape).unwrap();
