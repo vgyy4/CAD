@@ -132,6 +132,10 @@ in Rust, bounded and fuzzed where noted; the B-rep they yield still goes through
   per file, fuzz target `sldprt_read`) and the Parasolid XT they hold (`gusset-xt`).
 - Solid Edge `.par` and Inventor `.ipt` containers (`gusset-ole`: the same OLE2 reader, deflate streams capped by size, ratio
   and one byte budget per file, fuzz target `ole_read`) and the Parasolid/ShapeManager data they hold (`gusset-xt`, `gusset-sat`).
+- KiCad boards and footprints (`gusset-pcb`, ADR 0047: iterative S-expression reader bounded in
+  bytes, depth and nodes, item counts bounded, coordinates range-checked; fuzz target `pcb_read`).
+  A 3D model path written in a board is only looked up inside the models folder the caller names
+  (variables and absolute parts dropped, `..` and hidden names refused), and the STEP goes through the worker.
 - ACIS SAT/SAB and Fusion `.f3d`/`.f3z` archives (`gusset-sat`, `fusion::read_design`, the
   archives' JSON), zip entries including Zstandard ones (the C `zstd` decoder, output capped
   at the declared size).
