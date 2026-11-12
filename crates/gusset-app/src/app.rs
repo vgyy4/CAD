@@ -289,6 +289,13 @@ pub struct App {
     pub pcb_tab: bool,
     /// The board editor's view, tools and design rule markers.
     pub pcb_state: crate::pcb_view::State,
+    /// The Schematic tab is chosen (ADR 0047 phase 2a): the schematic editor replaces the
+    /// viewport.
+    pub sch_tab: bool,
+    /// The schematic editor's view and tools.
+    pub sch_state: crate::sch_view::State,
+    /// The reference last cross-probed between the schematic and the board.
+    probed: Option<String>,
     /// The Render tab's photo preview of the viewport.
     pub photo: crate::photo_preview::PhotoPreview,
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
@@ -447,6 +454,9 @@ impl App {
             assemble_tab: false,
             pcb_tab: false,
             pcb_state: crate::pcb_view::State::default(),
+            sch_tab: false,
+            sch_state: crate::sch_view::State::default(),
+            probed: None,
             photo: crate::photo_preview::PhotoPreview::default(),
             theme_applied: None,
             viewport: Viewport::default(),
@@ -2099,6 +2109,20 @@ impl App {
                 .inner;
             self.pcb_commands(out);
         }
+        if self.sch_view_shown() && !full {
+            let pal = *theme::palette(self.theme);
+            let sch = self.snapshot.sch.clone();
+            let out = egui::Panel::left("sch_tools")
+                .default_size(230.0)
+                .resizable(true)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .show(ui, |ui| crate::sch_view::controls(ui, &pal, sch.as_deref(), &mut self.sch_state))
+                        .inner
+                })
+                .inner;
+            self.pcb_commands(crate::pcb_view::Out { commands: out.commands });
+        }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             if self.active_drawing.is_some() {
                 self.sheet_view(ui);
@@ -2107,6 +2131,13 @@ impl App {
                 let pcb = self.snapshot.pcb.clone();
                 let out = crate::pcb_view::show(ui, &pal, pcb.as_deref(), &mut self.pcb_state);
                 self.pcb_commands(out);
+                self.cross_probe();
+            } else if self.sch_view_shown() {
+                let pal = *theme::palette(self.theme);
+                let sch = self.snapshot.sch.clone();
+                let out = crate::sch_view::show(ui, &pal, sch.as_deref(), &mut self.sch_state);
+                self.pcb_commands(crate::pcb_view::Out { commands: out.commands });
+                self.cross_probe();
             } else {
                 self.viewport(ui);
             }
@@ -2438,11 +2469,44 @@ impl App {
                 assemble: self.assemble_tab,
                 photo_preview: self.photo.on,
                 pcb: self.pcb_view_shown(),
+                sch: self.sch_view_shown(),
             },
         );
         if let Some(a) = action {
             self.ribbon_action(a);
         }
+    }
+
+    /// Whether the Schematic tab's editor is shown (not while a sketch or drawing is open).
+    pub fn sch_view_shown(&self) -> bool {
+        self.sch_tab && self.active_drawing.is_none() && self.active_sketch.is_none()
+    }
+
+    /// Cross-probing: a symbol picked in the schematic selects its footprint on the
+    /// board, and a footprint picked on the board selects its symbol on the shown sheet.
+    pub(crate) fn cross_probe(&mut self) {
+        let from_board = match (self.pcb_state.selected, self.snapshot.pcb.as_ref()) {
+            (Some(crate::pcb_view::Sel::Footprint(i)), Some(b)) => {
+                b.board.footprints.get(i).map(|f| f.reference.clone())
+            }
+            _ => None,
+        };
+        let from_sch = self.sch_state.probe.clone();
+        let picked = if self.sch_view_shown() { from_sch } else { from_board };
+        let Some(r) = picked.filter(|r| self.probed.as_ref() != Some(r)) else { return };
+        if let Some(b) = self.snapshot.pcb.as_ref()
+            && let Some(i) = b.board.footprint_index(&r)
+        {
+            self.pcb_state.selected = Some(crate::pcb_view::Sel::Footprint(i));
+        }
+        if let Some(o) = self.snapshot.sch.as_ref()
+            && let Some((_, s)) = crate::sch_view::shown_sheet(o, &self.sch_state)
+            && let Some(item) = crate::sch_view::symbol_of(s, &r)
+        {
+            self.sch_state.selected = Some(item);
+        }
+        self.sch_state.probe = Some(r.clone());
+        self.probed = Some(r);
     }
 
     /// Whether the PCB tab's board editor is shown (not while a sketch or drawing is open).
@@ -2453,7 +2517,11 @@ impl App {
     /// Sends what the board editor asked for: registry commands, like every other edit.
     pub(crate) fn pcb_commands(&mut self, out: crate::pcb_view::Out) {
         for (id, args) in out.commands {
-            let then = if id == "pcb.drc" { Then::Notice } else { Then::Quiet };
+            let then = if matches!(id, "pcb.drc" | "sch.erc" | "pcb.update_from_schematic") {
+                Then::Notice
+            } else {
+                Then::Quiet
+            };
             self.submit_command(id, args, then);
         }
     }
@@ -2480,6 +2548,7 @@ impl App {
                 assemble: self.assemble_tab,
                 photo_preview: self.photo.on,
                 pcb: self.pcb_view_shown(),
+                sch: self.sch_view_shown(),
             },
         );
         if let Some(a) = action {
@@ -2493,6 +2562,7 @@ impl App {
         if !matches!(
             action,
             Action::PcbTab
+                | Action::SchTab
                 | Action::Run(_)
                 | Action::Search
                 | Action::SelectFilter(_)
@@ -2500,6 +2570,7 @@ impl App {
                 | Action::PhotoPreview(_)
         ) {
             self.pcb_tab = false;
+            self.sch_tab = false;
         }
         match action {
             Action::PcbTab => {
@@ -2509,6 +2580,16 @@ impl App {
                 self.photo.set(false);
                 self.finish_sketch();
                 self.pcb_tab = true;
+                self.sch_tab = false;
+            }
+            Action::SchTab => {
+                self.active_drawing = None;
+                (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (false, false, false, false);
+                self.assemble_tab = false;
+                self.photo.set(false);
+                self.finish_sketch();
+                self.sch_tab = true;
+                self.pcb_tab = false;
             }
             // "Render image" in the app renders the current view (`render_to`), not a named view.
             Action::Run("export.image") => {

@@ -95,6 +95,9 @@ pub struct Snapshot {
     pub project_dir: Option<PathBuf>,
     /// The open printed circuit board (ADR 0047), parsed once per stored version.
     pub pcb: Option<std::sync::Arc<gusset_commands::pcb_session::OpenBoard>>,
+    /// The open schematic (ADR 0047 phase 2a), parsed with its netlist and ERC once per
+    /// stored version.
+    pub sch: Option<std::sync::Arc<gusset_commands::sch_session::OpenSchematic>>,
 }
 
 /// How many audit entries the GUI keeps in its snapshot.
@@ -146,6 +149,7 @@ impl Snapshot {
             audit_total: audit.len(),
             project_dir: s.project_dir.clone(),
             pcb: gusset_commands::pcb_session::open_board(s, &Actor::User).ok().flatten(),
+            sch: gusset_commands::sch_session::open_schematic(s, &Actor::User).ok().flatten(),
         }
     }
 

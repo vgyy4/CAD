@@ -19,6 +19,7 @@ pub mod prefs;
 pub mod quick_menus;
 pub mod results_panel;
 pub mod ribbon;
+pub mod sch_view;
 pub mod sheet;
 pub mod sketch_constrain;
 pub mod sketch_place;
@@ -43,3 +44,5 @@ mod tests_panels;
 mod tests_pcb;
 #[cfg(test)]
 mod tests_ribbon;
+#[cfg(test)]
+mod tests_sch;
