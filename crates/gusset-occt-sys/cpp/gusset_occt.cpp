@@ -853,16 +853,19 @@ bool has_elliptic_face(const TopoDS_Shape& s) {
 // A face that winds more than once around a periodic surface: a thread's root or crest, a
 // strip of a cylinder between two helices of many turns (a Fusion modeled thread). The
 // adaptive quadrature integrates its domain as if it were one period: 1145's root, nine turns,
-// put the solid 1.1 mm3 off (4.5e-4), while Gauss-Kronrod agrees with the mesh to 1e-6. Half a
-// period of slack: the pcurve box of a whole cylinder's face can pass one period a little.
+// put the solid 1.1 mm3 off (4.5e-4), while the default quadrature (and Gauss-Kronrod, too slow
+// on 5753's stored screws) agrees with the mesh to 2e-6. Only a cylinder or cone with one edge
+// (a helix) going one and a half turns round it: a face's pcurve box alone can pass a turn.
 bool has_wound_face(const TopoDS_Shape& s) {
   for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
     const TopoDS_Face& f = TopoDS::Face(ex.Current());
     BRepAdaptor_Surface sa(f, false);
-    double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
-    BRepTools::UVBounds(f, u0, u1, v0, v1);
-    if (sa.IsUPeriodic() && u1 - u0 > sa.UPeriod() * 1.5) return true;
-    if (sa.IsVPeriodic() && v1 - v0 > sa.VPeriod() * 1.5) return true;
+    if (sa.GetType() != GeomAbs_Cylinder && sa.GetType() != GeomAbs_Cone) continue;
+    for (TopExp_Explorer ee(f, TopAbs_EDGE); ee.More(); ee.Next()) {
+      double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+      BRepTools::UVBounds(f, TopoDS::Edge(ee.Current()), u0, u1, v0, v1);
+      if (u1 - u0 > 3.0 * M_PI) return true;
+    }
   }
   return false;
 }
@@ -3310,7 +3313,7 @@ int gs_mass(const GsShape* s, GsBuf* mass) {
   if (!s || !mass) return fail("null argument");
   GProp_GProps vol, area;
   if (has_wound_face(s->s)) {
-    BRepGProp::VolumePropertiesGK(s->s, vol, 1e-9);
+    BRepGProp::VolumeProperties(s->s, vol);
     BRepGProp::SurfaceProperties(s->s, area);
   } else if (has_freeform_face(s->s) || has_torus_face(s->s)) {
     // Swept, lofted and spline faces: the default quadrature is off by a few tenths of a
