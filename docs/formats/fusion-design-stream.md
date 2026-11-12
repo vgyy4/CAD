@@ -2934,3 +2934,65 @@ Readers: `fusion_tree/loft.rs` (`loft_json`, `pipe_json`, `profile_of_a_loft_cap
   `Fillet4 (2)` (one edge unresolved) after it.
 * adafruit-next: 124 of 150 as history (64 gained; none lost against round 25 T and V); adafruit-more: 133 of 150
   (unchanged, none lost); adafruit: 13 of 18 (unchanged, none lost).
+
+## 50. Round 27: Fusion's Thread as a document thread, its side byte, blends beside threads and offsets (2026-11-12)
+Document: `thread` (`gusset-doc`, `gusset-eval/src/thread.rs`, ADR 0034 amendment); reader: `fusion_tree/thread.rs`;
+importer: `tree_import/v2.rs` (`thread`, `offset_face`), `tree_import.rs` (`moved_picks`).
+
+### The thread feature
+* Gusset had helical sweeps and cosmetic hole threads, but no thread on an existing face. `thread <Name> (face,
+  pitch, [designation], [modeled], [major], [minor], [angle], [length], [offset], [along], [left])` is that feature:
+  cosmetic by default; modeled, it builds Fusion's form of section 36 (the whole face moved to the major diameter of a
+  shaft or the minor one of a hole, the basic groove cut one turn a sweep, square where the thread ends inside the
+  face, run out through a free face end, stopped at a face end something looks back from: a shoulder, a hole's floor).
+  Internal or external is the face's own side. It is composed from revolve, helical sweep and boolean calls; no new
+  shim entry. The groove must take out half its share of the material at least, else the feature fails.
+* A helical sweep whose helix did not start level with its section (the importer's old trees put every turn's helix
+  at the world origin) swept the section the wrong way along an axis pointing down: an internal thread whose hole's
+  axis ran -Z lost 1.67 mm3 where the plate's face crossed two turns' shared caps. Each turn's helix now starts at
+  its section's middle height; golden tests (`modeling_thread.rs`) give the analytic volume on a shaft (also from
+  the other end, left-handed, and built up where the thread is wider than the shaft), in a through hole of 3 and
+  4.5 mm and in a blind hole (stopped at its floor), to 2e-5.
+* The tree's `thread` feature replaces the sketches, rings, sweeps and combines the reader wrote: it picks the face
+  at its middle and gives the diameters, pitch, angle, length and offset (`along` runs from the end the offset is
+  measured from: the extrude's start for end code 2, its end for 1), modeled where a stored body holds its helices.
+  A cosmetic thread that cannot be placed is left out with a note, as before. Later blends' edges on the moved face
+  follow it about any axis.
+
+### The side byte (3692)
+* The byte after the flank angle is 1 in all six external records of the three sets (6g, 2A) and 0 in the four
+  internal ones (6H); the byte after the form name, which had been read as the side, is 1 in every full-length
+  thread (3692, 916 Thread2, 324, 3350 Thread2, 3221's 6H) and 0 in every one with a length. 3692's 1/4-56 UNS 2A
+  is external, full length, on a 6 mm shaft: Fusion builds the shaft up to the 6.279 mm major diameter (the face
+  moves either way), then cuts the groove. It had been built as an internal thread (431.5074 mm3 against the stored
+  441.2291). 3692 comes in as history.
+
+### Blend edges recorded before an offset (1054)
+* `Fillet1` rounds the foot of `Extrude5`'s plug, which `OffsetFaces1` took from r 1.5 to 1.4 mm; its edge is
+  recorded at 1.5 mm (as a thread's later blends are, section 36), where the hole of `Extrude2` around the plug has
+  its mouth, and the round failed there. An offset of cylindrical faces now records each cylinder it moved (the
+  radius one of the face's circular edges has after it); a later blend on that body whose edge lies wholly on the old
+  cylinder, where the body has no edge any more, is picked on the new one. 1054 comes in as history.
+
+### 916 Fillet1 (not solved; root cause)
+* Reproduced on a document (a 16 mm rod 20 mm long, the M16x1 thread from 4 mm, the foot groove of `Revolve2`, the
+  three 0.5 mm rounds): the fillet fails for an offset of 4 mm and of anything below it down to 3.99, and builds for
+  4.0002 and above; with offset 4 it builds for radius 0.4999 and fails for 0.5 and 0.5000005. So OCCT fails where
+  the round's plane-to-cylinder tangent line (z = -16.5 + r) lies on the groove's square end (z = -16), although the
+  finished round, rolling on the concave one beside it (concave-first passes, section 40), meets the cylinder
+  1.7 um lower (-16.0017, Fusion's torus). Vertex tolerances there are 5e-6 mm, but holding every tolerance of a copy
+  to 1e-7 does not help (tried, not kept), and a radius 1e-6 smaller "builds" a solid 113 mm3 too large. Not a
+  tolerance matter: ChFi3d's first guess of the contact runs along the crest face's boundary. Next: a blend of
+  circular edges about one axis made in the meridian section (rounds rolling on each other) and revolved.
+
+### 3350 on `wall`
+* On `wall` 3350 stops at its `Fillet1` ("fillet produced an invalid solid") after the half-turn split of
+  helical bands; here its thread is the `thread` feature (one ring and one groove per turn cut in one boolean of all
+  turns) and 3350 comes in as history again.
+
+### Result
+* adafruit-next: 3692 and 1054 come in as history; 916 still stops at `Fillet1`; 3221 (Extrude, a face profile) and
+  3429 (Fillet2, unresolved) as before. adafruit-more: 1145, 3350 history; 324 at Thread2 ("it is not on one face":
+  a patterned thread on holes off the origin). Designs with offsets of faces (3027, 3464 history; 858, 6299, 5998,
+  6002, 3093, 6126, the Crickit assembly at their earlier blockers) unchanged; 3000 fails its step check on `wall`
+  already (Extrude7's stored tools), the same here.

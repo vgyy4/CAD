@@ -378,3 +378,9 @@ Round 25 T (kernel: convex and concave corners blended together, a rim's arcs ro
 cylinders between planes as a boolean ring with their rounds carried, intersections retried the other way round;
 import: an offset's face in pieces on its own body): adafruit-next 119 of 150 (2278, 3777 added), adafruit-more 133
 of 150, adafruit 13 of 18. None lost on any set. 3350 and 1054 now read past OffsetFaces1 (section 44).
+
+## Round 27 (threads and fillet failures, 2026-11-12)
+
+The `thread` feature (section 50), the thread record's side byte, blend edges moved with an offset cylinder:
+adafruit-next gains 3692 and 1054 (checked one by one, with every design that has a thread or an offset of faces:
+none lost against `wall`; 3000 fails its step check on `wall` already). 916 stops at `Fillet1` (OCCT, section 50).
