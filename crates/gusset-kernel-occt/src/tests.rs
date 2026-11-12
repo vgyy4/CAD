@@ -2310,3 +2310,63 @@ fn a_helical_sweep_of_an_axial_line_is_a_cylinder_face() {
     assert!(v(&start) < v(&joined) && v(&end) > v(&joined));
     assert!(k().chamfer(&joined, &edges, 1.99).is_ok());
 }
+
+#[test]
+fn a_shell_of_a_spindle_dome_is_its_section_offset_and_revolved() {
+    // 3722's globe: a base cylinder r 33.5 mm, 19 mm tall, under a dome of r 54 mm about a
+    // centre 0.658 mm off the axis (a spindle torus, a point of it on the axis), the corner
+    // rounded by 2 mm; shelled 2 mm with the base opened. OCCT's thick solid fails on the
+    // point; the section offset in its plane and revolved gives the cavity.
+    let (cx, cz) = (0.658311, 61.865178);
+    let r = ((33.5 - cx) * (33.5f64 - cx) + (19.0 - cz) * (19.0f64 - cz)).sqrt();
+    let top = cz + (r * r - cx * cx).sqrt();
+    let edges = vec![
+        Seg2::Line { a: [0.0, 0.0], b: [33.5, 0.0] },
+        Seg2::Line { a: [33.5, 0.0], b: [33.5, 19.0] },
+        Seg2::Arc { center: [cx, cz], start: [33.5, 19.0], end: [0.0, top], ccw: true },
+        Seg2::Line { a: [0.0, top], b: [0.0, 0.0] },
+    ];
+    let outer =
+        Loop2 { edges: edges.into_iter().enumerate().map(|(i, seg)| ProfileEdge { seg, tag: 1 + i as u64 }).collect() };
+    let p = Profile { frame: Frame::XZ, regions: vec![Region2 { outer, holes: vec![] }] };
+    let spec = RevolveSpec { axis_origin: [0.0, 0.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::TAU };
+    let dome = k().revolve(&p, &spec).unwrap().shape;
+    let t = k().topology(&dome).unwrap();
+    let rim = t.edges.iter().position(|e| e.kind == CurveKind::Circle && (e.midpoint[2] - 19.0).abs() < 1e-6).unwrap();
+    let dome = k().fillet(&dome, &[rim as u32], 2.0).unwrap().shape;
+    let t = k().topology(&dome).unwrap();
+    let base = t.faces.iter().position(|f| f.normal[2] < -0.9).unwrap() as u32;
+    let shell = k().shell(&dome, &[base], 2.0).unwrap();
+    // Pappus, by Simpson's rule over the section: the wall between the outer radius (the base's
+    // 33.5 mm, the round r 2 mm about its centre, the dome's circle r 54 mm) and the inner one
+    // (31.5 mm, the round offset to r 4 mm, the circle r 52 mm), each up to the axis.
+    let fz = cz - ((r + 2.0) * (r + 2.0) - (35.5 - cx) * (35.5 - cx)).sqrt();
+    let (ux, uz) = (35.5 - cx, fz - cz);
+    let tz = |w: f64| cz + (r - w) * uz / (ux * ux + uz * uz).sqrt();
+    let rad = |w: f64, z: f64| {
+        if z <= fz {
+            33.5 - w
+        } else if z <= tz(w) {
+            35.5 - ((2.0 + w) * (2.0 + w) - (z - fz) * (z - fz)).max(0.0).sqrt()
+        } else {
+            cx + ((r - w) * (r - w) - (z - cz) * (z - cz)).max(0.0).sqrt()
+        }
+    };
+    let solid = |w: f64| {
+        let simpson = |a: f64, b: f64, n: usize| {
+            let h = (b - a) / n as f64;
+            let f = |z: f64| rad(w, z) * rad(w, z);
+            (1..n).fold(f(a) + f(b), |s, i| s + f(a + i as f64 * h) * if i % 2 == 1 { 4.0 } else { 2.0 }) * h / 3.0
+        };
+        let top = cz + ((r - w) * (r - w) - cx * cx).sqrt();
+        std::f64::consts::PI * (simpson(0.0, fz, 2) + simpson(fz, tz(w), 2000) + simpson(tz(w), top, 200_000))
+    };
+    let want = solid(0.0) - solid(2.0);
+    // The kernel's measure of the dome's face near the axis is 1e-5 off (72500.31 against 72499.74).
+    let got = k().mass_properties(&shell.shape).unwrap().volume;
+    assert!(close(got, want, 2e-5), "{got} vs {want}");
+    assert_eq!(k().topology(&shell.shape).unwrap().solids, 1);
+    // The cavity's faces are offsets of the dome's: the wall's, the round's and the dome's.
+    let offsets = shell.face_origins.iter().filter(|o| matches!(o.as_slice(), [FaceOrigin::Offset { .. }])).count();
+    assert_eq!(offsets, 3, "{:?}", shell.face_origins);
+}

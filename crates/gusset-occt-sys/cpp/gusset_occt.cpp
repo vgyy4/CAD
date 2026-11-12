@@ -36,6 +36,17 @@
 #include <BRepTools_History.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <BRepTools_WireExplorer.hxx>
+#include <BRepOffsetAPI_MakeOffset.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepAlgoAPI_Section.hxx>
+#include <BRepClass_FaceClassifier.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
+#include <BRepGProp_Face.hxx>
+#include <GeomAdaptor_Curve.hxx>
+#include <GeomConvert_CurveToAnaCurve.hxx>
+#include <ShapeAnalysis_FreeBounds.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
+#include <TopTools_HSequenceOfShape.hxx>
 #include <GCPnts_AbscissaPoint.hxx>
 #include <GeomAPI_Interpolate.hxx>
 #include <GeomConvert_CompCurveToBSplineCurve.hxx>
@@ -3437,6 +3448,268 @@ int gs_full_round(const GsShape* s, const uint32_t* faces, size_t nfaces, GsShap
   GS_GUARD_END
 }
 
+// The shell of a solid of revolution (inward wall `d` > 0, opened at planar faces across the
+// axis), for when OCCT's thick solid fails (3722's dome: a spindle torus whose offset meets the
+// axis in a point). The cavity is the solid's section through the axis, carried on through the
+// opened faces, offset inward by `d` in its plane and revolved; the shell is the solid less it.
+// Null when the solid is not one of revolution (Pappus on two half sections), an opened face is
+// not a plane across the axis, the section has a concave corner off the axis (where OCCT's 2D
+// offset would round what the 3D one extends) or a hole, or OCCT's 2D offset fails.
+static TopoDS_Shape revolved_cavity(const TopoDS_Shape& solid, const ShapeList& open, double d) {
+  if (!(d > 0)) return TopoDS_Shape();
+  // The axis: of the first face of revolution; every other such face on it, every plane across it.
+  bool have = false;
+  gp_Ax1 ax;
+  for (TopExp_Explorer ex(solid, TopAbs_FACE); ex.More(); ex.Next()) {
+    BRepAdaptor_Surface s(TopoDS::Face(ex.Current()), false);
+    gp_Ax1 a;
+    switch (s.GetType()) {
+      case GeomAbs_Cylinder: a = s.Cylinder().Axis(); break;
+      case GeomAbs_Cone: a = s.Cone().Axis(); break;
+      case GeomAbs_Sphere: a = s.Sphere().Position().Axis(); break;
+      case GeomAbs_Torus: a = s.Torus().Axis(); break;
+      case GeomAbs_SurfaceOfRevolution: a = s.AxeOfRevolution(); break;
+      case GeomAbs_Plane:
+        if (have && std::fabs(std::fabs(s.Plane().Axis().Direction().Dot(ax.Direction())) - 1) > 1e-9)
+          return TopoDS_Shape();
+        continue;
+      default: continue;
+    }
+    if (!have) {
+      ax = a;
+      have = true;
+    } else if (!ax.IsParallel(a, 1e-9) || gp_Lin(ax).Distance(a.Location()) > 1e-7) {
+      return TopoDS_Shape();
+    }
+  }
+  if (!have) return TopoDS_Shape();
+  const gp_Dir z = ax.Direction();
+  const gp_Dir any = std::fabs(z.X()) < 0.9 ? gp_Dir(1, 0, 0) : gp_Dir(0, 1, 0);
+  const gp_Dir n0(gp_Vec(z).Crossed(gp_Vec(any)));
+  const double L = 1e5;
+  // The meridian plane at `angle` about the axis: x radial, y along -z.
+  auto meridian = [&](double angle) {
+    gp_Dir n = n0.Rotated(ax, angle);
+    return gp_Pln(gp_Ax3(ax.Location(), n, gp_Dir(gp_Vec(n).Crossed(gp_Vec(z)))));
+  };
+  GProp_GProps vp;
+  BRepGProp::VolumeProperties(solid, vp);
+  const double vol = vp.Mass();
+  if (!(vol > 0)) return TopoDS_Shape();
+  for (double angle : {0.0, 2.0}) {
+    gp_Pln m = meridian(angle);
+    TopoDS_Shape half = BRepAlgoAPI_Common(solid, BRepBuilderAPI_MakeFace(m, 0, L, -L, L).Face()).Shape();
+    GProp_GProps sp;
+    BRepGProp::SurfaceProperties(half, sp);
+    double r = gp_Vec(ax.Location(), sp.CentreOfMass()).Dot(gp_Vec(m.Position().XDirection()));
+    if (std::fabs(2 * M_PI * sp.Mass() * r - vol) > 1e-5 * vol) return TopoDS_Shape();
+  }
+  const gp_Pln mer = meridian(0.0);
+  const gp_Dir rx = mer.Position().XDirection();
+  const TopoDS_Face big = BRepBuilderAPI_MakeFace(mer, -L, L, -L, L).Face();
+  TopoDS_Shape sec = BRepAlgoAPI_Common(solid, big).Shape();
+  // Carry the section on through each opened face: a rectangle 2d deep beyond the face, along
+  // the axis, on each piece of the face's trace.
+  for (ShapeList::Iterator it(open); it.More(); it.Next()) {
+    const TopoDS_Face of = TopoDS::Face(it.Value());
+    BRepAdaptor_Surface s(of, false);
+    // A plane across the axis: points of its surface at one height along the axis (a line
+    // across the axis revolved stays a surface of revolution in OCCT's revolve).
+    double fu0, fu1, fv0, fv1;
+    BRepTools::UVBounds(of, fu0, fu1, fv0, fv1);
+    const gp_Pnt base = s.Value(fu0, fv0);
+    for (int a = 0; a <= 4; ++a)
+      for (int b = 0; b <= 4; ++b) {
+        const gp_Pnt q = s.Value(fu0 + (fu1 - fu0) * a / 4, fv0 + (fv1 - fv0) * b / 4);
+        if (std::fabs(gp_Vec(base, q).Dot(gp_Vec(z))) > 1e-6) return TopoDS_Shape();
+      }
+    BRepGProp_Face gf(of);
+    double u0, u1, v0, v1;
+    gf.Bounds(u0, u1, v0, v1);
+    gp_Pnt pp;
+    gp_Vec nv;
+    gf.Normal(0.5 * (u0 + u1), 0.5 * (v0 + v1), pp, nv);
+    if (nv.Magnitude() < 1e-12) return TopoDS_Shape();
+    const double up = gp_Dir(nv).Dot(z);
+    if (std::fabs(std::fabs(up) - 1) > 1e-9) return TopoDS_Shape();
+    const double h = gp_Vec(ax.Location(), pp).Dot(gp_Vec(z));
+    const double s0 = up > 0 ? h : h - 2 * d, s1 = up > 0 ? h + 2 * d : h;
+    TopoDS_Shape trace = BRepAlgoAPI_Section(of, big).Shape();
+    int pieces = 0;
+    for (TopExp_Explorer ee(trace, TopAbs_EDGE); ee.More(); ee.Next()) {
+      TopoDS_Vertex a, b;
+      TopExp::Vertices(TopoDS::Edge(ee.Current()), a, b);
+      if (a.IsNull() || b.IsNull()) return TopoDS_Shape();
+      double lo = gp_Vec(ax.Location(), BRep_Tool::Pnt(a)).Dot(gp_Vec(rx));
+      double hi = gp_Vec(ax.Location(), BRep_Tool::Pnt(b)).Dot(gp_Vec(rx));
+      if (lo > hi) std::swap(lo, hi);
+      if (hi - lo < 1e-9) continue;
+      gp_Pnt o = ax.Location();
+      auto P = [&](double r, double t) { return o.Translated(gp_Vec(rx) * r + gp_Vec(z) * t); };
+      BRepBuilderAPI_MakePolygon poly(P(lo, s0), P(hi, s0), P(hi, s1), P(lo, s1), true);
+      if (!poly.IsDone()) return TopoDS_Shape();
+      sec = BRepAlgoAPI_Fuse(sec, BRepBuilderAPI_MakeFace(mer, poly.Wire()).Face()).Shape();
+      ++pieces;
+    }
+    if (pieces == 0) return TopoDS_Shape();
+  }
+  ShapeUpgrade_UnifySameDomain unify(sec, true, true, false);
+  unify.Build();
+  sec = unify.Shape();
+  TopoDS_Shape cavity;
+  const TopoDS_Face right = BRepBuilderAPI_MakeFace(mer, 0, L, -L, L).Face();
+  for (TopExp_Explorer fe(sec, TopAbs_FACE); fe.More(); fe.Next()) {
+    const TopoDS_Face sf = TopoDS::Face(fe.Current());
+    int wires = 0;
+    for (TopExp_Explorer we(sf, TopAbs_WIRE); we.More(); we.Next()) ++wires;
+    if (wires != 1) return TopoDS_Shape();
+    // The section's edges as lines and arcs (the boolean gives B-splines), joined anew.
+    occ::handle<TopTools_HSequenceOfShape> edges = new TopTools_HSequenceOfShape, joined;
+    for (BRepTools_WireExplorer we(BRepTools::OuterWire(sf), sf); we.More(); we.Next()) {
+      TopoDS_Edge e = we.Current();
+      double f0, f1;
+      occ::handle<Geom_Curve> c = BRep_Tool::Curve(e, f0, f1);
+      if (c.IsNull()) return TopoDS_Shape();
+      GeomAdaptor_Curve gc(c);
+      if (gc.GetType() != GeomAbs_Line && gc.GetType() != GeomAbs_Circle) {
+        GeomConvert_CurveToAnaCurve conv(c);
+        occ::handle<Geom_Curve> nc;
+        double g0, g1;
+        if (!conv.ConvertToAnalytical(1e-6, nc, f0, f1, g0, g1) || nc.IsNull()) return TopoDS_Shape();
+        e = BRepBuilderAPI_MakeEdge(nc, g0, g1).Edge();
+      }
+      edges->Append(e);
+    }
+    ShapeAnalysis_FreeBounds::ConnectEdgesToWires(edges, 1e-6, false, joined);
+    if (joined.IsNull() || joined->Length() != 1) return TopoDS_Shape();
+    BRepBuilderAPI_MakeFace mf(mer, TopoDS::Wire(joined->Value(1)));
+    if (!mf.IsDone()) return TopoDS_Shape();
+    TopoDS_Face af = mf.Face();
+    BRepCheck_Analyzer fa(af);
+    if (!fa.IsValid()) return TopoDS_Shape();
+    // A concave corner off the axis: the 2D offset rounds the wall's inside there, the 3D one
+    // extends the faces; one on the axis (the dimple of a spindle torus) is rounded over a
+    // width of microns at radius 0, which the volume does not see.
+    bool concave = false;
+    std::vector<TopoDS_Edge> ring;
+    for (BRepTools_WireExplorer we(BRepTools::OuterWire(af), af); we.More(); we.Next()) ring.push_back(we.Current());
+    for (size_t i = 0; i < ring.size(); ++i) {
+      const TopoDS_Edge& e1 = ring[i];
+      const TopoDS_Edge& e2 = ring[(i + 1) % ring.size()];
+      BRepAdaptor_Curve c1(e1), c2(e2);
+      double t1 = e1.Orientation() == TopAbs_REVERSED ? c1.FirstParameter() : c1.LastParameter();
+      double t2 = e2.Orientation() == TopAbs_REVERSED ? c2.LastParameter() : c2.FirstParameter();
+      gp_Pnt p;
+      gp_Vec d1, d2;
+      c1.D1(t1, p, d1);
+      c2.D1(t2, p, d2);
+      if (e1.Orientation() == TopAbs_REVERSED) d1.Reverse();
+      if (e2.Orientation() == TopAbs_REVERSED) d2.Reverse();
+      if (d1.Magnitude() < 1e-12 || d2.Magnitude() < 1e-12) return TopoDS_Shape();
+      d1.Normalize();
+      d2.Normalize();
+      if (d1.Crossed(d2).Magnitude() < 1e-7 && d1.Dot(d2) > 0) continue;  // tangent
+      gp_Vec into = d2 - d1;
+      if (into.Magnitude() < 1e-12) return TopoDS_Shape();
+      gp_Pnt q = p.Translated(into.Normalized() * (1e-3 * d));
+      BRepClass_FaceClassifier fc(af, q, 1e-9);
+      if (fc.State() == TopAbs_IN) continue;
+      if (gp_Lin(ax).Distance(p) > 1e-7) return TopoDS_Shape();
+      concave = true;
+    }
+    BRepOffsetAPI_MakeOffset mo(af, GeomAbs_Intersection);
+    mo.Perform(-d);
+    if (!mo.IsDone() && concave) {
+      mo.Init(af, GeomAbs_Arc);
+      mo.Perform(-d);
+    }
+    if (!mo.IsDone() || mo.Shape().IsNull()) return TopoDS_Shape();
+    std::vector<TopoDS_Wire> ows;
+    for (TopExp_Explorer we(mo.Shape(), TopAbs_WIRE); we.More(); we.Next()) ows.push_back(TopoDS::Wire(we.Current()));
+    for (const TopoDS_Wire& ow : ows) {
+      if (!BRep_Tool::IsClosed(ow)) return TopoDS_Shape();
+      BRepBuilderAPI_MakeFace of(mer, ow);
+      if (!of.IsDone()) return TopoDS_Shape();
+      TopoDS_Shape halfs = BRepAlgoAPI_Common(of.Face(), right).Shape();
+      for (TopExp_Explorer he(halfs, TopAbs_FACE); he.More(); he.Next()) {
+        TopoDS_Shape rv = BRepPrimAPI_MakeRevol(he.Current(), ax, 2 * M_PI).Shape();
+        cavity = cavity.IsNull() ? rv : BRepAlgoAPI_Fuse(cavity, rv).Shape();
+      }
+    }
+  }
+  return cavity;
+}
+
+// The shell as the solid less a cavity (see `revolved_cavity`): the solid's faces keep their
+// identity where the cut leaves them (the opened faces become the rings left of them), and
+// each face of the cavity is the offset of the solid's face `d` beyond it, outside the void.
+static int shell_by_cavity(const TopoDS_Shape& solid, const ShapeMap& in_faces, const TopoDS_Shape& cavity, double d,
+                           GsShape** out, GsBuf* origins) {
+  BRepAlgoAPI_Cut cut(solid, cavity);
+  if (!cut.IsDone() || cut.Shape().IsNull()) return fail("shell failed");
+  const TopoDS_Shape result = cut.Shape();
+  int nsolids = 0;
+  for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) ++nsolids;
+  if (nsolids != 1) return fail("shell failed");
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  for (int i = 1; i <= in_faces.Extent(); ++i) {
+    const TopoDS_Shape& g = in_faces(i);
+    int idx = out_faces.FindIndex(g);
+    if (idx > 0) {
+      push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
+      continue;
+    }
+    for (ShapeList::Iterator it(cut.Modified(g)); it.More(); it.Next()) {
+      int j = out_faces.FindIndex(it.Value());
+      if (j > 0) push_origin(o, j - 1, GS_ORIGIN_INPUT, 0, i - 1);
+    }
+  }
+  ShapeMap cav_faces;
+  TopExp::MapShapes(cavity, TopAbs_FACE, cav_faces);
+  for (int c = 1; c <= cav_faces.Extent(); ++c) {
+    ShapeList images = cut.Modified(cav_faces(c));
+    if (images.IsEmpty() && out_faces.Contains(cav_faces(c))) images.Append(cav_faces(c));
+    for (ShapeList::Iterator it(images); it.More(); it.Next()) {
+      int j = out_faces.FindIndex(it.Value());
+      if (j <= 0) continue;
+      const TopoDS_Face f = TopoDS::Face(it.Value());
+      double u0, u1, v0, v1;
+      BRepTools::UVBounds(f, u0, u1, v0, v1);
+      BRepGProp_Face gf(f);
+      gp_Pnt p;
+      gp_Vec n;
+      gf.Normal(0.5 * (u0 + u1), 0.5 * (v0 + v1), p, n);
+      if (n.Magnitude() < 1e-12) continue;
+      // The solid's face lies `d` from it along its normal, on the wall's side (whichever way
+      // the normal points: the nearer face of the two sides).
+      int best = 0;
+      double best_d = 1e-5 * std::max(1.0, d);
+      for (double side : {-d, d}) {
+        const TopoDS_Vertex q = BRepBuilderAPI_MakeVertex(p.Translated(n.Normalized() * side)).Vertex();
+        for (int i = 1; i <= in_faces.Extent(); ++i) {
+          BRepExtrema_DistShapeShape dist(q, in_faces(i));
+          if (dist.IsDone() && dist.Value() < best_d) {
+            best_d = dist.Value();
+            best = i;
+          }
+        }
+      }
+      if (best > 0) push_origin(o, j - 1, GS_ORIGIN_OFFSET, 0, best - 1);
+    }
+  }
+  check_valid(result, "shell");
+  GProp_GProps before, after;
+  BRepGProp::VolumeProperties(solid, before);
+  BRepGProp::VolumeProperties(result, after);
+  if (!(after.Mass() > 1e-9) || !(after.Mass() < before.Mass() - 1e-9))
+    throw Standard_Failure("the walls are too thick for this part");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+}
+
 int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thickness, GsShape** out,
              GsBuf* origins) {
   GS_GUARD_BEGIN
@@ -3506,7 +3779,19 @@ int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thic
     return int(mks.size()) - 1;
   };
   if (solids.size() <= 1) {
-    int k = shell_part(s->s, closing);
+    // A solid of revolution OCCT cannot offset (it fails or throws on a point of the axis on a
+    // face): its own cavity.
+    const bool revolved = thickness > 0 && !closing.IsEmpty() && solids.size() == 1;
+    int k = -1;
+    try {
+      k = shell_part(s->s, closing);
+    } catch (const Standard_Failure&) {
+      if (!revolved) throw;
+    }
+    if (k < 0 && revolved) {
+      const TopoDS_Shape cavity = revolved_cavity(solids[0], closing, thickness);
+      if (!cavity.IsNull()) return shell_by_cavity(solids[0], in_faces, cavity, thickness, out, origins);
+    }
     if (k < 0) return fail("shell failed");
     for (auto& m : maker_of) m = k;
   } else {
