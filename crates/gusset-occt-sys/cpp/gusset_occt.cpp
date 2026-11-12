@@ -2966,8 +2966,8 @@ int offset_cylinders(const GsShape* s, const std::vector<TopoDS_Face>& fs, const
     TopoDS_Edge old_wall, new_wall, old_rounds[2], new_rounds[2];
     const gp_Pnt start = at(c.ends[0].round ? c.ends[0].rc : r, c.ends[0].round ? c.ends[0].zp : c.ends[0].z);
     const gp_Pnt mid = profile(r, 0, true, old_wall, old_rounds);
-    const gp_Pnt far = at(c.ends[1].round ? c.ends[1].rc + shift : r1, c.ends[1].round ? c.ends[1].zp : c.ends[1].z);
-    line(mid, far);
+    const gp_Pnt far_end = at(c.ends[1].round ? c.ends[1].rc + shift : r1, c.ends[1].round ? c.ends[1].zp : c.ends[1].z);
+    line(mid, far_end);
     const gp_Pnt back = profile(r1, shift, false, new_wall, new_rounds);
     line(back, start);
     if (!mw.IsDone()) return fail("no section");
