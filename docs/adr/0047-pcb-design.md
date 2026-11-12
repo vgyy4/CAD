@@ -105,6 +105,21 @@ designs and generated files.
   `(model (at ...))` is in inches, `(offset ...)` in mm. The 3D model rotation order and sign,
   and the trapezoid `rect_delta` direction, are **unconfirmed** against KiCad's output.
 
+## Results (2026-11-12)
+* Tests: `gusset-pcb` 22 unit tests (hand-written boards: round trip, KiCad 5 and 10 layouts, Gerber
+  layers, Excellon, sanity check, profile, mock-kernel build, hostile inputs); `gusset-commands`
+  `tests_pcb` 5 (info, import, STEP models through a fake importer, model path confinement,
+  exports with the agent rules); OCCT `gusset-cli/tests/pcb_import.rs` 2 (board volume with a rounded
+  outline, cut-out, holes and a slot within 1e-3; copper on the faces; a STEP model through the real
+  worker replaces its box at the footprint's place). Fuzz target `pcb_read`.
+* Local check, not in the repository (CC-BY-SA data): 7 KiCad demo boards (KiCad 9 and 10 files, 2 and
+  4 copper layers, up to 8000 tracks) and 2 library footprints read, written back with an identical
+  tree, and plotted; rasterised Gerbers looked right (zone fills with thermal reliefs, arcs, outlines).
+  The largest (5.8 MB) reads, round-trips and plots in 0.3 s (release).
+* `cargo deny check`: advisories, bans, licences and sources ok; the new crates add no duplicates.
+* MCP: the four commands are not in the core tool list (17901 of 18000 bytes, unchanged); the
+  command tools average 593 bytes (cap 600).
+
 ## Alternatives considered
 * Embedding or porting KiCad (or LibrePCB/Horizon): the combined work would be GPL (ADR 0001).
 * `kiutils-rs` (MIT) for the S-expression layer: young (about a thousand downloads), and the core model
