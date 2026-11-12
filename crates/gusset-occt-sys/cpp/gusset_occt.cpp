@@ -1287,15 +1287,34 @@ void exact_helix_cylinders(Swept& sw, const std::vector<TaggedEdge>& tagged, con
   ShapeUpgrade_ShapeDivideAngle divide(M_PI, solid);
   if (!divide.Perform()) return;
   solid = divide.Result();
+  // A split face's pieces are what the reshape context gives for it. A face rebuilt round a
+  // split edge (a cap beside the cylinder) is in neither the context nor the records: it is
+  // matched by its surface, which it keeps.
   occ::handle<ShapeBuild_ReShape> ctx = divide.GetContext();
-  std::vector<Rec> split;
+  std::vector<Rec> pieces;
   for (const auto& r : recs) {
     const TopoDS_Shape v = ctx.IsNull() ? r.face : ctx->Value(r.face);
-    if (v.ShapeType() == TopAbs_FACE) {
-      split.push_back(Rec{v, r.kind, r.a, r.b});
-      continue;
+    for (TopExp_Explorer ex(v, TopAbs_FACE); ex.More(); ex.Next()) pieces.push_back(Rec{ex.Current(), r.kind, r.a, r.b});
+  }
+  std::vector<Rec> split;
+  for (TopExp_Explorer ex(solid, TopAbs_FACE); ex.More(); ex.Next()) {
+    const Rec* found = nullptr;
+    for (const auto& p : pieces) {
+      if (p.face.IsSame(ex.Current())) found = &p;
     }
-    for (TopExp_Explorer ex(v, TopAbs_FACE); ex.More(); ex.Next()) split.push_back(Rec{ex.Current(), r.kind, r.a, r.b});
+    if (!found) {
+      TopLoc_Location loc;
+      const occ::handle<Geom_Surface> surf = BRep_Tool::Surface(TopoDS::Face(ex.Current()), loc);
+      for (const auto& r : recs) {
+        if (r.face.ShapeType() != TopAbs_FACE) continue;
+        TopLoc_Location rl;
+        if (BRep_Tool::Surface(TopoDS::Face(r.face), rl) != surf || !(rl == loc)) continue;
+        if (found && (found->kind != r.kind || found->a != r.a || found->b != r.b)) return;
+        found = &r;
+      }
+    }
+    if (!found) return;
+    split.push_back(Rec{ex.Current(), found->kind, found->a, found->b});
   }
   recs = split;
   BRepLib::SameParameter(solid, 1e-6, true);
