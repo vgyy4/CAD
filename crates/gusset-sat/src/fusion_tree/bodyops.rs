@@ -432,11 +432,13 @@ fn unit9(n: V3) -> Value {
 /// that takes it out of the old one (section 30).
 pub(super) const BODY_MOVES: [&str; 2] = ["56225BC7", "BA3059E4"];
 
-/// For every body move of the design whose two halves are one Base Feature making one body and
-/// one RemoveBody of one body: the body the Base Feature makes is the removed body carried on,
+/// For every body move of the design whose halves are one Base Feature making N bodies and N
+/// RemoveBodies of one body each: each body the Base Feature makes is a removed body carried on,
 /// so its links are given to the removed body's maker (later features then act on that body).
-/// Returns the moves and their two halves, which are not features of the tree.
-pub(super) fn carry_moved_bodies(d: &Design, g: &mut Graph) -> HashMap<u64, Result<[u64; 2], String>> {
+/// With more than one body, a made body and a removed one pair by the name of their body
+/// records (2831: `Base0` and `Sensor0`, section 43). Returns the moves and their halves, which
+/// are not features of the tree.
+pub(super) fn carry_moved_bodies(d: &Design, g: &mut Graph) -> HashMap<u64, Result<Vec<u64>, String>> {
     let mut out = HashMap::new();
     for &m in &d.ids {
         if !BODY_MOVES.iter().any(|c| d.is(m, c)) {
@@ -450,28 +452,63 @@ pub(super) fn carry_moved_bodies(d: &Design, g: &mut Graph) -> HashMap<u64, Resu
         removes.sort_unstable();
         removes.dedup();
         let res = (|| {
-            let ([base], [remove]) = (bases.as_slice(), removes.as_slice()) else {
+            let [base] = bases.as_slice() else {
                 return Err(format!(
-                    "it names {} Base Features and {} RemoveBodies, not one each",
+                    "it names {} Base Features and {} RemoveBodies, not one Base Feature",
                     bases.len(),
                     removes.len()
                 ));
             };
-            let removed = g.selected_bodies(d, *remove);
-            let [link] = removed.as_slice() else {
-                return Err(format!("its RemoveBody selects {} bodies, not one", removed.len()));
-            };
-            let maker = g.creator.get(link).copied().ok_or("the moved body has no maker")?;
-            let made: Vec<u64> = g.creator.iter().filter(|(_, f)| **f == *base).map(|(l, _)| *l).collect();
-            if made.len() != 1 {
-                return Err(format!("its Base Feature makes {} bodies, not one", made.len()));
+            if removes.is_empty() {
+                return Err("it names a Base Feature and no RemoveBody (a copy, not a move)".to_string());
             }
-            for l in made {
+            let mut made: Vec<u64> = g.creator.iter().filter(|(_, f)| **f == *base).map(|(l, _)| *l).collect();
+            made.sort_unstable();
+            if made.len() != removes.len() {
+                return Err(format!(
+                    "its Base Feature makes {} bodies for {} RemoveBodies",
+                    made.len(),
+                    removes.len()
+                ));
+            }
+            let mut pairs: Vec<(u64, u64)> = Vec::new();
+            for remove in &removes {
+                let removed = g.selected_bodies(d, *remove);
+                let [link] = removed.as_slice() else {
+                    return Err(format!("its RemoveBody selects {} bodies, not one", removed.len()));
+                };
+                let maker = g.creator.get(link).copied().ok_or("the moved body has no maker")?;
+                let to = match made.as_slice() {
+                    [one] => *one,
+                    _ => {
+                        let name = link_body_name(d, *link).ok_or("a moved body has no name")?;
+                        let same: Vec<u64> =
+                            made.iter().copied().filter(|l| link_body_name(d, *l).as_ref() == Some(&name)).collect();
+                        let [one] = same.as_slice() else {
+                            return Err("a moved body is not the one body of its name the Base Feature makes".into());
+                        };
+                        *one
+                    }
+                };
+                if pairs.iter().any(|(l, _)| *l == to) {
+                    return Err("two moved bodies pair with one body of the Base Feature".into());
+                }
+                pairs.push((to, maker));
+            }
+            for (l, maker) in pairs {
                 g.creator.insert(l, maker);
             }
-            Ok([*base, *remove])
+            let mut halves = vec![*base];
+            halves.extend(removes.iter().copied());
+            Ok(halves)
         })();
         out.insert(m, res);
     }
     out
+}
+
+/// The name of the body record (`D3937028`) a body link names.
+fn link_body_name(d: &Design, link: u64) -> Option<String> {
+    let body = ref_ids(d, d.rec(link)).into_iter().find(|q| d.is(*q, "D3937028"))?;
+    super::feature::feature_name(d, body).1
 }

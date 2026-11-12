@@ -1532,8 +1532,8 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
     let moves = super::bodyops::carry_moved_bodies(d, &mut g);
     let halves: HashMap<u64, u64> = moves
         .iter()
-        .filter_map(|(m, r)| r.as_ref().ok().map(|h| (*m, *h)))
-        .flat_map(|(m, h)| h.map(|q| (q, m)))
+        .filter_map(|(m, r)| r.as_ref().ok().map(|h| (*m, h.clone())))
+        .flat_map(|(m, h)| h.into_iter().map(move |q| (q, m)))
         .collect();
     let g = g;
     let mut names: HashMap<u64, String> = HashMap::new();
