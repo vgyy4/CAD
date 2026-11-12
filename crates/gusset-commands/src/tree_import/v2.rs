@@ -887,6 +887,16 @@ pub(super) fn mirror(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value]) -> 
     if d.features.is_empty() {
         return mirror_body(g, s, d, o, n);
     }
+    // A mirror of one sweep that made a new body is a mirrored copy of that body (3923's
+    // Mirror1): a sweep is not built again reflected.
+    if let [one] = d.features.as_slice()
+        && let Some(f) = feats.iter().find(|f| f.get("name").and_then(Value::as_str) == Some(one.as_str()))
+        && f.get("type").and_then(Value::as_str) == Some("sweep")
+        && f.get("operation").and_then(Value::as_str) == Some("new")
+    {
+        let copy = MirrorF { features: Vec::new(), target: Some(one.clone()), merge: Some(false), ..d.clone() };
+        return mirror_body(g, s, &copy, o, n);
+    }
     // Gusset mirrors bodies, so each listed feature is built again, reflected.
     let before: (HashSet<String>, HashSet<String>) =
         (g.sketches.keys().cloned().collect(), g.features.keys().cloned().collect());
