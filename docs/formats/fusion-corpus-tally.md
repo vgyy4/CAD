@@ -383,4 +383,5 @@ of 150, adafruit 13 of 18. None lost on any set. 3350 and 1054 now read past Off
 
 The `thread` feature (section 50), the thread record's side byte, blend edges moved with an offset cylinder:
 adafruit-next gains 3692 and 1054 (checked one by one, with every design that has a thread or an offset of faces:
-none lost against `wall`; 3000 fails its step check on `wall` already). 916 stops at `Fillet1` (OCCT, section 50).
+none lost; 3350 and 3000, which `wall`'s half-turn split of helical bands had lost, come in again). 916 stops at
+`Fillet1` (OCCT, section 50).

@@ -2985,14 +2985,18 @@ importer: `tree_import/v2.rs` (`thread`, `offset_face`), `tree_import.rs` (`move
   tolerance matter: ChFi3d's first guess of the contact runs along the crest face's boundary. Next: a blend of
   circular edges about one axis made in the meridian section (rounds rolling on each other) and revolved.
 
-### 3350 on `wall`
+### 3350 and 3000 on `wall`
 * On `wall` 3350 stops at its `Fillet1` ("fillet produced an invalid solid") after the half-turn split of
-  helical bands; here its thread is the `thread` feature (one ring and one groove per turn cut in one boolean of all
-  turns) and 3350 comes in as history again.
+  helical bands; here its thread is the `thread` feature (one ring, then all the groove's turns cut in one boolean)
+  and 3350 comes in as history again.
+* 3000 (no thread at all) failed its step check on `wall`: the boolean's half-turn split took any cylinder face with
+  a seam and an edge that is neither a line nor a circle for a helical band, so cylinders cut by other cylinders or by
+  slanting planes were split and the booleans changed. A band's edge must now be a helix on it: its curve on the
+  face's parameter plane straight (within 1e-4 of its length at seven points), turning at least a quarter round and
+  climbing. 3000 comes in as history again; the gear, thread and sweep golden tests and the OCCT crate's tests pass.
 
 ### Result
 * adafruit-next: 3692 and 1054 come in as history; 916 still stops at `Fillet1`; 3221 (Extrude, a face profile) and
   3429 (Fillet2, unresolved) as before. adafruit-more: 1145, 3350 history; 324 at Thread2 ("it is not on one face":
   a patterned thread on holes off the origin). Designs with offsets of faces (3027, 3464 history; 858, 6299, 5998,
-  6002, 3093, 6126, the Crickit assembly at their earlier blockers) unchanged; 3000 fails its step check on `wall`
-  already (Extrude7's stored tools), the same here.
+  6002, 3093, 6126, the Crickit assembly at their earlier blockers) unchanged; 3000 history again (above).
