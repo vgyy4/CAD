@@ -2335,3 +2335,41 @@ fn a_sketch_text_record_gives_its_font_string_height_and_placement() {
         ("sans", "mono", "mono")
     );
 }
+
+#[test]
+fn a_side_faces_away_from_its_own_region_of_a_profile() {
+    // Two posts of one extrude, 2 x 2 at x 0..2 and x 10..12: the middle of all the profile's
+    // points (x 6) lies between them, so only the regions themselves tell which way a side faces.
+    let square = |x0: f64, id: usize| {
+        let c = [[x0, 0.0], [x0 + 2.0, 0.0], [x0 + 2.0, 2.0], [x0, 2.0], [x0, 0.0]];
+        (0..4)
+            .map(|k| {
+                std::rc::Rc::new(sketch::Seg {
+                    id: id + k,
+                    curve: (id + k) as u64,
+                    poly: vec![c[k], c[k + 1]],
+                    flag: 1,
+                    loopkey: id,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let bounds: Vec<_> = square(0.0, 0).into_iter().chain(square(10.0, 10)).collect();
+    let pl = geom::Plane { x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0], z: [0.0, 0.0, 1.0], origin: [0.0; 3] };
+    let eg = naming::ExtGeom {
+        pl,
+        sketch: std::rc::Rc::new(sketch::Sketch::default()),
+        segs: bounds.clone(),
+        t0: Some(0.0),
+        t1: Some(1.0),
+        tapered: false,
+        bounds,
+    };
+    assert_eq!(eg.in_profile([11.0, 1.0]), Some(true));
+    assert_eq!(eg.in_profile([6.0, 1.0]), Some(false));
+    // The right post's left side faces -x, the left post's right side +x.
+    assert_eq!(eg.away_from_profile([1.0, 0.0, 0.0], [10.0, 1.0, 0.5]), Some(-1.0));
+    assert_eq!(eg.away_from_profile([1.0, 0.0, 0.0], [2.0, 1.0, 0.5]), Some(1.0));
+    // A face inside the area (no side) tells nothing.
+    assert_eq!(eg.away_from_profile([1.0, 0.0, 0.0], [11.0, 1.0, 0.5]), None);
+}

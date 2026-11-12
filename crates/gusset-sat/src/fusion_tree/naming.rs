@@ -215,7 +215,7 @@ pub(super) struct ExtGeom {
 impl ExtGeom {
     /// Whether a sketch point lies inside the profile's area (even-odd over `bounds`); `None`
     /// without a closed boundary.
-    fn in_profile(&self, q: P2) -> Option<bool> {
+    pub(super) fn in_profile(&self, q: P2) -> Option<bool> {
         if self.bounds.is_empty() {
             return None;
         }
@@ -240,7 +240,7 @@ impl ExtGeom {
 
     /// The side of a planar side face (its normal `n`, a point `mid` of it) away from the
     /// profile's area: the probes either side of the face, where one is inside and one outside.
-    fn away_from_profile(&self, n: V3, mid: V3) -> Option<f64> {
+    pub(super) fn away_from_profile(&self, n: V3, mid: V3) -> Option<f64> {
         let pl = &self.pl;
         let rel = sub(mid, pl.origin);
         let (q, m) = ([dot(rel, pl.x), dot(rel, pl.y)], [dot(n, pl.x), dot(n, pl.y)]);
