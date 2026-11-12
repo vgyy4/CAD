@@ -82,8 +82,10 @@
 #include <Geom_Curve.hxx>
 #include <Geom_Surface.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepCheck_Result.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <ChFi3d.hxx>
 #include <BRepGProp.hxx>
 #include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepLProp_SLProps.hxx>
@@ -590,12 +592,40 @@ int shapes_out(std::vector<GsShape*>& v, GsShape*** out, size_t* n) {
   return GS_OK;
 }
 
+// Whether every fault BRepCheck finds in `made` lies in a part of it that `in` already had,
+// unchanged (the same vertex, edge, wire or face): faults a blend inherits, not ones it made.
+// 3350's threaded rod has helix edges a little off their faces (the thread's B-spline fits), and
+// any blend of it, far from the thread, keeps those edges as they were.
+bool faults_inherited(const TopoDS_Shape& made, const TopoDS_Shape& in) {
+  BRepCheck_Analyzer an(made, true, true);
+  if (an.IsValid()) return true;
+  ShapeMap old;
+  TopExp::MapShapes(in, old);
+  for (TopAbs_ShapeEnum t : {TopAbs_VERTEX, TopAbs_EDGE, TopAbs_WIRE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID}) {
+    for (TopExp_Explorer ex(made, t); ex.More(); ex.Next()) {
+      Handle(BRepCheck_Result) r = an.Result(ex.Current());
+      if (r.IsNull()) continue;
+      bool ok = true;
+      for (r->InitContextIterator(); ok && r->MoreShapeInContext(); r->NextShapeInContext())
+        for (const BRepCheck_Status st : r->StatusOnShape())
+          if (st != BRepCheck_NoError) ok = false;
+      for (const BRepCheck_Status st : r->Status())
+        if (st != BRepCheck_NoError) ok = false;
+      if (!ok && (t == TopAbs_SHELL || t == TopAbs_SOLID || !old.Contains(ex.Current()))) return false;
+    }
+  }
+  return true;
+}
+
 // A blend's shape, or its repair where BRepCheck rejects it (tolerances and small seams that
 // ShapeFix mends, as FreeCAD's fillet does when its own validity test fails); `ctx` then maps
-// the blend's faces to the repaired shape's.
-TopoDS_Shape valid_blend(const TopoDS_Shape& made, bool fillet, Handle(ShapeBuild_ReShape)& ctx) {
+// the blend's faces to the repaired shape's. A shape whose only faults are ones the blended
+// shape `in` already had is kept as it is ([`faults_inherited`]).
+TopoDS_Shape valid_blend(const TopoDS_Shape& made, bool fillet, Handle(ShapeBuild_ReShape)& ctx,
+                         const TopoDS_Shape& in) {
   TopoDS_Shape result = made;
-  if (!BRepCheck_Analyzer(result, true, true).IsValid()) {
+  if (!BRepCheck_Analyzer(result, true, true).IsValid() &&
+      (BRepCheck_Analyzer(in, true, true).IsValid() || !faults_inherited(made, in))) {
     ShapeFix_ShapeTolerance tol;
     tol.LimitTolerance(result, Precision::Confusion(), Precision::Confusion(), TopAbs_SHAPE);
     ShapeFix_Shape fix(result);
@@ -737,6 +767,31 @@ bool blend_in_passes(const TopoDS_Shape& in, const std::vector<BlendEdge>& es, T
   return !first;
 }
 
+// The edges of a fillet with the concave ones first, where it has both kinds; else empty.
+// Fusion blends a concave and a convex edge of one face whose blends overlap (the face is
+// narrower than both radii) as if the concave one came first: the convex blend then rolls on
+// the concave blend's surface (3350's Fillet1: a 0.5 mm groove fillet and the rod's rim across a
+// 0.942 mm step; its stored torus is the ball between the rod and the concave blend, as an edge
+// by edge fillet in this order makes it, volume equal to 1e-8).
+std::vector<BlendEdge> concave_first(const TopoDS_Shape& s, const std::vector<BlendEdge>& es) {
+  AncMap anc;
+  TopExp::MapShapesAndAncestors(s, TopAbs_EDGE, TopAbs_FACE, anc);
+  std::vector<BlendEdge> concave, convex;
+  for (const auto& x : es) {
+    int i = anc.FindIndex(x.e);
+    if (i <= 0 || anc(i).Extent() != 2) return {};
+    const TopoDS_Face f1 = TopoDS::Face(anc(i).First()), f2 = TopoDS::Face(anc(i).Last());
+    switch (ChFi3d::DefineConnectType(x.e, f1, f2, 1e-6, false)) {
+      case ChFiDS_Concave: concave.push_back(x); break;
+      case ChFiDS_Convex: convex.push_back(x); break;
+      default: return {};
+    }
+  }
+  if (concave.empty() || convex.empty()) return {};
+  concave.insert(concave.end(), convex.begin(), convex.end());
+  return concave;
+}
+
 // Defined below: the blend made by cutting away the corner of each edge.
 int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
                      GsShape** out, GsBuf* origins);
@@ -748,13 +803,35 @@ template <typename Mk>
 int blend_edges(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
                 GsShape** out, GsBuf* origins) {
   std::string first_error = fillet ? "fillet failed" : "chamfer failed";
+  // A fillet of concave and convex edges, the concave ones first (`concave_first`): where the
+  // blend at once fails or is invalid (OCCT's answer to overlapping rounds, which ShapeFix can
+  // turn into a valid solid of the wrong shape), before the repair.
+  auto concave_passes = [&]() -> bool {
+    if (!fillet || es.size() < 2) return false;
+    try {
+      const std::vector<BlendEdge> order = concave_first(s->s, es);
+      TopoDS_Shape made;
+      BRepTools_History hist;
+      if (order.empty() || !blend_in_passes<Mk>(s->s, order, made, hist)) return false;
+      Handle(ShapeBuild_ReShape) ctx;
+      TopoDS_Shape result = valid_blend(made, fillet, ctx, s->s);
+      std::vector<int64_t> o;
+      blend_origins(hist, s->s, result, ctx, o);
+      to_buf(o, origins);
+      *out = new GsShape{result};
+      return true;
+    } catch (const Standard_Failure&) {
+      return false;
+    }
+  };
   try {
     Mk mk(s->s);
     for (const auto& x : es) add_blend(mk, x);
     mk.Build();
     if (mk.IsDone()) {
+      if (!BRepCheck_Analyzer(mk.Shape(), true, true).IsValid() && concave_passes()) return GS_OK;
       Handle(ShapeBuild_ReShape) ctx;
-      TopoDS_Shape result = valid_blend(mk.Shape(), fillet, ctx);
+      TopoDS_Shape result = valid_blend(mk.Shape(), fillet, ctx, s->s);
       std::vector<int64_t> o;
       blend_origins(mk, s->s, result, ctx, o);
       to_buf(o, origins);
@@ -771,7 +848,7 @@ int blend_edges(const GsShape* s, const std::vector<BlendEdge>& es, const std::v
       BRepTools_History hist;
       if (blend_in_passes<Mk>(s->s, es, made, hist)) {
         Handle(ShapeBuild_ReShape) ctx;
-        TopoDS_Shape result = valid_blend(made, fillet, ctx);
+        TopoDS_Shape result = valid_blend(made, fillet, ctx, s->s);
         std::vector<int64_t> o;
         blend_origins(hist, s->s, result, ctx, o);
         to_buf(o, origins);
@@ -781,6 +858,7 @@ int blend_edges(const GsShape* s, const std::vector<BlendEdge>& es, const std::v
     } catch (const Standard_Failure&) {
     }
   }
+  if (concave_passes()) return GS_OK;
   try {
     if (blend_by_corners(s, es, idx, fillet, out, origins) == GS_OK) return GS_OK;
   } catch (const Standard_Failure&) {

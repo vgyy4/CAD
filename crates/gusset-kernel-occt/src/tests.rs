@@ -1787,6 +1787,64 @@ fn fillets_between_a_bar_and_a_disc() {
 }
 
 #[test]
+fn a_convex_fillet_beside_a_concave_one_rolls_on_it() {
+    // A rod of radius 7.942 with a groove 0.942 deep below z -10.5 and a 45 degree chamfer at its
+    // foot. Rounding the groove's inner top edge (concave), the rod's rim above it (convex) and the
+    // groove's foot (convex) with 0.5 mm: the two rounds at z -10.5 need 1 mm of a 0.942 mm step,
+    // so OCCT fails on them at once; the concave one first, the convex ball then rolls between the
+    // rod and the concave round, as Fusion's stored body has it.
+    let pts = [[0.0, 0.0], [7.942, 0.0], [7.942, -10.5], [7.0, -10.5], [7.0, -12.5], [5.5, -14.0], [0.0, -14.0]];
+    let edges = (0..pts.len())
+        .map(|i| ProfileEdge { seg: Seg2::Line { a: pts[i], b: pts[(i + 1) % pts.len()] }, tag: i as u64 + 1 })
+        .collect();
+    let p = Profile { frame: Frame::XZ, regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }] };
+    let rod = k()
+        .revolve(&p, &RevolveSpec { axis_origin: [0.0, 0.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::TAU })
+        .unwrap();
+    let t = k().topology(&rod.shape).unwrap();
+    let circle = |r: f64, z: f64| {
+        t.edges
+            .iter()
+            .position(|e| {
+                e.circle.as_ref().is_some_and(|c| (c.radius - r).abs() < 1e-9 && (c.center[2] - z).abs() < 1e-9)
+            })
+            .unwrap() as u32
+    };
+    let picked = [circle(7.0, -10.5), circle(7.942, -10.5), circle(7.0, -12.5)];
+    let f = k().fillet(&rod.shape, &picked, 0.5).unwrap();
+    // Pappus over the section: the rim's ball centre is 1 from the concave round's (7.5, -11).
+    let arc = |c: [f64; 2], a0: f64, a1: f64| -> Vec<[f64; 2]> {
+        (0..=4000)
+            .map(|i| a0 + (a1 - a0) * f64::from(i) / 4000.0)
+            .map(|a| [c[0] + 0.5 * a.cos(), c[1] + 0.5 * a.sin()])
+            .collect()
+    };
+    let cc = [7.5, -11.0];
+    let cv = [7.442, cc[1] + (1.0f64 - 0.058 * 0.058).sqrt()];
+    let towards = (cc[1] - cv[1]).atan2(cc[0] - cv[0]);
+    let back = (cv[1] - cc[1]).atan2(cv[0] - cc[0]);
+    let mut sec = vec![[0.0, 0.0], [7.942, 0.0]];
+    sec.extend(arc(cv, 0.0, towards));
+    sec.extend(arc(cc, back, std::f64::consts::PI));
+    sec.extend(arc([6.5, -13.0 + 0.5 * std::f64::consts::SQRT_2], 0.0, -std::f64::consts::FRAC_PI_4));
+    sec.extend([[5.5, -14.0], [0.0, -14.0]]);
+    let v = (0..sec.len())
+        .map(|i| {
+            let (a, b) = (sec[i], sec[(i + 1) % sec.len()]);
+            (a[0] * a[0] + a[0] * b[0] + b[0] * b[0]) * (b[1] - a[1])
+        })
+        .sum::<f64>()
+        .abs()
+        * std::f64::consts::PI
+        / 3.0;
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, v, 1e-7), "{} vs {v}", m.volume);
+    for e in picked {
+        assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+    }
+}
+
+#[test]
 fn fillet_of_an_arc_that_takes_its_whole_face() {
     // A 1 mm half disc of radius 10: a 1 mm fillet of its top arc leaves nothing of the
     // cylinder (OCCT's blend fails); the corner is cut away and ends on the flat side.
