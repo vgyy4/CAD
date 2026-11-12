@@ -1912,6 +1912,82 @@ Readers: `fusion_tree/json.rs` (patterns, mirrors, shells, extrudes); blends: `b
 * First blockers now: 858 `Fillet3` (tool faces Fusion keeps apart), 6299 `Extrude17` (a body face as profile),
   5358 `Chamfer2`, 5360 the step check.
 
+## 36. Round 22 L: modeled threads, from the stored bodies (2026-11-11)
+
+### What Fusion's modeled thread is
+Read from the end bodies of 1145's and 3350's history blobs (`.smbh`; the `.smb` holds the state before the thread):
+* The thread first moves the **whole** selected cylindrical face to the thread's diameter: an external thread to
+  half its major diameter (1145: the rod of radius 8.2 mm becomes 7.942 mm over all 13 mm, not only the threaded
+  length; 3350: 9 mm becomes 7.942 mm), an internal one to half its minor diameter (3350's Thread2: the 8 mm hole
+  becomes 7.51775 mm). Blends made later are made on the moved face (1145's Fillet1: a torus of 7.342 + 0.6 mm).
+* Then it cuts the groove of the basic profile. Faces: two flanks (`helix_spl_line` ruled surfaces), the root
+  (a cylinder strip between two helices, one ACIS face winding nine turns), the crest (the moved face, now also
+  bounded by helices). Profile in an axial plane, P the pitch, h the radial depth (major - minor) / 2, w = h tan of
+  half the flank angle: the crest flat (material at the major diameter of an external thread, at the minor one of
+  an internal one) is P/8 wide; the root flat takes the rest (1145: 0.2151 mm = P - P/8 - 2w). The flat at the
+  major diameter is centred P/16 before the face's start (along the face's axis, which runs the way its extrude
+  went) modulo P, the flat at the minor diameter 7P/16 after it, for the external and the internal threads alike;
+  at angle 0 (the sketch's x) the groove of 1145 spans [0, 7P/8] at the major diameter. All three ends are at whole
+  pitches from the face's start, so the phase could also be anchored at the thread's start; volumes and boxes do
+  not depend on it.
+* The thread ends **square**: the groove stops on planes across the axis, at the offset (1145: a planar face at
+  z = 4 mm, its loop two flank-plane curves, an arc at the major and one at the minor radius) and at the face's
+  end (the end face carries the groove's section). No run-out, no chamfer, no taper.
+* Where it lies: `ThreadOffset` and `ThreadLength` from one end of the face, clipped to the face (3350's Thread1:
+  12 mm from 5 mm on a 14 mm face is 9 mm). The `u32` after the side byte says which end: 2 in 1145 (the offset
+  from the extrude's start, the sketch plane), 1 in 3350's Thread1 (from the extrude's end cap); only these two
+  samples have an offset, so the reading is consistent with both but not proven. Full-length threads (3350's
+  Thread2, 324) have 2. All four samples are right-handed.
+* `helix_spl_line` (fixed in `step.rs`): after `centre major minor pitch taper axis null_surface null_surface
+  nullbs nullbs` come three numbers (rise, twist, climb): the point at (u, t) is the helix with its radius vectors
+  scaled by 1 + u rise and moved u climb along the unit axis (1145: rise 1.17499 = 0.5715 mm / 7.3705 mm per cm of u,
+  climb 0.5 = tan 30 deg x rise x radius; every edge of the flank lies on it). The reader had taken the axis for
+  the ruling, so every flank came in as a band on the root cylinder.
+
+### Measuring it
+* 1145's threaded body, analytic: rod 2576.0367 - fillet 3.7901 - groove 135.877 (9 mm x the groove's section
+  A 2 pi r_c / P = 15.0975 mm3/mm) = 2436.3700 mm3. Stored, converted: 2435.03 at first. Two errors:
+  - the helices were fitted with 16 Hermite pieces a turn from each curve's own start, so an edge lay 0.5 um off
+    its flank and the flank's volume was 2.6e-5 off: pieces now break where the helix crosses fixed half-planes
+    about its axis (64 a turn), so curves on one helix share their pieces;
+  - OCCT's adaptive volume quadrature (the shim's choice for shapes with freeform faces) integrated the root,
+    a cylinder face winding nine turns, as one period: 189.57 against 220.25 for that face. A shape with a cylinder
+    or cone face that one of its edges goes 1.5 turns round now gets the default quadrature, which agrees with the
+    mesh and Gauss-Kronrod (VolumePropertiesGK) to 2e-6; Gauss-Kronrod itself took over ten minutes on 5753's
+    stored screws, and a face's pcurve box alone (whole cylinders pass one turn a little) sent 2219 there too.
+    Converted now: 2436.3698 mm3.
+* The rebuild with Gusset's exact helical sweeps: 2436.3740 mm3 (1.7e-6 from the stored body).
+
+### The tree
+* `thread.rs` turns a modeled thread on the side of a whole extruded circle (axis along a world axis through the
+  origin) into tree features: an annulus extrude (cut for an external thread, join for an internal one) over the
+  face's length, then the groove: one-turn helical sweeps of the profile (run 0.03 P / tan(half angle) past the
+  surface it cuts, so no edge lies on it), the first a pitch below the thread's start. A sweep that reaches past an
+  end of the thread inside the face is made as a body, cut off by a disc of that length (`combine` intersect) and
+  then cut from the body; one that reaches past the face's end is cut directly (it runs out through the end face,
+  as Fusion's does).
+* OCCT and long grooves: one sweep of eleven turns cut 1145's rod not at all (no error, the body unchanged) when the
+  groove passed through the top face; so did some phases of the same groove (the result depended on where the
+  rod's seam was); two-turn sweeps failed once at the top face ("invalid solid"). One turn a sweep cut exactly in
+  every case tried.
+* Fillets and chamfers after the thread pick their edges by points taken from the extrude: an edge whose points all
+  lay on the face before it moved is moved with it (`moved_edges`).
+* Not converted: threads on other faces (3350's Thread2 is on a revolve's face: "its face is not the side of an
+  extruded circle"), on an axis that is not a world axis through the origin (324: holes off the Y axis), a face
+  narrower (external) or a hole wider (internal) than the thread, or an unknown offset end code.
+
+### Result
+* adafruit-more: 130 of 150 as history, adafruit 13 of 18: the same designs as round 22 M's tally (none gained,
+  none lost). The threads themselves now rebuild:
+  - 1145: Thread1 builds (2436.3740 mm3 against the stored 2436.3698) and Fillet1 rounds its moved edge; the design
+    is refused by its cap: Revolve2 (a revolved degree-5 spline, filleted) gives 476.79 mm3 where the end body is
+    436.99 (39.80 less, the same gap as with the thread left out in round 20; not a thread matter).
+  - 3350: Thread1 builds; the design stops at Thread2, an internal thread on a revolve's face (the face reader
+    knows only extruded circles; the form above holds for it: the 8 mm hole is filled to 7.51775 mm and the groove
+    cut to 8.0761 mm).
+  - 324: Thread2 is refused before its geometry ("it is not on one face": its selection is not one face recipe,
+    the thread is patterned by C-Pattern1 on holes off the origin); Split3, Combine1 and unresolved fillets follow.
+
 ## 37. Round 22 M: the magnetic connectors' last steps (2026-11-11)
 
 ### 5360: the step check (three faults, each shown by the stored shapes)
