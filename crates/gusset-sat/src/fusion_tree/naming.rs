@@ -1177,18 +1177,20 @@ impl Ctx<'_> {
     /// the one between the side and cap `2`.
     fn rim_named_minus_one(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
         let [a, b, end] = faces else { return None };
-        let ([(ga, oa)], [(gb, ob)], [(ge, oe)]) = (a.as_slice(), b.as_slice(), end.as_slice()) else {
-            return None;
-        };
-        let side = match (ga.as_str(), gb.as_str()) {
-            ("-1", g) if g != "1" && g != "2" && !g.starts_with('-') => b,
-            (g, "-1") if g != "1" && g != "2" && !g.starts_with('-') => a,
+        let [(ge, ops)] = end.as_slice() else { return None };
+        let minus = |f: &FaceName| matches!(f.as_slice(), [(g, o)] if g == "-1" && o == ops);
+        let side = match (minus(a), minus(b)) {
+            (true, false) => b,
+            (false, true) => a,
             _ => return None,
         };
-        if ge != "2" || oa != ob || oa != oe || oa.len() != 1 {
+        if ge != "2" || ops.len() != 1 {
             return None;
         }
-        self.edge_midpoint(&[end.clone(), side.clone()])
+        // The side may be merged with another feature's face (5981: the post's side and the
+        // wall's arc side): its entry of this extrude.
+        let own = side.iter().find(|(g, o)| o == ops && g != "1" && g != "2" && !g.starts_with('-'))?;
+        self.edge_midpoint(&[end.clone(), vec![own.clone()]])
     }
 
     /// The edges of a face picked whole (a bounded-face recipe in a blend: 5998's Chamfer2 takes
