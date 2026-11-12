@@ -364,7 +364,7 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "query.draft_analysis" => Tool::Draft,
         "feature.bake" => Tool::Body,
         "query.joints" => Tool::Joint,
-        "import.file" => Tool::Import,
+        "import.file" | "pcb.import" => Tool::Import,
         "export.step" | "export.mesh" => Tool::Export,
         "export.image" => Tool::RenderImage,
         "body.appearance" => Tool::Appearance,

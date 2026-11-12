@@ -134,7 +134,7 @@ const SOLID: &[Group] = &[
             d("query.draft_analysis", "Draft check"),
         ],
     },
-    Group { key: "ribbon.insert", large: 1, tools: &[d("import.file", "Import")] },
+    Group { key: "ribbon.insert", large: 1, tools: &[d("import.file", "Import"), d("pcb.import", "PCB")] },
 ];
 
 const CAM: &[Group] = &[
