@@ -332,16 +332,18 @@ pub(super) fn thin_extrude(
         return fail(j, "of a closed profile or with a second wall");
     }
     let Some((loc, t)) = wall(cx, fid) else { return fail(j, "the wall's side is not read") };
-    // The wall's offsets to the left of the chain (mm), by its location.
     let w = mm(t);
-    // 5981's wall (2) lies to the left of its chain: its sides meet at the chain's own points
-    // and 0.6 mm outside its arc (the stored edges of Extrude3's faces).
-    let (lo, hi) = match loc {
-        2 => (0.0, w),
-        // Location 1 (6126, 6299) would be the right side; no rebuild confirms it yet.
-        1 => return fail(j, "wall location 1 (the right of its chain?) is not confirmed by a rebuild yet"),
-        _ => return fail(j, &format!("wall location {loc} is not established")),
-    };
+    if loc != 2 {
+        // Location 1 (6126, 6299) would be the other side; no rebuild confirms it yet.
+        return fail(
+            j,
+            &if loc == 1 {
+                "wall location 1 (the right of its chain?) is not confirmed by a rebuild yet".to_string()
+            } else {
+                format!("wall location {loc} is not established")
+            },
+        );
+    }
     // The curves, as a sweep path names them.
     let mut sk: Option<u64> = None;
     let mut ids: Vec<String> = Vec::new();
@@ -377,6 +379,19 @@ pub(super) fn thin_extrude(
     };
     let Some(ch) = pieces_of(&sketch_feat, &ids).and_then(|p| chain(&p)) else {
         return fail(j, "its curves are not one open chain (corners only between lines)");
+    };
+    // The wall's offsets to the left of the chain (mm). Location 2 lies outside the chain's
+    // arcs: 5981's (0.6 mm outside its arc, its stored edges) and 6299's Extrude7 (2) (its
+    // stored vertices), whose chains run their arc clockwise, lie to the left; 5998's
+    // Extrude6 (2), whose chain runs its arc counter-clockwise, to the right (its stored
+    // faces, 1.4 -> 1.8 mm about the arc's centre). A chain of lines keeps the left (no
+    // sample tells); one whose arcs turn both ways is refused.
+    let turns: Vec<bool> =
+        ch.iter().filter_map(|p| if let Piece::Arc { ccw, .. } = p { Some(*ccw) } else { None }).collect();
+    let (lo, hi) = match (turns.iter().all(|c| *c), turns.iter().any(|c| *c)) {
+        (true, true) => (-w, 0.0),
+        (_, false) => (0.0, w),
+        (false, true) => return fail(j, "its chain turns both ways round its arcs"),
     };
     let Some((points, curves, mid)) = outline(&ch, lo, hi) else { return fail(j, "the wall does not fit its arcs") };
     // The direction: the sketch's normal, or against it.
