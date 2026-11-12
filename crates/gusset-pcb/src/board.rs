@@ -24,6 +24,8 @@ pub enum Error {
     NotABoard(String),
     /// Past a count limit (footprints, pads, tracks...).
     TooMany(&'static str),
+    /// An edit that cannot be made (bad argument, missing item).
+    Edit(String),
 }
 
 impl fmt::Display for Error {
@@ -35,6 +37,7 @@ impl fmt::Display for Error {
                 write!(f, "not a KiCad board or footprint (the file starts with '{h}')")
             }
             Error::TooMany(what) => write!(f, "the board has more {what} than the reader's limit"),
+            Error::Edit(m) => write!(f, "{m}"),
         }
     }
 }
@@ -260,6 +263,8 @@ pub struct Footprint {
     /// Indices into [`Board::pads`].
     pub pads: Vec<usize>,
     pub models: Vec<Model3d>,
+    /// Position among the file's top-level items (0 for a footprint file).
+    pub node: usize,
 }
 
 /// A track segment or arc.
@@ -272,6 +277,8 @@ pub struct Track {
     pub width: f64,
     pub layer: String,
     pub net: NetRef,
+    /// Position among the file's top-level items.
+    pub node: usize,
 }
 
 /// A via.
@@ -283,6 +290,8 @@ pub struct Via {
     /// The two layers it connects (through vias: `F.Cu` and `B.Cu`).
     pub layers: [String; 2],
     pub net: NetRef,
+    /// Position among the file's top-level items.
+    pub node: usize,
 }
 
 /// A copper zone (pour), keep-out or rule area.
@@ -322,6 +331,13 @@ pub struct Board {
     /// The board-wide solder mask expansion (`pad_to_mask_clearance`).
     pub mask_margin: f64,
     pub paste_margin: f64,
+    /// Whether the file lists its nets at the top (`(net 3 "GND")`, KiCad 5 to 9); items
+    /// then refer to nets by number.
+    pub numbered_nets: bool,
+    /// KiCad 5 net classes written in the board (newer versions keep them in the project).
+    pub net_classes: Vec<crate::rules::NetClass>,
+    /// `(setup (aux_axis_origin x y))`: the origin of placement files.
+    pub aux_origin: Pt,
     /// Things read but not understood, for the user (at most a few dozen).
     pub notes: Vec<String>,
 }
@@ -362,6 +378,9 @@ impl Board {
             zones: Vec::new(),
             mask_margin: 0.0,
             paste_margin: 0.0,
+            numbered_nets: false,
+            net_classes: Vec::new(),
+            aux_origin: [0.0, 0.0],
             notes: Vec::new(),
         };
         let mut r = Reader { limits, board: &mut b };
@@ -370,7 +389,7 @@ impl Board {
             // A footprint file is one footprint at the origin.
             "footprint" | "module" => {
                 r.board.version = tree.child("version").and_then(|v| v.num_arg(0)).map(|v| v as i64);
-                r.footprint(&tree)?;
+                r.footprint(&tree, 0)?;
             }
             _ => return Err(Error::NotABoard(head)),
         }
@@ -672,6 +691,7 @@ impl Reader<'_> {
         if let Some(setup) = tree.child("setup") {
             b.mask_margin = num(setup, "pad_to_mask_clearance").unwrap_or(0.0);
             b.paste_margin = num(setup, "pad_to_paste_clearance").unwrap_or(0.0);
+            b.aux_origin = pt(setup.child("aux_axis_origin")).unwrap_or([0.0, 0.0]);
             if let Some(st) = setup.child("stackup") {
                 for l in st.children("layer").take(1000) {
                     b.stackup.push(StackupLayer {
@@ -690,21 +710,28 @@ impl Reader<'_> {
             _ if stack_sum > 0.0 && stack_sum < 100.0 => stack_sum,
             _ => DEFAULT_THICKNESS,
         };
-        for n in tree.args() {
+        for (i, n) in tree.args().iter().enumerate() {
+            let node = i + 1;
             match n.head() {
+                Some("net_class") => {
+                    if self.board.net_classes.len() < 1000 {
+                        self.board.net_classes.push(crate::rules::NetClass::from_kicad5(n));
+                    }
+                }
                 Some("net") => {
                     self.check(self.board.nets.len(), "nets")?;
                     if let Some(id) = n.arg(0).and_then(|t| t.parse::<i64>().ok()) {
+                        self.board.numbered_nets = true;
                         self.board.nets.push(Net { id, name: text_arg(n, 1) });
                     } else if let Some(name) = n.arg(0) {
                         let id = self.board.nets.len() as i64;
                         self.board.nets.push(Net { id, name: name.to_string() });
                     }
                 }
-                Some("footprint" | "module") => self.footprint(n)?,
-                Some("segment") => self.track(n, false)?,
-                Some("arc") => self.track(n, true)?,
-                Some("via") => self.via(n)?,
+                Some("footprint" | "module") => self.footprint(n, node)?,
+                Some("segment") => self.track(n, false, node)?,
+                Some("arc") => self.track(n, true, node)?,
+                Some("via") => self.via(n, node)?,
                 Some("zone") => self.zone(n)?,
                 Some(h) if h.starts_with("gr_") => self.graphic(n, None, &Place::ORIGIN)?,
                 _ => {}
@@ -713,7 +740,7 @@ impl Reader<'_> {
         Ok(())
     }
 
-    fn track(&mut self, n: &Node, arc: bool) -> Result<(), Error> {
+    fn track(&mut self, n: &Node, arc: bool, node: usize) -> Result<(), Error> {
         self.check(self.board.tracks.len(), "tracks")?;
         let (Some(start), Some(end)) = (pt(n.child("start")), pt(n.child("end"))) else {
             self.note("a track without start or end was skipped".into());
@@ -727,11 +754,12 @@ impl Reader<'_> {
             width: num(n, "width").unwrap_or(0.0).max(0.0),
             layer: n.child("layer").map(|l| text_arg(l, 0)).unwrap_or_default(),
             net: net_ref(n),
+            node,
         });
         Ok(())
     }
 
-    fn via(&mut self, n: &Node) -> Result<(), Error> {
+    fn via(&mut self, n: &Node, node: usize) -> Result<(), Error> {
         self.check(self.board.vias.len(), "vias")?;
         let Some(at) = pt(n.child("at")) else { return Ok(()) };
         let layers = n.child("layers");
@@ -743,6 +771,7 @@ impl Reader<'_> {
             drill: num(n, "drill").unwrap_or(0.0).max(0.0),
             layers: [la, lb],
             net: net_ref(n),
+            node,
         });
         Ok(())
     }
@@ -832,7 +861,7 @@ impl Reader<'_> {
         Ok(())
     }
 
-    fn footprint(&mut self, n: &Node) -> Result<(), Error> {
+    fn footprint(&mut self, n: &Node, node: usize) -> Result<(), Error> {
         self.check(self.board.footprints.len(), "footprints")?;
         let index = self.board.footprints.len();
         let at_node = n.child("at");
@@ -853,6 +882,7 @@ impl Reader<'_> {
                 .unwrap_or_default(),
             pads: Vec::new(),
             models: Vec::new(),
+            node,
         };
         let fp_mask = num(n, "solder_mask_margin");
         let fp_paste = num(n, "solder_paste_margin");
