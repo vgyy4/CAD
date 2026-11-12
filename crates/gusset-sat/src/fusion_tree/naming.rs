@@ -1080,6 +1080,7 @@ impl Ctx<'_> {
             .or_else(|| self.stored_edge(faces))
             .or_else(|| self.side_at_cap(faces))
             .or_else(|| self.rim_at_plane(faces))
+            .or_else(|| self.rim_at_cone(faces))
             .or_else(|| self.mirrored_edge(faces))
     }
 
@@ -1153,6 +1154,47 @@ impl Ctx<'_> {
             return Some((at(std::f64::consts::PI), true, path));
         }
         None
+    }
+
+    /// A closed edge (no faces bound its ends) between a cylinder and a cone about the same axis,
+    /// both as the stored bodies hold them (6118's Fillet2: the round side of an extrude, r 11.75
+    /// mm, and the 45 degree cone of a revolve about the extrude's axis): the circle where the
+    /// cone reaches the cylinder's radius, given as points all round it like [`Ctx::rim_at_plane`].
+    fn rim_at_cone(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
+        let [f0, f1] = faces else { return None };
+        let (g0, ops0) = f0.first()?;
+        let (g1, ops1) = f1.first()?;
+        let s0 = self.stored_face(g0, ops0)?.surface;
+        let s1 = self.stored_face(g1, ops1)?.surface;
+        let (cyl, cone) = match (&s0, &s1) {
+            (Surface::Cylinder { .. }, Surface::Cone { .. }) => (s0, s1),
+            (Surface::Cone { .. }, Surface::Cylinder { .. }) => (s1, s0),
+            _ => return None,
+        };
+        let (Surface::Cylinder { origin, axis, radius }, Surface::Cone { origin: co, axis: ca, radius: cr, sin, cos }) =
+            (cyl, cone)
+        else {
+            return None;
+        };
+        let (axis, ca) = (unit(axis)?, unit(ca)?);
+        let off = sub(co, origin);
+        let across = sub(off, mul(axis, dot(off, axis)));
+        if (dot(axis, ca).abs() - 1.0).abs() > 1e-9 || norm(across) > 1e-7 || sin.abs() < 1e-6 || cos.abs() < 1e-6 {
+            return None;
+        }
+        if !(radius.is_finite() && radius > 0.0) {
+            return None;
+        }
+        // The cone's radius at height h along its axis is `cr + h sin / cos`.
+        let h = (radius - cr) * cos / sin;
+        let centre = add(co, mul(ca, h));
+        let u = unit(cross(ca, if ca[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] }))?;
+        let v = cross(ca, u);
+        let step = libm::acos((1.0 - 5e-4 / radius).clamp(-1.0, 1.0)) * 2.0;
+        let k = ((2.0 * std::f64::consts::PI / step.max(1e-3)).ceil() as usize).clamp(16, 256);
+        let at = |t: f64| add(centre, add(mul(u, radius * libm::cos(t)), mul(v, radius * libm::sin(t))));
+        let path: Vec<V3> = (0..=k).map(|i| at(2.0 * std::f64::consts::PI * i as f64 / k as f64)).collect();
+        Some((at(std::f64::consts::PI), true, path))
     }
 
     /// An edge named by a straight side of an extrude and a cap of the same extrude, and by
