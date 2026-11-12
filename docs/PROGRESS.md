@@ -9,6 +9,13 @@ refuses tag pushes); the tag triggers the release workflow after the milestone r
 Phase 3 has started (see Next).
 
 ## Done
+- Import history choice (owner request, 2026-11-12; ADR 0042 amendment): Fusion, SolidWorks,
+  Inventor and FreeCAD imports classify their feature history as perfect (the unchanged strict
+  check), imperfect (read, but differs: the reason says which feature or how much) or none
+  (with the reason). `import.file` `history: final | rebuild | ask` (default unchanged): rebuild
+  keeps failed features suppressed with their error as a note, one undo step; ask reports the
+  class without committing. The GUI asks in a modal after parsing and offers Undo after a
+  "try anyway" import.
 - PCB design (ADR 0047, 2026-11-12; owner request: build on the best-loved open-source
   tools instead of from scratch, research in docs/research/pcb-design.md). `gusset-pcb`
   reads and writes KiCad boards and schematics losslessly (S-expressions; KiCad libraries

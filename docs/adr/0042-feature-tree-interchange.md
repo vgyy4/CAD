@@ -568,3 +568,44 @@ the face's boundary (mm, at most 256), and `surface`, the surface the face lies 
   edges are on. The importer looks at that body alone only where the edges' points match edges
   of several bodies (two bodies touching along the edge: a magnet in its pocket); otherwise it is
   not used.
+
+## Amendment (2026-11-12): the history choice (owner request)
+
+The native importers that read a feature history (Fusion `.f3d`/`.f3z`, SolidWorks `.sldprt`,
+Inventor `.ipt`, FreeCAD `.FCStd`) used to keep it only when it rebuilds the file's own shapes,
+silently falling back to the shapes otherwise. The owner asked that the user decides: try the
+history anyway (with undo) or import only the final shape, and is told when there is no
+history to import.
+
+- **Classification** (`import::history`, separate from the decoders). Parsing classifies the
+  file's history: `perfect` (the strict `rebuild_check` passes, exactly as before: volume within
+  2e-5, bounding box, nothing skipped, and Fusion's state-by-state check), `imperfect` (a tree was
+  read but the check failed; the reason names the first feature that fails or the volume/box
+  difference) or `none` (no tree could be read, with the reason; a file without a history says
+  so; Solid Edge parts and SolidWorks assemblies are `none`: their histories are not read). Each
+  `*_history` reader hands back the tree it tried first (`attempt`) when its check fails;
+  nothing else in the readers changed. Formats that carry no history (STEP, meshes, `.gtree.json`,
+  SCAD) have no class.
+- **`import.file` argument `history`**: absent/`auto` keeps today's outcome (features only when
+  perfect), so CLI, MCP agents, the corpus tests and their success metric (the format's history
+  tier, which only a perfect history gets) are unchanged. `final` imports the stored shapes;
+  `rebuild` imports the tree even when imperfect: tree import runs with `keep_failed`, so a
+  feature whose generated statements parse but fail to build stays in the timeline
+  **suppressed, with its error as a note** (a feature that writes nothing, such as an unknown
+  type, is reported in `skipped_user_text` as before); the result's tier is
+  `TIER_PARTIAL_HISTORY` and a warning says the model differs from the file. The whole import is
+  one undo step either way. `ask` reports `{choice_required: "history", history: {class,
+  why_user_text, options}}` and commits nothing while there is a choice (perfect or imperfect);
+  without one it imports. Every import of a classified format reports `history: {class,
+  why_user_text, imported}`. One argument on the existing command (ADR 0012); `import.file` is
+  not in the core MCP list, and the per-command average stays under 600 bytes.
+- **GUI**: the app parses off the model thread (`HostHandle::import_prepare_detached`), then
+  shows a modal in the app's dialog style: perfect → "Import with editable history" (default) /
+  "Import final shape only"; imperfect → what failed, "Import final shape only" (default) /
+  "Try importing with history anyway (you can undo)"; none → an information dialog with the
+  reason while the final shape is imported. Cancel is audited as a cancelled import. After a
+  "try anyway" import the status bar keeps its notice with an Undo button until the next one.
+- Rejected: returning an error for `ask` (an agent would read it as a failure); a separate
+  `import.inspect` command (a second parse path and another tool for the same thing);
+  unsuppressed failed features (their errors would cascade into every later feature and change
+  what the generator builds after them).
