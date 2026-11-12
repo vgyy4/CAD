@@ -2801,6 +2801,77 @@ Readers: `fusion_tree/feature.rs` (`extrude_start`), `fusion_tree/pcb.rs` (`coil
 * First blockers: 817 and 770 pass; 3722 `Shell3` (OCCT cannot offset the spindle torus's point on the axis), then
   `Chamfer1` and `Chamfer1 (2)` (the coil's side is not one face with the revolve's cylinder); 5998 `Loft1` (not read).
 
+## 47. Round 26 W: the stored nut read exactly, coils on exact cylinders, a shell of revolution (2026-11-12)
+Reader: `gusset-sat` `step.rs`, `step/exact.rs`; kernel: `gusset_occt.cpp` (`measured_props`, `exact_helix_cylinders`);
+importer: `import.rs` (`fusion_instances`).
+
+### 3350: the stored tool was exact, its count was not known
+* The stored solid of 135.9311 mm3 is one of two rings (z -5.5..-4.5 and -2.5..-1.5 mm, r 8.6..11.5 mm) that
+  `Revolve3` cuts from the hexagon nut's corners with `Sketch7`'s two degree-5 spline profiles. Its `rot_spl_sur`
+  face's own approximation is exact (the profile's poles times a rational quadratic circle), and Pappus over the
+  profile gives 135.93110: the reading was right. No rule could place the tools because a revolve had no copy
+  count: a cut or join revolve now counts one tool per profile loop, as an extrude does (fewer where a loop changes
+  no material). The two rings then explain `Revolve3`; the check went on to the end bodies.
+* The stored nut then measured 347.7759 mm3 where the rebuild gave 347.8530 and the analytic nut (Pappus for the
+  corners, 12.3634 mm3 cut; the thread's ring 70.5297 joined and its groove, section 0.30856 mm2 at centroid radius
+  7.74263 mm over 3 mm, 45.0336 cut) is 347.85246. Two faults in reading and measuring it:
+  - **Intersection curves.** The hexagon's sides meet the revolved splines in `int_int_cur` edges, cubic fits within
+    0.68 um that lie a mean of 0.09 um off the revolved surface. OCCT trims each face at the fit's projection onto
+    its own surface, so the faces of an edge left a gap: the nut's part outside r 8.3 mm measured 276.2377 against
+    276.2692 for the same solid made by booleans. Where both surfaces of an `int_int_cur` are planes or revolved
+    exact B-splines (`rot_spl_sur` of an `exact_int_cur`), the curve is now rebuilt on them: Newton steps from the
+    fit's own points onto the line where the two tangent planes meet (exact nearest points: the plane's projection,
+    the revolved profile's nearest point in the meridian plane), Hermite pieces, sixteen to each span of the fit, on
+    the fit's parameters, the tangent along the normals' cross product. A point that moves more than 1e-3 of the
+    curve's size keeps the fit (a misread surface). That part now measures 276.2692.
+  - **Quadrature.** A shape with a wound face (the thread's crest, a cylinder strip of several turns: section 36)
+    was integrated by OCCT's default quadrature alone, which put the nut's trimmed spline faces 0.049 mm3 off. The
+    wound faces and the others now go into two compounds (each face taken about the same origin) and are
+    integrated each their own way: the default quadrature for the wound faces, the adaptive one for the rest, as a
+    shape without a wound face already was. The stored nut: 347.8520 mm3 (1.3e-6 off the analytic value), the parts
+    inside and outside r 8.3 mm adding up to it.
+* 3350 comes in as history: 10 stored solids are states and 5 are cut tools, the finished bodies the end blob's.
+
+### 3722: the coil on an exact cylinder
+* A profile line parallel to a helix's axis sweeps a strip of a cylinder (a helix is a straight line on the
+  cylinder's parameter plane). MakePipeShell gives it as a B-spline; the face is now put on the exact cylinder (its
+  edges kept, their pcurves projected anew and shifted into one strip of the parameter plane) and split into half
+  turns: OCCT's union of a rod with a coil whose cylinder face wound one and a half turns returned the rod alone. The
+  change is kept where the swept solid stays valid and its volume stays within 1e-5 (the slanted sides are fitted,
+  2e-6 measured). Thread grooves have such sides (the crest and root flats); 1145 and 3350 still rebuild to their
+  stored bodies.
+* Golden test `a_helical_sweep_of_an_axial_line_is_a_cylinder_face` (3722's dimensions): with the coil's side a
+  B-spline both chamfers of the joined body failed ("ChFi3d_Builder: only 2 faces" on the start's edge,
+  "TopOpeBRepDS_DataStructure::Point" on the end's foot); now both build, 1.99 mm, alone and together (the rod's
+  seam turned half a radian from the coil's start, below).
+* **New blocker: the seam.** In 3722 the coil starts at +x, on the seam of `Revolve2`'s cylinder (the revolve's
+  profile lies in the XZ plane at +x). The start's chamfer, whose edge ends on that seam, still fails ("chamfer
+  failed": the chamfer builder is not done); with the rod turned half a radian it builds. Splitting the closed faces
+  (`ShapeUpgrade_ShapeDivideClosed`, into two or three pieces) gave invalid blends or wrong volumes and was dropped.
+  Moving a revolve's seam (or a blend fallback that rebuilds the closed face on its surface turned about the axis
+  and lets `ShapeFix_Face` add the seam elsewhere) is the next step for `Chamfer1`; `Chamfer1 (2)` (the Cap's coil,
+  started at -x on the Cap's own base) was not examined further.
+
+### 3722: Shell3 in the half section (tried, not kept)
+* The shell of a solid of revolution is the solid less its cavity: the section through the axis offset inward by the
+  thickness (both halves, so the pole is a corner of it: Fusion's inner torus of minor radius 52 mm meets the axis at
+  z 113.861 mm), extended through the opened faces, revolved. The cavity of `Revolve2` with `Fillet2` is, by
+  Pappus, 2 pi times the integral of r times its height under the circle of radius 52 mm about (0.658, 61.865) mm,
+  for r up to 31.5 mm (the 2 mm round offset by 2 mm is a sharp corner: the fillet's centre).
+* An experiment in the shim (OCCT's thick solid first; the fallback for a solid every face of which is a plane
+  across one axis or a surface of revolution about it, a spline round included where its normals lie in planes
+  through the axis) failed in OCCT's 2D offset: `BRepOffsetAPI_MakeOffset` on the section (its dome arcs are
+  B-splines from the boolean section, its round an arc of radius equal to the thickness) returned an open wire of
+  one edge. A working version needs the section's curves as lines and arcs (circles fitted to the section's
+  splines, or the meridians taken from the faces' own surfaces) and convex arcs no larger than the thickness
+  replaced by the corner of their neighbours before the offset. Not committed; 3722's first blocker stays `Shell3`.
+
+### Result
+* adafruit-more: 134 of 150 as history (3350 gained; none lost; 133 before). adafruit: 13 of 18 (unchanged, none
+  lost). adafruit-next: 123 of 150 (unchanged, none lost).
+* First blockers: 3350 passes; 3722 `Shell3` (OCCT's thick solid; the half-section fallback needs its own 2D
+  offset), then `Chamfer1` (its start edge ends on `Revolve2`'s seam).
+
 ## 48. Round 26 X: Loft, Pipe, an extrude from a loft's end, surface extrudes and Thicken (2026-11-12)
 Readers: `fusion_tree/loft.rs` (`loft_json`, `pipe_json`, `profile_of_a_loft_cap`), `fusion_tree/json.rs`
 (`sweep_path`, shared with sweeps). The document already has `loft` and `sweep`; no document feature was added.
