@@ -346,15 +346,22 @@ impl Ctx<'_> {
         {
             return Err("the box's placement is not a rigid frame".into());
         }
-        let (height, from) = if op == "new" {
-            let made = self.made(g, fid)?;
-            let [one] = made.as_slice() else { return Err(format!("the box makes {} bodies, not one", made.len())) };
-            let stored = one.shape.vertex_box.ok_or("the box's stored body has no vertices")?;
-            let height = box_height(&m, [size[0], size[1], dz.abs()], stored)
-                .ok_or("the box of its parameters and placement is not the box of its stored body")?;
-            (height, "the side of the corner frame on which the stored body lies")
+        // A new box whose stored body is the box itself lies on the side of the frame that body
+        // shows (all 60 PCB boxes: a positive height, on +z). Where the history blob holds a
+        // later state of it (2354: the box cut by later features, or a blob of several states
+        // its state list does not name one by one), the signed height places it, as for a join
+        // or a cut; the rebuild check then judges the result (section 51).
+        let stored = if op == "new" {
+            self.made(g, fid).ok().and_then(|made| match made.as_slice() {
+                [one] => one.shape.vertex_box,
+                _ => None,
+            })
         } else {
-            (dz, "the sign of the box's height along the corner frame's z")
+            None
+        };
+        let (height, from) = match stored.and_then(|s| box_height(&m, [size[0], size[1], dz.abs()], s)) {
+            Some(height) => (height, "the side of the corner frame on which the stored body lies"),
+            None => (dz, "the sign of the box's height along the corner frame's z"),
         };
         let sketch = format!("{name} profile");
         let dir = |v: V3| json!([round9(v[0]), round9(v[1]), round9(v[2])]);
