@@ -1187,8 +1187,15 @@ impl Ctx<'_> {
 
     fn modelled_edge(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
         let fs: Vec<Option<FaceG>> = faces.iter().map(|f| f.first().and_then(|(g, ops)| self.face(g, ops))).collect();
-        if fs.iter().flatten().any(|f| matches!(f, FaceG::Fillet { .. })) {
-            return fillet_edge(&fs).map(|(m, arc)| (m, arc, Vec::new()));
+        let is_fillet = |f: &Option<FaceG>| matches!(f, Some(FaceG::Fillet { .. }));
+        if fs.iter().any(is_fillet) {
+            if let Some((m, arc)) = fillet_edge(&fs) {
+                return Some((m, arc, Vec::new()));
+            }
+            // Two planes ended by a fillet and another face: the ends below.
+            if fs.iter().take(2).any(is_fillet) {
+                return None;
+            }
         }
         let (a, b) = (fs.first()?.clone()?, fs.get(1)?.clone()?);
         if let (FaceG::Plane { n: n0, p: p0, .. }, FaceG::Plane { n: n1, p: p1, .. }) = (&a, &b) {
@@ -1206,6 +1213,23 @@ impl Ctx<'_> {
                     && let Some(t) = self.tangent_at(*feature, seg, pl, pp, u)
                 {
                     ts.push(t);
+                }
+                // A fillet face that rounds the corner of one of the edge's planes with another
+                // plane: the line ends where the fillet leaves that plane, `r` from the other
+                // (770: the bottom rim of a box between its side, rounded at the corners, and a
+                // later join that interrupts it).
+                if let FaceG::Fillet { r, a, b } = f {
+                    let on = |q: &(V3, V3), n: V3, p: V3| {
+                        (dot(unit(q.1).unwrap_or(q.1), n).abs() - 1.0).abs() < 1e-9 && dot(n, sub(q.0, p)).abs() < 1e-7
+                    };
+                    let other = [(a, b), (b, a)]
+                        .into_iter()
+                        .find_map(|(s, o)| (on(s, *n0, *p0) || on(s, *n1, *p1)).then_some(*o));
+                    if let Some((op, on_)) = other
+                        && dot(on_, u).abs() > 1e-9
+                    {
+                        ts.push((r - dot(on_, sub(pp, op))) / dot(on_, u));
+                    }
                 }
             }
             if ts.len() >= 2 {
