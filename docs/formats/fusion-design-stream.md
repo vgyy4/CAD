@@ -2557,3 +2557,83 @@ BoxPrimitive record, three (2831, 3093, 3221) at the body-move records of sectio
 * First blockers: 2831 passes; 2354 BoxPrimitive1 (its stored body is a later state); 3000 Mirror1 (a mirror of a
   box's faces, one drafted); 3093 Combine1 (target a pattern copy); 3221 Pipe1; 3802 Extrude4 (a join naming two
   bodies that stay apart); 5907 the mirrored component (occurrences the bodies reader does not read).
+
+## 45. Round 25 U: occurrences of streams without class tags, a mirror of drafted faces, stale profile loops (2026-11-12)
+Readers: `fusion_tree/joint.rs` (`paths`), `fusion_tree/mod.rs` (`occurrence_placements`), `fusion_tree/pcb.rs`
+(`box_primitive`), `fusion_tree/sketch.rs` and `geom.rs` (`cycle_of_curves`), `fusion_tree/bodyops.rs` (`draft_json`),
+`fusion_tree/json.rs` (mirror of faces); importer: `tree_import.rs` (`loop_points`), `tree_import/v2.rs` (draft mirrored).
+
+### Occurrences the bodies reader does not find (5907)
+* The bodies reader (`fusion.rs`) finds occurrences by the class tags `24 00 00 00` + GUID in the BulkStream. Some
+  streams carry no class tags at all (5907: none of FF415D89, CE2913AA, F9CB8717, E03784ED appears in the
+  BulkStream; the classes are in the MetaStream's table only). The reader then falls back to the older layout's
+  blocks: listed instances (`name:designator`, right) and, where a design lists instances, a component's
+  `CreateComponent` matrix. In 5907 that matrix put the mirrored component's source (a 1x20 header, a Base Feature)
+  a quarter turn about x at the board's centre, off the board.
+* In the framed stream the occurrence is `CE2913AA` (its first `E03784ED` reference is its component; its `904F885E`
+  list names the component that holds it), the first rigid 4 x 4 of its record is its placement in that component,
+  and every occurrence path has a `549FBB80` record (section 24) with its placement after each timeline step. 5907:
+  the header's occurrence and path record both store (1.9, 1.3, 1.57) mm, unturned (the header's blob spans
+  x -1.27..49.53, z -3..8.5 mm: it stands on the board top, z 1.57, pins through it); the mirrored component's
+  diag(1, -1, -1) at (1.9, 19.02, 1.57) mm. The source to new map is then the reflection in y = 10.16 mm, the
+  mirror's plane, and the new blob the source's reflected in its own z = 0, as section 43 found.
+* For a stream in which the bodies reader finds no occurrence record, every body is now placed by the last stored
+  placement of its component's path records (joint.rs's placement rule: a blob already placed the same way, or
+  unplaced at the origin, or with more placements than the paths give (a board's listed parts), is left alone).
+  Streams with tagged occurrence records are not touched. Over the three sets (301 streams) this changes the
+  placements of 22 streams (20 designs; 17 histories before), all of them in the final runs below. 5907 comes in
+  as history.
+
+### 3000: the box primitive's frame, the draft's pull, the mirror of drafted faces
+* **Box frame.** The corner frame a `BoxPrimitive` stores is in the frame of the origin snapshot (`7B6C3C2D`) the
+  record names first (its first rigid 4 x 4). 3000's join box stores (4, -18.85, 0) mm, x (0, 1, 0), y (-1, 0, 0);
+  its snapshot is a half turn about z, which gives (-4, 18.85) mm, x along -y, y along +x: the box x -4..-3,
+  y 16.35..18.85 mm, where the stored body and Draft1's face have it. 2354's boxes have such snapshots too (half
+  turns about z with z offsets 0.5..0.62 cm, quarter turns); its first box is refused before (section 43), so it is
+  not confirmed there. The 60 PCB boxes name no snapshot.
+* **Draft pull.** Draft1 (older layout, flip byte 0, `-20.0 deg` and `0.0 deg`) tapers the box's top (outward +z)
+  about the holder's wall `5 [306]` (y = 18.8336 mm, outward -y). By section 39's rule (the face's normal turned
+  towards the pull, the neutral face's outward normal, by the angle) the top rises towards -y; the stored drafted
+  face `2 [318, -319]` falls towards -y (z 3 at the wall, 2.096 at y 16.35: normal (0, -0.342, 0.940)), which only
+  the reversed pull gives. Nothing in the record that differs from 355's drafts (diffed byte for byte against 355,
+  258 and 324) explains it. The reader now compares each drafted plane face the stored bodies hold after the draft
+  (its name carrying the draft's operation, negated) with both turns: where some agree only with the reversed pull
+  and none with the outward one, the draft is flipped. 355's drafts agree with the outward pull and stay as they
+  were. Volumes: no draft 158.6233 mm3 for the holder, drafted the old way 159.7459 (+1.1226), the right way
+  157.5007.
+* **Mirror of faces.** `Mirror1` selects four faces of the box, one of them `2 [318, -319]`: a face a later feature
+  changed names that feature's operation negated (section 28). A mirror of faces now takes `[op, -k]` where `k` is a
+  draft's operation, and mirrors the draft with its maker when the selected faces are all of the draft's faces (no
+  blends). The importer mirrors a draft by reflecting its faces' points and surfaces and its neutral plane (a
+  reflection keeps the turn towards the reflected pull). The holder then rebuilds to 163.8291 mm3, the stored value
+  (157.5007 + the mirrored drafted box 6.3283).
+* **Profile picks near arcs.** Extrude1's region (the board: a circle of 25.4 mm less a notch, so one arc of 343
+  degrees) was tested against 16 chords, 0.44 mm inside the arc; a pick 0.28 mm from the rim (between the rim and
+  a 1.6 mm hole 0.5 mm from it) fell outside every region. Arcs now take one chord per 3.75 degrees (16 to 96).
+
+### Profile loops recorded against an earlier sketch (3000's Sketch7)
+* Sketch7: an outline 7 x 3.55 mm, a 3 x 1 mm rectangle on its bottom edge and a line up the middle. Extrude10's and
+  Extrude11's loops list the outline's top edge as pieces `1/3, 2/3, 3/3` and `3/4`, with the small rectangle's
+  curves: they were recorded when the rectangle sat on the top edge (cutting it in three, four with the middle
+  line). Extrude12, made later, lists the bottom edge `2/3` beside the rectangle, as the sketch is now; the stored
+  bodies (Extrude10 over the whole outline z 0..1, Extrude11 on the right half of the small rectangle z 1..2,
+  Extrude12's cut z 0.8..1 over the small rectangle) follow the sketch as it is now. The records keep the piece
+  numbers of their own time; the profile record (`0D57BD2F`) holds keys and piece numbers only, no geometry.
+* Where an outer loop neither reproduces its pieces nor closes, its curves as they are now, cut wherever any curve
+  of the sketch crosses or touches them, are taken when they bound exactly one face (pieces with a loose end are
+  dropped until none is left; what remains must be one simple cycle). Extrude11: the right half of the small
+  rectangle. A region with children whose children needed this, or failed, is its outline's faces, one pick in each
+  (Extrude10: the four faces of the outline). Only loops that failed before take this path.
+* 3000 comes in as history (17 stored solids are states of the rebuilt model, 18 cut tools).
+
+### 3722 (not attempted)
+* The coil's axis, start and hand are still not decoded, and after `CoilPrimitive1` come Move1, Combine1, Chamfer1
+  (an unresolved edge), the Cap component's coil, move, combine, a to-object cut, a chamfer and Shell3, which OCCT
+  fails on (section 25). Too far for this round; the box finding above (a primitive's frame is in its origin
+  snapshot's frame) is the first thing to try on the coil's `7B6C3C2D`.
+
+### Result
+* adafruit-next: 119 of 150 as history (3000 and 5907 gained; none lost; 117 before). adafruit-more: 133 of 150
+  (unchanged, none lost; every history among the streams whose placements changed stays one). adafruit: 13 of 18
+  (unchanged, none lost).
+* First blockers: 3000 and 5907 pass; 3722 `CoilPrimitive1` (not attempted).
