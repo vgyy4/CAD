@@ -348,7 +348,12 @@ pub fn build(board: &Board, k: &dyn Kernel, opts: &Options) -> Result<(Vec<Body>
                 continue;
             }
             let Some(b) = component_box(board, i) else {
-                missing += 1;
+                // Mounting holes and other footprints without a part (only non-plated
+                // holes, no body drawing) need no box; others are reported.
+                let part = fp.pads.iter().filter_map(|&p| board.pads.get(p)).any(|p| p.kind != PadKind::Npth);
+                if part {
+                    missing += 1;
+                }
                 continue;
             };
             let (z, height) = if fp.bottom { (0.0, -h) } else { (t, h) };

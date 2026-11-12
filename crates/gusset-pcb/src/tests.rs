@@ -369,6 +369,8 @@ fn board_builds_with_the_mock_kernel() {
     let (bodies, notes) = board3d::build(&b, &k, &board3d::Options::default()).unwrap();
     assert_eq!(bodies[0].name, "Board");
     assert!(notes.iter().any(|n| n.contains("holes could not be cut")), "{notes:?}");
+    // The mounting hole needs no box and is not reported.
+    assert_eq!(notes.len(), 1, "{notes:?}");
     let bb = gusset_kernel::Kernel::bbox(&k, &bodies[0].shape).unwrap();
     assert!((bb.min[0] - 100.0).abs() < 1e-9 && (bb.max[1] + 100.0).abs() < 1e-9, "{bb:?}");
     assert!((bb.max[2] - 1.6).abs() < 1e-9 && bb.min[2].abs() < 1e-9, "{bb:?}");
