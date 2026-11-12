@@ -73,7 +73,11 @@
 #include <ShapeFix_Solid.hxx>
 #include <ShapeFix_Edge.hxx>
 #include <ShapeFix_Wire.hxx>
+#include <ShapeExtend.hxx>
+#include <ShapeUpgrade_FaceDivide.hxx>
 #include <ShapeUpgrade_ShapeDivideAngle.hxx>
+#include <ShapeUpgrade_SplitSurfaceAngle.hxx>
+#include <ShapeUpgrade_WireDivide.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <gp_Lin.hxx>
 #include <GeomAbs_JoinType.hxx>
@@ -2048,6 +2052,79 @@ int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** ou
 extern "C++" {
 namespace {
 
+// A face on a cylinder that runs on round past its seam between helical edges: a thread's root
+// band (the core's cylinder split by the tooth), or a crest made exact by
+// `exact_helix_cylinders` whose half turns a refined boolean merged back. OCCT's face builder
+// cannot split such a face where another solid's edge crosses it (a partly threaded rod's
+// shank: "unused edges" on the crest and root bands, and an empty fuse).
+bool wraps_between_helices(const TopoDS_Face& f) {
+  if (BRepAdaptor_Surface(f, false).GetType() != GeomAbs_Cylinder) return false;
+  bool seam = false, helix = false;
+  for (TopExp_Explorer ex(f, TopAbs_EDGE); ex.More(); ex.Next()) {
+    const TopoDS_Edge& e = TopoDS::Edge(ex.Current());
+    if (BRep_Tool::Degenerated(e)) continue;
+    seam = seam || BRep_Tool::IsClosed(e, f);
+    const GeomAbs_CurveType t = BRepAdaptor_Curve(e).GetType();
+    helix = helix || (t != GeomAbs_Line && t != GeomAbs_Circle);
+  }
+  return seam && helix;
+}
+
+// Splits only the faces `wraps_between_helices` accepts (into half turns); others stay whole.
+class HelicalBandDivide : public ShapeUpgrade_FaceDivide {
+ public:
+  bool Perform(const double area = 0.) override {
+    if (myFace.IsNull() || wraps_between_helices(myFace)) return ShapeUpgrade_FaceDivide::Perform(area);
+    myStatus = ShapeExtend::EncodeStatus(ShapeExtend_OK);
+    myResult = myFace;
+    return false;
+  }
+};
+
+// `s` with its helical bands (`wraps_between_helices`) split into half turns, and the split's
+// history in `h`; `s` itself and a null `h` where it has none, or the split is not valid.
+TopoDS_Shape split_helical_bands(const TopoDS_Shape& s, occ::handle<BRepTools_History>& h) {
+  h.Nullify();
+  bool any = false;
+  for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More() && !any; ex.Next())
+    any = wraps_between_helices(TopoDS::Face(ex.Current()));
+  if (!any) return s;
+  ShapeUpgrade_ShapeDivideAngle divide(M_PI, s);
+  occ::handle<HelicalBandDivide> tool = new HelicalBandDivide;
+  tool->SetSplitSurfaceTool(new ShapeUpgrade_SplitSurfaceAngle(M_PI));
+  tool->SetWireDivideTool(nullptr);
+  divide.SetSplitFaceTool(tool);
+  if (!divide.Perform() || divide.GetContext().IsNull()) return s;
+  TopoDS_Shape out = divide.Result();
+  BRepLib::SameParameter(out, 1e-6, true);
+  if (!BRepCheck_Analyzer(out).IsValid()) return s;
+  h = divide.GetContext()->History();
+  return out;
+}
+
+// A boolean's history seen from its inputs before `split_helical_bands` (`split` null: not
+// split).
+struct AfterSplit {
+  const occ::handle<BRepTools_History>& split;
+  BRepAlgoAPI_BooleanOperation& op;
+  ShapeList Modified(const TopoDS_Shape& g) const {
+    ShapeList pieces, out;
+    if (!split.IsNull() && split->IsSupportedType(g)) pieces = split->Modified(g);
+    bool changed = !pieces.IsEmpty();
+    if (pieces.IsEmpty()) pieces.Append(g);
+    for (ShapeList::Iterator it(pieces); it.More(); it.Next()) {
+      const ShapeList& m = op.Modified(it.Value());
+      changed = changed || !m.IsEmpty();
+      if (m.IsEmpty()) {
+        if (!op.IsDeleted(it.Value())) out.Append(it.Value());
+      } else {
+        for (ShapeList::Iterator mt(m); mt.More(); mt.Next()) out.Append(mt.Value());
+      }
+    }
+    return changed ? out : ShapeList();
+  }
+};
+
 // The general boolean on the given arguments and tools. With `simplify` the result's
 // coplanar faces and collinear edges are unified; unification can turn a valid result
 // invalid (FreeCAD's examples: a pad touching a mirrored body), so callers retry without.
@@ -2689,15 +2766,17 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, int refine, G
   GS_GUARD_BEGIN
   if (!target || !tool || !out || !origins) return fail("null argument");
   ShapeList args, tools;
-  args.Append(target->s);
+  occ::handle<BRepTools_History> split_target, split_tool;
+  args.Append(split_helical_bands(target->s, split_target));
+  const TopoDS_Shape tool_s = split_helical_bands(tool->s, split_tool);
   // A multi-region extrusion is a compound of prisms that may share faces (two sketch
   // regions with a common edge). As one tool such a compound is self-touching and the
   // result is invalid; as separate tools the general fuse splits the shared faces.
   // (Union and cut only: they act on the tools' union, which this does not change.)
-  if (tool->s.ShapeType() == TopAbs_COMPOUND && (op == GS_BOOL_UNION || op == GS_BOOL_CUT)) {
-    for (TopoDS_Iterator it(tool->s); it.More(); it.Next()) tools.Append(it.Value());
+  if (tool_s.ShapeType() == TopAbs_COMPOUND && (op == GS_BOOL_UNION || op == GS_BOOL_CUT)) {
+    for (TopoDS_Iterator it(tool_s); it.More(); it.Next()) tools.Append(it.Value());
   } else {
-    tools.Append(tool->s);
+    tools.Append(tool_s);
   }
   if (tools.IsEmpty()) return fail("the tool is empty");
   std::unique_ptr<BRepAlgoAPI_BooleanOperation> b;
@@ -2715,8 +2794,9 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, int refine, G
   TopExp::MapShapes(result, TopAbs_FACE, out_faces);
   if (out_faces.Extent() == 0) return fail("boolean operation removed all material");
   std::vector<int64_t> o;
-  record_input_faces(*b, target->s, 0, out_faces, o);
-  record_input_faces(*b, tool->s, 1, out_faces, o);
+  AfterSplit ht{split_target, *b}, hs{split_tool, *b};
+  record_input_faces(ht, target->s, 0, out_faces, o);
+  record_input_faces(hs, tool->s, 1, out_faces, o);
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;
@@ -2734,8 +2814,9 @@ int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, 
   // One operation with all tools (review H3): the general fuse intersects every pair once,
   // instead of re-intersecting a growing result once per tool.
   ShapeList args, tool_list;
-  args.Append(target->s);
-  for (size_t i = 0; i < ntools; ++i) tool_list.Append(tools[i]->s);
+  std::vector<occ::handle<BRepTools_History>> splits(ntools + 1);
+  args.Append(split_helical_bands(target->s, splits[0]));
+  for (size_t i = 0; i < ntools; ++i) tool_list.Append(split_helical_bands(tools[i]->s, splits[i + 1]));
   if (op != GS_BOOL_UNION && op != GS_BOOL_CUT) return fail("only union and cut take several tools at once");
   auto b = run_boolean_checked(op, args, tool_list, refine != 0);
   TopoDS_Shape result = b->Shape();
@@ -2744,8 +2825,12 @@ int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, 
   TopExp::MapShapes(result, TopAbs_FACE, out_faces);
   if (out_faces.Extent() == 0) return fail("boolean operation removed all material");
   std::vector<int64_t> o;
-  record_input_faces(*b, target->s, 0, out_faces, o);
-  for (size_t i = 0; i < ntools; ++i) record_input_faces(*b, tools[i]->s, int64_t(i) + 1, out_faces, o);
+  AfterSplit ht{splits[0], *b};
+  record_input_faces(ht, target->s, 0, out_faces, o);
+  for (size_t i = 0; i < ntools; ++i) {
+    AfterSplit hs{splits[i + 1], *b};
+    record_input_faces(hs, tools[i]->s, int64_t(i) + 1, out_faces, o);
+  }
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;
