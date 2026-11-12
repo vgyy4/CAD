@@ -1191,6 +1191,69 @@ impl Ctx<'_> {
         self.edge_midpoint(&[end.clone(), side.clone()])
     }
 
+    /// The edges of a face picked whole (a bounded-face recipe in a blend: 5998's Chamfer2 takes
+    /// the bottom cap of a box whose corners two blends cut), one per face round it. The list of
+    /// faces round it is not in loop order, so each edge where the face meets a plane `B` round it
+    /// runs along their common line between the nearest ends, on either side of a point of `B`
+    /// (a modelled side's middle, else the mean of `B`'s stored points), that the other faces round
+    /// it make (planes it crosses, fillets that leave the face or `B`). A fillet face round it
+    /// meets the face along the fillet's arc.
+    pub(super) fn face_loop_edges(&mut self, face: &FaceName, ring: &[FaceName]) -> Vec<Option<EdgeAt>> {
+        let Some((n0, p0)) = self.plane_of(face) else { return vec![None; ring.len()] };
+        let gs: Vec<Option<FaceG>> = ring.iter().map(|f| f.first().and_then(|(g, ops)| self.face(g, ops))).collect();
+        let mut out = Vec::new();
+        for (k, b) in ring.iter().enumerate() {
+            let e = match gs.get(k).cloned().flatten() {
+                Some(fb @ FaceG::Fillet { .. }) => {
+                    fillet_edge(&[Some(fb), Some(FaceG::Plane { n: n0, p: p0, cap: true, mid: p0 })])
+                        .map(|(m, arc)| (m, arc, Vec::new()))
+                }
+                Some(FaceG::Plane { n: n1, p: p1, cap, mid }) => (|| {
+                    let n1 = unit(n1)?;
+                    let (pp, u) = plane_plane(n0, p0, n1, p1)?;
+                    let inside = if cap {
+                        let (g, ops) = b.first()?;
+                        let pts = self.stored_face(g, ops)?.points;
+                        if pts.is_empty() {
+                            return None;
+                        }
+                        let k = pts.len() as f64;
+                        pts.iter().fold([0.0; 3], |a, q| add(a, mul(*q, 1.0 / k)))
+                    } else {
+                        mid
+                    };
+                    let tm = dot(u, sub(inside, pp));
+                    let mut ts = Vec::new();
+                    for (j, o) in gs.iter().enumerate() {
+                        if j == k {
+                            continue;
+                        }
+                        match o {
+                            Some(FaceG::Plane { n, p, .. }) if dot(*n, u).abs() > 1e-9 => {
+                                ts.push(dot(*n, sub(*p, pp)) / dot(*n, u));
+                            }
+                            Some(FaceG::Fillet { r, a, b }) => {
+                                if let Some(t) = fillet_end(*r, *a, *b, [(n0, p0), (n1, p1)], pp, u) {
+                                    ts.push(t);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let lo = ts.iter().copied().filter(|t| *t < tm - 1e-9).fold(f64::NEG_INFINITY, f64::max);
+                    let hi = ts.iter().copied().filter(|t| *t > tm + 1e-9).fold(f64::INFINITY, f64::min);
+                    if !(lo.is_finite() && hi.is_finite()) {
+                        return None;
+                    }
+                    Some((add(pp, mul(u, (lo + hi) / 2.0)), false, Vec::new()))
+                })(),
+                _ => None,
+            };
+            out.push(e);
+        }
+        out
+    }
+
     /// A planar face, modelled or stored: its unit normal and a point.
     fn plane_of(&mut self, f: &FaceName) -> Option<(V3, V3)> {
         let (g, ops) = f.first()?;

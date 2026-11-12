@@ -402,7 +402,13 @@ impl Ctx<'_> {
         };
         let sets: Vec<u64> = ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "4A557CE2") && own(q)).collect();
         if sets.is_empty() {
-            vec![(param_values(d, fid, names).first().copied(), self.input_recipes(fid))]
+            let mut recs = self.input_recipes(fid);
+            if recs.is_empty() {
+                // A chamfer of one distance whose selection hangs under its value holder
+                // (`0D383DB2`, the holder of two-distance chamfers: 5998's Chamfer2).
+                recs = self.under(fid, "7ACC2A03", 4, Some(&["0D383DB2", "2CA5A1CD", "5662F619"]));
+            }
+            vec![(param_values(d, fid, names).first().copied(), recs)]
         } else {
             sets.iter().map(|q| (param_values(d, *q, names).first().copied(), self.input_recipes(*q))).collect()
         }
@@ -503,17 +509,33 @@ impl Ctx<'_> {
                     continue;
                 }
                 let (kind, faces) = naming::recipe(d, rid);
-                let (Some(RecipeKind::Edge), Some(faces)) = (kind, faces) else { continue };
-                let Some((mid, _, path)) = self.edge_midpoint(&faces) else {
-                    bad += 1;
-                    continue;
+                // A face picked whole (5998's Chamfer2 names the bottom cap of a box): every edge
+                // of its boundary.
+                let edges: Vec<(Vec<naming::FaceName>, Option<naming::EdgeAt>)> = match (kind, faces) {
+                    (Some(RecipeKind::Edge), Some(faces)) => {
+                        let e = self.edge_midpoint(&faces);
+                        vec![(faces, e)]
+                    }
+                    (Some(RecipeKind::BoundedFace), Some(faces)) if faces.len() >= 3 => {
+                        let Some((face, ring)) = faces.split_first() else { continue };
+                        let es = self.face_loop_edges(face, ring);
+                        ring.iter().zip(es).map(|(b, e)| (vec![face.clone(), b.clone()], e)).collect()
+                    }
+                    _ => continue,
                 };
-                let key = [(mid[0] * 1e6).round() as i64, (mid[1] * 1e6).round() as i64, (mid[2] * 1e6).round() as i64];
-                if seen.contains(&key) {
-                    continue;
+                for (_faces, e) in edges {
+                    let Some((mid, _, path)) = e else {
+                        bad += 1;
+                        continue;
+                    };
+                    let key =
+                        [(mid[0] * 1e6).round() as i64, (mid[1] * 1e6).round() as i64, (mid[2] * 1e6).round() as i64];
+                    if seen.contains(&key) {
+                        continue;
+                    }
+                    seen.push(key);
+                    es.push((mid, path));
                 }
-                seen.push(key);
-                es.push((mid, path));
             }
             out.push((v, es, bad));
         }
