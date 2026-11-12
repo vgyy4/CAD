@@ -465,11 +465,7 @@ pub(super) fn carry_moved_bodies(d: &Design, g: &mut Graph) -> HashMap<u64, Resu
             let mut made: Vec<u64> = g.creator.iter().filter(|(_, f)| **f == *base).map(|(l, _)| *l).collect();
             made.sort_unstable();
             if made.len() != removes.len() {
-                return Err(format!(
-                    "its Base Feature makes {} bodies for {} RemoveBodies",
-                    made.len(),
-                    removes.len()
-                ));
+                return Err(format!("its Base Feature makes {} bodies for {} RemoveBodies", made.len(), removes.len()));
             }
             let mut pairs: Vec<(u64, u64)> = Vec::new();
             for remove in &removes {
