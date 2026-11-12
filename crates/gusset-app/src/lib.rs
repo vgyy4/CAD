@@ -13,6 +13,7 @@ pub mod i18n;
 pub mod icons;
 pub mod link;
 pub mod palette;
+pub mod pcb_view;
 pub mod photo_preview;
 pub mod prefs;
 pub mod quick_menus;
@@ -38,5 +39,7 @@ mod tests;
 mod tests_lifecycle;
 #[cfg(test)]
 mod tests_panels;
+#[cfg(test)]
+mod tests_pcb;
 #[cfg(test)]
 mod tests_ribbon;

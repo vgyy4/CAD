@@ -37,6 +37,8 @@ pub enum Action {
     FinishSketch,
     /// The Drawing tab: opens the latest drawing (or starts a new one).
     DrawingTab,
+    /// The PCB tab (ADR 0047): the board editor.
+    PcbTab,
     /// The command search (Ctrl+K).
     Search,
     /// The SELECT group: what clicks in the viewport pick.
@@ -240,6 +242,42 @@ const SKETCH: &[Group] = &[
     Group { key: "ribbon.inspect", large: 1, tools: &[d("query.sketch", "Status")] },
 ];
 
+const PCB: &[Group] = &[
+    Group {
+        key: "ribbon.board",
+        large: 3,
+        tools: &[d("pcb.open", "Open"), d("pcb.new", "New"), d("pcb.save", "Save")],
+    },
+    Group {
+        key: "ribbon.modify",
+        large: 2,
+        tools: &[
+            d("pcb.set_outline", "Outline"),
+            d("pcb.move_footprint", "Move"),
+            d("pcb.add_track", "Track"),
+            d("pcb.add_via", "Via"),
+            d("pcb.delete", "Delete"),
+        ],
+    },
+    Group { key: "ribbon.inspect", large: 1, tools: &[d("pcb.drc", "DRC"), d("pcb.info", "Info")] },
+    Group {
+        key: "ribbon.export",
+        large: 3,
+        tools: &[
+            d("pcb.export_gerbers", "Gerbers"),
+            d("pcb.export_drill", "Drill"),
+            d("pcb.export_pos", "Placement"),
+            d("pcb.export_bom", "BOM"),
+            d("pcb.import", "To 3D"),
+        ],
+    },
+];
+
+/// The command ids of the PCB tab.
+pub fn pcb_command_ids() -> Vec<&'static str> {
+    PCB.iter().flat_map(|g| present(g)).map(|(_, s)| s.id).collect()
+}
+
 const DRAWING: &[Group] = &[
     Group {
         key: "ribbon.create",
@@ -319,6 +357,8 @@ pub struct Ribbon<'a> {
     pub assemble: bool,
     /// The viewport shows the path-traced preview.
     pub photo_preview: bool,
+    /// The PCB tab is chosen.
+    pub pcb: bool,
 }
 
 /// A tool's tooltip heading: the command title and its shortcut.
@@ -425,7 +465,7 @@ pub fn tabs(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         for (label, active, act) in [
             (
                 tr("tab.solid"),
-                !sketching && !drawing && !r.surface && !r.sheet && !r.cam && !r.render && !r.assemble,
+                !sketching && !drawing && !r.surface && !r.sheet && !r.cam && !r.render && !r.assemble && !r.pcb,
                 Action::SolidTab,
             ),
             (tr("tab.surface"), !sketching && !drawing && r.surface, Action::SurfaceTab),
@@ -435,6 +475,7 @@ pub fn tabs(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
             (tr("tab.render"), !sketching && !drawing && r.render, Action::RenderTab),
             (tr("tab.sketch"), sketching, Action::SketchTab),
             (tr("tab.drawing"), drawing, Action::DrawingTab),
+            (tr("tab.pcb"), !sketching && !drawing && r.pcb, Action::PcbTab),
         ] {
             if tab(ui, &label.to_uppercase(), active, pal).clicked() {
                 action = Some(act);
@@ -542,6 +583,8 @@ pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         DRAWING
     } else if sketching {
         SKETCH
+    } else if r.pcb {
+        PCB
     } else if r.surface {
         SURFACE
     } else if r.sheet {
@@ -612,7 +655,7 @@ pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
             });
             group_separator(ui, pal);
         }
-        if !sketching && r.drawing.is_none() {
+        if !sketching && r.drawing.is_none() && !r.pcb {
             ui.vertical(|ui| {
                 ui.add_space(theme::SPACE[2]);
                 ui.label(tr(r.select.key()));

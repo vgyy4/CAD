@@ -93,6 +93,8 @@ pub struct Snapshot {
     /// Total number of audit entries in the session.
     pub audit_total: usize,
     pub project_dir: Option<PathBuf>,
+    /// The open printed circuit board (ADR 0047), parsed once per stored version.
+    pub pcb: Option<std::sync::Arc<gusset_commands::pcb_session::OpenBoard>>,
 }
 
 /// How many audit entries the GUI keeps in its snapshot.
@@ -143,6 +145,7 @@ impl Snapshot {
             audit: audit.iter().skip(audit.len().saturating_sub(AUDIT_SHOWN)).cloned().collect(),
             audit_total: audit.len(),
             project_dir: s.project_dir.clone(),
+            pcb: gusset_commands::pcb_session::open_board(s, &Actor::User).ok().flatten(),
         }
     }
 

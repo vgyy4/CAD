@@ -1626,11 +1626,13 @@ dependencies = [
  "gusset-kernel-worker",
  "gusset-mcp",
  "gusset-occt-sys",
+ "gusset-pcb",
  "gusset-project",
  "gusset-render",
  "gusset-store",
  "gusset-units",
  "gusset-worker",
+ "libm",
  "serde_json",
  "tokio",
 ]

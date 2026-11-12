@@ -285,6 +285,10 @@ pub struct App {
     pub render_tab: bool,
     /// The Assemble tab is chosen.
     pub assemble_tab: bool,
+    /// The PCB tab is chosen (ADR 0047): the board editor replaces the viewport.
+    pub pcb_tab: bool,
+    /// The board editor's view, tools and design rule markers.
+    pub pcb_state: crate::pcb_view::State,
     /// The Render tab's photo preview of the viewport.
     pub photo: crate::photo_preview::PhotoPreview,
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
@@ -441,6 +445,8 @@ impl App {
             cam_tab: false,
             render_tab: false,
             assemble_tab: false,
+            pcb_tab: false,
+            pcb_state: crate::pcb_view::State::default(),
             photo: crate::photo_preview::PhotoPreview::default(),
             theme_applied: None,
             viewport: Viewport::default(),
@@ -960,6 +966,12 @@ impl App {
     }
 
     fn apply_command(&mut self, id: &str, then: Then, result: Result<Value, CommandError>) {
+        // Design rule markers for the board editor, wherever the check was started.
+        if id == "pcb.drc"
+            && let Ok(v) = &result
+        {
+            self.pcb_state.markers = crate::pcb_view::markers_from(v);
+        }
         match then {
             Then::Notice => self.report(id, &result),
             Then::Quiet => {
@@ -2073,9 +2085,28 @@ impl App {
         if self.code.is_some() && !full {
             egui::Panel::right("code").default_size(360.0).resizable(true).show(ui, |ui| self.code_view(ui));
         }
+        if self.pcb_view_shown() && !full {
+            let pal = *theme::palette(self.theme);
+            let pcb = self.snapshot.pcb.clone();
+            let out = egui::Panel::left("pcb_layers")
+                .default_size(230.0)
+                .resizable(true)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .show(ui, |ui| crate::pcb_view::controls(ui, &pal, pcb.as_deref(), &mut self.pcb_state))
+                        .inner
+                })
+                .inner;
+            self.pcb_commands(out);
+        }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             if self.active_drawing.is_some() {
                 self.sheet_view(ui);
+            } else if self.pcb_view_shown() {
+                let pal = *theme::palette(self.theme);
+                let pcb = self.snapshot.pcb.clone();
+                let out = crate::pcb_view::show(ui, &pal, pcb.as_deref(), &mut self.pcb_state);
+                self.pcb_commands(out);
             } else {
                 self.viewport(ui);
             }
@@ -2406,10 +2437,24 @@ impl App {
                 render: self.render_tab,
                 assemble: self.assemble_tab,
                 photo_preview: self.photo.on,
+                pcb: self.pcb_view_shown(),
             },
         );
         if let Some(a) = action {
             self.ribbon_action(a);
+        }
+    }
+
+    /// Whether the PCB tab's board editor is shown (not while a sketch or drawing is open).
+    pub fn pcb_view_shown(&self) -> bool {
+        self.pcb_tab && self.active_drawing.is_none() && self.active_sketch.is_none()
+    }
+
+    /// Sends what the board editor asked for: registry commands, like every other edit.
+    pub(crate) fn pcb_commands(&mut self, out: crate::pcb_view::Out) {
+        for (id, args) in out.commands {
+            let then = if id == "pcb.drc" { Then::Notice } else { Then::Quiet };
+            self.submit_command(id, args, then);
         }
     }
 
@@ -2434,6 +2479,7 @@ impl App {
                 render: self.render_tab,
                 assemble: self.assemble_tab,
                 photo_preview: self.photo.on,
+                pcb: self.pcb_view_shown(),
             },
         );
         if let Some(a) = action {
@@ -2443,7 +2489,27 @@ impl App {
 
     /// Carries out what the tabs or the ribbon reported.
     pub fn ribbon_action(&mut self, action: Action) {
+        // Every other tab leaves the board editor.
+        if !matches!(
+            action,
+            Action::PcbTab
+                | Action::Run(_)
+                | Action::Search
+                | Action::SelectFilter(_)
+                | Action::QuickBar(..)
+                | Action::PhotoPreview(_)
+        ) {
+            self.pcb_tab = false;
+        }
         match action {
+            Action::PcbTab => {
+                self.active_drawing = None;
+                (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (false, false, false, false);
+                self.assemble_tab = false;
+                self.photo.set(false);
+                self.finish_sketch();
+                self.pcb_tab = true;
+            }
             // "Render image" in the app renders the current view (`render_to`), not a named view.
             Action::Run("export.image") => {
                 self.dialog = Some(Dialog::Path { purpose: PathPurpose::Render, text: "part.png".into(), error: None });
