@@ -1969,7 +1969,19 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 Err(j) => feats.push(j),
             }
         } else if c8 == "E8063467" {
-            feats.push(shell_json(cx, fid, &nm, &fusion_type, class));
+            // A selection of a body (`9716F783`) and no face: the shell of the whole body.
+            let whole = cx.input_recipes(fid).is_empty() && !g.selected_bodies(d, fid).is_empty();
+            if whole {
+                // A shell of a whole body (no face removed): the body with a closed void.
+                let ed = super::bodyops::Edit { d, g: &g, names: &names, feats: &feats };
+                feats.push(match ed.target(fid) {
+                    Ok(target) => shell_json(cx, fid, &nm, &fusion_type, class, Some(&target)),
+                    Err(e) => json!({"type": "unsupported", "fusion_type": fusion_type, "name": nm,
+                        "class_guid": class, "source_id": fid, "error": format!("a shell of a whole body: {e}")}),
+                });
+            } else {
+                feats.push(shell_json(cx, fid, &nm, &fusion_type, class, None));
+            }
         } else if c8 == "D087EFE5" {
             feats.push(offset_faces_json(cx, fid, &nm, &fusion_type, class));
         } else if c8 == "F4163A07" {
@@ -2276,7 +2288,8 @@ fn mirror_face_plane(cx: &mut Ctx, fid: u64) -> Option<(V3, V3)> {
 /// Shell `E8063467`: the faces it removes are `7ACC2A03` face recipes under its selection records
 /// (a cap or side of an extrude, resolved like the edges of a fillet); the wall is the
 /// `innerThickness` parameter (walls grow inward) or, with no inner value, `outerThickness`.
-fn shell_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, class: &str) -> Value {
+/// With `body` (a selection of one whole body, no face removed) it is a closed hollow of that body.
+fn shell_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, class: &str, body: Option<&str>) -> Value {
     let d = cx.d;
     let fail = |why: &str| {
         json!({"type": "unsupported", "fusion_type": fusion_type, "name": name, "class_guid": class,
@@ -2289,6 +2302,14 @@ fn shell_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, class: &str
         (None, Some(t)) => ("outside", t),
         _ => return fail("the shell has no single wall thickness (inner and outer, or none)"),
     };
+    if let Some(body) = body {
+        return json!({"type": "shell", "name": name, "source_id": fid, "body": body, "faces": [],
+            "thickness": mm(t), "side": side});
+    }
+    if let Some(body) = body {
+        return json!({"type": "shell", "name": name, "source_id": fid, "body": body, "faces": [],
+            "thickness": mm(t), "side": side});
+    }
     let mut faces: Vec<Value> = Vec::new();
     for rid in cx.input_recipes(fid) {
         let (kind, names) = naming::recipe(d, rid);

@@ -30,7 +30,7 @@ impl Edit<'_> {
     /// The one body a feature acts on, as the name of the tree feature that made it. Refuses a
     /// selection of faces or edges, several bodies, and a body whose maker is not a single-body
     /// feature of the tree (a pattern makes several bodies under one name).
-    fn target(&self, fid: u64) -> Result<String, String> {
+    pub(super) fn target(&self, fid: u64) -> Result<String, String> {
         let links = self.g.selected_bodies(self.d, fid);
         let [link] = links.as_slice() else {
             return Err(format!("it selects {} bodies, not one", links.len()));

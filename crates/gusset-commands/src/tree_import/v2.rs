@@ -224,6 +224,9 @@ pub(super) struct HelixF {
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct ShellF {
     name: String,
+    /// The whole body a shell with no removed face hollows (a closed void).
+    #[serde(default)]
+    body: Option<String>,
     faces: Vec<FacePick>,
     thickness: f64,
     #[serde(default)]
@@ -721,8 +724,11 @@ pub(super) fn pattern(g: &mut Gen, s: &Session, d: &PatternF, circular: bool) ->
 }
 
 pub(super) fn shell(g: &mut Gen, s: &Session, d: &ShellF) -> Result<(), String> {
-    if d.faces.is_empty() || d.faces.len() > MAX_PICKS {
+    if (d.faces.is_empty() && d.body.is_none()) || d.faces.len() > MAX_PICKS {
         return Err("a shell removes between 1 and 256 faces".into());
+    }
+    if d.body.is_some() && !d.faces.is_empty() {
+        return Err("a shell names either a whole body or the faces it removes".into());
     }
     let t = positive(Some(d.thickness), "the thickness")?;
     // Gusset: positive walls grow inward, negative outward.
@@ -731,6 +737,15 @@ pub(super) fn shell(g: &mut Gen, s: &Session, d: &ShellF) -> Result<(), String> 
         "outside" => -t,
         other => return Err(format!("shell side '{}' is not inside or outside", short(other))),
     };
+    if let Some(whole) = &d.body {
+        let body = g.body_named(whole, "body")?;
+        let name = g.fresh(&d.name, "Shell");
+        let _ = writeln!(g.text, "\nshell {name} (body: {body}, faces: [], thickness: {} mm)", num(t));
+        builds(g, s, &name)?;
+        g.made.push(name.clone());
+        g.features.insert(d.name.clone(), name);
+        return Ok(());
+    }
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     let mut body: Option<String> = None;
     let mut names = Vec::new();
