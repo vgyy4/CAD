@@ -829,9 +829,22 @@ impl RegionCache {
             let segs_before = segs.len();
             let mut polys: Vec<Vec<P2>> = Vec::new();
             let mut missing: Option<String> = None;
+            // A curve whose every piece the loop lists stands whole, once (4300's board: a line
+            // and an arc that overlap by 2 µm where they meet, each cut in two by the other's end).
+            let all_pieces = |q: u64, b: u32| {
+                (1..=b).all(|a| full.iter().any(|f| f.0 == q && f.1.a == a && f.1.b == b))
+                    && full.iter().filter(|f| f.0 == q).all(|f| f.1.b == b)
+            };
+            let mut whole_done: Vec<u64> = Vec::new();
             for (k, (q, c, pl)) in full.iter().enumerate() {
                 let mut pl = pl.clone();
-                if c.b > 1 {
+                let whole = c.b > 1 && all_pieces(*q, c.b);
+                if whole && whole_done.contains(q) {
+                    continue;
+                }
+                if whole {
+                    whole_done.push(*q);
+                } else if c.b > 1 {
                     // A piece of a curve cut by other sketch curves: piece a of b.
                     let all = allpolys
                         .get_or_insert_with(|| curve_ids.iter().map(|kk| (*kk, curve_polyline(d, s, *kk))).collect());
