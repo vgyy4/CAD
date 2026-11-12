@@ -1096,6 +1096,56 @@ impl Ctx<'_> {
             .or_else(|| self.edge_by_round_ends(faces))
             .or_else(|| self.rim_named_minus_one(faces))
             .or_else(|| self.mirrored_edge(faces))
+            .or_else(|| self.line_on_cylinder(faces))
+    }
+
+    /// A straight edge where a plane along a cylinder's axis meets the cylinder, known only
+    /// from the stored bodies, ended by faces that are not modelled (3722's Chamfer1: the end
+    /// face of a coil joined to the outside of a revolve's cylinder, ended by the coil's helical
+    /// faces; no stored state holds the joined body before the chamfer, and the stored end face
+    /// is what the chamfer left of it). Of the two lines where the plane cuts the cylinder, the
+    /// one on the side of the plane face's stored points; where along it the edge ends is not
+    /// known, so the edge is given by a short piece about the stored points' middle, which the
+    /// model's edge must hold whole.
+    fn line_on_cylinder(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
+        let (f0, f1) = (faces.first()?, faces.get(1)?);
+        for (pf, cf) in [(f0, f1), (f1, f0)] {
+            let (pg, pops) = pf.first()?;
+            let (cg, cops) = cf.first()?;
+            if self.face(cg, cops).is_some() {
+                continue;
+            }
+            let Some(StoredPick { surface: Surface::Cylinder { origin, axis, radius }, .. }) =
+                self.stored_face(cg, cops)
+            else {
+                continue;
+            };
+            let Some(StoredPick { surface: Surface::Plane { origin: p, normal: n }, points }) =
+                self.stored_face(pg, pops)
+            else {
+                continue;
+            };
+            let axis = unit(axis)?;
+            if dot(n, axis).abs() > 1e-9 || radius.is_nan() || radius <= 0.0 || points.is_empty() {
+                continue;
+            }
+            let k = points.len() as f64;
+            let mean = points.iter().fold([0.0; 3], |acc, q| add(acc, mul(*q, 1.0 / k)));
+            // The axis's distance from the plane, and the plane's direction across the axis.
+            let off = dot(n, sub(p, origin));
+            let half = radius * radius - off * off;
+            if half <= 1e-12 {
+                continue;
+            }
+            let u = unit(cross(n, axis))?;
+            let w = sub(mean, origin);
+            let side = if dot(u, w) >= 0.0 { 1.0 } else { -1.0 };
+            let along = dot(axis, w);
+            let mid = add(origin, add(mul(n, off), add(mul(u, side * half.sqrt()), mul(axis, along))));
+            let step = mul(axis, 0.01);
+            return Some((mid, false, vec![sub(mid, step), add(mid, step)]));
+        }
+        None
     }
 
     /// An edge of a copy a mirror of features made, where every face it names carries the
