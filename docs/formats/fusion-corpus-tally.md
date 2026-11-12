@@ -335,3 +335,12 @@ Round 22 M (a blend edge on two bodies goes to the body named, a sweep's one too
 chamfer corners that run on past an edge end, a plane's circle on a stored cylinder, an intersect's tool by what the
 body keeps): adafruit-more 130 of 150 as history (5358, 5360, 610 added; none lost), adafruit 13 of 18. 5981 stops
 at Chamfer2, whose edge names face `-1` (section 37).
+
+## Re-run after rounds 22 L and 23 N, O (2026-11-12)
+
+Round 22 L (Fusion's modeled thread form, built as tree features; exact helix fits; volumes of faces a helix winds
+round) gains no design by itself: 1145 now stops at Revolve2, 3350 at Thread2 (a thread on a revolved face), 324
+at a patterned thread. Round 23 O (a draft of a slanted face, Base Feature bodies from the PM blob) and N (Split
+Body by a plane, the shell of a whole body as a hollow, mirror planes on faces): adafruit-more 132 of 150 as
+history (258, 3651 added; none lost), adafruit 13 of 18. 4431 reads in full but a feature changes a body the file
+stores as finished; 4632 stops at a surface extrude (Extrude11); 3502 at Bend1 (sections 38, 39).
