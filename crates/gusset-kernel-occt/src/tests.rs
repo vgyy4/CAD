@@ -482,6 +482,102 @@ fn offset_faces_golden() {
     assert!(k().offset_faces(&b.shape, &[], 1.0).is_err());
 }
 
+fn disc(r: f64, h: f64, z0: f64) -> OpResult {
+    let frame = Frame { origin: [0.0, 0.0, z0], ..Frame::XY };
+    let outer = Loop2 { edges: vec![ProfileEdge { seg: Seg2::Circle { center: [0.0, 0.0], radius: r }, tag: 1 }] };
+    let p = Profile { frame, regions: vec![Region2 { outer, holes: vec![] }] };
+    k().extrude(&p, &ExtrudeSpec { distance: h, symmetric: false }).unwrap()
+}
+
+#[test]
+fn a_hole_beside_slots_is_widened() {
+    // A 1.2 mm deep hole of radius 1.5 under a rod of radius 4, crossed at its mouth by a slot
+    // 1 mm wide and 0.5 mm deep. Offsetting the hole's wall by -0.1 widens it to 1.6; the slot's
+    // walls run on to it. (BRepOffset gives no shape here; the ring between the radii is cut.)
+    let rod = disc(4.0, 5.0, 0.0);
+    let hole = disc(1.5, 1.2, 0.0);
+    let b = k().boolean(BoolOp::Cut, &rod.shape, &hole.shape).unwrap();
+    let slot = k()
+        .extrude(
+            &Profile {
+                frame: Frame { origin: [-3.4, -0.5, 0.0], ..Frame::XY },
+                regions: vec![Region2 { outer: rect(6.8, 1.0, 10), holes: vec![] }],
+            },
+            &ExtrudeSpec { distance: 0.5, symmetric: false },
+        )
+        .unwrap();
+    let b = k().boolean(BoolOp::Cut, &b.shape, &slot.shape).unwrap();
+    let t = k().topology(&b.shape).unwrap();
+    let wall = t
+        .faces
+        .iter()
+        .position(|f| f.kind == SurfaceKind::Cylinder && f.centroid[0].hypot(f.centroid[1]) < 1.5 && f.area < 15.0)
+        .unwrap() as u32;
+    let before = k().mass_properties(&b.shape).unwrap().volume;
+    let r = k().offset_faces(&b.shape, &[wall], -0.1).unwrap();
+    // The ring from 1.5 to 1.6 over 1.2 mm, less its two pieces in the slot (0.5 mm deep).
+    let n = 20000;
+    let piece: f64 = (0..n)
+        .map(|i| {
+            let y = -0.5 + (f64::from(i) + 0.5) / f64::from(n);
+            (1.6f64 * 1.6 - y * y).sqrt() - (1.5f64 * 1.5 - y * y).sqrt()
+        })
+        .sum::<f64>()
+        / f64::from(n);
+    let ring = std::f64::consts::PI * (1.6 * 1.6 - 1.5 * 1.5);
+    let removed = before - k().mass_properties(&r.shape).unwrap().volume;
+    assert!(close(removed, 1.2 * ring - 0.5 * 2.0 * piece, 1e-6), "{removed}");
+    assert!(r.face_origins.iter().all(|o| !o.is_empty()), "{:?}", r.face_origins);
+    assert!(r.face_origins.iter().flatten().any(|o| *o == FaceOrigin::Input { input: 0, face: wall }));
+}
+
+#[test]
+fn a_pocket_wall_offset_carries_its_round() {
+    // A disc of radius 9 with an annular pocket from radius 4.9 to 6 and 0.4 deep, its two top
+    // rims rounded by 0.2. Offsetting both walls by -0.1 widens the pocket to 4.8 .. 6.1; the
+    // rounds go with the walls (the stored body of such an offset has the same rounds on the
+    // moved rims).
+    let base = disc(9.0, 1.5, 0.0);
+    let outer = disc(6.0, 0.4, 1.1);
+    let inner = disc(4.9, 0.4, 1.1);
+    let ring = k().boolean(BoolOp::Cut, &outer.shape, &inner.shape).unwrap();
+    let b = k().boolean(BoolOp::Cut, &base.shape, &ring.shape).unwrap();
+    let t = k().topology(&b.shape).unwrap();
+    let rim = |r: f64| {
+        t.edges
+            .iter()
+            .position(|e| {
+                e.circle.as_ref().is_some_and(|c| (c.radius - r).abs() < 1e-9 && (c.center[2] - 1.5).abs() < 1e-9)
+            })
+            .unwrap() as u32
+    };
+    let f = k().fillet(&b.shape, &[rim(4.9), rim(6.0)], 0.2).unwrap();
+    let t = k().topology(&f.shape).unwrap();
+    let wall = |r: f64| {
+        t.faces
+            .iter()
+            .position(|x| {
+                x.kind == SurfaceKind::Cylinder
+                    && x.axis.as_ref().is_some_and(|a| a.origin[0].abs() < 1e-9)
+                    && (x.area - std::f64::consts::TAU * r * 0.2).abs() < 1e-6
+            })
+            .unwrap() as u32
+    };
+    let walls = [wall(4.9), wall(6.0)];
+    let before = k().mass_properties(&f.shape).unwrap().volume;
+    let r = k().offset_faces(&f.shape, &walls, -0.1).unwrap();
+    // Pappus: each wall's section grows by 0.1 x 0.2 below its round, and the round moved 0.1
+    // sideways sweeps a band of 0.1 x 0.2 whose centre is 0.05 pi in from the round's centre
+    // (the mean width of a quarter circle of radius 0.2 is 0.05 pi), plus half the move:
+    // 6.2 - 0.05 pi + 0.05 outside, 4.7 + 0.05 pi - 0.05 inside; the two sum to 10.9.
+    let removed = before - k().mass_properties(&r.shape).unwrap().volume;
+    let want = std::f64::consts::TAU * 0.02 * (6.05 + 4.85 + 10.9);
+    assert!(close(removed, want, 1e-6), "{removed} vs {want}");
+    assert!(r.face_origins.iter().all(|o| !o.is_empty()), "{:?}", r.face_origins);
+    let rt = k().topology(&r.shape).unwrap();
+    assert_eq!(rt.faces.iter().filter(|x| x.kind == SurfaceKind::Torus).count(), 2);
+}
+
 fn plate_with_hole(cx: f64, cy: f64) -> OpResult {
     let mut region = Region2 { outer: rect(40.0, 40.0, 1), holes: vec![] };
     region

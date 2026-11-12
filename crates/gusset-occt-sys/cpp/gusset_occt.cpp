@@ -57,6 +57,7 @@
 #include <BRepBndLib.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
@@ -2681,6 +2682,361 @@ RoundCutter full_round_cutter(const TopoDS_Shape& body, const ShapeMap& face_map
   return rc;
 }
 
+// One end of a cylindrical face along its axis, for `offset_cylinders`: on a plane across the
+// axis, or on a round (a torus about the axis, tangent to the face) that ends on such a plane.
+struct CylinderEnd {
+  bool round = false;
+  double z = 0;               // where the face ends, along the axis
+  double rc = 0, rho = 0;     // a round's centre circle radius and its radius
+  double zp = 0;              // the plane the round ends on, along the axis
+  std::vector<TopoDS_Face> tori;
+};
+
+// One cylindrical face offset as a boolean: the section between the face (and its rounds) and
+// their offset places, turned about the axis.
+struct CylinderOffset {
+  TopoDS_Face face;
+  gp_Cylinder cyl;
+  double area = 0;  // the face's
+  CylinderEnd ends[2];
+  TopoDS_Shape ring;
+  TopoDS_Shape outer;                 // the ring's face on the offset radius
+  std::vector<TopoDS_Shape> rounds;  // the ring's faces on the moved rounds, per end (or null)
+  std::vector<TopoDS_Face> planes;   // the planes around the face and its rounds
+};
+
+// Along the cylinder's axis from its position's origin.
+double along(const gp_Cylinder& c, const gp_Pnt& p) {
+  return gp_Vec(c.Position().Location(), p).Dot(gp_Vec(c.Position().Direction()));
+}
+
+// The faces of `body` across edge `e` from `f`.
+TopoDS_Face face_across(const AncMap& anc, const TopoDS_Edge& e, const TopoDS_Face& f) {
+  const int k = anc.FindIndex(e);
+  if (k <= 0) return TopoDS_Face();
+  for (ShapeList::Iterator it(anc(k)); it.More(); it.Next())
+    if (!it.Value().IsSame(f)) return TopoDS::Face(it.Value());
+  return TopoDS_Face();
+}
+
+// Is `pl` a plane across the cylinder's axis? Then `z` is where, along the axis.
+bool plane_across(const gp_Cylinder& c, const TopoDS_Face& pl, double& z) {
+  BRepAdaptor_Surface s(pl, false);
+  if (s.GetType() != GeomAbs_Plane || !s.Plane().Axis().IsParallel(c.Axis(), 1e-9)) return false;
+  z = along(c, s.Plane().Location());
+  return true;
+}
+
+// Is `f` a cylinder whose every edge ends it along its axis, on a plane across the axis or on a
+// tangent round that ends on such a plane, or runs along the axis between it and a plane along
+// the axis? Then offsetting it only moves those rounds with it, and grows or shrinks its
+// neighbouring planes.
+bool offsettable_cylinder(const AncMap& anc, const TopoDS_Face& f, CylinderOffset& c) {
+  BRepAdaptor_Surface sf(f, true);
+  if (sf.GetType() != GeomAbs_Cylinder) return false;
+  c.cyl = sf.Cylinder();
+  const gp_Dir z = c.cyl.Axis().Direction();
+  const gp_Lin axis(c.cyl.Axis());
+  double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+  BRepTools::UVBounds(f, u0, u1, v0, v1);
+  c.ends[0].z = v0;
+  c.ends[1].z = v1;
+  bool seen[2] = {false, false};
+  for (TopExp_Explorer ex(f, TopAbs_EDGE); ex.More(); ex.Next()) {
+    const TopoDS_Edge e = TopoDS::Edge(ex.Current());
+    if (BRep_Tool::Degenerated(e)) continue;
+    const TopoDS_Face other = face_across(anc, e, f);
+    if (other.IsNull()) continue;  // the seam
+    BRepAdaptor_Curve cv(e);
+    if (cv.GetType() == GeomAbs_Line) {
+      BRepAdaptor_Surface so(other, false);
+      if (!cv.Line().Direction().IsParallel(z, 1e-9) || so.GetType() != GeomAbs_Plane ||
+          !so.Plane().Axis().Direction().IsNormal(z, 1e-9))
+        return false;
+      c.planes.push_back(other);
+      continue;
+    }
+    if (cv.GetType() != GeomAbs_Circle || !cv.Circle().Axis().IsParallel(c.cyl.Axis(), 1e-9) ||
+        axis.Distance(cv.Circle().Location()) > 1e-7)
+      return false;
+    const double ze = along(c.cyl, cv.Circle().Location());
+    const int k = std::fabs(ze - v0) <= 1e-7 ? 0 : std::fabs(ze - v1) <= 1e-7 ? 1 : -1;
+    double zp = 0;
+    // Between the ends: a step of a plane across the axis (1054: the slots' roofs) whose
+    // other side the ring passes through empty.
+    if (k < 0) {
+      if (!plane_across(c.cyl, other, zp)) return false;
+      c.planes.push_back(other);
+      continue;
+    }
+    CylinderEnd& end = c.ends[k];
+    if (plane_across(c.cyl, other, zp)) {
+      if (seen[k] && end.round) return false;
+      seen[k] = true;
+      c.planes.push_back(other);
+      continue;
+    }
+    // A round: a torus about the axis, its centre circle at the edge's height, tangent to the
+    // face, ending on a plane across the axis a radius away.
+    BRepAdaptor_Surface so(other, false);
+    if (so.GetType() != GeomAbs_Torus) return false;
+    const gp_Torus t = so.Torus();
+    if (!t.Axis().IsParallel(c.cyl.Axis(), 1e-9) || axis.Distance(t.Location()) > 1e-7) return false;
+    const double rc = t.MajorRadius(), rho = t.MinorRadius();
+    if (std::fabs(along(c.cyl, t.Location()) - ze) > 1e-7 || std::fabs(std::fabs(rc - c.cyl.Radius()) - rho) > 1e-7)
+      return false;
+    double zt = 0;
+    bool ends_on_plane = false;
+    for (TopExp_Explorer tx(other, TopAbs_EDGE); tx.More(); tx.Next()) {
+      const TopoDS_Edge te = TopoDS::Edge(tx.Current());
+      if (BRep_Tool::Degenerated(te)) continue;
+      const TopoDS_Face beyond = face_across(anc, te, other);
+      if (beyond.IsNull() || beyond.IsSame(f)) continue;
+      BRepAdaptor_Curve tc(te);
+      if (tc.GetType() != GeomAbs_Circle) return false;
+      if (std::fabs(along(c.cyl, tc.Circle().Location()) - ze) <= 1e-7) {
+        if (!beyond.IsSame(f)) return false;  // another face along the round's start
+        continue;
+      }
+      double zq = 0;
+      if (!plane_across(c.cyl, beyond, zq) || std::fabs(std::fabs(zq - ze) - rho) > 1e-7) return false;
+      c.planes.push_back(beyond);
+      if (ends_on_plane && std::fabs(zq - zt) > 1e-7) return false;
+      zt = zq;
+      ends_on_plane = true;
+    }
+    if (!ends_on_plane) return false;
+    if (seen[k] && (!end.round || std::fabs(end.rc - rc) > 1e-7 || std::fabs(end.rho - rho) > 1e-7 ||
+                    std::fabs(end.zp - zt) > 1e-7))
+      return false;
+    seen[k] = true;
+    end.round = true;
+    end.rc = rc;
+    end.rho = rho;
+    end.zp = zt;
+    bool known = false;
+    for (const auto& x : end.tori) known = known || x.IsSame(other);
+    if (!known) end.tori.push_back(other);
+  }
+  if (!seen[0] || !seen[1]) return false;
+  GProp_GProps g;
+  BRepGProp::SurfaceProperties(f, g);
+  c.area = g.Mass();
+  return c.area > 0;
+}
+
+// Offsets cylindrical faces by `d` along their outward normals as booleans, where BRepOffset
+// fails (3350: a pocket's two walls in a threaded body, whose every face BRepOffset offsets and
+// fails on; 1054: a hole beside two slots, BRepOffset gives no shape). Each face's section (from
+// its radius to the offset one, over its length; with a round at an end, from the round to the
+// same round on the moved face, as a fillet of the moved edge makes it) is turned about the axis
+// and cut away (an offset into the material) or added. The material taken (the empty space
+// filled) must be bounded on the face's own cylinder by exactly the face, and on its rounds'
+// tori by exactly the rounds (their areas), so nothing else changes but the planes around them,
+// which grow or shrink.
+int offset_cylinders(const GsShape* s, const std::vector<TopoDS_Face>& fs, const std::vector<uint32_t>& idx, double d,
+                     GsShape** out, GsBuf* origins) {
+  AncMap anc;
+  TopExp::MapShapesAndAncestors(s->s, TopAbs_EDGE, TopAbs_FACE, anc);
+  std::vector<CylinderOffset> cs;
+  ShapeList tools;
+  for (const auto& f : fs) {
+    CylinderOffset c;
+    c.face = f;
+    if (!offsettable_cylinder(anc, f, c)) return fail("not a cylinder between planes");
+    // The outward normal points away from the axis on a shaft, towards it in a hole.
+    double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+    BRepTools::UVBounds(f, u0, u1, v0, v1);
+    const gp_Pnt p = BRepAdaptor_Surface(f, false).Value(0.5 * (u0 + u1), 0.5 * (v0 + v1));
+    gp_Dir n;
+    if (!outward_normal(f, p, n)) return fail("no normal");
+    const gp_Vec radial(gp_Lin(c.cyl.Axis()).Normal(p).Direction());
+    const double away = gp_Vec(n).Dot(radial) > 0 ? 1.0 : -1.0;
+    const double r = c.cyl.Radius(), r1 = r + away * d, shift = r1 - r;
+    if (!(r1 > 1e-6)) return fail("the offset radius is not positive");
+    for (const auto& e : c.ends)
+      if (e.round && !(e.rc + shift > 1e-6 && std::fabs(shift) < e.rho)) return fail("the round would turn over");
+    // The section in the half plane of the axis and the position's x direction: (radius,
+    // height) -> point. Around: the old profile up one side, the new one down the other.
+    const gp_Ax3& pos = c.cyl.Position();
+    const gp_Pnt o = pos.Location();
+    auto at = [&](double rr, double h) {
+      return o.Translated(gp_Vec(pos.XDirection()) * rr + gp_Vec(pos.Direction()) * h);
+    };
+    BRepBuilderAPI_MakeWire mw;
+    std::vector<TopoDS_Edge> walls, arcs(2);
+    auto line = [&](const gp_Pnt& a, const gp_Pnt& b) {
+      if (a.Distance(b) < 1e-9) return TopoDS_Edge();
+      TopoDS_Edge e = BRepBuilderAPI_MakeEdge(a, b).Edge();
+      mw.Add(e);
+      return e;
+    };
+    auto arc = [&](double rc, double zc, double rho, double ra, double za, double rb, double zb) {
+      // The quarter circle about (rc, zc) from (ra, za) to (rb, zb).
+      gp_Vec2d m(ra - rc + rb - rc, za - zc + zb - zc);
+      m.Normalize();
+      GC_MakeArcOfCircle a(at(ra, za), at(rc + rho * m.X(), zc + rho * m.Y()), at(rb, zb));
+      if (!a.IsDone()) throw Standard_Failure("no section");
+      TopoDS_Edge e = BRepBuilderAPI_MakeEdge(a.Value()).Edge();
+      mw.Add(e);
+      return e;
+    };
+    // The profile at radius `rr` (the round's centre moved by `sh`), from end 0 to end 1, or back.
+    auto profile = [&](double rr, double sh, bool forward, TopoDS_Edge& wall, TopoDS_Edge* rounds) {
+      const CylinderEnd& a = c.ends[forward ? 0 : 1];
+      const CylinderEnd& b = c.ends[forward ? 1 : 0];
+      auto top = [&](const CylinderEnd& e) { return e.round ? e.rc + sh : rr; };
+      auto htop = [&](const CylinderEnd& e) { return e.round ? e.zp : e.z; };
+      gp_Pnt cur = at(top(a), htop(a));
+      if (a.round) {
+        rounds[forward ? 0 : 1] = arc(a.rc + sh, a.z, a.rho, a.rc + sh, a.zp, rr, a.z);
+        cur = at(rr, a.z);
+      }
+      wall = line(cur, at(rr, b.z));
+      if (b.round) rounds[forward ? 1 : 0] = arc(b.rc + sh, b.z, b.rho, rr, b.z, b.rc + sh, b.zp);
+      return at(top(b), htop(b));
+    };
+    TopoDS_Edge old_wall, new_wall, old_rounds[2], new_rounds[2];
+    const gp_Pnt start = at(c.ends[0].round ? c.ends[0].rc : r, c.ends[0].round ? c.ends[0].zp : c.ends[0].z);
+    const gp_Pnt mid = profile(r, 0, true, old_wall, old_rounds);
+    const gp_Pnt far = at(c.ends[1].round ? c.ends[1].rc + shift : r1, c.ends[1].round ? c.ends[1].zp : c.ends[1].z);
+    line(mid, far);
+    const gp_Pnt back = profile(r1, shift, false, new_wall, new_rounds);
+    line(back, start);
+    if (!mw.IsDone()) return fail("no section");
+    BRepBuilderAPI_MakeFace mf(mw.Wire(), true);
+    if (!mf.IsDone()) return fail("no section");
+    BRepPrimAPI_MakeRevol rev(mf.Face(), pos.Axis(), 2 * M_PI);
+    rev.Build();
+    if (!rev.IsDone()) return fail("no ring");
+    c.ring = rev.Shape();
+    if (signed_volume(c.ring) < 0) c.ring.Reverse();
+    // The ring's face turned from a section edge (the wire may hold copies of the edges made).
+    auto made = [&](const TopoDS_Edge& e) {
+      if (e.IsNull()) return TopoDS_Shape();
+      auto mid_of = [](const TopoDS_Edge& x) {
+        BRepAdaptor_Curve cv(x);
+        return cv.Value(0.5 * (cv.FirstParameter() + cv.LastParameter()));
+      };
+      const gp_Pnt m = mid_of(e);
+      for (TopExp_Explorer ex(mf.Face(), TopAbs_EDGE); ex.More(); ex.Next()) {
+        if (mid_of(TopoDS::Edge(ex.Current())).Distance(m) > 1e-9) continue;
+        const ShapeList& g = rev.Generated(ex.Current());
+        if (!g.IsEmpty()) return g.First();
+      }
+      return TopoDS_Shape();
+    };
+    c.outer = made(new_wall);
+    if (c.outer.IsNull()) return fail("no ring");
+    for (int k = 0; k < 2; ++k) c.rounds.push_back(made(new_rounds[k]));
+    tools.Append(c.ring);
+    cs.push_back(c);
+  }
+  const bool into = d < 0;
+  // What changes: the rings' material (into the body) or their empty space (out of it); bounded
+  // on each face's cylinder by just that face, on its rounds' tori by just those rounds.
+  double change = 0;
+  for (const auto& c : cs) {
+    std::unique_ptr<BRepAlgoAPI_BooleanOperation> part;
+    if (into) part = std::make_unique<BRepAlgoAPI_Common>(c.ring, s->s);
+    else part = std::make_unique<BRepAlgoAPI_Cut>(c.ring, s->s);
+    if (!part->IsDone() || part->HasErrors()) return fail("the ring's material could not be found");
+    const TopoDS_Shape x = part->Shape();
+    change += std::fabs(signed_volume(x));
+    double on = 0, want = c.area;
+    std::vector<gp_Torus> tori;
+    for (const auto& e : c.ends)
+      for (const auto& t : e.tori) {
+        GProp_GProps g;
+        BRepGProp::SurfaceProperties(t, g);
+        want += g.Mass();
+        tori.push_back(BRepAdaptor_Surface(t, false).Torus());
+      }
+    const gp_Lin axis(c.cyl.Axis());
+    for (TopExp_Explorer ex(x, TopAbs_FACE); ex.More(); ex.Next()) {
+      BRepAdaptor_Surface sf(TopoDS::Face(ex.Current()), false);
+      bool mine = false;
+      if (sf.GetType() == GeomAbs_Cylinder) {
+        const gp_Cylinder y = sf.Cylinder();
+        mine = std::fabs(y.Radius() - c.cyl.Radius()) <= 1e-7 && y.Axis().IsParallel(c.cyl.Axis(), 1e-9) &&
+               axis.Distance(y.Location()) <= 1e-7;
+      } else if (sf.GetType() == GeomAbs_Torus) {
+        const gp_Torus y = sf.Torus();
+        for (const auto& t : tori)
+          mine = mine || (std::fabs(y.MajorRadius() - t.MajorRadius()) <= 1e-7 &&
+                          std::fabs(y.MinorRadius() - t.MinorRadius()) <= 1e-7 && y.Location().Distance(t.Location()) <= 1e-7);
+      }
+      if (!mine) continue;
+      GProp_GProps g;
+      BRepGProp::SurfaceProperties(ex.Current(), g);
+      on += g.Mass();
+    }
+    if (std::fabs(on - want) > 1e-6 * std::max(1.0, want)) return fail("the offset reaches past the face");
+  }
+  ShapeList args;
+  args.Append(s->s);
+  auto b = run_boolean_checked(into ? GS_BOOL_CUT : GS_BOOL_UNION, args, tools);
+  const TopoDS_Shape result = b->Shape();
+  if (result.IsNull()) return fail("no result");
+  const double before = std::fabs(signed_volume(s->s)), after = std::fabs(signed_volume(result));
+  if (std::fabs(std::fabs(after - before) - change) > 1e-7 * std::max(1.0, before))
+    return fail("the offset changed more than the rings");
+  ShapeMap out_faces, in_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  TopExp::MapShapes(s->s, TopAbs_FACE, in_faces);
+  std::vector<int64_t> o;
+  record_input_faces(*b, s->s, 0, out_faces, o);
+  // The moved face and rounds stand for the ones they replace.
+  auto stands_for = [&](const TopoDS_Shape& made, const TopoDS_Shape& was) {
+    const int fi = in_faces.FindIndex(was);
+    if (made.IsNull() || fi <= 0) return false;
+    std::vector<TopoDS_Shape> res;
+    const ShapeList& mods = b->Modified(made);
+    for (ShapeList::Iterator it(mods); it.More(); it.Next()) res.push_back(it.Value());
+    if (mods.IsEmpty() && !b->IsDeleted(made)) res.push_back(made);
+    bool found = false;
+    for (const auto& g : res) {
+      const int k = out_faces.FindIndex(g);
+      if (k <= 0) continue;
+      found = true;
+      push_origin(o, k - 1, GS_ORIGIN_INPUT, 0, fi - 1);
+    }
+    return found;
+  };
+  for (const auto& c : cs) {
+    if (!stands_for(c.outer, c.face)) return fail("the offset face is missing");
+    for (int k = 0; k < 2; ++k)
+      for (const auto& t : c.ends[k].tori) stands_for(c.rounds[size_t(k)], t);
+  }
+  // A piece of a ring's side left beside a plane it grows (the boolean's unification refused,
+  // as on 3350's threaded body, whose own faults BRepCheck reports): that plane's.
+  std::vector<bool> has(size_t(out_faces.Extent()), false);
+  for (size_t k = 0; k + 3 < o.size(); k += 4)
+    if (o[k] >= 0 && o[k] < int64_t(has.size())) has[size_t(o[k])] = true;
+  for (int k = 1; k <= out_faces.Extent(); ++k) {
+    if (has[size_t(k - 1)]) continue;
+    BRepAdaptor_Surface sf(TopoDS::Face(out_faces(k)), false);
+    if (sf.GetType() != GeomAbs_Plane) continue;
+    const gp_Pln q = sf.Plane();
+    bool done = false;
+    for (const auto& c : cs)
+      for (const auto& pl : c.planes) {
+        if (done) break;
+        const gp_Pln w = BRepAdaptor_Surface(pl, false).Plane();
+        if (!w.Axis().IsParallel(q.Axis(), 1e-9) || w.Distance(q.Location()) > 1e-7) continue;
+        const int fi = in_faces.FindIndex(pl);
+        if (fi <= 0) continue;
+        push_origin(o, k - 1, GS_ORIGIN_INPUT, 0, fi - 1);
+        done = true;
+      }
+  }
+  check_valid(result, "offset");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  (void)idx;
+  return GS_OK;
+}
+
 }  // namespace
 
 // Replaces each middle face in `faces` by a half cylinder across the wall between its two
@@ -2974,35 +3330,68 @@ int gs_offset_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, doub
   if (!std::isfinite(distance) || std::fabs(distance) < 1e-9) return fail("the offset distance must be non-zero");
   ShapeMap in_faces;
   TopExp::MapShapes(s->s, TopAbs_FACE, in_faces);
-  // Base offset 0 with an offset on the chosen faces only: the others stay, their
-  // neighbours stretch (BRepOffset's per-face offsets).
-  BRepOffset_MakeOffset mk;
-  mk.Initialize(s->s, 0.0, 1e-7, BRepOffset_Skin, Standard_False, Standard_False, GeomAbs_Intersection);
+  std::vector<TopoDS_Face> fs;
+  std::vector<uint32_t> idx;
   for (size_t i = 0; i < nfaces; ++i) {
     if (in_faces.Extent() <= 0 || faces[i] >= uint32_t(in_faces.Extent())) return fail("face index out of range");
-    mk.SetOffsetOnFace(TopoDS::Face(in_faces(int(faces[i]) + 1)), distance);
+    fs.push_back(TopoDS::Face(in_faces(int(faces[i]) + 1)));
+    idx.push_back(faces[i]);
   }
-  mk.MakeOffsetShape();
-  if (!mk.IsDone()) return fail("the faces cannot be offset that far (the part would fold over)");
-  TopoDS_Shape result = mk.Shape();
-  if (result.IsNull()) return fail("offset produced no result");
-  ShapeMap out_faces;
-  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
-  // Modified() is empty for this algorithm; its face image maps every input face.
-  const BRepAlgo_Image& image = mk.OffsetFacesFromShapes();
-  std::vector<int64_t> o;
-  for (int i = 1; i <= in_faces.Extent(); ++i) {
-    const TopoDS_Shape& g = in_faces(i);
-    if (!image.HasImage(g)) continue;
-    for (ShapeList::Iterator it(image.Image(g)); it.More(); it.Next()) {
-      int idx = out_faces.FindIndex(it.Value());
-      if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
+  // Where BRepOffset fails, cylinders between planes are offset as booleans (`offset_cylinders`).
+  // A cylinder with a tangent round at an end goes that way first: BRepOffset carries the offset
+  // on along every tangent face (the round, then the plane the round ends on, and so on), where
+  // Fusion moves the round with the face and keeps the plane (3350's pocket walls).
+  bool rounds = false;
+  {
+    AncMap anc;
+    TopExp::MapShapesAndAncestors(s->s, TopAbs_EDGE, TopAbs_FACE, anc);
+    for (const auto& f : fs) {
+      CylinderOffset c;
+      if (offsettable_cylinder(anc, f, c)) rounds = rounds || c.ends[0].round || c.ends[1].round;
     }
   }
-  check_valid(result, "offset");
-  to_buf(o, origins);
-  *out = new GsShape{result};
-  return GS_OK;
+  if (rounds) {
+    try {
+      if (offset_cylinders(s, fs, idx, distance, out, origins) == GS_OK) return GS_OK;
+    } catch (const Standard_Failure&) {
+    }
+  }
+  std::string why;
+  try {
+    // Base offset 0 with an offset on the chosen faces only: the others stay, their
+    // neighbours stretch (BRepOffset's per-face offsets).
+    BRepOffset_MakeOffset mk;
+    mk.Initialize(s->s, 0.0, 1e-7, BRepOffset_Skin, Standard_False, Standard_False, GeomAbs_Intersection);
+    for (const auto& f : fs) mk.SetOffsetOnFace(f, distance);
+    mk.MakeOffsetShape();
+    if (!mk.IsDone()) throw Standard_Failure("the faces cannot be offset that far (the part would fold over)");
+    TopoDS_Shape result = mk.Shape();
+    if (result.IsNull()) throw Standard_Failure("offset produced no result");
+    ShapeMap out_faces;
+    TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+    // Modified() is empty for this algorithm; its face image maps every input face.
+    const BRepAlgo_Image& image = mk.OffsetFacesFromShapes();
+    std::vector<int64_t> o;
+    for (int i = 1; i <= in_faces.Extent(); ++i) {
+      const TopoDS_Shape& g = in_faces(i);
+      if (!image.HasImage(g)) continue;
+      for (ShapeList::Iterator it(image.Image(g)); it.More(); it.Next()) {
+        int k = out_faces.FindIndex(it.Value());
+        if (k > 0) push_origin(o, k - 1, GS_ORIGIN_INPUT, 0, i - 1);
+      }
+    }
+    check_valid(result, "offset");
+    to_buf(o, origins);
+    *out = new GsShape{result};
+    return GS_OK;
+  } catch (const Standard_Failure& e) {
+    why = e.what() ? e.what() : "offset failed";
+  }
+  try {
+    if (offset_cylinders(s, fs, idx, distance, out, origins) == GS_OK) return GS_OK;
+  } catch (const Standard_Failure&) {
+  }
+  return fail(why);
   GS_GUARD_END
 }
 
