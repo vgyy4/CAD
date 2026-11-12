@@ -78,21 +78,92 @@ designs and generated files.
 * `pcb.export_gerbers`: one `.gbr` per layer into a folder, named `<board>-<layer>.gbr`.
 * `pcb.export_drill`: `<board>-PTH.drl` and `<board>-NPTH.drl`.
 
+## Phase 1b (2026-11-12): the board in the session and a 2D editor
+* **The board in the document.** A `pcb (file: "<name>.kicad_pcb", board: "<hash>", project:
+  "<hash>")` statement (code view; stored in the history's parameter object) names the board's
+  `.kicad_pcb` text, and optionally the KiCad project file beside it, as blobs. Every board edit
+  stores a new board text and commits a document naming it, so `history.undo`/`redo`, branches,
+  compare (one `pcb` item) and merge (the board as one item, a conflict when both sides edited it)
+  work on boards as on features (ADR 0006). Snapshot closures keep both blobs. A board blob is
+  the whole file: a 5.8 MB board costs 5.8 MB per edit before compression (zstd in `.gus`);
+  per-item objects are later work if that matters.
+* **Edits in `gusset-pcb` (`edit`)** change the tree and re-read it, so untouched parts are written
+  back as read: `Board::new_two_layer` (rectangular outline, 1.6 mm FR4 stackup), move/rotate
+  (existing), `flip_footprint` (layers F↔B, local Y and angles mirrored: KiCad's default top/bottom
+  flip; mirrored text justification is not set), `add_track`, `add_via` (through), `delete_items`,
+  `set_outline` (`gr_rect` for axis-aligned rectangles, `gr_poly` otherwise, `gr_line`s for KiCad 5
+  files). New items get deterministic UUIDs (KiCad 6+); a net unknown to a numbered-nets file is
+  declared. Tracks, vias and footprints carry their tree position, so a skipped malformed item
+  does not shift indices.
+* **Rules (`rules`)**: board clearance, minimum track width, annular ring, hole-to-edge,
+  copper-to-edge, default track/via sizes and net classes (KiCad 5 `net_class` in the board;
+  KiCad 6+ `.kicad_pro` `net_settings.classes`, `netclass_assignments`, `netclass_patterns` with
+  `*`/`?`, and `board.design_settings.rules` minimums). Defaults: clearance 0.2, width 0.15
+  minimum and 0.25 new, ring 0.1, hole/copper to edge 0.3, via 0.6/0.3 mm.
+* **Connectivity and ratsnest (`copper`, `ratsnest`)**: pads (polygons, round pads as discs),
+  tracks (capsules, arcs as chords) and vias per copper layer; same-net copper that touches is
+  joined, and zone fills join the copper that touches them (pads in thermal reliefs touch the
+  spokes; edges bucketed on a grid). The ratsnest is a minimum spanning tree per net over the
+  islands' anchors (pad centres, via centres, track ends). On the 7 local demo boards (all fully
+  routed in KiCad) it reports 0 unrouted connections; the largest (7932 tracks) takes 32 ms.
+* **DRC (`drc`)**: copper clearance per layer between different nets (no-net copper counts as its
+  own net; the larger of the two nets' class clearances, else the board's), shorts, track width,
+  annular rings (vias and plated pads), hole-to-edge and copper-to-edge, with positions and the
+  items involved; 0.5 µm slack for file rounding. Zones are not checked. 52 ms on the largest demo
+  board. Boards whose project file sets tighter classes show clearance reports until it is read.
+* **Assembly files (`fab`)**: pick-and-place CSV (`Ref,Val,Package,PosX,PosY,Rot,Side`, mm from the
+  auxiliary origin with Y up, `exclude_from_pos_files`/`board_only` left out) and BOM CSV
+  (`Qty,Value,Footprint,References,DNP`, grouped by value + footprint + DNP, natural reference
+  order); fields quoted when needed, a leading `= + - @` escaped against spreadsheet formulas.
+* **Commands** (registry, not in the core MCP tool list): `pcb.open` (a `.kicad_pcb`, and the
+  `.kicad_pro` beside it), `pcb.new`, `pcb.save` (writes `.kicad_pcb`, overwrite confirmed),
+  `pcb.move_footprint` (`at`, `angle`, `flip`; by reference or `#index`), `pcb.add_track` (net from
+  the copper at either end, width from the net class), `pcb.add_via`, `pcb.delete` (tracks, vias by
+  index), `pcb.set_outline` (polygon), `pcb.drc` (rule overrides; at most 200 violations),
+  `pcb.export_pos`, `pcb.export_bom`. `pcb.info`, `pcb.import` (the board to 3D: "`pcb.to_cad`"),
+  `pcb.export_gerbers` and `pcb.export_drill` take the open board when `path` is left out.
+  Board text reaches agents only in `_user_text` fields.
+* **GUI (`gusset-app` `pcb_view`)**: a PCB tab whose central view is the board editor: layers in
+  KiCad-like colours back to front with the active copper layer on top, a side panel with
+  per-layer visibility, the active layer, grid (0.1 to 2.54 mm), tools (Select, Route, Via),
+  ratsnest toggle, the unrouted count, a DRC button and its problem list; pan/zoom/fit; select
+  footprints, tracks and vias; drag a footprint (snapped, shown where it lands); R turns, F flips,
+  Delete removes; Route clicks lay segments on the active layer, snapping to pad centres; markers
+  at DRC violations with their messages on hover. The widget only reports registry commands,
+  which the app sends like every other edit. The ribbon's PCB tab holds open/new/save, the edit
+  commands, DRC/info and the exports. Zone fills are drawn as outlines (egui fills convex shapes
+  only).
+
+## Results of phase 1b (2026-11-12)
+* Tests: `gusset-pcb` 32 unit tests (10 new: new board, track/via add and delete give the file back,
+  net declaration, move/turn/flip and flip back, outline, ratsnest with tracks and vias, zone fills
+  joining pads, DRC codes and places, net classes and patterns, placement and BOM);
+  `gusset-history` the board stored, compared, merged and kept by GC; `gusset-commands`
+  `tests_pcb_edit` 5 (open, edit, undo/redo, save with an identical tree for an unedited board,
+  project rules, DRC through the registry, assembly files with agent path rules, open board in
+  info/import/drill); `gusset-app` `tests_pcb` 3 (snapping, picking, drop places, every editor
+  action a registry command, the tab editing with undo and DRC markers through the app).
+* MCP: core tool list unchanged (31 tools, 17901 of 18000 bytes); the command tools average 581
+  bytes (142 tools; was 593, cap 600); the largest new one is `pcb_add_track` at 615 bytes.
+
 ## Next (out of scope of this ADR's work; each needs its own ADR before work)
-* **Phase 1b:** board in the `gusset-doc` model (history, undo, code view) instead of bodies only; STEP
-  export of the board; text on silkscreen (KiCad stroke font is CC data, an own font or the
-  `gusset-text` outlines); Gerber object attributes (`.N`, `.P`, `.C`); pick-and-place CSV and BOM;
-  `.kicad_sch`/`.kicad_sym` readers; re-reading our Gerbers with a permissive parser in tests;
-  a fuzz target for the reader; a corpus test over local KiCad sample boards.
-* **DRC** (clearance, width, drill, annular ring, edge) as a pure function.
-* **Phase 2: interactive 2D layout editor in the egui app** (board canvas in `gusset-render`,
-  select/move footprints, routing with push-and-shove-lite, zone fill).
-* **Schematic capture** (after layout works; netlist import from KiCad/atopile until then).
-* **Routing/autorouting**: Topola (MIT, Rust) when mature, else Specctra DSN out and Freerouting as an
-  external GPL process.
+* **Schematic capture**: `.kicad_sch`/`.kicad_sym` readers, then a schematic editor and netlist
+  sync to the board (netlist import from KiCad/atopile until then).
+* **Interactive routing**: push-and-shove, walk-around, 45° modes, track drag, differential pairs.
+* **Autorouting**: Topola (MIT, Rust) when mature, else Specctra DSN out and Freerouting as an
+  external GPL process (detected, never bundled).
+* **Zone refill** (pour with clearances and thermal reliefs) and zone DRC; filled zone drawing.
+* **KiCad library content pack** (footprints, symbols, 3D models; CC-BY-SA-4.0 with exception) as
+  an optional download with notices; placing footprints from it.
+* DRC: hole-to-hole, courtyard overlap, silk on pads, drill sizes, per-class rules beyond
+  clearance; KiCad's custom rules (`.kicad_dru`).
+* Editor: text on silkscreen (plotted and drawn), mirrored text on flip, arc tracks drawn by the
+  user, multi-select and box select, footprint placement from a library, board outline drawing
+  with the mouse (today: the `pcb.set_outline` form).
+* From phase 1a: STEP export of the board; Gerber object attributes (`.N`, `.P`, `.C`);
+  re-reading our Gerbers with a permissive parser in tests; a corpus test over local KiCad samples.
 * **KiCad IPC bridge** (protobuf over NNG to a running KiCad, after the `.proto` licence is confirmed)
   and a `kicad-cli` wrapper for authoritative DRC/ERC and STEP/IPC-2581/ODB++ export.
-* Library handling: KiCad libraries as an optional downloadable content pack with notices.
 
 ## Consequences
 * Users can bring a KiCad board into Gusset to design an enclosure around it, and write fabrication
@@ -105,7 +176,7 @@ designs and generated files.
   `(model (at ...))` is in inches, `(offset ...)` in mm. The 3D model rotation order and sign,
   and the trapezoid `rect_delta` direction, are **unconfirmed** against KiCad's output.
 
-## Results (2026-11-12)
+## Results of phase 0 + 1a (2026-11-12)
 * Tests: `gusset-pcb` 22 unit tests (hand-written boards: round trip, KiCad 5 and 10 layouts, Gerber
   layers, Excellon, sanity check, profile, mock-kernel build, hostile inputs); `gusset-commands`
   `tests_pcb` 5 (info, import, STEP models through a fake importer, model path confinement,
