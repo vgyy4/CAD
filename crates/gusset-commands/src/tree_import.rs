@@ -1871,6 +1871,19 @@ fn containing_edges(ev: &gusset_eval::Evaluation, pick: &EdgePick) -> Vec<(Strin
         (Some(first), Some(last)) => vec![pick.midpoint, first, last],
         _ => vec![pick.midpoint],
     };
+    let out = edges_holding(ev, pick, &pts);
+    // Fusion's path ends can lie off the curve its other points run on (858's Fillet3: ends
+    // 0.016 mm inside the r 14 mm circle, at the lines that cut it): the points next to them.
+    if out.is_empty()
+        && pick.path.len() >= 4
+        && let (Some(a), Some(b)) = (pick.path.get(1).copied(), pick.path.get(pick.path.len() - 2).copied())
+    {
+        return edges_holding(ev, pick, &[pick.midpoint, a, b]);
+    }
+    out
+}
+
+fn edges_holding(ev: &gusset_eval::Evaluation, pick: &EdgePick, pts: &[V3]) -> Vec<(String, String)> {
     let interior = pick.path.is_empty();
     let mut out = Vec::new();
     for b in &ev.bodies {
@@ -1878,7 +1891,7 @@ fn containing_edges(ev: &gusset_eval::Evaluation, pick: &EdgePick) -> Vec<(Strin
         for (i, e) in t.edges.iter().enumerate() {
             let ends: Vec<V3> =
                 e.vertices.iter().filter_map(|v| t.vertices.get(*v as usize)).map(|v| v.point).collect();
-            if edge_holds(e.kind, &ends, e.midpoint, e.circle, &pts)
+            if edge_holds(e.kind, &ends, e.midpoint, e.circle, pts)
                 && (!interior || ends.iter().all(|v| norm(sub(*v, pick.midpoint)) > 0.01))
                 && let Some(n) = b.names.edges.get(i)
             {
