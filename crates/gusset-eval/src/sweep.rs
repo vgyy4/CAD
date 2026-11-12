@@ -17,8 +17,7 @@ impl Evaluator {
         params: &ParamValues,
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
-        let (solved, frame) = sketch_input(name, &d.profile.sketch, s)?;
-        let (profile, regions) = sketch::kernel_profile(name, &d.profile.sketch, &solved, frame, &d.profile.regions)?;
+        let (profile, input) = profile_input(k, name, &d.profile, s)?;
         let twist = match &d.twist {
             Some(e) => eval_expr(name, e, Dim::ANGLE, params, units)?,
             None => 0.0,
@@ -47,7 +46,18 @@ impl Evaluator {
                     .ok_or_else(|| EvalError::new(name, ErrorCode::NoTargetBody, "the path edges have no body"))?;
                 SweepPath::Edges { shape: body.shape.clone(), edges }
             }
-            PathRef::Helix(h) => self.helix_path(s, name, h, &solved, &regions, frame, units, params)?,
+            PathRef::Helix(h) => {
+                let (solved, frame) = sketch_input(name, &d.profile.sketch, s)?;
+                let ProfileIn::Sketch(regions) = &input else {
+                    return Err(EvalError::new(
+                        name,
+                        ErrorCode::InvalidReference,
+                        "a helical sweep takes a sketch profile",
+                    )
+                    .with_hint("sketch the profile on the face"));
+                };
+                self.helix_path(s, name, h, &solved, regions, frame, units, params)?
+            }
         };
         let orientation = match d.orientation {
             Orientation::Fixed => SweepOrientation::Fixed,
@@ -55,7 +65,7 @@ impl Evaluator {
         };
         let res =
             k.sweep(&profile, &path, &SweepSpec { orientation, twist }).map_err(|ke| kernel_err(name, "sweep", ke))?;
-        let ctx = OpContext::Sweep { feature: name, sketch: &d.profile.sketch, regions: &regions };
+        let ctx = input.ctx(name, &d.profile);
         self.combine_refined(s, name, &ctx, res, d.op, (d.body.as_deref(), d.body_name.as_deref()), d.refine)
     }
 
@@ -140,9 +150,19 @@ impl Evaluator {
         }
         let mut sections = Vec::with_capacity(d.profiles.len());
         let mut sketches = Vec::with_capacity(d.profiles.len());
+        let mut edges = Vec::with_capacity(d.profiles.len());
         for p in &d.profiles {
-            let (solved, frame) = sketch_input(name, &p.sketch, s)?;
-            let (profile, regions) = sketch::kernel_profile(name, &p.sketch, &solved, frame, &p.regions)?;
+            let (profile, regions) = match profile_input(k, name, p, s)? {
+                (profile, ProfileIn::Sketch(regions)) => {
+                    edges.push(Vec::new());
+                    (profile, regions)
+                }
+                (profile, ProfileIn::Face(e)) => {
+                    edges.push(e);
+                    (profile, vec![String::new()])
+                }
+            };
+            let what = p.face.as_ref().map_or_else(|| p.sketch.clone(), ToString::to_string);
             if regions.len() != 1 {
                 return Err(EvalError::new(
                     name,
@@ -159,7 +179,7 @@ impl Evaluator {
                 return Err(EvalError::new(
                     name,
                     ErrorCode::InvalidReference,
-                    format!("the profile in {} has holes, which a loft cannot follow", p.sketch),
+                    format!("the profile in {what} has holes, which a loft cannot follow"),
                 )
                 .with_hint("loft the outline, then cut the holes with an extrude"));
             }
@@ -167,7 +187,7 @@ impl Evaluator {
             sketches.push(p.sketch.clone());
         }
         let res = k.loft(&sections, &LoftSpec { ruled: d.ruled }).map_err(|ke| kernel_err(name, "loft", ke))?;
-        let ctx = OpContext::Loft { feature: name, sketches: &sketches };
+        let ctx = OpContext::Loft { feature: name, sketches: &sketches, edges: &edges };
         self.combine_refined(s, name, &ctx, res, d.op, (d.body.as_deref(), d.body_name.as_deref()), d.refine)
     }
 }

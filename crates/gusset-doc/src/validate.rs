@@ -886,7 +886,7 @@ fn check_body_op(
 fn check_sweep(n: &str, d: &SweepDef, seen: &BTreeMap<&str, &Feature>, out: &mut Vec<Issue>) {
     match &d.path {
         PathRef::Sketch { sketch, curves } => {
-            if sketch == &d.profile.sketch {
+            if d.profile.face.is_none() && sketch == &d.profile.sketch {
                 out.push(issue_h(
                     n,
                     "the path and the profile are in the same sketch",
@@ -1002,6 +1002,14 @@ pub fn validate_feature_name(n: &str) -> Result<(), String> {
 }
 
 fn check_profile(n: &str, p: &ProfileRef, seen: &BTreeMap<&str, &Feature>, out: &mut Vec<Issue>) {
+    if let Some(face) = &p.face {
+        if let Some(f) = seen.get(face.feature.as_str())
+            && matches!(f.kind, FeatureKind::Sketch(_))
+        {
+            out.push(issue(n, format!("profile face {face} names a sketch, not a body")));
+        }
+        return;
+    }
     match seen.get(p.sketch.as_str()) {
         Some(f) if !matches!(f.kind, FeatureKind::Sketch(_)) => {
             out.push(issue(n, format!("profile '{}' is not a sketch", p.sketch)));

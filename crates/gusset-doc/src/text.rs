@@ -363,6 +363,9 @@ fn print_param(out: &mut String, p: &Param) {
 }
 
 fn print_profile(p: &ProfileRef) -> String {
+    if let Some(f) = &p.face {
+        return f.to_string();
+    }
     if p.regions.is_empty() { p.sketch.clone() } else { format!("{}.regions({})", p.sketch, p.regions.join(", ")) }
 }
 
@@ -1294,7 +1297,13 @@ pub(crate) fn parse_bool(c: &mut Cursor<'_>) -> Result<bool, ParseError> {
 }
 
 fn parse_profile(c: &mut Cursor<'_>) -> Result<ProfileRef, ParseError> {
+    let start = c.clone();
     let sketch = c.ident()?.to_string();
+    if c.peek() == Some('/') {
+        // A body face (`Extrude1/cap(end)`).
+        *c = start;
+        return Ok(ProfileRef::face(parse_face(c)?));
+    }
     let mut regions = Vec::new();
     if c.eat('.') {
         if !c.eat_kw("regions") {
@@ -1312,7 +1321,7 @@ fn parse_profile(c: &mut Cursor<'_>) -> Result<ProfileRef, ParseError> {
         }
         c.expect(')')?;
     }
-    Ok(ProfileRef { sketch, regions })
+    Ok(ProfileRef { sketch, regions, face: None })
 }
 
 pub(crate) fn unknown_arg(c: &Cursor<'_>, kw: &str, key: &str, allowed: &str) -> ParseError {

@@ -447,6 +447,33 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     }
 
     #[test]
+    fn a_face_profile_round_trips_and_is_validated() {
+        let ok = format!(
+            "{HOLE_BASE}extrude E2 (profile: E/cap(end), distance: 2 mm, op: add, body: E)\n\nloft L (profiles: [E/cap(end), S], op: new)\n\nextrude E3 (profile: L/along(edge(E/cap(end), E/side(P/l4))), distance: 1 mm, op: new)\n"
+        );
+        let doc = Document::from_text(&ok).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Extrude(e) = &doc.feature("E2").unwrap().kind else { panic!() };
+        assert_eq!(e.profile.face.as_ref().map(ToString::to_string).as_deref(), Some("E/cap(end)"));
+        assert!(e.profile.sketch.is_empty());
+        assert_eq!(
+            doc.feature("E3").unwrap().kind.dependencies(),
+            vec!["L".to_string(), "E".to_string(), "P".to_string()]
+        );
+        let mut renamed = doc.clone();
+        for f in &mut renamed.features {
+            if let FeatureKind::Extrude(e) = &mut f.kind {
+                e.profile.rename_feature("E", "Body");
+            }
+        }
+        assert!(renamed.to_text().contains("extrude E2 (profile: Body/cap(end)"));
+        // A sketch is not a body.
+        let bad = format!("{HOLE_BASE}extrude E2 (profile: S/cap(end), distance: 2 mm, op: new)\n");
+        let err = Document::from_text(&bad).unwrap_err().to_string();
+        assert!(err.contains("names a sketch"), "{err}");
+    }
+
+    #[test]
     fn extrude_up_to_a_face_round_trips_and_is_validated() {
         let ok = format!(
             "{HOLE_BASE}extrude E2 (profile: P, to: E/cap(end), offset: deep / 2, reverse: true, op: add, body: E)\n\nextrude E3 (profile: P, to: E/side(P/l5), op: cut, body: E)\n"

@@ -10,6 +10,7 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
 pub mod cancel;
+pub mod face_profile;
 pub mod mock;
 pub mod slot;
 pub mod types;
@@ -279,6 +280,13 @@ pub trait Kernel: Send + Sync + Debug {
     fn shell(&self, shape: &Shape, remove: &[u32], thickness: f64) -> KResult<OpResult> {
         let _ = (shape, remove, thickness);
         unsupported("shell", self.name())
+    }
+
+    /// The planar face `face` of `shape` as a profile of one region on the face's plane, its
+    /// normal along the face's outward normal; each profile edge's tag is the index of the
+    /// body edge it comes from ([`face_profile::face_profile_from_topology`]).
+    fn face_profile(&self, shape: &Shape, face: u32) -> KResult<Profile> {
+        face_profile::face_profile_from_topology(&self.topology(shape)?, face)
     }
 
     /// Sheets (ADR 0036): every edge of the profile's loops (open or closed chains) swept

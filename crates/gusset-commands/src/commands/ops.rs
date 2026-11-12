@@ -30,7 +30,7 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
     };
     match kind {
         FeatureKind::Sweep(d) => {
-            sketch_of(&mut d.profile.sketch);
+            d.profile.rename_feature(from, to);
             match &mut d.path {
                 PathRef::Sketch { sketch, .. } => sketch_of(sketch),
                 PathRef::Edges(edges) => edges.iter_mut().for_each(|e| e.rename_feature(from, to)),
@@ -43,7 +43,7 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             body_of(&mut d.body);
         }
         FeatureKind::Loft(d) => {
-            d.profiles.iter_mut().for_each(|p| sketch_of(&mut p.sketch));
+            d.profiles.iter_mut().for_each(|p| p.rename_feature(from, to));
             body_of(&mut d.body);
         }
         FeatureKind::Shell(d) => {
@@ -121,14 +121,14 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
         FeatureKind::Surface(d) => match &mut d.op {
             gusset_doc::SurfaceOp::Extrude { curves: PathRef::Sketch { sketch, .. }, .. } => sketch_of(sketch),
             gusset_doc::SurfaceOp::Extrude { .. } => {}
-            gusset_doc::SurfaceOp::Patch { profile } => sketch_of(&mut profile.sketch),
+            gusset_doc::SurfaceOp::Patch { profile } => profile.rename_feature(from, to),
             gusset_doc::SurfaceOp::Thicken { body, .. } => body_of(body),
             gusset_doc::SurfaceOp::Stitch { bodies, .. } => bodies.iter_mut().for_each(sketch_of),
         },
         FeatureKind::Sheet(d) => match &mut d.op {
             gusset_doc::SheetOp::Contour { curves: PathRef::Sketch { sketch, .. }, .. } => sketch_of(sketch),
             gusset_doc::SheetOp::Contour { .. } => {}
-            gusset_doc::SheetOp::Tab { profile } => sketch_of(&mut profile.sketch),
+            gusset_doc::SheetOp::Tab { profile } => profile.rename_feature(from, to),
             gusset_doc::SheetOp::EdgeFlange { body, .. } => sketch_of(body),
         },
         _ => {}

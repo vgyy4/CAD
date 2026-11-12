@@ -45,6 +45,9 @@ pub enum FaceKey {
     /// A face of a sheet-metal feature (ADR 0037, `Base/flat(l3)`, `Base/bend_in(l3)`):
     /// `at` is the sketch line of the flat, or the line a bend follows.
     Sheet { part: SheetPart, at: String },
+    /// Lateral face swept from an edge of a body face used as a profile
+    /// (`Extrude2/along(edge(Extrude1/cap(end), Extrude1/side(Sketch1/l4)))`).
+    Along(Box<EdgeRef>),
 }
 
 /// Which face of a sheet-metal flange (ADR 0037).
@@ -148,7 +151,7 @@ impl FaceRef {
         f(&self.feature);
         match &self.key {
             FaceKey::Side { sketch, .. } => f(sketch),
-            FaceKey::Blend(e) => e.features(f),
+            FaceKey::Blend(e) | FaceKey::Along(e) => e.features(f),
             FaceKey::Inner(r) | FaceKey::Mirror(r) | FaceKey::Copy(r) | FaceKey::Instance { face: r, .. } => {
                 r.features(f);
             }
@@ -167,7 +170,7 @@ impl FaceRef {
         }
         match &mut self.key {
             FaceKey::Side { sketch, .. } if sketch == from => *sketch = to.to_string(),
-            FaceKey::Blend(e) => e.rename_feature(from, to),
+            FaceKey::Blend(e) | FaceKey::Along(e) => e.rename_feature(from, to),
             FaceKey::Inner(r) | FaceKey::Mirror(r) | FaceKey::Copy(r) | FaceKey::Instance { face: r, .. } => {
                 r.rename_feature(from, to);
             }
@@ -238,6 +241,7 @@ impl fmt::Display for FaceRef {
                 }
             }
             FaceKey::Blend(e) => write!(f, "blend({e})")?,
+            FaceKey::Along(e) => write!(f, "along({e})")?,
             FaceKey::Imported(i) => write!(f, "face({i})")?,
             FaceKey::Inner(r) => write!(f, "inner({r})")?,
             FaceKey::Mirror(r) => write!(f, "mirror({r})")?,
@@ -315,6 +319,7 @@ pub(crate) fn parse_face(c: &mut Cursor<'_>) -> Result<FaceRef, ParseError> {
             FaceKey::Cap { side, region }
         }
         "blend" => FaceKey::Blend(Box::new(parse_edge(c)?)),
+        "along" => FaceKey::Along(Box::new(parse_edge(c)?)),
         "face" => FaceKey::Imported(c.uint()?),
         "inner" => FaceKey::Inner(Box::new(parse_face(c)?)),
         "mirror" => FaceKey::Mirror(Box::new(parse_face(c)?)),
@@ -331,7 +336,7 @@ pub(crate) fn parse_face(c: &mut Cursor<'_>) -> Result<FaceRef, ParseError> {
         other => {
             return Err(c.err_hint(
                 format!("unknown face kind '{other}'"),
-                "use side(...), cap(start|end), blend(edge(...)), inner(<face>), mirror(<face>), copy(<face>), part(<face>), instance(k, <face>), face(N), a hole face such as wall(p5) or a sheet-metal face such as flat(l3)",
+                "use side(...), cap(start|end), blend(edge(...)), along(edge(...)), inner(<face>), mirror(<face>), copy(<face>), part(<face>), instance(k, <face>), face(N), a hole face such as wall(p5) or a sheet-metal face such as flat(l3)",
             ));
         }
     };

@@ -288,7 +288,7 @@ impl FeatureKind {
         match self {
             FeatureKind::Sketch(s) => s.plane.features(&mut add),
             FeatureKind::Extrude(e) => {
-                add(&e.profile.sketch);
+                e.profile.features(&mut add);
                 if let Some(b) = &e.body {
                     add(b);
                 }
@@ -297,7 +297,7 @@ impl FeatureKind {
                 }
             }
             FeatureKind::Revolve(r) => {
-                add(&r.profile.sketch);
+                r.profile.features(&mut add);
                 if let AxisRef::SketchLine { sketch, .. } = &r.axis {
                     add(sketch);
                 }
@@ -306,7 +306,7 @@ impl FeatureKind {
                 }
             }
             FeatureKind::Sweep(d) => {
-                add(&d.profile.sketch);
+                d.profile.features(&mut add);
                 match &d.path {
                     PathRef::Sketch { sketch, .. } => add(sketch),
                     PathRef::Edges(edges) => edges.iter().for_each(|e| e.features(&mut add)),
@@ -319,7 +319,7 @@ impl FeatureKind {
                 add_body(&mut add, &d.body);
             }
             FeatureKind::Loft(d) => {
-                d.profiles.iter().for_each(|p| add(&p.sketch));
+                d.profiles.iter().for_each(|p| p.features(&mut add));
                 add_body(&mut add, &d.body);
             }
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
@@ -340,14 +340,14 @@ impl FeatureKind {
             FeatureKind::Surface(d) => match &d.op {
                 SurfaceOp::Extrude { curves: PathRef::Sketch { sketch, .. }, .. } => add(sketch),
                 SurfaceOp::Extrude { .. } => {}
-                SurfaceOp::Patch { profile } => add(&profile.sketch),
+                SurfaceOp::Patch { profile } => profile.features(&mut add),
                 SurfaceOp::Thicken { body, .. } => add_body(&mut add, body),
                 SurfaceOp::Stitch { bodies, .. } => bodies.iter().for_each(|b| add(b)),
             },
             FeatureKind::Sheet(d) => match &d.op {
                 SheetOp::Contour { curves: PathRef::Sketch { sketch, .. }, .. } => add(sketch),
                 SheetOp::Contour { .. } => {}
-                SheetOp::Tab { profile } => add(&profile.sketch),
+                SheetOp::Tab { profile } => profile.features(&mut add),
                 SheetOp::EdgeFlange { body, .. } => add(body),
             },
             FeatureKind::Mirror(d) => {
@@ -977,12 +977,46 @@ impl SkPatternKind {
 
 // ------------------------------------------------------------------ solid features
 
-/// Which closed regions of a sketch a feature uses.
-#[derive(Debug, Clone, PartialEq)]
+/// Which closed regions of a sketch a feature uses, or a planar face of an earlier body.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ProfileRef {
+    /// The sketch; empty when the profile is a body face.
     pub sketch: String,
     /// Empty = all regions. Otherwise regions identified by an entity on their outer loop.
     pub regions: Vec<String>,
+    /// A planar face of an earlier body used as the profile (its outer boundary and holes),
+    /// instead of sketch regions (`profile: Extrude1/cap(end)`).
+    pub face: Option<FaceRef>,
+}
+
+impl ProfileRef {
+    /// Regions of a sketch (empty = all of them).
+    pub fn sketch(sketch: impl Into<String>, regions: Vec<String>) -> Self {
+        ProfileRef { sketch: sketch.into(), regions, face: None }
+    }
+
+    /// A planar body face.
+    pub fn face(face: FaceRef) -> Self {
+        ProfileRef { sketch: String::new(), regions: Vec::new(), face: Some(face) }
+    }
+
+    /// Calls `f` with every feature name the profile refers to.
+    pub fn features(&self, f: &mut dyn FnMut(&str)) {
+        match &self.face {
+            Some(r) => r.features(f),
+            None => f(&self.sketch),
+        }
+    }
+
+    /// Renames every occurrence of feature `from` to `to`.
+    pub fn rename_feature(&mut self, from: &str, to: &str) {
+        if self.sketch == from {
+            self.sketch = to.to_string();
+        }
+        if let Some(r) = &mut self.face {
+            r.rename_feature(from, to);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -2228,7 +2228,7 @@ fn extrude_feature(s: &mut Session, ctx: &CmdCtx, a: ExtrudeParts) -> Result<Val
             let f = Feature::new(
                 name.clone(),
                 FeatureKind::Extrude(ExtrudeDef {
-                    profile: ProfileRef { sketch: a.sketch, regions: a.regions },
+                    profile: ProfileRef { sketch: a.sketch, regions: a.regions, face: None },
                     end: a.end,
                     symmetric: a.symmetric,
                     op,
@@ -2360,7 +2360,7 @@ impl Command for Revolve {
                 let f = Feature::new(
                     name.clone(),
                     FeatureKind::Revolve(RevolveDef {
-                        profile: ProfileRef { sketch: self.sketch, regions: self.regions },
+                        profile: ProfileRef { sketch: self.sketch, regions: self.regions, face: None },
                         axis,
                         angle,
                         op,
@@ -2827,9 +2827,7 @@ fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
             FeatureKind::Sketch(s) => s.plane.rename_feature(from, to),
             FeatureKind::Extrude(ExtrudeDef { profile, body, .. })
             | FeatureKind::Revolve(RevolveDef { profile, body, .. }) => {
-                if profile.sketch == from {
-                    profile.sketch = to.to_string();
-                }
+                profile.rename_feature(from, to);
                 if body.as_deref() == Some(from) {
                     *body = Some(to.to_string());
                 }

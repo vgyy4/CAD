@@ -92,7 +92,13 @@ pub enum OpContext<'a> {
     Modify { feature: &'a str, inputs: &'a [&'a BodyNames] },
     /// A loft through the profiles of `sketches` (in order) by `feature`: lateral faces are
     /// named after the section edge that generated them, `side(<sketch>/<entity>)`.
-    Loft { feature: &'a str, sketches: &'a [String] },
+    /// A section that is a body face (`edges[section]` not empty, indexed by its profile
+    /// tags) names its lateral faces `along(<edge>)` instead.
+    Loft { feature: &'a str, sketches: &'a [String], edges: &'a [Vec<EdgeRef>] },
+    /// A sweep (extrude/sweep) of a body face used as the profile: the profile tags index
+    /// `edges`, the names of the body edges they come from. Lateral faces are
+    /// `feature/along(<edge>)`, the caps `cap(start|end)`.
+    FaceSweep { feature: &'a str, edges: &'a [EdgeRef] },
     /// A combined operation: sweep then boolean. Input 0 is the target body, input 1
     /// the freshly swept tool (whose own origins are named as a sweep).
     SweepInto { feature: &'a str, sketch: &'a str, regions: &'a [String], target: &'a BodyNames },
@@ -196,6 +202,12 @@ fn sweep_face(feature: &str, sketch: &str, regions: &[String], o: &FaceOrigin) -
     }
 }
 
+/// The lateral face swept from body edge `tag` of a profile face whose edges are named `edges`.
+fn along(feature: &str, edges: &[EdgeRef], tag: u64) -> Option<FaceRef> {
+    let e = usize::try_from(tag).ok().and_then(|t| edges.get(t))?;
+    Some(FaceRef::new(feature, FaceKey::Along(Box::new(e.clone()))))
+}
+
 /// Computes the names of every face and edge of a body produced by an operation.
 pub fn name_body(ctx: &OpContext<'_>, origins: &[Vec<FaceOrigin>], topo: &Topology) -> Result<BodyNames, NamingError> {
     if origins.len() != topo.faces.len() {
@@ -239,7 +251,19 @@ pub fn name_body(ctx: &OpContext<'_>, origins: &[Vec<FaceOrigin>], topo: &Topolo
         for o in if name.is_none() { sorted.as_slice() } else { &[] } {
             name = match (ctx, o) {
                 (OpContext::Sweep { feature, sketch, regions }, o) => sweep_face(feature, sketch, regions, o),
-                (OpContext::Loft { feature, sketches }, FaceOrigin::Section { section, tag }) => {
+                (OpContext::Loft { feature, edges, .. }, FaceOrigin::Section { section, tag })
+                    if edges.get(*section as usize).is_some_and(|e| !e.is_empty()) =>
+                {
+                    along(feature, edges.get(*section as usize).map_or(&[][..], Vec::as_slice), *tag)
+                }
+                (
+                    OpContext::FaceSweep { feature, edges },
+                    FaceOrigin::Lateral { tag } | FaceOrigin::Swept { tag, .. },
+                ) => along(feature, edges, *tag),
+                (OpContext::FaceSweep { feature, .. }, FaceOrigin::Cap { end, .. }) => {
+                    Some(FaceRef::new(*feature, FaceKey::Cap { side: cap(*end), region: None }))
+                }
+                (OpContext::Loft { feature, sketches, .. }, FaceOrigin::Section { section, tag }) => {
                     sketches.get(*section as usize).map(|sketch| {
                         FaceRef::new(
                             *feature,
@@ -801,7 +825,7 @@ mod tests {
             vec![FaceOrigin::Section { section: 0, tag: c3 }, FaceOrigin::Section { section: 1, tag: l5 }],
             vec![FaceOrigin::Section { section: 0, tag: c3 }, FaceOrigin::Section { section: 1, tag: l6 }],
         ];
-        let ctx = OpContext::Loft { feature: "Loft1", sketches: &sketches };
+        let ctx = OpContext::Loft { feature: "Loft1", sketches: &sketches, edges: &[] };
         let n = name_body(&ctx, &origins, &flat_topo(4)).unwrap();
         let names: Vec<String> = n.faces.iter().map(ToString::to_string).collect();
         assert_eq!(names, ["Loft1/cap(start)", "Loft1/cap(end)", "Loft1/side(Square/l5)", "Loft1/side(Square/l6)"]);

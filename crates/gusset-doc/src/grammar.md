@@ -298,7 +298,15 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
 ```
 
 - Profile `<P>` is a sketch name (all its closed regions) or `Sketch1.regions(l5, c7)`
-  naming the wanted regions (see "Regions" below).
+  naming the wanted regions (see "Regions" below), or a planar face of an earlier body
+  (`profile: Extrude1/cap(end)`; extrude, sweep and loft). A face profile is the face's outer
+  boundary with its holes, on the face's plane; it extrudes along the face's outward normal
+  (a positive distance grows the body out of the face, a `cut` into it needs a negative one).
+  The face must be bounded by lines, circles and arcs. Its lateral faces are named after the
+  body edge they come from, `<Feature>/along(<edge>)`, its caps `cap(start)` and `cap(end)`
+  (a loft section's sides likewise). `revolve` and helical sweeps take sketch profiles only.
+  `extrude Boss (profile: Base/cap(end), distance: 3 mm, op: add, body: Base)` raises the whole
+  top of `Base` by 3 mm.
 - `op` defaults to `new`, which creates a body named after the feature, or after
   `body_name` when given (a unique identifier; only with `op: new`). `add`, `cut` and
   `intersect` combine with the body created by the feature named in `body:` (default:
@@ -341,8 +349,8 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
 
 ## References
 
-- Face: `<Feature>/cap(start)`, `<Feature>/cap(end)`, `<Feature>/side(<Sketch>/<line id>)`;
-  with several regions `cap(end, <region entity>)`; a trailing `#2` picks one of several
+- Face: `<Feature>/cap(start)`, `<Feature>/cap(end)`, `<Feature>/side(<Sketch>/<line id>)`,
+  `<Feature>/along(<edge>)` (a side swept from a profile face's edge); with several regions `cap(end, <region entity>)`; a trailing `#2` picks one of several
   split faces.
 - Edge: `edge(<face>, <face>)`, e.g.
   `edge(Extrude1/cap(end), Extrude1/side(Sketch1/l6))`, optionally followed by `#2`.

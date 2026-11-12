@@ -1040,9 +1040,7 @@ impl Evaluator {
                 }
             }
             FeatureKind::Extrude(e) => {
-                let (solved, frame) = sketch_input(name, &e.profile.sketch, s)?;
-                let (profile, regions) =
-                    sketch::kernel_profile(name, &e.profile.sketch, &solved, frame, &e.profile.regions)?;
+                let (profile, input) = profile_input(k, name, &e.profile, s)?;
                 let r = match &e.end {
                     ExtrudeEnd::Distance(d) => {
                         let distance = eval_expr(name, d, Dim::LENGTH, params, units)?;
@@ -1087,7 +1085,7 @@ impl Evaluator {
                         })?
                     }
                 };
-                let ctx = OpContext::Sweep { feature: name, sketch: &e.profile.sketch, regions: &regions };
+                let ctx = input.ctx(name, &e.profile);
                 self.combine_refined(s, name, &ctx, r, e.op, (e.body.as_deref(), e.body_name.as_deref()), e.refine)
             }
             FeatureKind::Revolve(r) => {
@@ -1507,11 +1505,75 @@ fn blend_error(
 
 /// The solved sketch and its placement frame.
 fn sketch_input(feature: &str, sketch: &str, s: &State) -> Result<(Arc<Solved>, Frame), EvalError> {
+    if sketch.is_empty() {
+        return Err(EvalError::new(
+            feature,
+            ErrorCode::InvalidReference,
+            "this feature takes a sketch profile, not a body face",
+        )
+        .with_hint("sketch on the face and use the sketch as the profile"));
+    }
     let solved = s.solved.get(sketch).cloned().ok_or_else(|| {
         EvalError::new(feature, ErrorCode::InvalidReference, format!("'{sketch}' is not an evaluated sketch"))
     })?;
     let frame = solved.frame;
     Ok((solved, frame))
+}
+
+/// The planar body face `face` as a kernel profile, with the names of the body's edges (the
+/// profile's tags index them).
+pub(crate) fn face_profile_input(
+    k: &dyn Kernel,
+    feature: &str,
+    face: &gusset_doc::FaceRef,
+    s: &State,
+) -> Result<(gusset_kernel::Profile, Vec<gusset_doc::EdgeRef>), EvalError> {
+    let (b, fi) = s.bodies.iter().rev().find_map(|b| b.names.face_index(face).map(|fi| (b, fi))).ok_or_else(|| {
+        let mut err = EvalError::new(feature, ErrorCode::MissingReference, format!("face {face} no longer exists"))
+            .with_hint("re-select the profile face");
+        err.reference = Some(face.to_string());
+        err.suggestion = s.bodies.last().and_then(|b| ops::closest_face(&b.names, face)).map(|f| f.to_string());
+        err
+    })?;
+    let p = k.face_profile(&b.shape, fi).map_err(|ke| {
+        let mut e = kernel_err(feature, "profile face", ke);
+        e.hint.get_or_insert_with(|| "the profile face must be planar, bounded by lines and arcs".into());
+        e
+    })?;
+    Ok((p, b.names.edges.clone()))
+}
+
+/// A profile as kernel input: its sketch's regions (their identifying entities), or a body
+/// face (the names of the edges its tags index).
+pub(crate) enum ProfileIn {
+    Sketch(Vec<String>),
+    Face(Vec<gusset_doc::EdgeRef>),
+}
+
+impl ProfileIn {
+    /// The naming context of a sweep of this profile by `feature`.
+    pub(crate) fn ctx<'a>(&'a self, feature: &'a str, p: &'a gusset_doc::ProfileRef) -> OpContext<'a> {
+        match self {
+            ProfileIn::Sketch(regions) => OpContext::Sweep { feature, sketch: &p.sketch, regions },
+            ProfileIn::Face(edges) => OpContext::FaceSweep { feature, edges },
+        }
+    }
+}
+
+/// The kernel profile of `p`: sketch regions or a body face.
+pub(crate) fn profile_input(
+    k: &dyn Kernel,
+    feature: &str,
+    p: &gusset_doc::ProfileRef,
+    s: &State,
+) -> Result<(gusset_kernel::Profile, ProfileIn), EvalError> {
+    if let Some(face) = &p.face {
+        let (profile, edges) = face_profile_input(k, feature, face, s)?;
+        return Ok((profile, ProfileIn::Face(edges)));
+    }
+    let (solved, frame) = sketch_input(feature, &p.sketch, s)?;
+    let (profile, regions) = sketch::kernel_profile(feature, &p.sketch, &solved, frame, &p.regions)?;
+    Ok((profile, ProfileIn::Sketch(regions)))
 }
 
 /// The frame of `plane` in a finished evaluation (sketch-plane coordinates for text and

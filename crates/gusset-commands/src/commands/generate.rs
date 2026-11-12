@@ -286,7 +286,7 @@ impl Command for GenerateGear {
             doc.params.extend(new_params);
 
             let mut features = vec![Feature::new(sketch_name.clone(), FeatureKind::Sketch(sketch.def))];
-            let profile = ProfileRef { sketch: sketch_name.clone(), regions: vec![sketch.region] };
+            let profile = ProfileRef { sketch: sketch_name.clone(), regions: vec![sketch.region], face: None };
             let width = parse_expr("face_width", &nm.n("face_width"))?;
             if bevel {
                 // A straight bevel gear: the heel profile here, a toe profile scaled to the
@@ -368,7 +368,7 @@ impl Command for GenerateGear {
                 features.push(Feature::new(
                     name.clone(),
                     FeatureKind::Loft(LoftDef {
-                        profiles: vec![profile, ProfileRef { sketch: toe_sk, regions: vec![toe.region] }],
+                        profiles: vec![profile, ProfileRef { sketch: toe_sk, regions: vec![toe.region], face: None }],
                         ruled: true,
                         op: BodyOp::New,
                         body: None,
@@ -422,7 +422,7 @@ impl Command for GenerateGear {
                     Feature::new(
                         name.clone(),
                         FeatureKind::Extrude(ExtrudeDef {
-                            profile: ProfileRef { sketch: ring_sketch, regions: Vec::new() },
+                            profile: ProfileRef { sketch: ring_sketch, regions: Vec::new(), face: None },
                             end: ExtrudeEnd::Distance(width.clone()),
                             symmetric: false,
                             op: BodyOp::New,
@@ -664,7 +664,7 @@ impl Command for GenerateSpring {
                 Feature::new(
                     name.clone(),
                     FeatureKind::Sweep(SweepDef {
-                        profile: ProfileRef { sketch: sketch_name.clone(), regions: Vec::new() },
+                        profile: ProfileRef { sketch: sketch_name.clone(), regions: Vec::new(), face: None },
                         path: PathRef::Sketch { sketch: path_name.clone(), curves: Vec::new() },
                         orientation: Orientation::Frenet,
                         twist: Some(parse_expr("twist", &twist)?),
@@ -900,7 +900,7 @@ impl Command for GenerateWorm {
                 Feature::new(
                     core.clone(),
                     FeatureKind::Extrude(ExtrudeDef {
-                        profile: ProfileRef { sketch: core_sk.clone(), regions: Vec::new() },
+                        profile: ProfileRef { sketch: core_sk.clone(), regions: Vec::new(), face: None },
                         end: ExtrudeEnd::Distance(parse_expr("length", &ln)?),
                         symmetric: false,
                         op: BodyOp::New,
@@ -921,7 +921,7 @@ impl Command for GenerateWorm {
                 features.push(Feature::new(
                     format!("{name}_helix{suffix}"),
                     FeatureKind::Sweep(SweepDef {
-                        profile: ProfileRef { sketch: sk, regions: Vec::new() },
+                        profile: ProfileRef { sketch: sk, regions: Vec::new(), face: None },
                         path: PathRef::Helix(gusset_doc::HelixDef {
                             axis: gusset_doc::AxisRef::Z,
                             pitch: parse_expr("pitch", &format!("{starts} * {pe}"))?,
@@ -1167,7 +1167,7 @@ impl Command for GenerateRack {
                 Feature::new(
                     name.clone(),
                     FeatureKind::Extrude(ExtrudeDef {
-                        profile: ProfileRef { sketch: sketch_name.clone(), regions: Vec::new() },
+                        profile: ProfileRef { sketch: sketch_name.clone(), regions: Vec::new(), face: None },
                         end: ExtrudeEnd::Distance(parse_expr("width", &nm.n("width"))?),
                         symmetric: false,
                         op: BodyOp::New,
@@ -1381,7 +1381,7 @@ fn shank_features(name: &str, nm: &Names, core: &str, vals: [f64; 4]) -> Result<
         Feature::new(
             format!("{name}_shank"),
             FeatureKind::Revolve(RevolveDef {
-                profile: ProfileRef { sketch: sk, regions: Vec::new() },
+                profile: ProfileRef { sketch: sk, regions: Vec::new(), face: None },
                 axis: gusset_doc::AxisRef::Y,
                 angle: parse_expr("angle", "360 deg")?,
                 op: BodyOp::Add,
@@ -1456,7 +1456,7 @@ fn chamfer_features(
         Feature::new(
             format!("{name}_{end}_chamfer"),
             FeatureKind::Revolve(RevolveDef {
-                profile: ProfileRef { sketch: sk, regions: Vec::new() },
+                profile: ProfileRef { sketch: sk, regions: Vec::new(), face: None },
                 axis: gusset_doc::AxisRef::Y,
                 angle: parse_expr("angle", "360 deg")?,
                 op: BodyOp::Cut,
@@ -1687,7 +1687,7 @@ impl Command for GenerateThread {
                 Feature::new(
                     core.clone(),
                     FeatureKind::Extrude(ExtrudeDef {
-                        profile: ProfileRef { sketch: core_sk.clone(), regions: Vec::new() },
+                        profile: ProfileRef { sketch: core_sk.clone(), regions: Vec::new(), face: None },
                         end: ExtrudeEnd::Distance(parse_expr("length", &nm.n("length"))?),
                         symmetric: false,
                         op: BodyOp::New,
@@ -1700,7 +1700,7 @@ impl Command for GenerateThread {
                 Feature::new(
                     format!("{name}_helix"),
                     FeatureKind::Sweep(SweepDef {
-                        profile: ProfileRef { sketch: tooth_sk.clone(), regions: Vec::new() },
+                        profile: ProfileRef { sketch: tooth_sk.clone(), regions: Vec::new(), face: None },
                         path: PathRef::Helix(gusset_doc::HelixDef {
                             axis: gusset_doc::AxisRef::Z,
                             pitch: parse_expr("pitch", &nm.n("pitch"))?,
@@ -1754,7 +1754,7 @@ impl Command for GenerateThread {
                 features.push(Feature::new(
                     format!("{name}_head"),
                     FeatureKind::Extrude(ExtrudeDef {
-                        profile: ProfileRef { sketch: head_sk, regions: Vec::new() },
+                        profile: ProfileRef { sketch: head_sk, regions: Vec::new(), face: None },
                         end: ExtrudeEnd::Distance(parse_expr("head_height", &format!("-{}", nm.n("head_height")))?),
                         symmetric: false,
                         op: BodyOp::Add,
@@ -1793,7 +1793,7 @@ impl Command for GenerateThread {
                     features.push(Feature::new(
                         format!("{name}_socket"),
                         FeatureKind::Extrude(ExtrudeDef {
-                            profile: ProfileRef { sketch: sock_sk, regions: Vec::new() },
+                            profile: ProfileRef { sketch: sock_sk, regions: Vec::new(), face: None },
                             end: ExtrudeEnd::Distance(parse_expr("socket_depth", &nm.n("socket_depth"))?),
                             symmetric: false,
                             op: BodyOp::Cut,
@@ -2024,7 +2024,7 @@ impl Command for GenerateNut {
                 Feature::new(
                     hex.clone(),
                     FeatureKind::Extrude(ExtrudeDef {
-                        profile: ProfileRef { sketch: hex_sk.clone(), regions: Vec::new() },
+                        profile: ProfileRef { sketch: hex_sk.clone(), regions: Vec::new(), face: None },
                         end: ExtrudeEnd::Distance(parse_expr("height", &nm.n("height"))?),
                         symmetric: false,
                         op: BodyOp::New,
@@ -2037,7 +2037,7 @@ impl Command for GenerateNut {
                 Feature::new(
                     format!("{name}_thread"),
                     FeatureKind::Sweep(SweepDef {
-                        profile: ProfileRef { sketch: groove_sk.clone(), regions: Vec::new() },
+                        profile: ProfileRef { sketch: groove_sk.clone(), regions: Vec::new(), face: None },
                         path: PathRef::Helix(gusset_doc::HelixDef {
                             axis: gusset_doc::AxisRef::Z,
                             pitch: parse_expr("pitch", &nm.n("pitch"))?,

@@ -69,7 +69,7 @@ impl Command for Sweep {
                 let f = Feature::new(
                     name.clone(),
                     FeatureKind::Sweep(SweepDef {
-                        profile: ProfileRef { sketch: self.sketch, regions: self.regions },
+                        profile: ProfileRef { sketch: self.sketch, regions: self.regions, face: None },
                         path,
                         orientation,
                         twist,
