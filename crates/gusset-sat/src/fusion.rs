@@ -381,6 +381,13 @@ fn occurrence_records(b: &[u8]) -> Vec<OccRecord> {
     out
 }
 
+/// Whether the stream has occurrence records this reader places bodies by (class tags in the
+/// BulkStream). Streams without them carry their classes in the MetaStream only; see
+/// [`crate::fusion_tree::occurrence_placements`].
+pub(crate) fn has_occurrence_records(b: &[u8]) -> bool {
+    !occurrence_records(b).is_empty()
+}
+
 /// A component's record: its id and name.
 struct CompRecord {
     at: usize,

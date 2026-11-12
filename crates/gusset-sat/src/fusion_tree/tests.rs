@@ -2034,6 +2034,37 @@ fn a_joint_that_disagrees_with_the_stored_placement_places_nothing() {
     }
 }
 
+#[test]
+fn occurrence_path_records_place_bodies_without_joints() {
+    // The joint disagrees, so the joints place nothing; the path records still say where every
+    // occurrence stands, and the stream has no class tags the bodies reader would find.
+    let (m, bulk) = jointed_header(0);
+    let got = super::occurrence_placements(&m, &bulk);
+    assert_eq!((got.verified, got.unverified.len()), (0, 0));
+    let header = got.placements.iter().find(|p| p.path == [32]).unwrap();
+    assert_eq!(header.placement.t, [60.0, 200.0, 15.0]);
+    let mut placed = vec![crate::fusion::Placed {
+        brep: "hdr".into(),
+        occurrence: "x:1".into(),
+        placement: crate::fusion::Placement::IDENTITY,
+    }];
+    super::place_by_joints(&mut placed, &got);
+    assert_eq!(placed[0].placement, header.placement);
+    // A stream whose BulkStream carries tagged occurrence records is left to the bodies reader.
+    let mut tagged = bulk.clone();
+    tagged.extend([36, 0, 0, 0]);
+    tagged.extend(b"FF415D89-A1DB-44AC-B824-E9A772B86ED4");
+    for id in ["aaaaaaaa-0000-0000-0000-000000000001$", "aaaaaaaa-0000-0000-0000-000000000002$"] {
+        tagged.extend(id.encode_utf16().flat_map(u16::to_le_bytes));
+    }
+    tagged.extend("aaaaaaaa-0000-0000-0000-000000000003".encode_utf16().flat_map(u16::to_le_bytes));
+    assert!(crate::fusion::has_occurrence_records(&tagged));
+    assert!(super::occurrence_placements(&m, &tagged).placements.is_empty());
+    for cut in (0..bulk.len()).step_by(7) {
+        let _ = super::occurrence_placements(&m, &bulk[..cut]);
+    }
+}
+
 /// A Base Feature (10) with the PM bodies `pm`, the one DM body 31 (its body link 41) and the PM
 /// bodies named again `again`; the PM bodies' state list (50) names the blob `BREP.pm.smb`.
 fn base_feature(pm: &[u64], again: &[u64]) -> (Vec<u8>, Vec<u8>) {

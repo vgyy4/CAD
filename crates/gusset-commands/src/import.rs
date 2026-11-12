@@ -3294,6 +3294,11 @@ fn f3d(
                 .strip_suffix("BulkStream.dat")
                 .and_then(|dir| entries.iter().find(|(m, _)| m.strip_prefix(dir) == Some("MetaStream.dat")));
             if let Some((_, meta)) = meta {
+                // Occurrences the reader above does not find (a stream without class tags).
+                gusset_sat::fusion_tree::place_by_joints(
+                    &mut d.bodies,
+                    &gusset_sat::fusion_tree::occurrence_placements(meta, b),
+                );
                 gusset_sat::fusion_tree::add_pattern_copies(
                     &mut d.bodies,
                     &gusset_sat::fusion_tree::pattern_copies(meta, b),

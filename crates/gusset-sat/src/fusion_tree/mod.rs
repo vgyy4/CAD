@@ -163,6 +163,7 @@ fn built(
     // The features are in each component's own coordinates; the file's bodies stand where the
     // occurrences of the components put them.
     let mut placed = crate::fusion::read_design(bulk).bodies;
+    place_by_joints(&mut placed, &occurrence_placements(meta, bulk));
     add_pattern_copies(&mut placed, &pattern_copies(meta, bulk));
     place_by_joints(&mut placed, &joints);
     json::place(&mut tree, &placed)?;
@@ -457,6 +458,21 @@ pub fn joint_placements(meta: &[u8], bulk: &[u8]) -> Joints {
         return Joints::default();
     }
     Design::new(meta, bulk).map(|d| joint::read(&d)).unwrap_or_default()
+}
+
+/// Where the occurrence path records (`549FBB80`) of a design stream put its occurrences, for a
+/// stream whose occurrences the bodies reader ([`crate::fusion::read_design`]) does not find:
+/// one whose BulkStream carries no class tags, so that its occurrences (`CE2913AA`) are known by
+/// the MetaStream's class table only. The reader places such a design's components by the
+/// blocks of the older layout, which can be a matrix of something else (section 45 of
+/// `docs/formats/fusion-design-stream.md`). Empty for any other stream, or when a path record is
+/// not laid out as known. Apply with [`place_by_joints`].
+pub fn occurrence_placements(meta: &[u8], bulk: &[u8]) -> Joints {
+    if meta.len().saturating_add(bulk.len()) > MAX_STREAM_BYTES || crate::fusion::has_occurrence_records(bulk) {
+        return Joints::default();
+    }
+    let placements = Design::new(meta, bulk).map(|d| joint::paths(&d)).unwrap_or_default();
+    Joints { placements, ..Joints::default() }
 }
 
 /// Puts the bodies of a design where its occurrence path records have them, when

@@ -313,11 +313,18 @@ pub(super) fn read(d: &Design) -> Joints {
         }
         return out;
     }
+    out.placements = final_placements(d, &read);
+    out
+}
+
+/// The last placement each path record stores (the origin for a path nothing moved).
+fn final_placements(d: &Design, read: &[Option<OccPath>]) -> Vec<JointPlacement> {
+    let mut out = Vec::new();
     for p in read.iter().flatten() {
         // An occurrence of an inserted design names no component of this design.
         let component = p.path.last().and_then(|o| occ_component(d, *o));
         let placement = p.steps.iter().rev().find_map(|s| s.1).unwrap_or(Placement::IDENTITY);
-        out.placements.push(JointPlacement {
+        out.push(JointPlacement {
             path: p.path.clone(),
             name: component.and_then(|c| component_name(d, c)).unwrap_or_else(|| "Component".into()),
             blobs: component.map(|c| component_bodies(d, c)).unwrap_or_default(),
@@ -325,6 +332,19 @@ pub(super) fn read(d: &Design) -> Joints {
         });
     }
     out
+}
+
+/// Where the occurrence path records of a design put every occurrence, joints or not (see
+/// [`super::occurrence_placements`]): empty when a record that names occurrences is not laid
+/// out as known.
+pub(super) fn paths(d: &Design) -> Vec<JointPlacement> {
+    let records: Vec<u64> = d.ids.iter().copied().filter(|i| d.is(*i, PATH)).take(MAX_PATHS).collect();
+    let read: Vec<Option<OccPath>> = records.iter().map(|i| occ_path(d, *i)).collect();
+    let unread = records
+        .iter()
+        .zip(&read)
+        .any(|(i, p)| p.is_none() && refs_at(d, d.rec(*i), 0).iter().any(|r| d.is(r.1, OCCURRENCE)));
+    if unread { Vec::new() } else { final_placements(d, &read) }
 }
 
 /// See [`super::place_by_joints`].
