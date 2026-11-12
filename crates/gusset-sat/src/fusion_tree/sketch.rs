@@ -650,6 +650,8 @@ fn curve_polyline(d: &Design, s: &Sketch, q: u64) -> Option<Vec<P2>> {
 #[derive(Default)]
 pub(super) struct RegionCache {
     next_id: usize,
+    /// Outer loops read by [`geom::cycle_of_curves`] (recorded against an earlier sketch).
+    stale: usize,
     used: Option<HashMap<u64, HashSet<(u64, u64)>>>,
     pub done: HashMap<u64, Result<Rc<Vec<RegionEnt>>, String>>,
 }
@@ -700,6 +702,26 @@ fn sketch_of_profile(d: &Design, q: u64) -> Option<u64> {
         }
     }
     None
+}
+
+/// A region's picks from its rings (one outer ring, any holes): a point in every face the
+/// sketch's other curves (whole, the loops' own included: a curve can run on through the region
+/// past the piece that bounds it) cut it into.
+fn region_ent(
+    s: &Sketch,
+    all: &[(u64, Option<Vec<P2>>)],
+    rings: &[(u8, Vec<P2>)],
+    segments: Vec<Rc<Seg>>,
+    naming_segments: Option<Vec<Rc<Seg>>>,
+) -> Result<RegionEnt, String> {
+    let outer: Vec<&Vec<P2>> = rings.iter().filter(|(f, _)| *f == 1).map(|(_, r)| r).collect();
+    let holes: Vec<&[P2]> = rings.iter().filter(|(f, _)| *f != 1).map(|(_, r)| r.as_slice()).collect();
+    let [outer] = outer.as_slice() else { return Err(format!("outer loops {}", outer.len())) };
+    let others: Vec<&[P2]> =
+        all.iter().filter(|(q, _)| !s.other.contains_key(q)).filter_map(|(_, v)| v.as_deref()).collect();
+    let mut points = geom::face_points(outer, &holes, &others).ok_or("no interior point")?.into_iter();
+    let point = points.next().ok_or("no interior point")?;
+    Ok(RegionEnt { point, more_points: points.collect(), segments, naming_segments })
 }
 
 impl RegionCache {
@@ -767,16 +789,23 @@ impl RegionCache {
             let gone = |l: &Loop| gone_loop(l, &keymap);
             for g in &regs {
                 let mut naming = None;
+                let mut parent = None;
                 let parts: Vec<&Region> = if g.children.is_empty() {
                     vec![g]
                 } else {
                     naming = Some(if g.loops.is_empty() {
                         Vec::new()
                     } else {
-                        self.process(d, s, g, &keymap, &curve_ids, &mut allpolys, &mut used)?.1
+                        let p = self.process(d, s, g, &keymap, &curve_ids, &mut allpolys, &mut used)?;
+                        let n = p.1.clone();
+                        parent = Some(p);
+                        n
                     });
                     g.children.iter().collect()
                 };
+                let stale_before = self.stale;
+                let mut ents = Vec::new();
+                let mut failed = None;
                 let mut first = true;
                 for part in parts {
                     // A region whose outline is made only of curves the sketch no longer holds
@@ -784,25 +813,34 @@ impl RegionCache {
                     if part.loops.iter().any(|l| l.flag == 1 && gone(l)) {
                         continue;
                     }
-                    let (rings, segments) = self.process(d, s, part, &keymap, &curve_ids, &mut allpolys, &mut used)?;
-                    let outer: Vec<&Vec<P2>> = rings.iter().filter(|(f, _)| *f == 1).map(|(_, r)| r).collect();
-                    let holes: Vec<&[P2]> = rings.iter().filter(|(f, _)| *f != 1).map(|(_, r)| r.as_slice()).collect();
-                    let [outer] = outer.as_slice() else { return Err(format!("outer loops {}", outer.len())) };
-                    // The sketch's other curves (whole, the loops' own included: a curve can run
-                    // on through the region past the piece that bounds it).
-                    let all = allpolys
-                        .get_or_insert_with(|| curve_ids.iter().map(|kk| (*kk, curve_polyline(d, s, *kk))).collect());
-                    let others: Vec<&[P2]> = all
-                        .iter()
-                        .filter(|(q, _)| !s.other.contains_key(q))
-                        .filter_map(|(_, v)| v.as_deref())
-                        .collect();
-                    let mut points = geom::face_points(outer, &holes, &others).ok_or("no interior point")?.into_iter();
-                    let point = points.next().ok_or("no interior point")?;
+                    let (rings, segments) =
+                        match self.process(d, s, part, &keymap, &curve_ids, &mut allpolys, &mut used) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                failed = Some(e);
+                                break;
+                            }
+                        };
                     let naming_segments = naming.as_ref().map(|n| if first { n.clone() } else { Vec::new() });
                     first = false;
-                    pts.push(RegionEnt { point, more_points: points.collect(), segments, naming_segments });
+                    let all = allpolys
+                        .get_or_insert_with(|| curve_ids.iter().map(|kk| (*kk, curve_polyline(d, s, *kk))).collect());
+                    ents.push(region_ent(s, all, &rings, segments, naming_segments)?);
                 }
+                // The faces of a region whose own loops were recorded against an earlier state of
+                // the sketch (or cannot be read) are those its outline holds now: one pick in each.
+                if let Some((rings, segments)) = parent
+                    && (failed.is_some() || self.stale > stale_before)
+                {
+                    let all = allpolys
+                        .get_or_insert_with(|| curve_ids.iter().map(|kk| (*kk, curve_polyline(d, s, *kk))).collect());
+                    ents = vec![region_ent(s, all, &rings, segments, naming.clone())?];
+                    failed = None;
+                }
+                if let Some(e) = failed {
+                    return Err(e);
+                }
+                pts.extend(ents);
             }
         }
         if pts.is_empty() {
@@ -953,6 +991,32 @@ impl RegionCache {
                     segs.push(Rc::new(Seg { id: self.next_id, curve: q, poly: pl, flag: l.flag, loopkey }));
                 }
                 ring = geom::chain(&polys);
+            }
+            if ring.is_none() && l.flag == 1 {
+                // A loop recorded against an earlier state of the sketch: its curves as they are
+                // now, cut by every curve, may still bound one face.
+                let all = allpolys
+                    .get_or_insert_with(|| curve_ids.iter().map(|kk| (*kk, curve_polyline(d, s, *kk))).collect());
+                let others: Vec<&[P2]> =
+                    all.iter().filter(|(q, _)| !s.other.contains_key(q)).filter_map(|(_, v)| v.as_deref()).collect();
+                let mut whole: Vec<(u64, Vec<P2>)> = Vec::new();
+                for (q, _, pl) in &full {
+                    if !whole.iter().any(|w| w.0 == *q) {
+                        whole.push((*q, pl.clone()));
+                    }
+                }
+                if let Some(pieces) = geom::cycle_of_curves(&whole, &others)
+                    && let Some(r) = geom::chain(&pieces.iter().map(|p| p.1.clone()).collect::<Vec<_>>())
+                {
+                    segs.truncate(segs_before);
+                    for (q, pl) in pieces {
+                        self.next_id += 1;
+                        segs.push(Rc::new(Seg { id: self.next_id, curve: q, poly: pl, flag: l.flag, loopkey }));
+                    }
+                    self.stale += 1;
+                    ring = Some(r);
+                    missing = None;
+                }
             }
             // A piece that could not be cut out of its curve is only left out when the loop's
             // other curves close without it. (512's switch pocket lists the outline's bottom edge,

@@ -540,6 +540,98 @@ pub(super) fn joined_holes(polys: &[Vec<P2>]) -> Option<Vec<Vec<P2>>> {
     )
 }
 
+/// The one closed ring the open curves `curves` (whole, `(curve, polyline)`) bound when each is
+/// cut wherever any of `others` crosses or touches it: pieces with a loose end are dropped
+/// until none is left, and what remains must be one simple cycle. The pieces in ring order,
+/// each with its curve; `None` otherwise. For a profile loop recorded against an earlier state
+/// of its sketch (its piece numbers no longer fit the curves; 3000's Sketch7, whose inner
+/// rectangle moved from the outline's top edge to its bottom one after two extrudes took
+/// regions of it).
+pub(super) fn cycle_of_curves(curves: &[(u64, Vec<P2>)], others: &[&[P2]]) -> Option<Vec<(u64, Vec<P2>)>> {
+    const MAX_PIECES: usize = 4096;
+    let all: Vec<P2> = curves.iter().flat_map(|c| c.1.iter().copied()).collect();
+    let lo = all.iter().fold([f64::INFINITY; 2], |m, p| [m[0].min(p[0]), m[1].min(p[1])]);
+    let hi = all.iter().fold([f64::NEG_INFINITY; 2], |m, p| [m[0].max(p[0]), m[1].max(p[1])]);
+    let scale = dist(lo, hi);
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let tol = 1e-6 * scale;
+    let mut pieces: Vec<(u64, Vec<P2>)> = Vec::new();
+    for (q, pl) in curves {
+        let (first, last) = (*pl.first()?, *pl.last()?);
+        if pl.len() < 2 || dist(first, last) < tol {
+            return None;
+        }
+        let mut cuts = vec![0.0];
+        cuts.extend(split_params_ex(pl, others, true).into_iter().filter(|f| *f > 1e-6 && *f < 1.0 - 1e-6));
+        cuts.push(1.0);
+        for w in cuts.windows(2) {
+            let [f0, f1] = w else { continue };
+            let piece = sub_poly(pl, *f0, *f1);
+            if piece.first().zip(piece.last()).is_some_and(|(a, b)| dist(*a, *b) > tol) {
+                pieces.push((*q, piece));
+            }
+        }
+        if pieces.len() > MAX_PIECES {
+            return None;
+        }
+    }
+    // Ends within `tol` are one node.
+    let mut nodes: Vec<P2> = Vec::new();
+    let mut node = |p: P2| -> usize {
+        if let Some(k) = nodes.iter().position(|n| dist(*n, p) < tol) {
+            return k;
+        }
+        nodes.push(p);
+        nodes.len() - 1
+    };
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for (_, pl) in &pieces {
+        let (a, b) = (node(*pl.first()?), node(*pl.last()?));
+        edges.push((a, b));
+    }
+    let mut alive = vec![true; edges.len()];
+    let degree =
+        |alive: &[bool], n: usize| edges.iter().zip(alive).filter(|(e, l)| **l && (e.0 == n || e.1 == n)).count();
+    loop {
+        let loose: Vec<usize> = (0..edges.len())
+            .filter(|k| alive.get(*k) == Some(&true))
+            .filter(|k| edges.get(*k).is_some_and(|e| degree(&alive, e.0) < 2 || degree(&alive, e.1) < 2))
+            .collect();
+        if loose.is_empty() {
+            break;
+        }
+        for k in loose {
+            if let Some(l) = alive.get_mut(k) {
+                *l = false;
+            }
+        }
+    }
+    let left: Vec<usize> = (0..edges.len()).filter(|k| alive.get(*k) == Some(&true)).collect();
+    // One simple cycle: every node it uses has two pieces, and walking from one piece meets all.
+    let used: Vec<usize> = left.iter().filter_map(|k| edges.get(*k)).flat_map(|e| [e.0, e.1]).collect();
+    if left.len() < 2 || used.iter().any(|n| degree(&alive, *n) != 2) {
+        return None;
+    }
+    let mut order: Vec<usize> = vec![*left.first()?];
+    let (_, mut at) = *edges.get(*left.first()?)?;
+    while order.len() < left.len() {
+        let next = left
+            .iter()
+            .copied()
+            .find(|k| !order.contains(k) && edges.get(*k).is_some_and(|e| e.0 == at || e.1 == at))?;
+        let e = *edges.get(next)?;
+        at = if e.0 == at { e.1 } else { e.0 };
+        order.push(next);
+    }
+    let start = edges.get(*order.first()?)?.0;
+    if at != start {
+        return None;
+    }
+    order.into_iter().map(|k| pieces.get(k).cloned()).collect()
+}
+
 pub(super) fn chain(polys: &[Vec<P2>]) -> Option<Vec<P2>> {
     if polys.is_empty() {
         return None;

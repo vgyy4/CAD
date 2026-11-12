@@ -162,6 +162,45 @@ fn square() -> Vec<Vec<P2>> {
 }
 
 #[test]
+fn curves_of_a_loop_bound_the_one_face_they_close_round_as_the_sketch_is_now() {
+    // 3000's Sketch7: an outline 7 x 3.55, a 3 x 1 rectangle on its bottom edge, a line up the
+    // middle. A loop recorded when the small rectangle sat at the top lists the outline's top
+    // edge, the rectangle's bottom, top and right side and the middle line: of those curves,
+    // cut by every curve, only the right half of the small rectangle closes.
+    let outline: Vec<Vec<P2>> = vec![
+        vec![[3.5, 6.35], [-3.5, 6.35]],
+        vec![[-3.5, 6.35], [-3.5, 9.9]],
+        vec![[-3.5, 9.9], [3.5, 9.9]],
+        vec![[3.5, 9.9], [3.5, 6.35]],
+    ];
+    let inner: Vec<Vec<P2>> = vec![
+        vec![[-1.5, 7.35], [1.5, 7.35]],
+        vec![[1.5, 7.35], [1.5, 6.35]],
+        vec![[1.5, 6.35], [-1.5, 6.35]],
+        vec![[-1.5, 6.35], [-1.5, 7.35]],
+    ];
+    let middle = vec![[0.0, 6.35], [0.0, 9.9]];
+    let all: Vec<&[P2]> = outline.iter().chain(&inner).chain(std::iter::once(&middle)).map(Vec::as_slice).collect();
+    let listed: Vec<(u64, Vec<P2>)> = vec![
+        (3, outline[2].clone()),
+        (11, inner[2].clone()),
+        (9, inner[0].clone()),
+        (15, middle.clone()),
+        (10, inner[1].clone()),
+    ];
+    let pieces = geom::cycle_of_curves(&listed, &all).unwrap();
+    let mut curves: Vec<u64> = pieces.iter().map(|p| p.0).collect();
+    curves.sort_unstable();
+    assert_eq!(curves, vec![9, 10, 11, 15]);
+    let ring = geom::chain(&pieces.into_iter().map(|p| p.1).collect::<Vec<_>>()).unwrap();
+    assert!(geom::inside([0.75, 6.85], &ring) && !geom::inside([-0.75, 6.85], &ring));
+    // Two faces (the whole small rectangle's curves with the middle line) are not one.
+    let both: Vec<(u64, Vec<P2>)> =
+        inner.iter().enumerate().map(|(k, c)| (k as u64, c.clone())).chain([(15, middle.clone())]).collect();
+    assert!(geom::cycle_of_curves(&both, &all).is_none());
+}
+
+#[test]
 fn segments_chain_into_a_ring_whatever_their_direction() {
     let ring = geom::chain(&square()).unwrap();
     assert_eq!(ring.len(), 4);
