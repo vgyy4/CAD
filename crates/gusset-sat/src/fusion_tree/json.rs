@@ -162,7 +162,9 @@ fn sketch_json(cx: &mut Ctx, fid: u64, name: &str) -> Option<(Value, u64)> {
             && s.points.contains_key(&a)
             && s.points.contains_key(&b)
         {
-            curves.push(json!({"id": format!("c{q}"), "type": "line", "start": pid(a), "end": pid(b)}));
+            // A line shorter than the merge distance keeps its own ends (4128's sketch has one).
+            let (sa, sb) = if pid(a) == pid(b) { (format!("p{a}"), format!("p{b}")) } else { (pid(a), pid(b)) };
+            curves.push(json!({"id": format!("c{q}"), "type": "line", "start": sa, "end": sb}));
         }
     }
     for (q, a) in &s.arcs {
@@ -174,7 +176,9 @@ fn sketch_json(cx: &mut Ctx, fid: u64, name: &str) -> Option<(Value, u64)> {
         if full && has(c).is_some() {
             curves.push(json!({"id": format!("c{q}"), "type": "circle", "center": format!("p{}", c.unwrap_or(0)), "radius": mm(a.radius)}));
         } else if let (Some(c), Some(st), Some(en)) = (has(c), has(st), has(en)) {
-            curves.push(json!({"id": format!("c{q}"), "type": "arc", "center": format!("p{c}"), "start": pid(st), "end": pid(en)}));
+            let (ss, se) = if pid(st) == pid(en) { (format!("p{st}"), format!("p{en}")) } else { (pid(st), pid(en)) };
+            curves
+                .push(json!({"id": format!("c{q}"), "type": "arc", "center": format!("p{c}"), "start": ss, "end": se}));
         }
     }
     j.insert("points".into(), points.into());
