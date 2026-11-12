@@ -109,6 +109,28 @@ fn column(m: &[f64; 16], k: usize) -> Option<V3> {
     Some([*m.get(k)?, *m.get(k + 4)?, *m.get(k + 8)?])
 }
 
+/// The rigid frame an origin snapshot stores (the first in its record; translation in mm).
+fn snapshot_frame(rec: &[u8]) -> Option<crate::fusion::Placement> {
+    (0..rec.len().saturating_sub(127)).find_map(|at| crate::fusion::rigid_at(rec, at))
+}
+
+/// `s` applied to the frame `m` (row-major 4x4, cm).
+fn compose_cm(s: &crate::fusion::Placement, m: &[f64; 16]) -> [f64; 16] {
+    let g = |i: usize, j: usize| m.get(4 * i + j).copied().unwrap_or(0.0);
+    let r = |i: usize, j: usize| s.r.get(i).and_then(|row| row.get(j)).copied().unwrap_or(0.0);
+    let mut out = *m;
+    for i in 0..3 {
+        for j in 0..4 {
+            let v: f64 = (0..3).map(|k| r(i, k) * g(k, j)).sum();
+            let t = if j == 3 { s.t.get(i).copied().unwrap_or(0.0) / 10.0 } else { 0.0 };
+            if let Some(slot) = out.get_mut(4 * i + j) {
+                *slot = v + t;
+            }
+        }
+    }
+    out
+}
+
 /// The corner frame and the sizes of a box against the box of the body stored for it: the signed
 /// height along the frame's z that reproduces the stored box, when one of the two does.
 pub(super) fn box_height(m: &[f64; 16], size: V3, stored: (V3, V3)) -> Option<f64> {
@@ -300,6 +322,18 @@ impl Ctx<'_> {
         }
         cover::skip(rec, end, pad, "box.pad");
         cover::field(rec, at, 128, "box.placement");
+        // The corner frame is in the frame of the box's origin snapshot (`7B6C3C2D`, the first
+        // one the record names): 3000's box stores (4, -18.85) mm with its x along +y, and its
+        // snapshot a half turn about z, which puts it at (-4, 18.85) mm with its x along -y,
+        // where the stored body and the faces Draft1 tapers have it (section 45).
+        if let Some(s) = refs_at(d, rec, 0)
+            .into_iter()
+            .map(|(_, q)| q)
+            .find(|q| d.is(*q, "7B6C3C2D"))
+            .and_then(|q| snapshot_frame(d.rec(q)))
+        {
+            m = compose_cm(&s, &m);
+        }
         let frame = (column(&m, 0), column(&m, 1), column(&m, 2), column(&m, 3));
         let (Some(x), Some(y), Some(z), Some(o)) = frame else { return Err("the box has no placement".into()) };
         let unit = |a: V3| (geom::norm(a) - 1.0).abs() < 1e-9;
