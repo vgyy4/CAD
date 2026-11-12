@@ -1799,16 +1799,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 j.insert("type".into(), if fil { "fillet" } else { "chamfer" }.into());
                 j.insert("name".into(), if k == 0 { nm.clone() } else { format!("{nm} set {}", k + 1) }.into());
                 j.insert("source_id".into(), fid.into());
-                j.insert(
-                    key.into(),
-                    v.map_or(Value::Null, |v| {
-                        if std::env::var_os("XR21").is_some() && nm == "Fillet2" {
-                            (mm(v) - 0.0001).into()
-                        } else {
-                            mm(v).into()
-                        }
-                    }),
-                );
+                j.insert(key.into(), v.map_or(Value::Null, |v| mm(v).into()));
                 // A curved edge carries its points (`path`): the model's edge that holds them
                 // stands for it where its own middle lies elsewhere (a whole circle).
                 let edge = |(m, path): &(V3, Vec<V3>)| {
