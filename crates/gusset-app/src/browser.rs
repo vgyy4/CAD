@@ -614,8 +614,11 @@ fn parameters(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
         let mut r = Row::new(Tool::Params, &p.name);
         r.mono = true;
         r.indent = INDENT;
-        r.suffix = format!("= {}   {value}", p.expr);
-        r.access = format!("{} = {} {value}", p.name, p.expr);
+        // A parameter written as a plain value shows it once, not as "5 mm   5 mm".
+        let expr = p.expr.to_string();
+        let same = expr.split_whitespace().collect::<String>() == value.split_whitespace().collect::<String>();
+        r.suffix = if same { format!("= {value}") } else { format!("= {expr}   {value}") };
+        r.access = if same { format!("{} = {value}", p.name) } else { format!("{} = {expr} {value}", p.name) };
         r.clickable = true;
         if row(ui, v.pal, &r).on_hover_text(tr("browser.edit_param")).double_clicked() {
             out.push(Action::EditParam(p.name.clone()));
