@@ -5,7 +5,7 @@
 //! name of the feature that made it.
 
 use super::feature::{param_values, point3};
-use super::geom::{V3, dot, mm, norm, round9};
+use super::geom::{V3, add, cross, dot, mm, mul, norm, round9, sub, unit};
 use super::naming::{self, RecipeKind};
 use super::stream::{Design, finite_doubles, ref_ids};
 use super::{Ctx, Graph, PARAM, PARAM_HOLDER};
@@ -308,11 +308,14 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
         let faces_list = if a.0 < b.0 { a } else { b };
         faces_list.1.iter_mut().for_each(|k| *k = Some(RecipeKind::BoundedFace));
     }
+    // The drafted faces' planes (a point and the outward normal), where they are planes.
+    let mut face_planes: Vec<Option<(V3, V3)>> = Vec::new();
     for (_, kinds, picks) in lists {
         if bounded(&kinds) {
-            for (pick, dir, _) in picks {
+            for (pick, dir, pl) in picks {
                 faces.push(pick);
                 dirs.extend(dir);
+                face_planes.push(pl);
             }
         } else if let ([Some(RecipeKind::Face)], [(_, _, Some(pl))]) = (kinds.as_slice(), picks.as_slice()) {
             plane = Some(*pl);
@@ -324,19 +327,72 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
     if faces.is_empty() {
         return bad("the draft names no faces");
     }
-    // A face that does not stand along the pull (258: a pin's end cap drafted about a chamfer
-    // face at 45 degrees) is not a draft Gusset makes: the kernel's draft is for side walls.
+    // The flags after the header of the older layout (`F4163A07` of 2014-2016 files): three
+    // bytes, the first the flipped pull (258's Draft1 1, with +45 degrees, where its Draft2 has 0
+    // and -45 degrees on the mirror image; 324's and 355's drafts 0), then `00 00 00 01` and the
+    // first reference. Newer layouts keep the pull as the face's outward normal.
+    let rec = d.rec(fid);
+    let old_flags = super::stream::parse_header(rec)
+        .map(|h| h.body)
+        .filter(|&b| rec.get(b..b + 7).is_some_and(|x| matches!(x, [0 | 1, 1, 1, 0, 0, 0, 1])));
+    if let Some(b) = old_flags {
+        cover::field(rec, b, 3, "draft.flags");
+    }
+    let flip = old_flags.is_some_and(|b| rec.get(b) == Some(&1));
+    let pull = if flip { [-n[0], -n[1], -n[2]] } else { n };
     let along = |(v, normal): &(V3, bool)| {
-        let c = dot(*v, n).abs() / (norm(*v) * norm(n)).max(1e-300);
+        let c = dot(*v, pull).abs() / (norm(*v) * norm(pull)).max(1e-300);
         if *normal { c < 1e-6 } else { (c - 1.0).abs() < 1e-6 }
     };
     if !dirs.iter().all(along) {
-        return bad("a face of the draft does not stand along the pull direction");
+        // A plane face at a slant to the pull (258: a pin's start cap drafted about the 45
+        // degree chamfer face beside it, by 45 degrees): Fusion turns the face about its line on
+        // the neutral plane by the angle, its outward normal towards the pull for a positive
+        // angle, as it does a side wall. That is the draft of a side wall about the plane through
+        // that line square to the face, whose pull is the part of the pull across the face. The
+        // stored pins of 258 end on the chamfer face, as both its drafts give this way.
+        let ([face], [Some((fp, fnormal))]) = (faces.as_slice(), face_planes.as_slice()) else {
+            return bad("a face of the draft does not stand along the pull direction");
+        };
+        let (Some(fu), Some(pu)) = (unit(*fnormal), unit(pull)) else {
+            return bad("a face of the draft or its neutral plane has no normal");
+        };
+        let across = sub(pu, mul(fu, dot(pu, fu)));
+        let (Some(m), Some(line)) = (unit(across), unit(cross(fu, pu))) else {
+            return bad("a face of the draft lies parallel to the neutral plane");
+        };
+        // A point of the line where the face meets the neutral plane: from the face's point
+        // along the face, square to the line, onto the neutral plane.
+        let in_face = cross(line, fu);
+        let k = dot(in_face, pu);
+        if k.abs() < 1e-9 {
+            return bad("a face of the draft lies parallel to the neutral plane");
+        }
+        let on_line = add(*fp, mul(in_face, dot(sub(o, *fp), pu) / k));
+        // The stored face's points come from every state that has the face, the drafted one's
+        // too (258: on the chamfer face, which they would pick as well): the face before the
+        // draft is the points on its plane.
+        let mm3 = |p: V3| [mm(p[0]), mm(p[1]), mm(p[2])];
+        let (pmm, on_plane) = (mm3(*fp), |q: &V3| dot(sub(*q, mm3(*fp)), fu).abs() < 1e-4);
+        let points: Vec<V3> = face
+            .get("points")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|q| serde_json::from_value::<V3>(q.clone()).ok())
+            .filter(on_plane)
+            .collect();
+        let point = points.first().copied().unwrap_or(pmm);
+        let face = json!({"point": point, "points": points,
+            "surface": {"type": "plane", "origin": pmm, "normal": unit9(fu)}});
+        return json!({"type": "draft", "name": name, "source_id": fid, "faces": [face],
+            "plane": {"origin": v3(on_line), "normal": unit9(m)}, "angle": round9(angle.to_degrees()), "flip": false});
     }
-    // Pull direction: the neutral face's outward normal. 355's two drafts (10 and -10 degrees)
-    // rebuild to the stored drafted faces this way (section 28).
+    // Pull direction: the neutral face's outward normal, reversed where the draft flips it.
+    // 355's two drafts (10 and -10 degrees) rebuild to the stored drafted faces this way
+    // (section 28).
     json!({"type": "draft", "name": name, "source_id": fid, "faces": faces,
-        "plane": {"origin": v3(o), "normal": unit9(n)}, "angle": round9(angle.to_degrees()), "flip": false})
+        "plane": {"origin": v3(o), "normal": unit9(n)}, "angle": round9(angle.to_degrees()), "flip": flip})
 }
 
 /// The values of a draft's parameters with the role `Draft` (older files), in the order of
