@@ -291,30 +291,23 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
     let ps = &e.params;
     let along = pget(ps, "AlongDistance");
     let against = pget(ps, "AgainstDistance");
-    // The direction is given in the sketch's frame, except where it lies in the sketch plane:
-    // then it is given in the frame of the assembly the component stands in (4800: a component's
-    // standoffs and another's screen, drawn in place), and the placement of the component's
-    // occurrence tells the side ([`place`]).
+    // The distances count along the sketch normal, signed. The stored direction vector does not
+    // tell the side: 3350's four extrudes whose vector runs against their sketch's normal go the
+    // way their distance's sign says (Extrude1, -14 mm: the stored rod is z -14..0; Extrude3,
+    // 3 mm from a sketch facing down: z -17..-14), and no other extrude of the corpus has one.
+    // A vector in the sketch plane is given in the frame of the assembly the component stands in
+    // (4800: a component's standoffs and another's screen, drawn in place), and the placement of
+    // the component's occurrence tells the side ([`place`]).
     let in_plane = match (&plane, e.vec) {
         (Some(pl), Some(v)) => dot(pl.z, v).abs() < 1e-6,
         _ => false,
-    };
-    let sign = match (&plane, e.vec) {
-        (Some(pl), Some(v)) if !in_plane => {
-            if dot(pl.z, v) >= 0.0 {
-                1.0
-            } else {
-                -1.0
-            }
-        }
-        _ => 1.0,
     };
     if let (true, Some(pl), Some(v)) = (in_plane, &plane, e.vec) {
         j.insert("_assembly_direction".into(), json!({"normal": pl.z, "direction": v}));
     }
     // Where it starts, off the sketch plane (cm along its normal).
     let start = match &plane {
-        Some(pl) => cx.extrude_start(fid, &e, pl, sign),
+        Some(pl) => cx.extrude_start(fid, &e, pl),
         None => Ok(0.0),
     };
     let start = match start {
@@ -324,7 +317,7 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
             0.0
         }
     };
-    let mut distance = along.and_then(|a| a.value).map(|v| mm(v) * sign);
+    let mut distance = along.and_then(|a| a.value).map(mm);
     if let Some(a) = along {
         j.insert("distance_expr".into(), a.expr.as_str().into());
     }
@@ -345,7 +338,7 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
     }
     if let (2, Some(ag)) = (e.extent, against) {
         j.insert("two_sided".into(), true.into());
-        j.insert("distance2".into(), ag.value.map_or(Value::Null, |v| (mm(v) * -sign).into()));
+        j.insert("distance2".into(), ag.value.map_or(Value::Null, |v| (-mm(v)).into()));
         j.insert("distance2_expr".into(), ag.expr.as_str().into());
     }
     if distance.is_none() && pget(ps, "Side1Offset").is_some() {
@@ -549,13 +542,12 @@ fn profile_of_an_exposed_cap(cx: &mut Ctx, fid: u64, j: &mut Map<String, Value>,
     if dot(pl.z, v).abs() < 1e-6 {
         return;
     }
-    let sign = if dot(pl.z, v) >= 0.0 { 1.0 } else { -1.0 };
     let t = if g == "2" { dx } else { 0.0 };
     j.remove("profile_note");
     j.insert("sketch".into(), xf.get("sketch").cloned().unwrap_or(Value::Null));
     j.insert("sketch_source_id".into(), sid.into());
     j.insert("profiles".into(), open.iter().map(|p| json!({"point": p})).collect::<Vec<_>>().into());
-    j.insert("distance".into(), (mm(along) * sign).into());
+    j.insert("distance".into(), mm(along).into());
     if t != 0.0 {
         j.insert("start".into(), t.into());
     }

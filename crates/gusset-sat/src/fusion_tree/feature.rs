@@ -257,12 +257,12 @@ impl Ctx<'_> {
     /// A `ProfileOffset` parameter marks a start off the profile plane: with no face recipe it
     /// is that offset (an offset plane), with one face recipe (and no `Side1Offset` end, whose
     /// target is a face recipe too) the plane of that face, a cap or planar side, plus the
-    /// offset ("from object"; every such start in the corpus has offset 0). The offset takes the
-    /// direction's sign like `AlongDistance`. `Err` where the start is a face that is not a
+    /// offset ("from object"; every such start in the corpus has offset 0). The offset counts
+    /// along the normal like `AlongDistance`. `Err` where the start is a face that is not a
     /// known plane parallel to the sketch, or which face is the start is not known.
-    pub(super) fn extrude_start(&mut self, fid: u64, e: &ExtRaw, pl: &Plane, sign: f64) -> Result<f64, &'static str> {
+    pub(super) fn extrude_start(&mut self, fid: u64, e: &ExtRaw, pl: &Plane) -> Result<f64, &'static str> {
         let Some(off) = pget(&e.params, "ProfileOffset") else { return Ok(0.0) };
-        let off = off.value.ok_or("the start offset has no value")? * sign;
+        let off = off.value.ok_or("the start offset has no value")?;
         let d = self.d;
         let mut faces = Vec::new();
         for rid in self.edge_recipes_of(fid) {
@@ -322,16 +322,16 @@ impl Ctx<'_> {
                 }
             }
         }
-        let sign = e.vec.map_or(1.0, |v| if dot(pl.z, v) >= 0.0 { 1.0 } else { -1.0 });
+        // The distances count along the sketch normal, signed, whatever the stored direction
+        // vector says (see `extrude_json`).
         let (mut t0, mut t1) = (None, None);
         if let Some(a) = pget(&e.params, "AlongDistance").and_then(|p| p.value) {
-            let a = a * sign;
-            let s0 = self.extrude_start(fid, &e, &pl, sign).ok()?;
+            let s0 = self.extrude_start(fid, &e, &pl).ok()?;
             if e.extent == 3 {
                 let side = if e.half_length? { a } else { a / 2.0 };
                 (t0, t1) = (Some(s0 - side), Some(s0 + side));
             } else if let (2, Some(ag)) = (e.extent, pget(&e.params, "AgainstDistance").and_then(|p| p.value)) {
-                (t0, t1) = (Some(s0 - ag * sign), Some(s0 + a));
+                (t0, t1) = (Some(s0 - ag), Some(s0 + a));
             } else {
                 (t0, t1) = (Some(s0), Some(s0 + a));
             }
