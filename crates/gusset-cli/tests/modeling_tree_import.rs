@@ -1472,3 +1472,31 @@ fn a_tree_thread_cuts_its_groove_or_records_a_cosmetic_one() {
     let (_, v) = import_v2(f);
     assert_vol(v, std::f64::consts::PI * 8.2 * 8.2 * 13.0);
 }
+
+#[test]
+fn a_rounded_edge_recorded_before_an_offset_moves_with_its_face() {
+    // 1054: a plug of r 1.5 mm made 1.4 mm by an offset, then its rim rounded by an edge
+    // recorded on the 1.5 mm cylinder.
+    let circle: Vec<Value> = (0..16)
+        .map(|i| {
+            let t = f64::from(i) * std::f64::consts::TAU / 16.0;
+            json!([1.5 * libm::cos(t), 1.5 * libm::sin(t), 1.0])
+        })
+        .collect();
+    let f = vec![
+        disc("S", plane_at(0.0), 0.0, 0.0, 1.5),
+        extrude("Plug", "S", 1.0, "new"),
+        json!({"type": "offset_face", "name": "Offset1", "distance": -0.1, "on_body": "Plug",
+            "faces": [{"point": [1.5, 0, 0.5],
+                "surface": {"type": "cylinder", "origin": [0, 0, 0], "axis": [0, 0, 1], "radius": 1.5}}]}),
+        json!({"type": "fillet", "name": "Fillet1", "radius": 0.2, "on_body": "Plug",
+            "edges": [{"midpoint": [-1.5, 0, 1.0], "path": circle}]}),
+    ];
+    let (r, v) = import_v2(f);
+    assert!(r["features"].to_string().contains("Fillet1"), "{r}");
+    // The rim round takes (1 - pi / 4) r^2 of the section, turned about the axis at a radius
+    // under 1.4 mm.
+    let plain = std::f64::consts::PI * 1.4 * 1.4;
+    let most = (1.0 - std::f64::consts::FRAC_PI_4) * 0.04 * std::f64::consts::TAU * 1.4;
+    assert!(v < plain && v > plain - most, "{v}");
+}

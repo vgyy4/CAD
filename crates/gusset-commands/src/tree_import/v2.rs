@@ -1522,6 +1522,25 @@ pub(super) fn offset_face(g: &mut Gen, s: &Session, d: &OffsetFaceF) -> Result<(
     );
     builds(g, s, &name)?;
     g.made.push(name.clone());
+    // The cylinders it moved, and where to: the radius one of the face's circular edges about
+    // the axis has now (the old radius plus or less the distance).
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    if let Some(b) = ev.bodies.iter().find(|b| b.feature == body) {
+        for pick in &d.faces {
+            let Some(SurfaceF::Cylinder { origin, axis, radius }) = pick.surface.clone() else { continue };
+            let Some(a) = unit(axis) else { continue };
+            let off = |q: V3| norm(cross(sub(q, origin), a));
+            let to =
+                [radius + d.distance.abs(), radius - d.distance.abs()].into_iter().find(|r| {
+                    b.topology.edges.iter().filter_map(|e| e.circle).any(|c| {
+                        (c.radius - r).abs() < 1e-6 && off(c.center) < 1e-6 && dot(c.normal, a).abs() > 1.0 - 1e-9
+                    })
+                });
+            if let Some(to) = to.filter(|t| *t > 0.0) {
+                g.moved.push((body.clone(), origin, a, radius, to));
+            }
+        }
+    }
     g.features.insert(d.name.clone(), body);
     Ok(())
 }

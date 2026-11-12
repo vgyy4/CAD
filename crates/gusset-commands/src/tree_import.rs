@@ -627,6 +627,9 @@ struct Gen {
     /// Sketch entities generated so far (mirrors copy sketches: review of v2).
     entities: usize,
     started: std::time::Instant,
+    /// Cylindrical faces an offset moved: (body feature, axis origin, axis, radius before,
+    /// radius after), for later blends whose edges were recorded where the face was.
+    moved: Vec<(String, V3, V3, f64, f64)>,
     /// One evaluator for the whole import: its cache keeps every feature built so far, so
     /// each trial build only builds what the new feature adds.
     evaluator: gusset_eval::Evaluator,
@@ -741,6 +744,7 @@ pub fn apply_with(
         index: HashMap::new(),
         entities: 0,
         started: std::time::Instant::now(),
+        moved: Vec::new(),
         evaluator: std::mem::replace(evaluator, gusset_eval::Evaluator::new(s.kernel().clone())),
     };
     // Parameters go after the header lines; each is evaluated with those before it, so one
@@ -1696,6 +1700,52 @@ fn full_round(g: &mut Gen, s: &Session, d: &EdgeF, pick: &v2::FacePick, fillet: 
     Ok(())
 }
 
+/// The blend with its edge picks moved with the cylindrical faces an offset moved: an edge of
+/// the body the blend names whose every point lies on such a face's old cylinder, and that no
+/// edge of that body still has its middle at, is moved across the axis to the new radius (1054:
+/// Fillet1 rounds the foot of a plug, r 1.5 mm, that OffsetFaces1 made 1.4 mm; its edge is
+/// recorded at 1.5 mm, and the hole's mouth around the plug is there).
+fn moved_picks(g: &Gen, ev: &gusset_eval::Evaluation, d: &EdgeF) -> EdgeF {
+    let mut out = d.clone();
+    let Some(body) = d.on_body.as_deref().and_then(|b| g.features.get(b)) else { return out };
+    let moves: Vec<&(String, V3, V3, f64, f64)> = g.moved.iter().filter(|m| m.0 == *body).collect();
+    let Some(b) = ev.bodies.iter().find(|b| b.feature == *body) else { return out };
+    if moves.is_empty() {
+        return out;
+    }
+    for pick in &mut out.edges {
+        if b.topology.edges.iter().any(|e| norm(sub(e.midpoint, pick.midpoint)) <= 0.01) {
+            continue;
+        }
+        let rho = |q: V3, o: V3, a: V3| norm(cross(sub(q, o), a));
+        let all: Vec<V3> = std::iter::once(pick.midpoint).chain(pick.path.iter().copied()).collect();
+        let Some(&&(_, o, a, _, to)) =
+            moves.iter().find(|(_, o, a, r, _)| all.iter().all(|q| (rho(*q, *o, *a) - r).abs() < 1e-4))
+        else {
+            continue;
+        };
+        let shift = |q: V3| -> V3 {
+            let foot = add3(o, scale3(a, dot(sub(q, o), a)));
+            let w = sub(q, foot);
+            let r = norm(w);
+            if r > 0.0 { add3(foot, scale3(w, to / r)) } else { q }
+        };
+        pick.midpoint = shift(pick.midpoint);
+        for q in &mut pick.path {
+            *q = shift(*q);
+        }
+    }
+    out
+}
+
+fn add3(a: V3, b: V3) -> V3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn scale3(a: V3, k: f64) -> V3 {
+    [a[0] * k, a[1] * k, a[2] * k]
+}
+
 fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String> {
     if let Some(pick) = &d.full_round {
         return full_round(g, s, d, pick, fillet);
@@ -1706,6 +1756,8 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         return Err("too many edges".into());
     }
     let ev = g.evaluate(s).map_err(|e| e.message)?;
+    let moved = moved_picks(g, &ev, d);
+    let d = &moved;
     // Each edge: the nearest one of the model as built so far, within 0.01 mm; of the bodies
     // `only` names alone, if given.
     let collect = |only: Option<&str>| -> Result<BTreeMap<String, Vec<String>>, String> {
