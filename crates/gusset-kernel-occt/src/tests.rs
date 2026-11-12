@@ -2179,3 +2179,65 @@ fn shell_of_a_body_of_two_solids() {
     assert_eq!(one.face_origins.len(), rt.faces.len());
     assert!(one.face_origins.iter().all(|o| !o.is_empty()));
 }
+
+/// A circle as a profile loop.
+fn circle_loop(r: f64, tag: u64) -> Loop2 {
+    Loop2 { edges: vec![ProfileEdge { seg: Seg2::Circle { center: [0.0, 0.0], radius: r }, tag }] }
+}
+
+/// A shape with a wound face (the default quadrature, which a face winding several turns
+/// needs) and a rational B-spline face trimmed by planes (the adaptive one, which it needs) is
+/// measured face by face. A hexagon nut whose corners a cone cuts and whose hole a helical
+/// groove cuts measures the same with the cone a lofted B-spline (rational: between two
+/// circles) as with the cone exact. On the whole shape the default quadrature put the lofted
+/// one off (3350's stored nut, a revolved spline trimmed by the hexagon's sides: 1.4e-4).
+#[test]
+fn a_wound_face_beside_a_trimmed_spline_is_measured_face_by_face() {
+    let apothem = 9.5;
+    let corner = apothem / 30f64.to_radians().cos();
+    let pts: Vec<[f64; 2]> = (0..6)
+        .map(|i| {
+            [corner * (f64::from(i) * 60f64.to_radians()).cos(), corner * (f64::from(i) * 60f64.to_radians()).sin()]
+        })
+        .collect();
+    let hexagon = Loop2 {
+        edges: (0..6)
+            .map(|i| ProfileEdge { seg: Seg2::Line { a: pts[i], b: pts[(i + 1) % 6] }, tag: 2 + i as u64 })
+            .collect(),
+    };
+    let low = Frame { origin: [0.0, 0.0, -5.0], ..Frame::XY };
+    let prism = Profile { frame: low, regions: vec![Region2 { outer: hexagon, holes: vec![circle_loop(5.0, 9)] }] };
+    let prism = k().extrude(&prism, &ExtrudeSpec { distance: 3.0, symmetric: false }).unwrap().shape;
+    // The groove: a square section screwed round the hole, past both ends, a turn at a time
+    // (OCCT cuts one turn exactly).
+    let spec = SweepSpec { orientation: SweepOrientation::Frenet, twist: 0.0 };
+    let mut threaded = prism.clone();
+    for turn in 0..5 {
+        let z = -6.0 + f64::from(turn);
+        let path = SweepPath::Helix {
+            origin: [0.0, 0.0, z],
+            axis: [0.0, 0.0, 1.0],
+            x: [1.0, 0.0, 0.0],
+            radius: 5.0,
+            pitch: 1.0,
+            height: 1.0,
+        };
+        let frame = Frame { origin: [5.0, 0.0, z], ..Frame::XZ };
+        let groove = k().sweep(&centred_square(0.2, frame), &path, &spec).unwrap().shape;
+        threaded = k().boolean(BoolOp::Cut, &threaded, &groove).unwrap().shape;
+    }
+    // The cone from radius 12 at z -5 to 9.6 at z -2, lofted and revolved.
+    let at = |z: f64| Frame { origin: [0.0, 0.0, z], ..Frame::XY };
+    let disc =
+        |r: f64, z: f64| Profile { frame: at(z), regions: vec![Region2 { outer: circle_loop(r, 1), holes: vec![] }] };
+    let sections = [disc(12.0, -5.0), disc(11.6, -4.0), disc(10.4, -3.0), disc(9.6, -2.0)];
+    let lofted = k().loft(&sections, &LoftSpec { ruled: false }).unwrap().shape;
+    let v = |sh: &Shape| k().mass_properties(sh).unwrap().volume;
+    let whole = k().boolean(BoolOp::Intersect, &prism, &lofted).unwrap().shape;
+    let nut = k().boolean(BoolOp::Intersect, &threaded, &lofted).unwrap().shape;
+    let kinds: Vec<SurfaceKind> = k().topology(&nut).unwrap().faces.iter().map(|f| f.kind).collect();
+    assert!(kinds.contains(&SurfaceKind::BSpline), "{kinds:?}");
+    // The groove lies inside the loft: the nut is the cut-off prism less what the groove took.
+    let want = v(&whole) - (v(&prism) - v(&threaded));
+    assert!(close(v(&nut), want, 1e-8), "{} vs {want}", v(&nut));
+}

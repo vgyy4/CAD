@@ -935,18 +935,64 @@ bool has_elliptic_face(const TopoDS_Shape& s) {
 // put the solid 1.1 mm3 off (4.5e-4), while the default quadrature (and Gauss-Kronrod, too slow
 // on 5753's stored screws) agrees with the mesh to 2e-6. Only a cylinder or cone with one edge
 // (a helix) going one and a half turns round it: a face's pcurve box alone can pass a turn.
-bool has_wound_face(const TopoDS_Shape& s) {
-  for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
-    const TopoDS_Face& f = TopoDS::Face(ex.Current());
-    BRepAdaptor_Surface sa(f, false);
-    if (sa.GetType() != GeomAbs_Cylinder && sa.GetType() != GeomAbs_Cone) continue;
-    for (TopExp_Explorer ee(f, TopAbs_EDGE); ee.More(); ee.Next()) {
-      double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
-      BRepTools::UVBounds(f, TopoDS::Edge(ee.Current()), u0, u1, v0, v1);
-      if (u1 - u0 > 3.0 * M_PI) return true;
-    }
+bool is_wound_face(const TopoDS_Face& f) {
+  BRepAdaptor_Surface sa(f, false);
+  if (sa.GetType() != GeomAbs_Cylinder && sa.GetType() != GeomAbs_Cone) return false;
+  for (TopExp_Explorer ee(f, TopAbs_EDGE); ee.More(); ee.Next()) {
+    double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+    BRepTools::UVBounds(f, TopoDS::Edge(ee.Current()), u0, u1, v0, v1);
+    if (u1 - u0 > 3.0 * M_PI) return true;
   }
   return false;
+}
+
+bool has_wound_face(const TopoDS_Shape& s) {
+  for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
+    if (is_wound_face(TopoDS::Face(ex.Current()))) return true;
+  }
+  return false;
+}
+
+// Volume and area as `gs_mass` measures them. Torus and freeform faces are integrated
+// adaptively (the default quadrature is off by a few tenths of a percent on twisted surfaces,
+// by some 1e-7 on tori trimmed by planes), the rest by the default quadrature. A shape with a
+// wound face is integrated face by face: the wound faces by the default quadrature, the others
+// as above (the volume is a sum over faces, each face's part taken about the same origin: the
+// faces go into two compounds). On the whole shape the default quadrature put 3350's stored nut,
+// a revolved spline trimmed by the hexagon's sides beside a thread, 0.049 mm3 (1.4e-4) off.
+// `area` may be null (the volume alone).
+void measured_props(const TopoDS_Shape& s, GProp_GProps& vol, GProp_GProps* area) {
+  if (!has_freeform_face(s) && !has_torus_face(s)) {
+    BRepGProp::VolumeProperties(s, vol);
+    if (area) BRepGProp::SurfaceProperties(s, *area);
+    return;
+  }
+  const double eps = has_elliptic_face(s) ? 1e-10 : 1e-7;
+  if (!has_wound_face(s)) {
+    BRepGProp::VolumeProperties(s, vol, eps);
+    if (area) BRepGProp::SurfaceProperties(s, *area, eps);
+    return;
+  }
+  BRep_Builder b;
+  TopoDS_Compound wound, rest;
+  b.MakeCompound(wound);
+  b.MakeCompound(rest);
+  for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
+    const TopoDS_Face& f = TopoDS::Face(ex.Current());
+    b.Add(is_wound_face(f) ? wound : rest, f);
+  }
+  GProp_GProps wv, rv;
+  BRepGProp::VolumeProperties(wound, wv);
+  BRepGProp::VolumeProperties(rest, rv, eps);
+  wv.Add(rv);
+  vol = wv;
+  if (area) {
+    GProp_GProps wa, ra;
+    BRepGProp::SurfaceProperties(wound, wa);
+    BRepGProp::SurfaceProperties(rest, ra, eps);
+    wa.Add(ra);
+    *area = wa;
+  }
 }
 
 // ---------------------------------------------------------------- sweep and loft helpers
@@ -976,15 +1022,12 @@ double signed_volume(const TopoDS_Shape& s) {
   return g.Mass();
 }
 
-// The volume as `gs_mass` measures it: adaptively where a face is a torus or freeform. The
-// default quadrature is off by some 1e-7 of the volume on tori trimmed by planes, which is the
-// tolerance the corner blends check their volumes to (3777's rim round, cut off by flats).
+// The volume as `gs_mass` measures it (`measured_props`). The default quadrature is off by
+// some 1e-7 of the volume on tori trimmed by planes, which is the tolerance the corner blends
+// check their volumes to (3777's rim round, cut off by flats).
 double measured_volume(const TopoDS_Shape& s) {
   GProp_GProps g;
-  if (!has_wound_face(s) && (has_freeform_face(s) || has_torus_face(s)))
-    BRepGProp::VolumeProperties(s, g, has_elliptic_face(s) ? 1e-10 : 1e-7);
-  else
-    BRepGProp::VolumeProperties(s, g);
+  measured_props(s, g, nullptr);
   return g.Mass();
 }
 
@@ -3948,18 +3991,7 @@ int gs_mass(const GsShape* s, GsBuf* mass) {
   GS_GUARD_BEGIN
   if (!s || !mass) return fail("null argument");
   GProp_GProps vol, area;
-  if (has_wound_face(s->s)) {
-    BRepGProp::VolumeProperties(s->s, vol);
-    BRepGProp::SurfaceProperties(s->s, area);
-  } else if (has_freeform_face(s->s) || has_torus_face(s->s)) {
-    // Swept, lofted and spline faces: the default quadrature is off by a few tenths of a
-    // percent on twisted surfaces, so integrate adaptively.
-    BRepGProp::VolumeProperties(s->s, vol, has_elliptic_face(s->s) ? 1e-10 : 1e-7);
-    BRepGProp::SurfaceProperties(s->s, area, has_elliptic_face(s->s) ? 1e-10 : 1e-7);
-  } else {
-    BRepGProp::VolumeProperties(s->s, vol);
-    BRepGProp::SurfaceProperties(s->s, area);
-  }
+  measured_props(s->s, vol, &area);
   gp_Pnt c = vol.CentreOfMass();
   std::vector<double> v = {vol.Mass(), area.Mass(), c.X(), c.Y(), c.Z()};
   to_buf(v, mass);
