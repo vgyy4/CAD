@@ -2057,6 +2057,30 @@ namespace {
 // `exact_helix_cylinders` whose half turns a refined boolean merged back. OCCT's face builder
 // cannot split such a face where another solid's edge crosses it (a partly threaded rod's
 // shank: "unused edges" on the crest and root bands, and an empty fuse).
+// Whether edge `e` of a cylinder face `f` is a helix on it: its curve on the face's parameter
+// plane a straight line that turns at least a quarter round and climbs (an intersection with
+// another cylinder or a plane slanting across, also neither line nor circle in space, is not:
+// 3000's board, which no thread touches, changed volume when such faces were split).
+bool helix_on(const TopoDS_Edge& e, const TopoDS_Face& f) {
+  const GeomAbs_CurveType t = BRepAdaptor_Curve(e).GetType();
+  if (t == GeomAbs_Line || t == GeomAbs_Circle) return false;
+  double a = 0, b = 0;
+  occ::handle<Geom2d_Curve> c = BRep_Tool::CurveOnSurface(e, f, a, b);
+  if (c.IsNull()) return false;
+  const gp_Pnt2d p0 = c->Value(a), p1 = c->Value(b);
+  const double du = p1.X() - p0.X(), dv = p1.Y() - p0.Y();
+  if (std::fabs(du) < 0.5 * M_PI || std::fabs(dv) < 1e-7) return false;
+  const double len = std::hypot(du, dv);
+  for (int k = 1; k < 8; ++k) {
+    const double s = k / 8.0;
+    const gp_Pnt2d q = c->Value(a + s * (b - a));
+    // Distance from the chord, as a share of its length.
+    const double off = std::fabs((q.X() - p0.X()) * dv - (q.Y() - p0.Y()) * du) / len;
+    if (off > 1e-4 * len) return false;
+  }
+  return true;
+}
+
 bool wraps_between_helices(const TopoDS_Face& f) {
   if (BRepAdaptor_Surface(f, false).GetType() != GeomAbs_Cylinder) return false;
   bool seam = false, helix = false;
@@ -2064,8 +2088,7 @@ bool wraps_between_helices(const TopoDS_Face& f) {
     const TopoDS_Edge& e = TopoDS::Edge(ex.Current());
     if (BRep_Tool::Degenerated(e)) continue;
     seam = seam || BRep_Tool::IsClosed(e, f);
-    const GeomAbs_CurveType t = BRepAdaptor_Curve(e).GetType();
-    helix = helix || (t != GeomAbs_Line && t != GeomAbs_Circle);
+    helix = helix || helix_on(e, f);
   }
   return seam && helix;
 }
