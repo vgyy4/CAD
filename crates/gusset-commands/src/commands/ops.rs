@@ -130,6 +130,10 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             gusset_doc::SheetOp::Contour { .. } => {}
             gusset_doc::SheetOp::Tab { profile } => profile.rename_feature(from, to),
             gusset_doc::SheetOp::EdgeFlange { body, .. } => sketch_of(body),
+            gusset_doc::SheetOp::Bend { body, sketch, .. } => {
+                sketch_of(body);
+                sketch_of(sketch);
+            }
         },
         _ => {}
     }

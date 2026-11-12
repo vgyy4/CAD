@@ -61,7 +61,7 @@ pub fn creates_body(f: &Feature) -> bool {
         FeatureKind::Split(_) => true,
         FeatureKind::Move(m) => m.copy,
         FeatureKind::Surface(d) => !matches!(d.op, SurfaceOp::Thicken { .. }),
-        FeatureKind::Sheet(d) => !matches!(d.op, SheetOp::EdgeFlange { .. }),
+        FeatureKind::Sheet(d) => !matches!(d.op, SheetOp::EdgeFlange { .. } | SheetOp::Bend { .. }),
         _ => false,
     }
 }
@@ -84,7 +84,7 @@ pub fn created_body_name(f: &Feature) -> Option<&str> {
         FeatureKind::Surface(d) if !matches!(d.op, SurfaceOp::Thicken { .. }) => {
             Some(d.body_name.as_deref().unwrap_or(&f.name))
         }
-        FeatureKind::Sheet(d) if !matches!(d.op, SheetOp::EdgeFlange { .. }) => {
+        FeatureKind::Sheet(d) if !matches!(d.op, SheetOp::EdgeFlange { .. } | SheetOp::Bend { .. }) => {
             Some(d.body_name.as_deref().unwrap_or(&f.name))
         }
         _ => None,
@@ -512,8 +512,13 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                     }
                 }
             },
-            FeatureKind::Sheet(d) if d.thickness.is_some() == matches!(d.op, SheetOp::EdgeFlange { .. }) => {
-                out.push(issue(n, "a contour_flange or tab needs a thickness; an edge_flange takes its tab's"));
+            FeatureKind::Sheet(d)
+                if d.thickness.is_some() == matches!(d.op, SheetOp::EdgeFlange { .. } | SheetOp::Bend { .. }) =>
+            {
+                out.push(issue(
+                    n,
+                    "a contour_flange or tab needs a thickness; an edge_flange or bend takes its body's",
+                ));
             }
             FeatureKind::Sheet(d) => match &d.op {
                 SheetOp::Contour { curves, .. } => {
@@ -553,6 +558,10 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                         None => out.push(issue(n, format!("unknown tab '{body}'"))),
                         _ => {}
                     }
+                    check_body_target(n, Some(body), true, &seen, &consumed, &mut out);
+                }
+                SheetOp::Bend { body, sketch, line, .. } => {
+                    check_sketch_entity(n, sketch, line, Some('l'), &seen, &mut out);
                     check_body_target(n, Some(body), true, &seen, &consumed, &mut out);
                 }
             },

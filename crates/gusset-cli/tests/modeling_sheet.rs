@@ -1041,3 +1041,91 @@ fn a_mitre_on_a_bend_radius_below_the_half_gap_keeps_its_diagonal() {
     });
     assert_eq!(diag.count(), 2, "the mitre's two faces");
 }
+
+/// The tab with a bend line across it at x = 30 (in a sketch of its own on the tab's plane).
+fn bent(args: &str) -> (Evaluator, Evaluation) {
+    let src = format!(
+        "{TAB}\nsketch L (plane: XY, next_id: 4) {{\n  p1 = point(30, 0)\n  p2 = point(30, 40)\n  l3 = line(p1, p2)\n}}\n\n\
+         bend B1 (body: Plate, line: L.l3, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.44{args})\n"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(doc.to_text(), src);
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut ev = Evaluator::new(k);
+    let r = ev.evaluate(&doc, None, &());
+    (ev, r)
+}
+
+#[test]
+fn a_bend_turns_the_sheet_beyond_its_line_and_keeps_the_neutral_length() {
+    // 60 x 40 x 2 mm, bent 90 deg along x = 30 with r = 3 mm, k = 0.44: the zone is
+    // pi/2 (3 + 0.88) = 6.0947 mm long, centred on the line; the part beyond it stands up
+    // (or hangs down) 26.953 mm past the bend. The volume grows by w theta t^2 (1/2 - k).
+    let (t, r, k, w) = (2.0, 3.0, 0.44, 40.0);
+    let ba = FRAC_PI_2 * (r + k * t);
+    let flat_len = 30.0 - ba / 2.0;
+    let volume = 60.0 * w * t + w * FRAC_PI_2 * t * t * (0.5 - k);
+    for down in [false, true] {
+        let (ev, res) = bent(&format!(", side: right{}", if down { ", flip: true" } else { "" }));
+        assert!(res.errors().is_empty(), "{:?}", res.errors());
+        let b = res.body("Plate").unwrap();
+        let kern = ev.kernel();
+        let m = kern.mass_properties(&b.shape).unwrap();
+        assert!(near(m.volume, volume), "down {down}: {} vs {volume}", m.volume);
+        let bb = kern.bbox(&b.shape).unwrap();
+        let reach = flat_len + r + t;
+        assert!(near(bb.max[0], reach) && near(bb.min[0], 0.0), "down {down}: {bb:?}");
+        if down {
+            assert!(near(bb.min[2], -(r + flat_len)) && near(bb.max[2], t), "{bb:?}");
+        } else {
+            assert!(near(bb.max[2], t + r + flat_len) && near(bb.min[2], 0.0), "{bb:?}");
+        }
+        // The plate's faces keep their names on both sides of the bend (told apart by #k); the
+        // bend's sides lie in the plate's side faces and merge with them.
+        let names: Vec<String> = b.names.faces.iter().map(ToString::to_string).collect();
+        for want in ["B1/bend_in(l3)", "B1/bend_out(l3)", "Plate/cap(end)#1", "Plate/cap(end)#2", "Plate/side(T/l5)"] {
+            assert!(names.iter().any(|n| n == want), "{want} in {names:?}");
+        }
+        // The flat pattern keeps the plate and gains the bend.
+        let flat = b.sheet.as_ref().unwrap();
+        assert_eq!(flat.bends.len(), 1);
+        assert!(near(flat.bends[0].allowance, ba) && flat.changed_by.is_empty(), "{flat:?}");
+        assert!(near(flat.size()[0], 60.0) && near(flat.size()[1], 40.0));
+    }
+    // The left side moves instead, the zone starting at the line: the part at x < 30 stands up.
+    let (ev, res) = bent(", position: start");
+    assert!(res.errors().is_empty(), "{:?}", res.errors());
+    let bb = ev.kernel().bbox(&res.body("Plate").unwrap().shape).unwrap();
+    assert!(near(bb.min[0], 30.0 - r - t) && near(bb.max[0], 60.0), "{bb:?}");
+    assert!(near(bb.max[2], t + r + 30.0 - ba), "{bb:?}");
+}
+
+#[test]
+fn bends_that_do_not_fit_the_sheet_are_refused() {
+    for (args, want) in
+        [(", angle: 0 deg, k_factor: 0.44", "between 0 and 180"), (", angle: 90 deg, k_factor: 1.5", "k_factor")]
+    {
+        let src = format!(
+            "{TAB}\nsketch L (plane: XY, next_id: 4) {{\n  p1 = point(30, 0)\n  p2 = point(30, 40)\n  l3 = line(p1, p2)\n}}\n\n\
+             bend B1 (body: Plate, line: L.l3, bend_radius: 3 mm{args})\n"
+        );
+        let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+        let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+        let r = Evaluator::new(k).evaluate(&doc, None, &());
+        assert!(r.errors().iter().any(|e| e.feature == "B1" && e.message.contains(want)), "{args}: {:?}", r.errors());
+    }
+    // A line half way through the sheet (on no face of it), and a zone that runs off the plate.
+    for (datum, plane, x, want) in [
+        ("plane M (base: XY, offset: 1 mm)\n\n", "M", 30.0, "does not lie on a face"),
+        ("", "XY", 58.0, "not one straight strip"),
+    ] {
+        let src = format!(
+            "{TAB}\n{datum}sketch L (plane: {plane}, next_id: 4) {{\n  p1 = point({x}, 0)\n  p2 = point({x}, 40)\n  l3 = line(p1, p2)\n}}\n\n\
+             bend B1 (body: Plate, line: L.l3, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.44, side: right)\n"
+        );
+        let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+        let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+        let r = Evaluator::new(k).evaluate(&doc, None, &());
+        assert!(r.errors().iter().any(|e| e.feature == "B1" && e.message.contains(want)), "{plane}: {:?}", r.errors());
+    }
+}

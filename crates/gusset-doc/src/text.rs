@@ -687,6 +687,19 @@ fn print_feature(out: &mut String, f: &Feature) {
                         args.push(if *mitre { "close: mitre" } else { "close: true" }.into());
                     }
                 }
+                SheetOp::Bend { body, sketch, line, angle, bend_radius, k_factor, right, position } => {
+                    args.push(format!("body: {body}"));
+                    args.push(format!("line: {sketch}.{line}"));
+                    args.push(format!("angle: {angle}"));
+                    args.push(format!("bend_radius: {bend_radius}"));
+                    args.push(format!("k_factor: {k_factor}"));
+                    if *right {
+                        args.push("side: right".into());
+                    }
+                    if *position != BendPosition::Center {
+                        args.push(format!("position: {}", position.keyword()));
+                    }
+                }
             }
             if d.flip {
                 args.push("flip: true".into());
@@ -1173,7 +1186,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             | "draft" | "offset_face" | "delete_face" | "move_face" | "text" | "mirror" | "split"
             | "pattern_linear" | "pattern_circular" | "plane" | "move" | "scale" | "remove" | "combine" | "hole"
             | "thread" | "joint" | "component" | "surface_extrude" | "patch" | "thicken" | "stitch"
-            | "contour_flange" | "tab" | "edge_flange" | "cam_job" => {
+            | "contour_flange" | "tab" | "edge_flange" | "bend" | "cam_job" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -1207,7 +1220,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     parse_component(&mut c)?
                 } else if matches!(kw, "surface_extrude" | "patch" | "thicken" | "stitch") {
                     parse_surface(kw, &mut c)?
-                } else if matches!(kw, "contour_flange" | "tab" | "edge_flange") {
+                } else if matches!(kw, "contour_flange" | "tab" | "edge_flange" | "bend") {
                     parse_sheet(kw, &mut c)?
                 } else if kw == "text" {
                     parse_text(&mut c)?
@@ -3077,10 +3090,13 @@ fn parse_sheet(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let (mut body, mut line, mut length, mut angle) = (None, None, None, None);
     let (mut symmetric, mut flip, mut close, mut mitre) = (false, false, false, false);
     let mut body_name = None;
+    let (mut bend_line, mut right, mut position) = (None, false, BendPosition::Center);
     let allowed = if kw == "tab" {
         "profile, thickness, flip, body_name, label, group, suppressed"
     } else if kw == "edge_flange" {
         "body, line, length, angle, bend_radius, k_factor, flip, close, label, group, suppressed"
+    } else if kw == "bend" {
+        "body, line, angle, bend_radius, k_factor, flip, side, position, label, group, suppressed"
     } else {
         "curves, width, symmetric, thickness, bend_radius, k_factor, flip, body_name, label, group, suppressed"
     };
@@ -3091,7 +3107,27 @@ fn parse_sheet(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             (_, "suppressed") => suppressed = parse_bool(c)?,
             ("contour_flange" | "tab", "body_name") => body_name = Some(c.ident()?.to_string()),
             ("contour_flange" | "tab", "thickness") => thickness = Some(c.expr()?),
-            ("edge_flange", "body") => body = Some(c.ident()?.to_string()),
+            ("edge_flange" | "bend", "body") => body = Some(c.ident()?.to_string()),
+            ("bend", "line") => {
+                let sketch = c.ident()?.to_string();
+                c.expect('.')?;
+                bend_line = Some((sketch, c.ident()?.to_string()));
+            }
+            ("bend", "angle") => angle = Some(c.expr()?),
+            ("bend", "bend_radius") => bend_radius = Some(c.expr()?),
+            ("bend", "k_factor") => k_factor = Some(c.expr()?),
+            ("bend", "side") => {
+                right = match c.ident()? {
+                    "left" => false,
+                    "right" => true,
+                    other => return Err(c.err(format!("expected left or right, found '{other}'"))),
+                }
+            }
+            ("bend", "position") => {
+                let w = c.ident()?;
+                position = BendPosition::from_keyword(w)
+                    .ok_or_else(|| c.err(format!("expected center, start or end, found '{w}'")))?;
+            }
             ("edge_flange", "line") => line = Some(c.ident()?.to_string()),
             ("edge_flange", "length") => length = Some(c.expr()?),
             ("edge_flange", "angle") => angle = Some(c.expr()?),
@@ -3120,10 +3156,22 @@ fn parse_sheet(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     if !c.at_end() {
         return Err(c.err("unexpected text after ')'"));
     }
-    if kw != "edge_flange" && thickness.is_none() {
+    if !matches!(kw, "edge_flange" | "bend") && thickness.is_none() {
         return Err(missing(c, kw, "thickness"));
     }
-    let op = if kw == "edge_flange" {
+    let op = if kw == "bend" {
+        let (sketch, line) = bend_line.ok_or_else(|| missing(c, kw, "line"))?;
+        SheetOp::Bend {
+            body: body.ok_or_else(|| missing(c, kw, "body"))?,
+            sketch,
+            line,
+            angle: Box::new(angle.ok_or_else(|| missing(c, kw, "angle"))?),
+            bend_radius: Box::new(bend_radius.ok_or_else(|| missing(c, kw, "bend_radius"))?),
+            k_factor: Box::new(k_factor.ok_or_else(|| missing(c, kw, "k_factor"))?),
+            right,
+            position,
+        }
+    } else if kw == "edge_flange" {
         SheetOp::EdgeFlange {
             body: body.ok_or_else(|| missing(c, kw, "body"))?,
             line: line.ok_or_else(|| missing(c, kw, "line"))?,

@@ -498,6 +498,21 @@ impl Evaluator {
             };
             return self.run_edge_flange(s, name, body, line, &spec);
         }
+        if let SheetOp::Bend { body, sketch, line, angle, bend_radius, k_factor, right, position } = &d.op {
+            let v = |e: &Expr, dim| eval_expr(name, e, dim, params, units);
+            let spec = crate::bend::BendSpec {
+                body,
+                sketch,
+                line,
+                angle: v(angle, Dim::ANGLE)?,
+                r: v(bend_radius, Dim::LENGTH)?,
+                k: v(k_factor, Dim::NONE)?,
+                down: d.flip,
+                right: *right,
+                position: *position,
+            };
+            return self.run_bend(s, name, &spec);
+        }
         let Some(thickness) = &d.thickness else {
             return Err(EvalError::new(name, ErrorCode::Expression, "the thickness is missing"));
         };
@@ -632,7 +647,7 @@ impl Evaluator {
                     regions,
                 )
             }
-            SheetOp::EdgeFlange { .. } => return Ok(()),
+            SheetOp::EdgeFlange { .. } | SheetOp::Bend { .. } => return Ok(()),
         };
         let body_name = d.body_name.as_deref();
         match &ctx_at {

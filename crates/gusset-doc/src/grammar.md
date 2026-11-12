@@ -503,6 +503,7 @@ listed bodies are consumed. Sheet bodies report `kind: sheet` in `query.body`.
 contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 2 mm, k_factor: 0.44, [symmetric: true], [flip: true])
 tab Plate (profile: S2.regions(l4), thickness: 2 mm, [flip: true])
 edge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.44, [flip: true], [close: true|mitre])
+bend B1 (body: Plate, line: S3.l2, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.44, [side: left|right], [position: center|start|end], [flip: true])
 ```
 
 `contour_flange` bends an open chain of sketch lines at every corner (inside radius
@@ -528,6 +529,18 @@ cuts both walls on the corner's diagonal instead, 0.1 mm apart. A later cut thro
 flat regions or bends (an extrude cut, a hole) appears in the flat pattern as a cut-out; a cut
 that notches an edge or adds material marks the pattern `changed_by` instead. Flat patterns: `query.flat_pattern` (size, bends with angle, radius, `k_factor` and allowance
 `|angle| (r + k t)`) and `sheet.export_flat` (DXF or SVG, 1:1).
+
+`bend` bends a flat stretch of any sheet body (a tab, an imported sheet) along a sketch line
+drawn on one of its faces: the material on the line's `left` (default) or `right`, seen from
+the sketch normal, turns by `angle` up along the sketch normal (`flip`: down), with inside
+radius `bend_radius`. The bend zone is `angle (bend_radius + k_factor t)` long (the neutral
+fibre keeps its length, so the volume changes by `w angle t^2 (1/2 - k_factor)`); `position`
+puts it centred on the line (default), starting at it (on the moving side) or ending at it.
+The thickness is the sheet's. The zone must be a plain strip of the sheet (no edge, cut-out or
+step in it). The body keeps its face names on both sides (a face cut in two is told apart by
+`#1`, `#2`); the bend's faces are `B1/bend_in(<line>)` and `B1/bend_out(<line>)`. A tab's flat
+pattern gains the bend when the line's sketch lies on the tab's plane; flanges can no longer
+be bent off the body.
 
 ## Datum planes, bodies and patterns
 

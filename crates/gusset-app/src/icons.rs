@@ -464,7 +464,7 @@ pub fn tool_for_keyword(keyword: &str) -> Tool {
         "import" => Tool::Import,
         "shell" | "thicken" => Tool::Shell,
         "surface_extrude" | "tab" => Tool::Extrude,
-        "contour_flange" | "edge_flange" => Tool::Shell,
+        "contour_flange" | "edge_flange" | "bend" => Tool::Shell,
         "patch" => Tool::Rect,
         "stitch" => Tool::Combine,
         "draft" => Tool::Draft,

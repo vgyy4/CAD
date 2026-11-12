@@ -186,3 +186,16 @@ dropped when the end cut runs into the strip's end edge. Volume: the wedge formu
 60 degree case with its sign, t len ((r + t/2) sin(angle) + len/2 cos(angle)), negative when
 the wall is trimmed. OCCT test at 120 degrees (close and mitre, up and down): solid volume
 hand-calculated, flat area times thickness equal to it (k 0.5).
+
+Amendment (2026-11-12): `bend`, a flat stretch of a sheet bent along a sketch line (Fusion's
+Bend, which the importer reads). `bend B1 (body: Plate, line: S.l2, angle: 90 deg, bend_radius:
+2 mm, k_factor: 0.44, [side: left|right], [position: center|start|end], [flip: true])`. It needs
+no kernel operation of its own: the evaluator cuts the body by two planes square to the sheet
+through the zone's ends (boxes and booleans), revolves the zone's rectangular cross-section
+about the bend axis, lays the far part back onto the zone's start and turns it about the same
+axis, and unites the three. The thickness and the zone's run along the line are measured on the
+body (a thin slab at the line); the zone must be one straight strip, the same all across (its
+box and volume are checked), so the revolution is exact. Volume: the flat volume plus
+`w angle t^2 (1/2 - k)`; OCCT test of a 60 x 40 x 2 mm tab bent up and down (volume, box, names,
+flat pattern) and of the refusals (zero angle, k out of range, a line on no face, a zone that runs
+off the sheet).

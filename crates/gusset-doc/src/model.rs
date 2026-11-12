@@ -349,6 +349,10 @@ impl FeatureKind {
                 SheetOp::Contour { .. } => {}
                 SheetOp::Tab { profile } => profile.features(&mut add),
                 SheetOp::EdgeFlange { body, .. } => add(body),
+                SheetOp::Bend { body, sketch, .. } => {
+                    add(body);
+                    add(sketch);
+                }
             },
             FeatureKind::Mirror(d) => {
                 add_body(&mut add, &d.body);
@@ -498,6 +502,11 @@ impl FeatureKind {
                         take(bend_radius);
                         take(k_factor);
                     }
+                    SheetOp::Bend { angle, bend_radius, k_factor, .. } => {
+                        take(angle);
+                        take(bend_radius);
+                        take(k_factor);
+                    }
                     SheetOp::Tab { .. } => {}
                 }
             }
@@ -596,6 +605,11 @@ impl FeatureKind {
                     }
                     SheetOp::EdgeFlange { length, angle, bend_radius, k_factor, .. } => {
                         out.push(length);
+                        out.push(angle);
+                        out.push(bend_radius);
+                        out.push(k_factor);
+                    }
+                    SheetOp::Bend { angle, bend_radius, k_factor, .. } => {
                         out.push(angle);
                         out.push(bend_radius);
                         out.push(k_factor);
@@ -1375,6 +1389,53 @@ pub enum SheetOp {
         /// instead of one running past the other.
         mitre: bool,
     },
+    /// A flat stretch of the sheet `body` bent along the sketch line `sketch.line` by `angle`
+    /// (up along the sketch normal, or down with `flip`) with inside radius `bend_radius`: the
+    /// bend zone, `angle (bend_radius + k_factor t)` long, lies where `position` puts it
+    /// against the line, and the material on the `right` (or left) of the line moves.
+    Bend {
+        body: String,
+        sketch: String,
+        line: String,
+        angle: Box<Expr>,
+        bend_radius: Box<Expr>,
+        k_factor: Box<Expr>,
+        /// The material right of the line's direction (seen from the sketch normal) moves;
+        /// else the material on its left.
+        right: bool,
+        position: BendPosition,
+    },
+}
+
+/// Where a bend's zone lies against its line, seen from the side that moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BendPosition {
+    /// The zone is centred on the line.
+    #[default]
+    Center,
+    /// The zone starts at the line (it lies on the moving side).
+    Start,
+    /// The zone ends at the line (it lies on the side that stays).
+    End,
+}
+
+impl BendPosition {
+    pub fn keyword(self) -> &'static str {
+        match self {
+            BendPosition::Center => "center",
+            BendPosition::Start => "start",
+            BendPosition::End => "end",
+        }
+    }
+
+    pub fn from_keyword(s: &str) -> Option<Self> {
+        match s {
+            "center" => Some(BendPosition::Center),
+            "start" => Some(BendPosition::Start),
+            "end" => Some(BendPosition::End),
+            _ => None,
+        }
+    }
 }
 
 impl SheetOp {
@@ -1383,6 +1444,7 @@ impl SheetOp {
             SheetOp::Contour { .. } => "contour_flange",
             SheetOp::Tab { .. } => "tab",
             SheetOp::EdgeFlange { .. } => "edge_flange",
+            SheetOp::Bend { .. } => "bend",
         }
     }
 }

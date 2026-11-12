@@ -12,6 +12,7 @@
 // does not matter for performance.
 #![allow(clippy::result_large_err, reason = "cold-path errors with rich context")]
 
+mod bend;
 mod budget;
 mod chamfer;
 mod component;
