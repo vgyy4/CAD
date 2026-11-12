@@ -2059,3 +2059,71 @@ Read from the end bodies of 1145's and 3350's history blobs (`.smbh`; the `.smb`
 * adafruit-more: 130 of 150 as history (5358, 5360 and 610 gained; none lost; 127 before). adafruit: 13 of 18
   (unchanged, none lost).
 * First blocker of the four: 5981 `Chamfer2` (negative generator `-1`, not decoded); 5358, 5360 and 610 pass.
+
+## 39. Round 23 O: a draft of a slanted face, Base Feature bodies from the PM blob (2026-11-12)
+
+### A draft of a face at a slant to the pull (258)
+* 258's `Draft1` and `Draft2` each draft one pin's start cap (plane y = 29 mm, outward normal -y) about the 45 degree
+  chamfer face beside it (neutral plane y + z = 34 mm, outward normal (0, 1, 1)/sqrt 2): `Draft1` by +45 degrees,
+  `Draft2` by -45. The cap does not lie in the neutral plane; it meets it in the line y = 29, z = 5 (the pin's lowest
+  line). The stored cap of each pin, after the draft, is the ellipse where the pin's cylinder meets the chamfer face
+  (points such as (-2, 28, 6) and (-2.5, 28.5, 5.5)): the pins run on to the chamfer face.
+* **Flipped pull.** The older draft layout (925-byte `F4163A07`, 2014-2016 files) has three bytes after the header,
+  then `00 00 00 01` and the first reference. The first byte is 1 in 258's `Draft1` only and 0 in its `Draft2` and
+  in the drafts of 324 and 355 (whose 10 and -10 degree drafts rebuild with the pull as the neutral face's outward
+  normal). Read as "the pull is reversed", the two drafts of 258 give the same result on mirror-image pins. Newer
+  layouts are left as they were (the byte is not where they keep it).
+* **Rule.** Fusion turns each drafted face about its line on the neutral plane, its outward normal n towards the pull p
+  by the angle a: n' = n cos a + m sin a, m the part of p across n (unit). For a side wall (n square to p) this is the
+  draft Gusset already makes. For a plane face at a slant it is the side-wall draft about the plane through that line
+  with normal m. With p = (0, 1, 1)/sqrt 2 reversed and a = +45 (`Draft1`), or not reversed and a = -45 (`Draft2`),
+  n' = (0, -1, -1)/sqrt 2: the cap turns into the chamfer face's plane, as stored. The reader writes such a draft
+  (one plane face) with that plane; the face is picked by the stored points that lie on its plane before the draft
+  (the stored face's points come from every state that has the face, and the drafted ones lie on the chamfer face,
+  which they would pick as well).
+* 258 comes in as history (4 stored states and 1 cut tool explained).
+
+### Base Feature bodies whose list is a later state (4431)
+* `Base Feature1` (a JST connector, 5 DM bodies) and `Base Feature1 (2)` (the switch, 1 DM body) name a `.smbh` state
+  list that is a later state of their components. The connector's list (after `Combine1`) lists 4 bodies, without
+  the DM body that `Combine1` takes as its tool (that body still names the list as its state). The switch's list
+  holds it with the bodies of two later new-body extrudes, and its `.smbh` body is already cut by `Extrude1 (2)`.
+* The PM blobs (`.smb`) keep the component's bodies of earlier states as well: the connector's 5 PM bodies among 6
+  solids (the first a copy of the second, a 0.5 x 2 x 3.3 mm block), the switch's 1 among 11 solids and 17 sheets
+  (the other solids are the cap's extrudes and the cut tool). In both the PM list's bodies are, in list order, the
+  last solid bodies of the blob (as DM bodies are the last of a history blob): connector blob bodies 1..5 (3.3, 2.6379,
+  2.6379, 101.8808, 2.6379 mm3), switch blob body 21 (607.5388 mm3). Reader: where a DM body is not in its list, or
+  not among its last bodies, the Base Feature's stored bodies are its PM bodies (DM k and PM k name each other) from
+  the PM blob, at those places.
+* A Combine whose tool or target is one body of a Base Feature of several is now that stored body (the k-th body
+  link of the feature is its k-th stored body).
+* With these the whole tree reads and every feature rebuilds to the stored states, the end of the switch's chain
+  included: 521.2856 (switch after the cut), 47.4707 and 632.6862 mm3 are the bodies of its `.smbh`, and the
+  connector's housing becomes 105.1808 = 101.8808 + 3.3 mm3 after `Combine1`, as its `.smbh` stores it.
+* **Still refused (not converted):**
+  1. The import refuses a stored body that a later feature changes when it equals a finished body of the file: the
+     finished bodies are the `.smb` solids, and the connector's PM blob holds the housing as it was before
+     `Combine1`. Experiment only (the rule bypassed): the step check then goes on.
+  2. Step check, experiment only: `Extrude1 (2)`'s cut tool (127.1088 mm3, r 3.4 x 3.5 mm) holds 86.2532 mm3 of the
+     switch before the cut (exactly the cut) and none after, but the tools of the later joins of the cap (4.48,
+     12.768 and 27.436 mm3) also hold parts of the switch's top before the cut and none after; the placed-tool rule
+     gives a feature all such tools at once, so the cut is not explained. Taking the tools feature by feature until
+     no feature takes another explains it (each feature's tools still have to be its volume change exactly).
+  3. Then `Fillet1` (the last feature, 633.3340 -> 632.6862 mm3) follows the last stored `.smb` state and has no copy
+     count; the end bodies (`.smbh`) are not consulted in a tree with stored bodies. They would confirm it, except
+     that the connector's `.smbh` also holds the 3.3 mm3 block that the tree's `Combine1` consumes. Whether
+     `Combine1` keeps its tool is not decoded: its 349-byte record is byte for byte the layout of the consuming
+     Combines of 3651, 3900, 4200, 4242 and 4400 (only references and a counter differ), and the state list omits
+     the block while the block's record still names that list.
+  4431 stays as bodies; its first blocker is now (1).
+
+### Not attempted
+* 858 (`Fillet3`, a refine that unifies across the boolean only, and three more blockers after it) and 6299
+  (`Extrude17` from a body face, then two lofts, two more extrudes of faces and a thin extrude unconfirmed) are further
+  from passing than 258 and 4431 and were left for later rounds.
+
+### Result
+* adafruit-more: 131 of 150 as history (258 gained; none lost; 130 before). adafruit: 13 of 18 (unchanged, none
+  lost).
+* First blockers of the four: 258 passes; 4431 the finished-body rule on its PM-blob stored body (above, 1-3);
+  858 `Fillet3` and 6299 `Extrude17` as in section 35.
