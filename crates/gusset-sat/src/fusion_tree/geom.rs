@@ -486,6 +486,34 @@ pub(super) fn bridged(polys: &[Vec<P2>]) -> Option<(Vec<P2>, Vec<Vec<P2>>)> {
     Some((outer, rings))
 }
 
+/// A hole loop of closed curves joined by open pieces that run from one closed curve to
+/// another (3010's board: two circles round its holes and the middle piece of a line between
+/// them): the closed curves are the holes, each a ring of its own, and the joining pieces bound
+/// no area. `None` unless every open piece ends on closed curves of the loop at both ends.
+pub(super) fn joined_holes(polys: &[Vec<P2>]) -> Option<Vec<Vec<P2>>> {
+    let tol = 1e-6;
+    let is_closed = |p: &&Vec<P2>| p.len() > 2 && p.first().zip(p.last()).is_some_and(|(a, b)| dist(*a, *b) < tol);
+    let closed: Vec<&Vec<P2>> = polys.iter().filter(is_closed).collect();
+    let open: Vec<&Vec<P2>> = polys.iter().filter(|p| !is_closed(p)).collect();
+    if closed.len() < 2 || open.is_empty() {
+        return None;
+    }
+    let on_closed = |e: P2| closed.iter().any(|c| poly_dist(e, c) < 1e-5);
+    if !open.iter().all(|p| p.first().is_some_and(|a| on_closed(*a)) && p.last().is_some_and(|b| on_closed(*b))) {
+        return None;
+    }
+    Some(
+        closed
+            .into_iter()
+            .map(|c| {
+                let mut r = c.clone();
+                r.pop();
+                r
+            })
+            .collect(),
+    )
+}
+
 pub(super) fn chain(polys: &[Vec<P2>]) -> Option<Vec<P2>> {
     if polys.is_empty() {
         return None;

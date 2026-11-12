@@ -826,6 +826,7 @@ impl RegionCache {
                 full.push((q, c, pl));
             }
             let n = full.len();
+            let segs_before = segs.len();
             let mut polys: Vec<Vec<P2>> = Vec::new();
             let mut missing: Option<String> = None;
             for (k, (q, c, pl)) in full.iter().enumerate() {
@@ -930,6 +931,25 @@ impl RegionCache {
                 && let Some(why) = missing
             {
                 return Err(why);
+            }
+            if ring.is_none()
+                && l.flag != 1
+                && let [(_, c, pl)] = full.as_slice()
+                && c.b == 1
+                && pl.first().zip(pl.last()).is_some_and(|(a, b)| geom::dist(*a, *b) > 1e-9)
+            {
+                // One whole open curve listed as a hole: a slit inside the region that bounds no
+                // area (3010's board: a line between two holes it ends in, cut by them into the
+                // pieces the faces' loops list).
+                segs.truncate(segs_before);
+                continue;
+            }
+            if ring.is_none()
+                && l.flag != 1
+                && let Some(holes) = geom::joined_holes(&polys)
+            {
+                rings.extend(holes.into_iter().map(|r| (l.flag, r)));
+                continue;
             }
             rings.push((l.flag, ring.ok_or("loop does not close")?));
             rings.extend(islands.into_iter().map(|r| (0, r)));
