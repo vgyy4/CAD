@@ -910,6 +910,20 @@ fn a_fillet_face_gives_the_edges_of_its_corner() {
     assert!(!arc && m[0].abs() < 1e-12 && (m[1] - 5.0).abs() < 1e-12 && (m[2] - 5.0).abs() < 1e-12, "{m:?}");
 }
 
+#[test]
+fn a_line_ends_where_a_fillet_leaves_its_plane() {
+    use super::naming::fillet_end;
+    // A corner of sides x = 0 and y = 0 (normals towards the fillet's axis), rounded with r = 1.
+    let (a, b) = (([0.0; 3], [1.0, 0.0, 0.0]), ([0.0; 3], [0.0, 1.0, 0.0]));
+    // The rim where the side y = 0 meets the cap z = 5 runs along x: it ends at x = 1.
+    let planes = [([0.0, 1.0, 0.0], [0.0; 3]), ([0.0, 0.0, 1.0], [0.0, 0.0, 5.0])];
+    let t = fillet_end(1.0, a, b, planes, [0.0, 0.0, 5.0], [1.0, 0.0, 0.0]).unwrap();
+    assert!((t - 1.0).abs() < 1e-12, "{t}");
+    // A line in neither of the fillet's sides does not end at it.
+    let other = [([0.0, 1.0, 0.0], [0.0, 3.0, 0.0]), ([0.0, 0.0, 1.0], [0.0, 0.0, 5.0])];
+    assert!(fillet_end(1.0, a, b, other, [0.0, 3.0, 5.0], [1.0, 0.0, 0.0]).is_none());
+}
+
 /// A MetaStream with the given classes (GUID texts) and objects (id, bulk offset, class index).
 fn meta_classes(classes: &[&str], objs: &[(u64, u64, usize)]) -> Vec<u8> {
     let mut m = s("Design");

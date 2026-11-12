@@ -415,7 +415,7 @@ fn fillet_centre(r: f64, a: (V3, V3), b: (V3, V3), w: (V3, V3)) -> Option<V3> {
 /// Where a line `pp + t u` lying in one of the two planes `on` ends at a fillet face (radius
 /// `r`, sides `a`, `b` with normals towards its axis) that rounds the corner of that plane with
 /// another: `r` from the other side's plane.
-fn fillet_end(r: f64, a: (V3, V3), b: (V3, V3), on: [(V3, V3); 2], pp: V3, u: V3) -> Option<f64> {
+pub(super) fn fillet_end(r: f64, a: (V3, V3), b: (V3, V3), on: [(V3, V3); 2], pp: V3, u: V3) -> Option<f64> {
     let lies = |q: &(V3, V3), n: V3, p: V3| {
         (dot(unit(q.1).unwrap_or(q.1), n).abs() - 1.0).abs() < 1e-9 && dot(n, sub(q.0, p)).abs() < 1e-7
     };
