@@ -841,22 +841,21 @@ impl RegionCache {
             let segs_before = segs.len();
             let mut polys: Vec<Vec<P2>> = Vec::new();
             let mut missing: Option<String> = None;
-            // A curve whose every piece the loop lists stands whole, once (4300's board: a line
-            // and an arc that overlap by 2 µm where they meet, each cut in two by the other's end).
+            // A curve whose pieces cannot be cut out but whose every piece the loop lists stands
+            // whole, once (4300's board: a line and an arc that overlap by 2 µm where they meet,
+            // each cut in two by the other's end).
             let all_pieces = |q: u64, b: u32| {
                 (1..=b).all(|a| full.iter().any(|f| f.0 == q && f.1.a == a && f.1.b == b))
                     && full.iter().filter(|f| f.0 == q).all(|f| f.1.b == b)
             };
             let mut whole_done: Vec<u64> = Vec::new();
+            let mut cut_out: Vec<u64> = Vec::new();
             for (k, (q, c, pl)) in full.iter().enumerate() {
                 let mut pl = pl.clone();
-                let whole = c.b > 1 && all_pieces(*q, c.b);
-                if whole && whole_done.contains(q) {
+                if whole_done.contains(q) {
                     continue;
                 }
-                if whole {
-                    whole_done.push(*q);
-                } else if c.b > 1 {
+                if c.b > 1 {
                     // A piece of a curve cut by other sketch curves: piece a of b.
                     let all = allpolys
                         .get_or_insert_with(|| curve_ids.iter().map(|kk| (*kk, curve_polyline(d, s, *kk))).collect());
@@ -895,7 +894,11 @@ impl RegionCache {
                         pc = geom::trim_by_neighbours(&pl, prev, next, c.a, c.b);
                     }
                     match pc {
-                        Some(p) => pl = p,
+                        Some(p) => {
+                            pl = p;
+                            cut_out.push(*q);
+                        }
+                        None if all_pieces(*q, c.b) && !cut_out.contains(q) => whole_done.push(*q),
                         None => {
                             // Left out for now: the loop may close without it (see below).
                             missing.get_or_insert_with(|| format!("curve piece {}/{} not reproduced", c.a, c.b));
