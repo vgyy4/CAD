@@ -328,3 +328,10 @@ none lost), adafruit 13 of 18. Of the 23 left, 7 have no feature history; modele
 Split 3651, CoilPrimitive 3722, Bend 3502, a shell with no removed face 4632 and the font-bound 6124/6126 need
 new operations or data the file lacks; 858, 6299, 5358, 5360, 610, 258, 4431 and 5981 read further and stop at
 the blockers in sections 34 and 35.
+
+## Re-run after round 22 M (2026-11-12)
+
+Round 22 M (a blend edge on two bodies goes to the body named, a sweep's one tool, the end blob a body move leaves,
+chamfer corners that run on past an edge end, a plane's circle on a stored cylinder, an intersect's tool by what the
+body keeps): adafruit-more 130 of 150 as history (5358, 5360, 610 added; none lost), adafruit 13 of 18. 5981 stops
+at Chamfer2, whose edge names face `-1` (section 37).
