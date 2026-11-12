@@ -68,6 +68,10 @@ pub struct State {
     pub show_markers: bool,
     /// The reference of the symbol last picked (for cross-probing).
     pub probe: Option<String>,
+    /// A net drawn highlighted (from a picked wire or label, or the board).
+    pub highlight: Option<String>,
+    /// The picked symbol's fields being edited: (symbol, value, footprint).
+    pub fields: Option<(usize, String, String)>,
 }
 
 impl Default for State {
@@ -88,6 +92,8 @@ impl Default for State {
             symbol: String::new(),
             show_markers: true,
             probe: None,
+            highlight: None,
+            fields: None,
         }
     }
 }
@@ -320,6 +326,36 @@ pub fn markers(open: &OpenSchematic, st: &State) -> Vec<Marker> {
         .collect()
 }
 
+/// The net of a picked wire or label on the shown sheet (its first use), by name.
+pub fn net_of(open: &OpenSchematic, sheet: usize, sch: &Schematic, item: Item) -> Option<String> {
+    let u = open.netlist.uses.iter().position(|x| x.sheet == sheet)?;
+    let net = match item {
+        Item::Wire(k) => open.netlist.wire_nets.get(u)?.get(k).copied().flatten()?,
+        Item::Label(k) => {
+            let at = sch.labels.get(k)?.at;
+            open.netlist.nets.iter().position(|n| {
+                n.marks.iter().any(|(mu, p, _)| *mu == u && (p[0] - at[0]).abs() < 1e-6 && (p[1] - at[1]).abs() < 1e-6)
+            })?
+        }
+        _ => return None,
+    };
+    open.netlist.nets.get(net).map(|n| n.name.clone())
+}
+
+/// The commands that set a symbol's changed value and footprint.
+pub fn field_commands(st: &State, symbol: usize, old: (&str, &str), new: (&str, &str)) -> Vec<(&'static str, Value)> {
+    let mut out = Vec::new();
+    for (field, was, now) in [("Value", old.0, new.0), ("Footprint", old.1, new.1)] {
+        if was != now.trim() {
+            out.push((
+                "sch.set_field",
+                with_sheet(st, json!({ "symbol": format!("symbol#{symbol}"), "field": field, "value": now.trim() })),
+            ));
+        }
+    }
+    out
+}
+
 /// The symbol of a reference on the shown sheet (cross-probing from the board).
 pub fn symbol_of(sch: &Schematic, reference: &str) -> Option<Item> {
     sch.symbols.iter().position(|s| s.reference() == reference).map(Item::Symbol)
@@ -419,6 +455,34 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &m
             }
         });
     });
+    // The picked symbol's fields.
+    if let (Some(Item::Symbol(i)), Some((_, sch))) = (st.selected, shown_sheet(open, st))
+        && let Some(sym) = sch.symbols.get(i)
+    {
+        if st.fields.as_ref().is_none_or(|f| f.0 != i) {
+            st.fields = Some((i, sym.value().to_string(), sym.footprint().to_string()));
+        }
+        ui.separator();
+        ui.strong(sym.reference());
+        let mut apply = false;
+        if let Some((_, value, fp)) = st.fields.as_mut() {
+            ui.horizontal(|ui| {
+                ui.label(tr("sch.value"));
+                apply |= ui.text_edit_singleline(value).lost_focus() && ui.input(|x| x.key_pressed(egui::Key::Enter));
+            });
+            ui.horizontal(|ui| {
+                ui.label(tr("sch.footprint"));
+                apply |= ui.text_edit_singleline(fp).lost_focus() && ui.input(|x| x.key_pressed(egui::Key::Enter));
+            });
+        }
+        if (ui.small_button(tr("sch.apply")).clicked() || apply)
+            && let Some((_, v, f)) = st.fields.clone()
+        {
+            out.commands.extend(field_commands(st, i, (sym.value(), sym.footprint()), (&v, &f)));
+        }
+    } else {
+        st.fields = None;
+    }
     ui.separator();
     ui.label(tr("sch.label"));
     ui.text_edit_singleline(&mut st.label_text);
@@ -543,6 +607,9 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
                     Some(Item::Symbol(i)) => sch.symbols.get(i).map(|s| s.reference().to_string()),
                     _ => None,
                 };
+                if let Some(o) = open {
+                    st.highlight = st.selected.and_then(|it| net_of(o, sheet_index, sch, it));
+                }
             }
             Tool::Wire => {
                 let q = wire_snap(sch, p, tol, st.grid);
@@ -596,6 +663,24 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
 
     let dragged = st.drag.as_ref().and_then(|d| d.item.map(|i| (i, d.moved)));
     paint(&painter, &map, sch, st, dragged);
+    if let (Some(h), Some(o)) = (&st.highlight, open)
+        && let Some(u) = o.netlist.uses.iter().position(|x| x.sheet == sheet_index)
+        && let Some(n) = o.netlist.nets.iter().position(|n| n.name == *h)
+    {
+        let glow = Color32::from_rgba_unmultiplied(255, 170, 0, 150);
+        let w = (0.5 * map.zoom).max(3.0);
+        let nets = o.netlist.wire_nets.get(u);
+        for (k, wire) in sch.wires.iter().enumerate() {
+            if nets.and_then(|v| v.get(k)).copied().flatten() == Some(n) {
+                painter.line_segment([map.to(wire.a), map.to(wire.b)], Stroke::new(w, glow));
+            }
+        }
+        if let Some(net) = o.netlist.nets.get(n) {
+            for node in net.nodes.iter().filter(|x| x.sheet_use == u) {
+                painter.circle_filled(map.to(node.at), w, glow);
+            }
+        }
+    }
     if st.show_markers
         && let Some(o) = open
     {

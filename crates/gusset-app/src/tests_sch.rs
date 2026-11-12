@@ -144,6 +144,26 @@ fn the_schematic_tab_edits_with_undo_and_cross_probes() {
     h.state_mut().cross_probe();
     // Already probed R1: nothing new to do until another part is picked.
     assert_eq!(h.state().sch_state.selected, None);
+    // Net highlighting crosses over: the board's highlighted net is the schematic's.
+    h.state_mut().pcb_state.highlight = Some("/OUT".into());
+    h.state_mut().cross_probe();
+    assert_eq!(h.state().sch_state.highlight.as_deref(), Some("/OUT"));
+    h.run();
+    // A picked wire's net, and the field edits of a picked symbol.
+    let o = h.state().snapshot.sch.clone().unwrap();
+    let s = &o.design.sheets[0].1;
+    let net = sch_view::net_of(&o, 0, s, Item::Wire(0)).unwrap();
+    assert!(net.contains("R1"), "{net}");
+    assert_eq!(sch_view::net_of(&o, 0, s, Item::Symbol(0)), None);
+    let st = State::default();
+    let cmds = sch_view::field_commands(&st, 0, ("10k", ""), ("4k7", " R:R_0603 "));
+    assert_eq!(cmds.len(), 2);
+    assert_eq!(cmds[1].1["value"], "R:R_0603");
+    assert!(sch_view::field_commands(&st, 0, ("10k", ""), ("10k", "")).is_empty());
+    h.state_mut().pcb_commands(crate::pcb_view::Out { commands: cmds, blocked: None });
+    h.state_mut().wait_idle();
+    let o = h.state().snapshot.sch.clone().unwrap();
+    assert_eq!(o.design.sheets[0].1.symbols[0].value(), "4k7");
     h.run();
     let _ = std::fs::remove_dir_all(&dir);
 }

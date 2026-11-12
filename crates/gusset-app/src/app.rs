@@ -2485,6 +2485,14 @@ impl App {
     /// Cross-probing: a symbol picked in the schematic selects its footprint on the
     /// board, and a footprint picked on the board selects its symbol on the shown sheet.
     pub(crate) fn cross_probe(&mut self) {
+        // The shown editor's highlighted net is highlighted in the other one too.
+        if self.sch_view_shown() {
+            if self.pcb_state.highlight != self.sch_state.highlight {
+                self.pcb_state.highlight = self.sch_state.highlight.clone();
+            }
+        } else if self.sch_state.highlight != self.pcb_state.highlight {
+            self.sch_state.highlight = self.pcb_state.highlight.clone();
+        }
         let from_board = match (self.pcb_state.selected, self.snapshot.pcb.as_ref()) {
             (Some(crate::pcb_view::Sel::Footprint(i)), Some(b)) => {
                 b.board.footprints.get(i).map(|f| f.reference.clone())
