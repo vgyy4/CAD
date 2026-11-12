@@ -207,7 +207,16 @@ impl Target {
 #[derive(Debug, Clone, Deserialize)]
 struct SolidF {
     name: String,
+    /// Empty for an extrude whose profile is `profile_face`.
+    #[serde(default)]
     sketch: String,
+    /// Extrude: a planar face of a body as the profile (a pick of the face as it is before
+    /// this feature), instead of sketch regions; the distance counts along its outward normal.
+    #[serde(default)]
+    profile_face: Option<v2::FacePick>,
+    /// A surface extrude: the ids of the sketch curves swept into a sheet (no profile).
+    #[serde(default)]
+    curves: Vec<String>,
     #[serde(default)]
     profiles: Option<Profiles>,
     #[serde(default)]
@@ -616,6 +625,10 @@ struct Gen {
     features: HashMap<String, String>,
     /// Source names of bodies a `remove_body` dropped -> the removing feature's name.
     removed: HashMap<String, String>,
+    /// What a feature pattern repeats for a source feature, where that is not the feature
+    /// `features` names: a Thicken joined to a body repeats its `combine`; the sheet it
+    /// thickened repeats nothing (`None`: the combine carries it).
+    repeat: HashMap<String, Option<String>>,
     made: Vec<String>,
     skipped: Vec<Value>,
     warnings: Vec<String>,
@@ -735,6 +748,7 @@ pub fn apply_with(
         params: HashMap::new(),
         sketches: HashMap::new(),
         removed: HashMap::new(),
+        repeat: HashMap::new(),
         features: HashMap::new(),
         made: Vec::new(),
         skipped: Vec::new(),
@@ -842,6 +856,9 @@ pub fn apply_with(
             "mirror" => serde_json::from_value::<v2::MirrorF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::mirror(&mut g, s, &d, &tree.features)),
+            "thicken" => serde_json::from_value::<v2::ThickenF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::thicken(&mut g, s, &d)),
             "combine" => serde_json::from_value::<v2::CombineF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::combine(&mut g, s, &d)),
@@ -1202,9 +1219,18 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
 }
 
 fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), String> {
+    if let Some(pick) = &d.profile_face {
+        if revolve || !d.sketch.is_empty() || !d.curves.is_empty() {
+            return Err("a face profile belongs to an extrude without a sketch".into());
+        }
+        return face_extrude(g, s, d, pick);
+    }
     let sm =
         g.sketches.get(&d.sketch).ok_or_else(|| format!("its sketch '{}' was not imported", short(&d.sketch)))?.clone();
     let (sk_name, flipped) = (sm.name.clone(), sm.flipped);
+    if !d.curves.is_empty() {
+        return surface_extrude(g, s, d, &sm);
+    }
     let profile = match &d.profiles {
         None => sk_name.clone(),
         Some(Profiles::All(a)) if a == "all" => sk_name.clone(),
@@ -1354,6 +1380,89 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
     }
     // The tree's name stands for the first; the others are only made.
     g.made.extend(made);
+    g.features.insert(d.name.clone(), name);
+    Ok(())
+}
+
+/// An extrude of a planar body face: the face (found by its pick) is the profile, the distance
+/// along its outward normal.
+fn face_extrude(g: &mut Gen, s: &Session, d: &SolidF, pick: &v2::FacePick) -> Result<(), String> {
+    if d.end_condition.as_deref().unwrap_or("blind") != "blind" {
+        return Err("an extrude of a face is blind".into());
+    }
+    if d.symmetric || d.distance2.is_some() || d.taper_deg.is_some_and(|t| t != 0.0) {
+        return Err("an extrude of a face goes one way, straight".into());
+    }
+    let dist = finite(d.distance.filter(|v| v.abs() > 1e-9).ok_or("an extrude without a distance")?, "the distance")?;
+    let op = match d.operation.as_deref().unwrap_or("new") {
+        "new" => "new",
+        "join" => "add",
+        "cut" => "cut",
+        "intersect" => "intersect",
+        other => return Err(format!("operation '{}' is not new, join, cut or intersect", short(other))),
+    };
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    let (on, face) = v2::pick_face_name(g, s, &ev, pick)?;
+    let name = g.fresh(&d.name, "Extrude");
+    let mut args = vec![
+        format!("profile: {face}"),
+        format!("distance: {}", g.value(dist, "mm", d.distance_parameter.as_ref(), false)),
+        format!("op: {op}"),
+    ];
+    if op != "new" {
+        let t = match &d.target {
+            Some(t) => g.body_named(t.one()?, "target")?,
+            None => on,
+        };
+        args.push(format!("body: {t}"));
+        if !d.refine {
+            args.push("refine: false".into());
+        }
+    }
+    let _ = writeln!(g.text, "\nextrude {name} ({})", args.join(", "));
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {
+        return Err(format!("it does not build here: {}", e.message));
+    }
+    g.made.push(name.clone());
+    g.features.insert(d.name.clone(), name);
+    Ok(())
+}
+
+/// A surface extrude: the sketch curves swept along the sketch normal into a sheet, a new body.
+fn surface_extrude(g: &mut Gen, s: &Session, d: &SolidF, sm: &SketchMap) -> Result<(), String> {
+    if d.curves.len() > MAX_PROFILE_PICKS {
+        return Err("too many curves".into());
+    }
+    if d.operation.as_deref().unwrap_or("new") != "new" {
+        return Err("a surface extrude makes a new body".into());
+    }
+    if d.end_condition.as_deref().unwrap_or("blind") != "blind" || d.taper_deg.is_some_and(|t| t != 0.0) {
+        return Err("a surface extrude is blind and straight".into());
+    }
+    if d.distance2.is_some() {
+        return Err("a surface extrude goes one way or both ways evenly".into());
+    }
+    let dist =
+        finite(d.distance.filter(|v| v.abs() > 1e-9).ok_or("a surface extrude without a distance")?, "the distance")?;
+    let mut ids = Vec::new();
+    for c in &d.curves {
+        ids.push(sm.ids.get(c).ok_or_else(|| format!("unknown curve '{}'", short(c)))?.clone());
+    }
+    let name = g.fresh(&d.name, "Surface");
+    let mut args = vec![
+        format!("curves: {}.curves({})", sm.name, ids.join(", ")),
+        format!("distance: {}", g.value(dist, "mm", d.distance_parameter.as_ref(), sm.flipped)),
+    ];
+    if d.symmetric {
+        args.push("symmetric: true".into());
+    }
+    let _ = writeln!(g.text, "\nsurface_extrude {name} ({})", args.join(", "));
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {
+        return Err(format!("it does not build here: {}", e.message));
+    }
+    g.made.push(name.clone());
     g.features.insert(d.name.clone(), name);
     Ok(())
 }

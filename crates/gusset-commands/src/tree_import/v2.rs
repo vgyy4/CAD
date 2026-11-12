@@ -158,7 +158,8 @@ pub(super) struct CombineF {
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct LoftF {
     name: String,
-    sketches: Vec<String>,
+    /// The sections in order: sketches, or planar body faces (`{"face": <pick>}`).
+    sketches: Vec<LoftSection>,
     #[serde(default)]
     ruled: bool,
     #[serde(default)]
@@ -184,6 +185,9 @@ pub(super) struct SweepF {
     /// A helix about a world axis as the path (ADR 0034).
     #[serde(default)]
     helix: Option<HelixF>,
+    /// Edges of the model as the path, in order (each by its middle, as a fillet's).
+    #[serde(default)]
+    path_edges: Vec<super::EdgePick>,
     /// `frenet` (default) or `fixed`.
     #[serde(default)]
     orientation: Option<String>,
@@ -714,10 +718,19 @@ pub(super) fn pattern(g: &mut Gen, s: &Session, d: &PatternF, circular: bool) ->
             args.push(format!("body: {tn}"));
         }
     } else {
-        let mut names = Vec::new();
+        let mut names: Vec<String> = Vec::new();
         for f in &d.features {
-            names
-                .push(g.features.get(f).ok_or_else(|| format!("its feature '{}' was not imported", short(f)))?.clone());
+            let n = match g.repeat.get(f) {
+                // A sheet a Thicken joined: its combine repeats it.
+                Some(None) => continue,
+                Some(Some(n)) => n.clone(),
+                None => {
+                    g.features.get(f).ok_or_else(|| format!("its feature '{}' was not imported", short(f)))?.clone()
+                }
+            };
+            if !names.contains(&n) {
+                names.push(n);
+            }
         }
         args.push(format!("features: [{}]", names.join(", ")));
     }
@@ -1088,6 +1101,8 @@ pub(super) fn sweep(g: &mut Gen, s: &Session, d: &SweepF) -> Result<(), String> 
         .clone();
     let path = match (&d.path, &d.helix) {
         (Some(_), Some(_)) => return Err("a sweep takes a path sketch or a helix, not both".into()),
+        (None, None) if !d.path_edges.is_empty() => edge_path(g, s, &d.path_edges)?,
+        (_, _) if !d.path_edges.is_empty() => return Err("a sweep's path is a sketch, a helix or edges".into()),
         (None, None) => return Err("a sweep needs a path sketch or a helix".into()),
         (None, Some(h)) => {
             if !d.path_curves.is_empty() {
@@ -1142,6 +1157,43 @@ pub(super) fn sweep(g: &mut Gen, s: &Session, d: &SweepF) -> Result<(), String> 
     g.made.push(name.clone());
     g.features.insert(d.name.clone(), name);
     Ok(())
+}
+
+/// A path of model edges: each pick's edge (the nearest middle, within 0.01 mm), all on one body,
+/// as the document's `[edge(...), ...]`.
+fn edge_path(g: &mut Gen, s: &Session, picks: &[super::EdgePick]) -> Result<String, String> {
+    if picks.len() > MAX_PICKS {
+        return Err("too many path edges".into());
+    }
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    let mut body: Option<&str> = None;
+    let mut names: Vec<String> = Vec::new();
+    for pick in picks {
+        let m = finite3(pick.midpoint, "a path edge's middle")?;
+        let mut best: Option<(f64, &str, String)> = None;
+        for b in &ev.bodies {
+            for (i, e) in b.topology.edges.iter().enumerate() {
+                let dd = norm(sub(e.midpoint, m));
+                if best.as_ref().is_none_or(|x| dd < x.0)
+                    && let Some(n) = b.names.edges.get(i)
+                {
+                    best = Some((dd, b.feature.as_str(), n.to_string()));
+                }
+            }
+        }
+        let (dd, on, n) = best.ok_or("the model has no edges")?;
+        if dd > 0.01 {
+            return Err(format!("no edge of the model has its midpoint at {m:?} (the nearest is {dd:.3} mm away)"));
+        }
+        if body.is_some_and(|b| b != on) {
+            return Err("the path's edges are on several bodies".into());
+        }
+        body = Some(on);
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    Ok(format!("[{}]", names.join(", ")))
 }
 
 /// The document's `helix(...)` path of a tree helix. The document's helix climbs a world axis
@@ -1201,9 +1253,15 @@ pub(super) fn loft(g: &mut Gen, s: &Session, d: &LoftF) -> Result<(), String> {
     }
     let mut names = Vec::new();
     for sk in &d.sketches {
-        names.push(
-            g.sketches.get(sk).ok_or_else(|| format!("its sketch '{}' was not imported", short(sk)))?.name.clone(),
-        );
+        names.push(match sk {
+            LoftSection::Sketch(sk) => {
+                g.sketches.get(sk).ok_or_else(|| format!("its sketch '{}' was not imported", short(sk)))?.name.clone()
+            }
+            LoftSection::Face { face } => {
+                let ev = g.evaluate(s).map_err(|e| e.message)?;
+                pick_face_name(g, s, &ev, face)?.1
+            }
+        });
     }
     let op = body_op(d.operation.as_deref())?;
     let name = g.fresh(&d.name, "Loft");
@@ -1226,6 +1284,14 @@ pub(super) fn loft(g: &mut Gen, s: &Session, d: &LoftF) -> Result<(), String> {
     g.made.push(name.clone());
     g.features.insert(d.name.clone(), name);
     Ok(())
+}
+
+/// A loft section: a sketch of the tree, or a planar face of a body as it is before the loft.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub(super) enum LoftSection {
+    Sketch(String),
+    Face { face: FacePick },
 }
 
 /// A body the source file stores as geometry, not as features (a Fusion base feature, a
@@ -1280,6 +1346,83 @@ pub(super) fn combine(g: &mut Gen, s: &Session, d: &CombineF) -> Result<(), Stri
     // The combined body keeps its target's name for later references.
     g.features.insert(d.name.clone(), target);
     Ok(())
+}
+
+/// Sheets thickened into solids (Fusion's Thicken): `join` thickens each sheet in place and
+/// combines it into `target`; `new` thickens a copy of the sheet, which stays.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct ThickenF {
+    name: String,
+    sheets: Vec<String>,
+    /// mm, along the sheet's normals (negative: against them).
+    thickness: f64,
+    /// Half to each side.
+    #[serde(default)]
+    symmetric: bool,
+    operation: String,
+    #[serde(default)]
+    target: Option<String>,
+}
+
+pub(super) fn thicken(g: &mut Gen, s: &Session, d: &ThickenF) -> Result<(), String> {
+    if d.sheets.is_empty() || d.sheets.len() > MAX_PICKS {
+        return Err("a thicken takes between 1 and 256 sheets".into());
+    }
+    let t = finite(d.thickness, "the thickness")?;
+    if t.abs() < 1e-9 || t.abs() > MAX_LENGTH {
+        return Err("the thickness is zero or too large".into());
+    }
+    let both = if d.symmetric { ", both_sides: true" } else { "" };
+    let op = body_op(Some(d.operation.as_str()))?;
+    let mut sheets = Vec::new();
+    for sh in &d.sheets {
+        sheets.push(g.body_named(sh, "sheet")?);
+    }
+    match op {
+        "add" => {
+            let target = g.body_named(d.target.as_deref().ok_or("a thicken that joins names no body")?, "target")?;
+            if sheets.contains(&target) {
+                return Err("a thicken joins its sheet to itself".into());
+            }
+            let mut made = Vec::new();
+            for sh in &sheets {
+                let name = g.fresh(&format!("{} {sh}", d.name), "Thicken");
+                let _ = writeln!(g.text, "\nthicken {name} (body: {sh}, thickness: {} mm{both})", num(t));
+                made.push(name);
+            }
+            let name = g.fresh(&d.name, "Thicken");
+            let _ = writeln!(g.text, "\ncombine {name} (body: {target}, tools: [{}], op: add)", sheets.join(", "));
+            made.push(name.clone());
+            for m in &made {
+                builds(g, s, m)?;
+            }
+            g.made.extend(made);
+            for sh in &d.sheets {
+                g.removed.insert(sh.clone(), name.clone());
+                g.repeat.insert(sh.clone(), None);
+            }
+            g.repeat.insert(d.name.clone(), Some(name));
+            g.features.insert(d.name.clone(), target);
+            Ok(())
+        }
+        "new" => {
+            let [sh] = sheets.as_slice() else {
+                return Err("a thicken of several sheets into new bodies is not imported yet".into());
+            };
+            // The sheet stays (Fusion keeps it): its copy becomes the solid.
+            let name = g.fresh(&d.name, "Thicken");
+            let _ = writeln!(g.text, "\nmove {name} (translate: [0 mm, 0 mm, 0 mm], copy: true, body: {sh})");
+            let solid = g.fresh(&format!("{} solid", d.name), "Thicken");
+            let _ = writeln!(g.text, "\nthicken {solid} (body: {name}, thickness: {} mm{both})", num(t));
+            builds(g, s, &name)?;
+            builds(g, s, &solid)?;
+            g.made.push(name.clone());
+            g.made.push(solid);
+            g.features.insert(d.name.clone(), name);
+            Ok(())
+        }
+        other => Err(format!("a thicken that does '{other}' is not imported")),
+    }
 }
 
 /// A turn about an axis (degrees), applied before the translation.

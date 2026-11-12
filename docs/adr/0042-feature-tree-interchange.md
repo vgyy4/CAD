@@ -569,6 +569,7 @@ the face's boundary (mm, at most 256), and `surface`, the surface the face lies 
   of several bodies (two bodies touching along the edge: a magnet in its pocket); otherwise it is
   not used.
 
+<<<<<<< HEAD
 ## Amendment (2026-11-12): the history choice (owner request)
 
 The native importers that read a feature history (Fusion `.f3d`/`.f3z`, SolidWorks `.sldprt`,
@@ -609,3 +610,23 @@ history to import.
   `import.inspect` command (a second parse path and another tool for the same thing);
   unsuppressed failed features (their errors would cascade into every later feature and change
   what the generator builds after them).
+=======
+## Amendment (2026-11-12): face profiles, surface extrudes, Thicken, edge paths
+
+- An `extrude` may take `profile_face` (a face pick, as a hole's `face` or a stored-face pick)
+  instead of `sketch` and `profiles`: a planar face of a body as it is before the extrude is the
+  profile (the document's `profile: <face>`), and `distance` counts along the face's outward
+  normal. Blind, one-sided and straight only. A join or cut acts on `target`, or else on the
+  face's body.
+- An `extrude` with `curves` (curve ids of its `sketch`) sweeps those curves into a sheet (the
+  document's `surface_extrude`): a new body, blind, straight, `symmetric` allowed.
+- `{"type": "thicken", "name", "sheets": [tree names of surface extrudes], "thickness": mm,
+  "symmetric": bool, "operation": "join" | "new", "target"}` thickens sheets into solids. A
+  join thickens each sheet in place and combines them into `target` (the sheets are gone after
+  it); a feature pattern of the sheet and the thicken repeats that combine. A new body thickens a
+  copy of its one sheet (the sheet stays, as in the source).
+- A `loft` section (an entry of `sketches`) may be `{"face": <pick>}`: a planar face of a body.
+- A `sweep` may take `path_edges` (edge picks by `midpoint`, as a fillet's) instead of `path`:
+  the model's edges with those middles (within 0.01 mm, all on one body) are the path.
+- For a component placed by its occurrence these picks move with the component.
+>>>>>>> 7db89c8 (feat(fusion): surface extrudes, Thicken, face profiles and edge paths)

@@ -146,8 +146,19 @@ pub(super) fn loft_json(
             return j;
         };
         let Some(sid) = super::feature::profile_sketch_of(d, d.rec(*sel)) else {
-            j.insert("error".into(), "a loft section is not a sketch profile (a point or a face)".into());
-            return j;
+            // A face (3221: the end caps of two bodies): the face itself is the section.
+            let faces = super::json::profile_faces(d, *s);
+            let pick = match faces.as_slice() {
+                [(g, ops)] => super::json::face_pick(cx, g, ops),
+                _ => None,
+            };
+            let Some(pick) = pick else {
+                j.insert("error".into(), "a loft section is not a sketch profile or one face (a point?)".into());
+                return j;
+            };
+            names.push(json!({ "face": pick }));
+            points.push(Value::Null);
+            continue;
         };
         let Some(sketch) = sketch_names.get(&sid) else {
             j.insert("error".into(), "a loft section's sketch is not in the tree".into());

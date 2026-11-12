@@ -582,7 +582,7 @@ pub(super) struct RegionEnt {
     pub naming_segments: Option<Vec<Rc<Seg>>>,
 }
 
-fn crv_key(d: &Design, q: u64) -> Option<(u64, u64)> {
+pub(super) fn crv_key(d: &Design, q: u64) -> Option<(u64, u64)> {
     let h = parse_header(d.rec(q))?;
     let v = |k: &str| h.attrs.get(k).map(|b| b.iter().rev().fold(0u64, |a, c| a.wrapping_shl(8) | u64::from(*c)));
     Some((v("crv_primary_id")?, v("crv_secondary_id")?))

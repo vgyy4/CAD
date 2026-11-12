@@ -1499,4 +1499,64 @@ fn a_rounded_edge_recorded_before_an_offset_moves_with_its_face() {
     let plain = std::f64::consts::PI * 1.4 * 1.4;
     let most = (1.0 - std::f64::consts::FRAC_PI_4) * 0.04 * std::f64::consts::TAU * 1.4;
     assert!(v < plain && v > plain - most, "{v}");
+
+// ---- Face profiles, surface extrudes, Thicken, edge paths (section 49 of the Fusion notes) ----
+
+fn volume_of(s: &mut Session, body: &str) -> f64 {
+    let b = execute(s, &CmdCtx::user(1), "query.body", json!({"body": body})).unwrap();
+    b["volume_mm3"].as_f64().unwrap()
+}
+
+#[test]
+fn extrudes_of_body_faces() {
+    // The plate's top raised 5 mm, then 2 mm cut into its front (y = 0) face.
+    let (mut s, _) = import_v2_session(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 40.0, 20.0),
+        extrude("Plate", "Sketch1", 10.0, "new"),
+        json!({"type": "extrude", "name": "Raise", "profile_face": {"point": [20, 10, 10], "normal": [0, 0, 1]},
+               "distance": 5, "operation": "join", "target": "Plate"}),
+        json!({"type": "extrude", "name": "Shave", "profile_face": {"point": [20, 0, 7]},
+               "distance": -2, "operation": "cut", "target": "Plate"}),
+    ]);
+    assert_vol(volume_of(&mut s, "Plate"), 40.0 * 18.0 * 15.0);
+}
+
+#[test]
+fn a_sheet_thickened_into_a_body_and_repeated() {
+    // A wall 30 mm long and 5 high swept up from a line on the plate's top, thickened 2 mm (1 to
+    // each side) into the plate; the pattern turns the pair a quarter about the plate's middle:
+    // a cross of two walls, 2 x 2 x 5 shared.
+    let line = json!({"type": "sketch", "name": "Line", "plane": plane_at(10.0),
+        "points": [{"id": "a", "x": 5, "y": 10}, {"id": "b", "x": 35, "y": 10}],
+        "curves": [{"id": "l1", "type": "line", "start": "a", "end": "b"}]});
+    let (mut s, _) = import_v2_session(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 40.0, 20.0),
+        extrude("Plate", "Sketch1", 10.0, "new"),
+        line,
+        json!({"type": "extrude", "name": "Wall", "sketch": "Line", "curves": ["l1"], "distance": 5,
+               "operation": "new"}),
+        json!({"type": "thicken", "name": "Thicken1", "sheets": ["Wall"], "thickness": 2, "symmetric": true,
+               "operation": "join", "target": "Plate"}),
+        json!({"type": "pattern_circular", "name": "Turn", "features": ["Wall", "Thicken1"], "count": 2,
+               "angle": 90, "axis": {"origin": [20, 10, 0], "direction": [0, 0, 1]}}),
+    ]);
+    assert_vol(volume_of(&mut s, "Plate"), 8000.0 + 2.0 * 300.0 - 20.0);
+}
+
+#[test]
+fn a_loft_from_a_face_and_a_sweep_along_an_edge() {
+    let (mut s, _) = import_v2_session(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 40.0, 20.0),
+        extrude("Plate", "Sketch1", 10.0, "new"),
+        disc("Top", plane_at(20.0), 20.0, 10.0, 5.0),
+        json!({"type": "loft", "name": "Spire", "sketches": [{"face": {"point": [20, 10, 10]}}, "Top"],
+               "operation": "new"}),
+        disc("Ring", json!({"origin": [0, 0, 0], "x_axis": [0, 1, 0], "y_axis": [0, 0, 1]}), 0.0, 10.0, 1.0),
+        json!({"type": "sweep", "name": "Rail", "sketch": "Ring", "path_edges": [{"midpoint": [20, 0, 10]}],
+               "orientation": "fixed", "operation": "new"}),
+    ]);
+    // The loft lies between the plate's top (800 mm2) and the disc (25 pi) 10 mm above.
+    let v = volume_of(&mut s, "Spire");
+    assert!(v > 25.0 * std::f64::consts::PI * 10.0 && v < 8000.0, "{v}");
+    assert_vol(volume_of(&mut s, "Rail"), std::f64::consts::PI * 40.0);
 }

@@ -328,15 +328,28 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
     j.insert("type".into(), "extrude".into());
     j.insert("name".into(), name.into());
     j.insert("source_id".into(), fid.into());
-    let Some(e) = extrude_raw(d, fid) else {
+    let Some(mut e) = extrude_raw(d, fid) else {
         j.insert("error".into(), "layout not recognised".into());
         return j;
     };
+    // A surface extrude: its profile selection names sketch curves, which it sweeps into a sheet
+    // (a new body; 5998's cut of a sketch text names curves too, and is not one).
+    let mut surface = None;
+    if e.sketch.is_none()
+        && e.op == 4
+        && let Some((sk, curves)) = super::surface::surface_curves(cx, fid)
+    {
+        e.sketch = Some(sk);
+        surface = Some(curves);
+    }
     j.insert("sketch".into(), e.sketch.and_then(|s| sketch_names.get(&s)).map_or(Value::Null, |s| s.as_str().into()));
     j.insert("sketch_source_id".into(), e.sketch.map_or(Value::Null, Value::from));
     j.insert("profiles".into(), "all".into());
     let plane = e.sketch.map(|s| cx.sketch(s)).and_then(|s| s.plane);
-    if let Some(sid) = e.sketch {
+    if let Some(curves) = &surface {
+        j.insert("profiles".into(), Value::Null);
+        j.insert("curves".into(), curves.iter().map(|c| format!("c{c}")).collect::<Vec<_>>().into());
+    } else if let Some(sid) = e.sketch {
         let s = cx.sketch(sid);
         match cx.rc.regions(d, fid, &s) {
             Ok(rg) => {
@@ -921,8 +934,19 @@ fn sweep_json(
     let ok = path.is_ok();
     let (path_sketch, curve_ids) = match path {
         Ok((s, c)) => (Some(s), c),
+        // A path of body edges (6002's Sweep1: three `5662F619` selections of edge recipes).
         Err(why) => {
-            j.insert("error".into(), why.into());
+            match sweep_path_edges(cx, fid) {
+                Ok(edges) => {
+                    j.insert("path_edges".into(), edges.into());
+                }
+                Err(Some(e)) => {
+                    j.insert("error".into(), e.into());
+                }
+                Err(None) => {
+                    j.insert("error".into(), why.into());
+                }
+            }
             (None, Vec::new())
         }
     };
@@ -935,6 +959,45 @@ fn sweep_json(
     j.insert("target".into(), Value::Null);
     let shift = profile.filter(|_| ok).and_then(|p| path_start_offset(cx, p, path_sketch?, &curve_ids));
     (j, shift)
+}
+
+/// A sweep path of body edges: the path selection (`2CA5A1CD` -> `5662F619` -> `7ACC2A03` edge
+/// recipes, the edges of a fillet), each edge by its middle (and points along it where curved).
+/// `Err(None)` where no selection is of edges only, `Err(Some(why))` where its edges are not read.
+fn sweep_path_edges(cx: &mut Ctx, fid: u64) -> Result<Vec<Value>, Option<String>> {
+    let d = cx.d;
+    let mut out = Vec::new();
+    // The record names its selections twice (in its body and in its list).
+    let mut sels: Vec<u64> = ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "2CA5A1CD")).collect();
+    sels.sort_unstable();
+    sels.dedup();
+    for q in sels {
+        let mut ents: Vec<u64> = ref_ids(d, d.rec(q)).into_iter().filter(|s| d.is(*s, "5662F619")).collect();
+        ents.dedup();
+        let recipes: Vec<u64> = ents
+            .iter()
+            .flat_map(|s| ref_ids(d, d.rec(*s)))
+            .filter(|r| d.is(*r, "7ACC2A03") || d.is(*r, "71D91267"))
+            .collect();
+        let edges: Vec<_> = recipes.iter().map(|r| naming::recipe(d, *r)).collect();
+        if edges.is_empty() || !edges.iter().all(|(k, _)| matches!(k, Some(RecipeKind::Edge))) {
+            continue;
+        }
+        if !out.is_empty() {
+            return Err(Some("a sweep path of edges in two selections".into()));
+        }
+        for (_, faces) in edges {
+            let unresolved = || Some("a sweep path of body edges: an edge of it is not resolved".to_string());
+            let faces = faces.ok_or_else(unresolved)?;
+            let (mid, _, path) = cx.edge_midpoint(&faces).ok_or_else(unresolved)?;
+            out.push(if path.is_empty() {
+                json!({"midpoint": v3mm(mid)})
+            } else {
+                json!({"midpoint": v3mm(mid), "path": path.iter().map(|p| v3mm(*p)).collect::<Vec<_>>()})
+            });
+        }
+    }
+    if out.is_empty() { Err(None) } else { Ok(out) }
 }
 
 /// The path of a sweep or pipe `fid`: its sketch and the curves of it, from the feature's
@@ -979,9 +1042,54 @@ pub(super) fn sweep_path(cx: &mut Ctx, fid: u64) -> Result<(u64, Vec<u64>), Stri
     }
 }
 
+/// An extrude whose profile is one planar face of a body (its selection `2CA5A1CD` ->
+/// `5662F619`, no `4BD53E5A` profile) and that no reading above turned into sketch regions:
+/// the face itself is the profile (`profile_face`, a pick of the face as it is before the
+/// extrude). The distance counts along the face's outward normal, as the document's face
+/// profiles do (3221's `Extrude7`: -0.5 mm, a cut into the end of `Pipe1`). Blind, one-sided
+/// and straight only.
+fn profile_of_a_face(cx: &mut Ctx, fid: u64, j: &mut Map<String, Value>) {
+    if !j.contains_key("profile_note") || !j.get("sketch").is_some_and(Value::is_null) {
+        return;
+    }
+    let plain = ["start", "start_error", "extent_from", "taper_deg", "_taper2_deg", "error"]
+        .iter()
+        .all(|k| j.get(*k).is_none())
+        && j.get("symmetric").and_then(Value::as_bool) != Some(true)
+        && j.get("two_sided").and_then(Value::as_bool) != Some(true)
+        && j.get("distance").is_some_and(Value::is_f64);
+    if !plain {
+        return;
+    }
+    let faces = profile_faces(cx.d, fid);
+    let [(g, ops)] = faces.as_slice() else { return };
+    let Some(pick) = face_pick(cx, g, ops) else { return };
+    j.remove("profile_note");
+    j.insert("profiles".into(), Value::Null);
+    j.insert("profile_face".into(), pick);
+    j.insert("profile_from".into(), "a face of a body (its outline and holes)".into());
+}
+
+/// A pick of a face by its name, as a shell's removed faces are picked: a cap by its stored
+/// face's points, another plane by a point of the face itself, other faces by the stored
+/// surface they lie on.
+pub(super) fn face_pick(cx: &mut Ctx, g: &str, ops: &[i32]) -> Option<Value> {
+    match cx.face_with_middle(g, ops) {
+        Some(naming::FaceG::Plane { cap: true, .. })
+            if (g == "1" || g == "2")
+                && ops.len() == 1
+                && let Some(sp) = cx.stored_face(g, ops) =>
+        {
+            Some(sp.json())
+        }
+        Some(naming::FaceG::Plane { mid, .. }) => Some(json!({"point": v3mm(mid)})),
+        _ => cx.general_face(g, ops).map(|p| p.json()),
+    }
+}
+
 /// The faces a feature's profile selection names (`2CA5A1CD` -> `5662F619` -> face recipes), by
 /// their first (generator, operations) name.
-fn profile_faces(d: &Design, fid: u64) -> Vec<(String, Vec<i32>)> {
+pub(super) fn profile_faces(d: &Design, fid: u64) -> Vec<(String, Vec<i32>)> {
     let mut faces: Vec<(String, Vec<i32>)> = Vec::new();
     for q in ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "2CA5A1CD")) {
         for s in ref_ids(d, d.rec(q)).into_iter().filter(|s| d.is(*s, "5662F619")) {
@@ -1680,6 +1788,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             super::thin::thin_extrude(cx, fid, &mut j, &mut feats, &sketch_names, &nm);
             profile_of_an_exposed_cap(cx, fid, &mut j, &feats);
             super::loft::profile_of_a_loft_cap(cx, fid, &mut j, &feats);
+            profile_of_a_face(cx, fid, &mut j);
             two_sided_from_a_moved_sketch(cx, &mut j, &nm, &mut feats);
             in_own_component(&mut j, "sketch", comp, &mut feats, nbefore, format!("{nm} sketch"));
             let made = op_target(&mut j, &g, d, fid, &names);
@@ -2184,6 +2293,13 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                         "class_guid": class, "source_id": fid, "error": why}));
                 }
             }
+        } else if c8 == "BCE0AD0E" {
+            let ed = super::bodyops::Edit { d, g: &g, names: &names, feats: &feats };
+            let j = ed.thicken(fid, &nm).unwrap_or_else(|why| {
+                json!({"type": "unsupported", "fusion_type": fusion_type, "name": nm,
+                    "class_guid": class, "source_id": fid, "error": why})
+            });
+            feats.push(j);
         } else if c8 == "428B5C6E" {
             feats.push(insert_json(d, fid, &nm, &fusion_type, class));
         } else if c8 == super::pcb::COIL {
@@ -2357,7 +2473,7 @@ pub(super) fn joins_of_several_bodies(feats: &mut Vec<Value>) {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
-        let joins = matches!(f.get("type").and_then(Value::as_str), Some("extrude" | "sweep"))
+        let joins = matches!(f.get("type").and_then(Value::as_str), Some("extrude" | "sweep" | "loft"))
             && f.get("operation").and_then(Value::as_str) == Some("join")
             && f.get("creates_bodies").and_then(Value::as_u64) == Some(0)
             && targets.len() >= 2
@@ -2852,7 +2968,8 @@ fn blocker(f: &Value) -> Option<String> {
             if has("error") {
                 return Some("its layout is not recognised".into());
             }
-            if !f.get("profiles").is_some_and(Value::is_array) {
+            let surface = f.get("curves").is_some_and(Value::is_array) || has("profile_face");
+            if !surface && !f.get("profiles").is_some_and(Value::is_array) {
                 return Some(
                     text("profile_note")
                         .map_or_else(|| "its profile regions are not decoded".to_string(), str::to_string),
@@ -2922,7 +3039,7 @@ fn blocker(f: &Value) -> Option<String> {
             if has("error") {
                 return Some(text("error").unwrap_or("its layout is not recognised").to_string());
             }
-            if !has("sketch") || !(has("path") || has("helix")) {
+            if !has("sketch") || !(has("path") || has("helix") || has("path_edges")) {
                 return Some("its profile or path sketch is not decoded".into());
             }
             let op = text("operation").unwrap_or("");
@@ -2948,7 +3065,7 @@ fn blocker(f: &Value) -> Option<String> {
             None
         }
         "hole" | "mirror" | "shell" | "draft" | "offset_face" | "move_body" | "scale_body" | "remove_body"
-        | "split" | "combine" | "thread" => None,
+        | "split" | "combine" | "thread" | "thicken" => None,
         "component_insert" => Some("the design it inserts is not merged into the tree".into()),
         "stored_body" => (!has("brep")).then(|| "the stored body names no blob".to_string()),
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),
@@ -3199,6 +3316,36 @@ pub(super) fn move_feature(f: &mut Value, pl: &crate::fusion::Placement) {
                             }
                         }
                     }
+                }
+            }
+        }
+        "extrude" => {
+            if let Some(fc) = f.get_mut("profile_face").and_then(Value::as_object_mut) {
+                move_pick(fc, &pl);
+            }
+        }
+        "sweep" => {
+            // A path of edges.
+            for e in f.get_mut("path_edges").and_then(Value::as_array_mut).into_iter().flatten() {
+                if let Some(m) = pt(e.get("midpoint"))
+                    && let Some(o) = e.as_object_mut()
+                {
+                    o.insert("midpoint".into(), m);
+                }
+                if let Some(path) = e.get_mut("path").and_then(Value::as_array_mut) {
+                    for q in path.iter_mut() {
+                        if let Some(m) = pt(Some(q)) {
+                            *q = m;
+                        }
+                    }
+                }
+            }
+        }
+        "loft" => {
+            // Sections that are faces.
+            for s in f.get_mut("sketches").and_then(Value::as_array_mut).into_iter().flatten() {
+                if let Some(fc) = s.get_mut("face").and_then(Value::as_object_mut) {
+                    move_pick(fc, &pl);
                 }
             }
         }

@@ -31,6 +31,7 @@ mod patdir;
 mod pcb;
 mod sketch;
 mod stream;
+mod surface;
 mod thin;
 mod thread;
 

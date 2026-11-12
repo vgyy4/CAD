@@ -20,7 +20,7 @@ pub(super) enum Combined {
 
 impl Edit<'_> {
     /// The body links a `2CA5A1CD` selection names (through its `9716F783`).
-    fn links_of(&self, sel: u64) -> Vec<u64> {
+    pub(super) fn links_of(&self, sel: u64) -> Vec<u64> {
         let mut out = Vec::new();
         for s in ref_ids(self.d, self.d.rec(sel)) {
             if self.d.is(s, "9716F783") {
@@ -35,7 +35,7 @@ impl Edit<'_> {
     }
 
     /// The tree entry of the feature that made a body link, and that feature's id.
-    fn maker(&self, link: u64) -> Option<(u64, &Value)> {
+    pub(super) fn maker(&self, link: u64) -> Option<(u64, &Value)> {
         let m = self.g.creator.get(&link).copied()?;
         let e = self
             .feats
