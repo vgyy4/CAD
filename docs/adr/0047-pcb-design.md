@@ -146,9 +146,92 @@ designs and generated files.
 * MCP: core tool list unchanged (31 tools, 17901 of 18000 bytes); the command tools average 581
   bytes (142 tools; was 593, cap 600); the largest new one is `pcb_add_track` at 615 bytes.
 
+## Phase 2a (2026-11-12): schematic capture
+* **Formats (`gusset-pcb` `sch`)**: `.kicad_sch` and `.kicad_sym` read and written losslessly over
+  the same S-expression tree as boards (KiCad 6 to 10 layouts; older files get a note). Modelled:
+  library symbols (embedded `lib_symbols` and libraries) with units and body styles (`Name_U_S`,
+  0 = common), rectangles, polylines, Béziers (as their control polygon), circles, arcs, text and
+  pins (type, style, length, name, number, hidden; `pin_names`/`pin_numbers` hiding and name
+  offset); derived symbols (`extends`) resolved when embedding; placed symbols (`lib_id`,
+  `lib_name`, place, angle, mirror, unit, body style, properties with places, per-sheet-use
+  references from `instances`, `in_bom`/`on_board`/`dnp`); wires, buses and bus entries (kept and
+  drawn), junctions, no-connect flags, local/global/hierarchical labels, sheets with pins, text and
+  graphic lines. Item counts are bounded like boards; fuzz target `sch_read`.
+* **Placement convention (checked on samples)**: a library point (Y up) is flipped to Y down,
+  turned by the symbol's angle (counter-clockwise on screen), then mirrored (`mirror x` flips Y,
+  `mirror y` flips X), then moved to the symbol's place. The other order (mirror, then turn)
+  connects fewer pins on the demo designs.
+* **Netlist (`netlist`)**: items connect where connection points meet; a point (pin, label, sheet
+  pin, junction, no-connect, wire end) anywhere on a wire joins it; crossing wires join only at a
+  junction. Local labels join per sheet use, global labels and power symbols (by value, through
+  their power-input pin; `PWR_FLAG`'s output pin joins nothing) across the design, hidden
+  power-input pins of ordinary symbols by pin name, hierarchical labels with the parent's sheet
+  pin. Label text compares with `/` written as `{slash}`. Net names as KiCad's: power/global name;
+  else the local label highest in the hierarchy (`/sub/NAME`, `/NAME` at the root), then
+  hierarchical labels; else `Net-(REF-PIN)` from the first pin with a name of its own (not `~` or
+  its number; reference order, then unit, then pin), else `Net-(REF-PadN)`; a lone pin
+  `unconnected-(REF[-NAME]-PadN)`; multi-unit references get the unit letter. Wire-grid work is
+  bounded (8 M cells).
+* **ERC (`erc`)**, kept simple: `pin_not_connected`, `no_connect_connected`, `pin_conflict`
+  (output/power-output against each other, a no-connect pin on a net), `power_not_driven` (power
+  inputs on a net without a power output: the `PWR_FLAG` check), `label_dangling` (bus labels
+  skipped), `duplicate_reference`, `unannotated`, `missing_symbol`, `no_footprint`.
+* **Schematic to board (`sync`)**: `update_board` adds footprints the board lacks when the caller
+  finds the part's `Lib:Name` footprint file (never bundled; placed in a column right of the
+  board), then sets every pad's net by reference and pad number (pads of a listed part whose
+  number has no pin lose their net; unnumbered pads are left alone), and reports extra
+  footprints, value and footprint differences, pins without a pad and parts without a footprint.
+  Tracks keep their nets: renamed nets show as DRC problems until rerouted.
+* **Session and history**: `schematic (file, sheet, sheets: {"sub.kicad_sch": hash})` in the
+  parameter object names the root sheet and every sub-sheet text; closures keep them, compare
+  lists a changed schematic with the board, merge takes it as one item. Each edit stores the one
+  sheet it changed.
+* **Commands** (registry, not in the core MCP tool list): `sch.open` (the root and the sheets it
+  uses from beside it; sheet names that are absolute or climb with `..` are not followed and are
+  reported), `sch.new`, `sch.save` (all sheets), `sch.add_symbol` (from a user-given `.kicad_sym`;
+  reference defaults to the next free one across the design; library id `<file stem>:<symbol>`),
+  `sch.move` (symbols: place, angle, mirror, fields follow; labels: place, angle),
+  `sch.add_wire` (polyline; junction dots where it meets a wire's middle or three ends meet),
+  `sch.add_label` (local, global, hierarchical), `sch.delete` (by `R1` or `kind#index`; unused
+  library symbols go too), `sch.erc`, `sch.netlist`, and `pcb.update_from_schematic`
+  (`footprints` folder of `Lib.pretty` libraries, `dry_run`). Edits on a sub-sheet name it with
+  `sheet`. File text reaches agents only in `_user_text` fields.
+* **GUI (`gusset-app` `sch_view`)**: a Schematic tab beside the PCB tab: the shown sheet on a light
+  canvas in KiCad-like colours (symbol bodies with background fills, pins with names and numbers,
+  visible reference/value fields, wires, buses, junctions, no-connects, labels, sheets with their
+  pins, text); pan/zoom/fit; a sheet chooser; tools Select (pick, drag symbols and labels on the
+  grid, R turns, X/Y mirror, Delete), Wire (corners snap to pin ends, double/right click or Esc
+  ends), Label and Place (the panel's library file and symbol); ERC markers with their messages on
+  hover. Cross-probing: picking a symbol selects its footprint on the PCB tab and picking a
+  footprint selects its symbol. Every action is a registry command (undoable). The ribbon's
+  Schematic tab holds open/new/save, the edits, ERC/netlist and the board update.
+
+## Results of phase 2a (2026-11-12)
+* Local check, not in the repository (CC-BY-SA data): 5 KiCad demo designs (KiCad 9 files, 14
+  sheets, hierarchical ones included) read and write back with an identical tree. For
+  `complex_hierarchy`, `pic_programmer`, `ecc83-pp` and `interf_u` the netlist gives every pad of
+  KiCad's own board the same net, names included (164, 236, 33 and 373 pads), and
+  `update_board` on those boards changes no pad; their ERC is clean except two bus labels (now
+  skipped). `video` (buses across sheets) matches 1300 of 2046 pads: bus members that cross sheets
+  through bus sheet pins are not joined yet. The largest design connects in 60 ms (debug build).
+* Tests: `gusset-pcb` `tests_sch` 9 (library read and embedding with `extends`, round trip and pin
+  placement with turn/mirror, nets from wires/labels/power, crossing wires and junctions,
+  hierarchy with two uses of one sheet, ERC codes, edits, board update with an added footprint
+  and a second update changing nothing, hostile inputs); `gusset-history` the schematic stored,
+  compared, merged and kept by GC; `gusset-commands` `tests_sch` 3 (draw, netlist, ERC, move and
+  undo, save; a hierarchical open with an unsafe sheet name refused, sub-sheet edits, save;
+  the board updated from the schematic with dry run and undo, footprint names with path parts
+  never looked up); `gusset-app` `tests_sch` 3 (picking, snapping, drops; every editor action a
+  registry command; the tab editing with undo, ERC markers, cross-probing both ways).
+* MCP: core tool list unchanged (31 tools, 17901 of 18000 bytes); the command tools average 570
+  bytes (153 tools; was 581); the largest new one is `sch_add_symbol` at 767 bytes.
+
 ## Next (out of scope of this ADR's work; each needs its own ADR before work)
-* **Schematic capture**: `.kicad_sch`/`.kicad_sym` readers, then a schematic editor and netlist
-  sync to the board (netlist import from KiCad/atopile until then).
+* **Schematic, after phase 2a**: bus member connectivity (`D[0..7]`, `{A B}` groups, bus sheet
+  pins); dragging wires with symbols; multi-select and box select; annotation of a whole design;
+  symbol and field editing (value, footprint assignment) and a symbol library browser; sheet
+  creation and editing; net highlighting; KiCad 5 `.sch` files; back-annotation from the board;
+  `kicad-cli sch erc` for the authoritative check.
 * **Interactive routing**: push-and-shove, walk-around, 45° modes, track drag, differential pairs.
 * **Autorouting**: Topola (MIT, Rust) when mature, else Specctra DSN out and Freerouting as an
   external GPL process (detected, never bundled).
