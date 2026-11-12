@@ -477,6 +477,38 @@ mod tests {
     }
 
     #[test]
+    fn the_open_schematic_is_stored_compared_merged_and_kept() {
+        // ADR 0047 phase 2a: the root sheet and its sub-sheets are blobs.
+        let mut store = ObjectStore::default();
+        let mut blob = |b: &[u8]| store.put(crate::objects::ObjectKind::Blob, b);
+        let (s1, s2, sub) = (blob(b"(kicad_sch 1)"), blob(b"(kicad_sch 2)"), blob(b"(kicad_sch 3)"));
+        let t = |sheet: Option<Hash>| {
+            let line = sheet.map(|h| {
+                format!("schematic (file: \"a.kicad_sch\", sheet: \"{h}\", sheets: {{\"b.kicad_sch\": \"{sub}\"}})\n")
+            });
+            Document::from_text(&format!("gusset 1\nunits mm\n\nparam w = 4 mm\n{}", line.unwrap_or_default())).unwrap()
+        };
+        let (base, ours, theirs) = (t(None), t(Some(s1)), t(Some(s2)));
+        assert_eq!(ours.schematic.as_ref().unwrap().sheets, [("b.kicad_sch".to_string(), sub.to_hex())]);
+        assert_eq!(Document::from_text(&ours.to_text()).unwrap(), ours);
+        let h = store.put_document(&ours);
+        assert_eq!(store.document(h).unwrap(), ours);
+        let mut closure = std::collections::BTreeSet::new();
+        assert!(store.snapshot_closure(h, &mut closure));
+        assert!(closure.contains(&s1) && closure.contains(&sub) && !closure.contains(&s2));
+        let d = diff::diff_documents(&ours, &theirs);
+        assert!(matches!(&d.pcb[..], [ItemChange { change: Change::Modified { .. }, .. }]), "{d:?}");
+        assert_eq!(merge_documents(&base, &ours, &theirs, None).conflicts.len(), 1);
+        let m = merge_documents(&ours, &ours, &theirs, None);
+        assert!(m.conflicts.is_empty() && m.doc.schematic == theirs.schematic);
+        for bad in
+            ["schematic (file: \"a\")", "schematic (file: \"a\", sheet: \"zz\")", "schematic (sheet: \"ab\", x: 1)"]
+        {
+            assert!(Document::from_text(&format!("gusset 1\n{bad}\n")).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn appearances_are_stored_compared_and_merged() {
         // ADR 0045: per body, like configurations.
         let t = |extra: &str| Document::from_text(&format!("gusset 1\nunits mm\n\nparam w = 4 mm\n{extra}")).unwrap();

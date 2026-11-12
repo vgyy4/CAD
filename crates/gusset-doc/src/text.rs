@@ -57,6 +57,12 @@ pub fn print(doc: &Document) -> String {
         out.push('\n');
         print_pcb(&mut out, p);
     }
+    if let Some(s) = &doc.schematic {
+        if doc.pcb.is_none() {
+            out.push('\n');
+        }
+        print_schematic(&mut out, s);
+    }
     for d in &doc.drawings {
         out.push('\n');
         crate::drawing::print_drawing(&mut out, d);
@@ -70,6 +76,65 @@ fn print_pcb(out: &mut String, p: &PcbBoard) {
         let _ = write!(args, ", project: {}", quote(h));
     }
     let _ = writeln!(out, "pcb ({args})");
+}
+
+fn print_schematic(out: &mut String, s: &PcbSchematic) {
+    let mut args = format!("file: {}, sheet: {}", quote(&s.file), quote(&s.sheet));
+    if !s.sheets.is_empty() {
+        let items: Vec<String> = s.sheets.iter().map(|(f, h)| format!("{}: {}", quote(f), quote(h))).collect();
+        let _ = write!(args, ", sheets: {{{}}}", items.join(", "));
+    }
+    let _ = writeln!(out, "schematic ({args})");
+}
+
+/// A file name in a `pcb` or `schematic` statement: at most 255 characters.
+fn file_name_arg(c: &mut Cursor<'_>) -> Result<String, ParseError> {
+    let f = c.string()?;
+    if f.chars().count() > 255 {
+        return Err(c.err("the file name is longer than 255 characters"));
+    }
+    Ok(f)
+}
+
+/// `schematic (file: "<name>", sheet: "<hash>", sheets: {"<name>": "<hash>", ...})`
+/// (ADR 0047 phase 2a).
+fn parse_schematic(c: &mut Cursor<'_>) -> Result<PcbSchematic, ParseError> {
+    let (mut file, mut sheet, mut sheets) = (None, None, Vec::new());
+    parse_args(c, |key, c| {
+        match key {
+            "file" => file = Some(file_name_arg(c)?),
+            "sheet" => sheet = Some(blob_hash(c, "sheet")?),
+            "sheets" => {
+                c.expect('{')?;
+                if !c.eat('}') {
+                    loop {
+                        let f = file_name_arg(c)?;
+                        c.expect(':')?;
+                        let h = blob_hash(c, "a sheet")?;
+                        if sheets.len() >= 4096 {
+                            return Err(c.err("too many sheets"));
+                        }
+                        sheets.push((f, h));
+                        if c.eat(',') {
+                            continue;
+                        }
+                        c.expect('}')?;
+                        break;
+                    }
+                }
+            }
+            key => return Err(unknown_arg(c, "schematic", key, "file, sheet, sheets")),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    Ok(PcbSchematic {
+        file: file.ok_or_else(|| missing(c, "schematic", "file"))?,
+        sheet: sheet.ok_or_else(|| missing(c, "schematic", "sheet"))?,
+        sheets,
+    })
 }
 
 /// A stored blob's hash: hex digits only.
@@ -1015,6 +1080,13 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     return Err(c.err("'pcb' appears twice"));
                 }
                 doc.pcb = Some(parse_pcb(&mut c)?);
+                pending_note.clear();
+            }
+            "schematic" => {
+                if doc.schematic.is_some() {
+                    return Err(c.err("'schematic' appears twice"));
+                }
+                doc.schematic = Some(parse_schematic(&mut c)?);
                 pending_note.clear();
             }
             "appearance" => {
@@ -2857,21 +2929,24 @@ pub struct ParamsObject {
     pub appearances: Vec<Appearance>,
     /// The open board (ADR 0047).
     pub pcb: Option<PcbBoard>,
+    /// The open schematic (ADR 0047 phase 2a).
+    pub schematic: Option<PcbSchematic>,
 }
 
 /// Canonical text of a parameter table with the configurations and appearances (a history
 /// object).
 pub fn print_params_object(params: &[Param], configurations: &[Configuration], appearances: &[Appearance]) -> String {
-    print_params_object_with(params, configurations, appearances, None)
+    print_params_object_with(params, configurations, appearances, None, None)
 }
 
-/// [`print_params_object`] with the open board (ADR 0047), which the history stores in
-/// the same object.
+/// [`print_params_object`] with the open board and schematic (ADR 0047), which the
+/// history stores in the same object.
 pub fn print_params_object_with(
     params: &[Param],
     configurations: &[Configuration],
     appearances: &[Appearance],
     pcb: Option<&PcbBoard>,
+    schematic: Option<&PcbSchematic>,
 ) -> String {
     let mut s = String::new();
     for p in params {
@@ -2885,6 +2960,9 @@ pub fn print_params_object_with(
     }
     if let Some(p) = pcb {
         print_pcb(&mut s, p);
+    }
+    if let Some(x) = schematic {
+        print_schematic(&mut s, x);
     }
     s
 }
@@ -2900,6 +2978,7 @@ pub fn parse_params_object(s: &str) -> Result<ParamsObject, ParseError> {
         configurations: doc.configurations,
         appearances: doc.appearances,
         pcb: doc.pcb,
+        schematic: doc.schematic,
     })
 }
 

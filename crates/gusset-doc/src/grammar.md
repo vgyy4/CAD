@@ -17,6 +17,7 @@ sketch <Name> (<args>) { ... }
 extrude|revolve|sweep|loft|fillet|chamfer|hole|import <Name> (<args>)
 appearance <Body> (color: "#rrggbb", finish: plastic|metal|glass|rubber, faces: {"#rrggbb": [<face>, ...], ...}, texture: wood|brushed|carbon|speckle, texture_size: <n> mm)   # ADR 0045
 pcb (file: "<name>.kicad_pcb", board: "<hash>", project: "<hash>")   # ADR 0047, at most one
+schematic (file: "<name>.kicad_sch", sheet: "<hash>", sheets: {"<sub>.kicad_sch": "<hash>", ...})   # ADR 0047, at most one
 ```
 
 - `appearance` sets how a body looks in the viewport and in path-traced renders; it changes
@@ -31,6 +32,8 @@ pcb (file: "<name>.kicad_pcb", board: "<hash>", project: "<hash>")   # ADR 0047,
 - `pcb` is the printed circuit board open in the project: the KiCad board file (and its
   project file, optional) stored by hash. It changes no body; the `pcb.*` commands edit it,
   each edit storing a new board, so undo and branches work on it like on features.
+- `schematic` is the KiCad schematic open in the project: the root sheet and the sheets it
+  uses, stored by hash. It changes no body; the `sch.*` commands edit it like `pcb`.
 
 - One statement per line. `#` starts a comment: a comment on its own line(s) before a
   statement becomes that statement's note, a trailing `# text` on a `param` its comment.

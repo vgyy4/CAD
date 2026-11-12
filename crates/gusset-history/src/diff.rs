@@ -37,7 +37,7 @@ pub struct DocDiff {
     pub drawings: Vec<ItemChange>,
     /// Body appearances (ADR 0045), by body.
     pub appearances: Vec<ItemChange>,
-    /// The open board (ADR 0047): at most one entry, named by its file.
+    /// The open board and schematic (ADR 0047): at most one entry each, named by file.
     pub pcb: Vec<ItemChange>,
 }
 
@@ -124,6 +124,16 @@ pub fn diff_documents(a: &Document, b: &Document) -> DocDiff {
         (Some(o), None) => d.pcb.push(ItemChange { name: o.file.clone(), change: Change::Removed }),
         (Some(o), Some(n)) if o != n => {
             d.pcb.push(ItemChange { name: n.file.clone(), change: Change::Modified { old: board(o), new: board(n) } })
+        }
+        _ => {}
+    }
+    // The schematic (phase 2a) is listed with the board, named by its root sheet.
+    let sheet = |p: &gusset_doc::PcbSchematic| format!("{} ({})", p.file, p.sheet.get(..12).unwrap_or(&p.sheet));
+    match (&a.schematic, &b.schematic) {
+        (None, Some(n)) => d.pcb.push(ItemChange { name: n.file.clone(), change: Change::Added }),
+        (Some(o), None) => d.pcb.push(ItemChange { name: o.file.clone(), change: Change::Removed }),
+        (Some(o), Some(n)) if o != n => {
+            d.pcb.push(ItemChange { name: n.file.clone(), change: Change::Modified { old: sheet(o), new: sheet(n) } })
         }
         _ => {}
     }

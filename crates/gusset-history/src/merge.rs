@@ -303,8 +303,20 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
     if pcb != ours.pcb {
         from_theirs.push("pcb".into());
     }
+    // The open schematic, likewise one item.
+    let show_s = |p: &Option<gusset_doc::PcbSchematic>| p.as_ref().map(|s| format!("{} ({})", s.file, s.sheet));
+    let schematic = match pick(base.schematic.as_ref(), ours.schematic.as_ref(), theirs.schematic.as_ref()) {
+        Ok(r) => r,
+        Err(()) if resolve("schematic", "sheet", show_s(&ours.schematic), show_s(&theirs.schematic)) => {
+            theirs.schematic.clone()
+        }
+        Err(()) => ours.schematic.clone(),
+    };
+    if schematic != ours.schematic {
+        from_theirs.push("schematic".into());
+    }
     Merged {
-        doc: Document { units, params, configurations, features, drawings, appearances, pcb },
+        doc: Document { units, params, configurations, features, drawings, appearances, pcb, schematic },
         conflicts,
         from_theirs,
     }

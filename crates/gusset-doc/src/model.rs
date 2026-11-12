@@ -22,6 +22,8 @@ pub struct Document {
     pub appearances: Vec<Appearance>,
     /// The printed circuit board open in the document (ADR 0047); it changes no body.
     pub pcb: Option<PcbBoard>,
+    /// The schematic open in the document (ADR 0047 phase 2a); it changes no body.
+    pub schematic: Option<PcbSchematic>,
 }
 
 /// A KiCad board kept in the project: `pcb (file: "main.kicad_pcb", board: "<hash>")`.
@@ -35,6 +37,19 @@ pub struct PcbBoard {
     pub board: String,
     /// Hash of the KiCad project file (`.kicad_pro`, its net classes and rules), if read.
     pub project: Option<String>,
+}
+
+/// A KiCad schematic kept in the project: `schematic (file: "main.kicad_sch", sheet:
+/// "<hash>", sheets: {"sub.kicad_sch": "<hash>"})`. The root sheet's text and those of
+/// the sheets it uses are stored blobs, so every edit is a new blob and undo goes back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PcbSchematic {
+    /// The root sheet's file name (shown, never a path to read).
+    pub file: String,
+    /// Hash of the root `.kicad_sch` text blob.
+    pub sheet: String,
+    /// Sub-sheets: (file name as the root names it, hash of its text).
+    pub sheets: Vec<(String, String)>,
 }
 
 /// A body's look: `appearance Extrude1 (color: "#8a9bb0", finish: metal)`.

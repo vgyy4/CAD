@@ -321,7 +321,13 @@ impl ObjectStore {
         let params = stage(
             ObjectKind::Params,
             &|| "the parameter table".into(),
-            print_params_object_with(&doc.params, &doc.configurations, &doc.appearances, doc.pcb.as_ref()),
+            print_params_object_with(
+                &doc.params,
+                &doc.configurations,
+                &doc.appearances,
+                doc.pcb.as_ref(),
+                doc.schematic.as_ref(),
+            ),
         )?;
         let mut features = Vec::with_capacity(doc.features.len());
         for f in &doc.features {
@@ -425,7 +431,7 @@ impl ObjectStore {
     /// Materializes the document of a snapshot.
     pub fn document(&self, snapshot: Hash) -> Result<Document, ObjectError> {
         let snap = self.snapshot(snapshot)?;
-        let gusset_doc::text::ParamsObject { params, configurations, appearances, pcb } =
+        let gusset_doc::text::ParamsObject { params, configurations, appearances, pcb, schematic } =
             parse_params_object(self.text(snap.params)?)
                 .map_err(|e| ObjectError::Corrupt { hash: snap.params, reason: e.to_string() })?;
         let features = snap.features.iter().map(|h| self.feature(*h)).collect::<Result<Vec<_>, _>>()?;
@@ -437,7 +443,7 @@ impl ObjectStore {
                     .map_err(|e| ObjectError::Corrupt { hash: *h, reason: e.to_string() })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Document { units: snap.units, params, configurations, features, drawings, appearances, pcb })
+        Ok(Document { units: snap.units, params, configurations, features, drawings, appearances, pcb, schematic })
     }
 
     /// Hashes of every object a snapshot references (including itself). Returns false
@@ -455,6 +461,12 @@ impl ObjectStore {
         match self.text(s.params).map(parse_params_object) {
             Ok(Ok(p)) => {
                 for h in p.pcb.iter().flat_map(|b| std::iter::once(&b.board).chain(&b.project)) {
+                    if let Some(h) = Hash::from_hex(h) {
+                        out.insert(h);
+                    }
+                }
+                for h in p.schematic.iter().flat_map(|s| std::iter::once(&s.sheet).chain(s.sheets.iter().map(|x| &x.1)))
+                {
                     if let Some(h) = Hash::from_hex(h) {
                         out.insert(h);
                     }
