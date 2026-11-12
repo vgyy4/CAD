@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicBool;
 pub(super) fn specs() -> Vec<CommandSpec> {
     let mut v = vec![spec::<PcbInfo>(), spec::<PcbImport>(), spec::<PcbExportGerbers>(), spec::<PcbExportDrill>()];
     v.extend(super::pcb_edit::specs());
+    v.extend(super::pcb_layout::specs());
     v
 }
 
@@ -264,20 +265,24 @@ impl PcbImport {
     }
 }
 
-impl Command for PcbImport {
-    const ID: &'static str = "pcb.import";
-    const TITLE: &'static str = "Import PCB";
-    const DESCRIPTION: &'static str = "Bring a KiCad board in as bodies: the board with its holes, component boxes (or STEP models from models_dir), copper optional. For enclosure design.";
-    const CATEGORY: Category = Category::Exchange;
-    const FLAGS: Flags = EDIT;
-    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let (b, stem) = board_source(s, ctx, self.path.as_deref())?;
+/// A body of a board: name, shape, colour.
+pub(super) type BoardBody = (String, gusset_kernel::Shape, u32);
+
+impl PcbImport {
+    /// The board's bodies (name, shape, colour) as this import's options make them, with
+    /// footprint STEP models in place of boxes where found.
+    pub(super) fn bodies(
+        &self,
+        s: &Session,
+        ctx: &CmdCtx,
+        b: &Board,
+    ) -> Result<(Vec<BoardBody>, Vec<String>), CommandError> {
         let height = match &self.component_height {
             Some(t) => length_mm("component_height", t)?,
             None => 2.0,
         };
         if !(height.is_finite() && height > 0.0 && height <= 1000.0) {
-            return Err(CommandError::args("pcb.import: component_height must be above 0 and at most 1000 mm"));
+            return Err(CommandError::args("component_height must be above 0 and at most 1000 mm"));
         }
         let opts = board3d::Options {
             holes: self.holes.unwrap_or(true),
@@ -288,8 +293,8 @@ impl Command for PcbImport {
         };
         let k = s.kernel().clone();
         let (bodies, mut notes) =
-            board3d::build(&b, k.as_ref(), &opts).map_err(|e| CommandError::new("io", format!("PCB: {e}")))?;
-        let mut out: Vec<(String, Vec<u8>, Option<u32>)> = Vec::new();
+            board3d::build(b, k.as_ref(), &opts).map_err(|e| CommandError::new("io", format!("PCB: {e}")))?;
+        let mut out = Vec::new();
         let mut cache = ModelCache::new();
         let mut budget = (0usize, 0u64);
         let (mut placed, mut boxed) = (0usize, 0usize);
@@ -309,7 +314,7 @@ impl Command for PcbImport {
                     };
                     for sh in shapes {
                         let mut cur = Some(sh);
-                        for t in board3d::model_steps(&b, fp, m) {
+                        for t in board3d::model_steps(b, fp, m) {
                             cur = cur.and_then(|c| k.transform(&c, &t).ok().map(|r| r.shape));
                         }
                         parts.extend(cur);
@@ -326,11 +331,29 @@ impl Command for PcbImport {
                     boxed += 1;
                 }
             }
-            let blob = k.write_native(&shape).map_err(|e| CommandError::new("io", e.message))?;
-            out.push((body.name, blob, Some(color)));
+            out.push((body.name, shape, color));
         }
         if self.models_dir.is_some() {
             notes.push(format!("{placed} components from STEP models, {boxed} as boxes (no readable model found)"));
+        }
+        Ok((out, notes))
+    }
+}
+
+impl Command for PcbImport {
+    const ID: &'static str = "pcb.import";
+    const TITLE: &'static str = "Import PCB";
+    const DESCRIPTION: &'static str = "Bring a KiCad board in as bodies: the board with its holes, component boxes (or STEP models from models_dir), copper optional. For enclosure design.";
+    const CATEGORY: Category = Category::Exchange;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let (b, stem) = board_source(s, ctx, self.path.as_deref())?;
+        let (bodies, notes) = self.bodies(s, ctx, &b)?;
+        let k = s.kernel().clone();
+        let mut out: Vec<(String, Vec<u8>, Option<u32>)> = Vec::new();
+        for (name, shape, color) in bodies {
+            let blob = k.write_native(&shape).map_err(|e| CommandError::new("io", e.message))?;
+            out.push((name, blob, Some(color)));
         }
         let prepared = crate::import::PreparedImport::native(out, format!("{stem}.kicad_pcb"), TIER_PCB, notes);
         crate::import::commit_import(s, ctx, prepared)

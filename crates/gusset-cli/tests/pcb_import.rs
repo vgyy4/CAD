@@ -135,3 +135,34 @@ fn a_footprint_step_model_replaces_its_box() {
     assert!((bb.min[2] - 1.6).abs() < 1e-6 && (bb.max[2] - 2.6).abs() < 1e-6, "{bb:?}");
     assert!((k.mass_properties(u1).unwrap().volume - 8.0).abs() < 1e-6);
 }
+
+#[test]
+fn the_board_exports_as_step_and_reads_back() {
+    let k: Arc<dyn Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut s = session(k.clone(), "export-step");
+    let r = execute(&mut s, &CmdCtx::user(1), "pcb.export_step", json!({"path": "board.kicad_pcb", "file": "b.step"}))
+        .unwrap();
+    assert_eq!(r["bodies"], 3, "{r}");
+    // Read back in a fresh project (through the import worker): the board (exact
+    // volume), J1 and U1 as boxes.
+    let worker = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/gusset-worker");
+    assert!(worker.exists(), "build gusset-worker first (cargo build -p gusset-worker)");
+    let k: Arc<dyn Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::with_worker(Some(worker.clone())).unwrap());
+    let mut t = session(k.clone(), "export-step-back");
+    t.importer = Some(Arc::new(gusset_worker::WorkerImporter::new(worker)));
+    let dir = s.project_dir.clone().unwrap();
+    std::fs::copy(dir.join("b.step"), t.project_dir.clone().unwrap().join("b.step")).unwrap();
+    let r = execute(&mut t, &CmdCtx::user(1), "import.file", json!({"path": "b.step"})).unwrap();
+    assert_eq!(r["features"].as_array().unwrap().len(), 3, "{r}");
+    let labels: Vec<String> =
+        t.document(&Actor::User).unwrap().features.iter().filter_map(|f| f.label.clone()).collect();
+    assert_eq!(labels, vec!["Board", "J1", "U1"], "{r}");
+    let ev = t.evaluate(&Actor::User).unwrap();
+    let rounded = 60.0 * 40.0 - (4.0 - PI) * 9.0;
+    let holes = PI * 16.0 + 2.0 * PI * 0.25 + (PI * 0.25 + 1.0) + PI * 1.6 * 1.6;
+    let want = (rounded - holes) * 1.6;
+    let v = k.mass_properties(&ev.bodies[0].shape).unwrap().volume;
+    assert!((v - want).abs() < 1e-3 * want, "board volume {v}, expected {want}");
+    let text = execute(&mut t, &CmdCtx::user(2), "document.get_text", json!({})).unwrap();
+    assert!(text["text_user_text"].as_str().unwrap().contains("color: \""), "{text}");
+}

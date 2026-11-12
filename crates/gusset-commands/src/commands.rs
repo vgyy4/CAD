@@ -37,6 +37,7 @@ mod measure;
 mod ops;
 pub(crate) mod pcb;
 mod pcb_edit;
+mod pcb_layout;
 mod sch;
 #[cfg(test)]
 pub(crate) use sch::footprint_candidates as sch_footprint_candidates;
@@ -73,6 +74,7 @@ pub use pcb_edit::{
     PcbAddTrack, PcbAddVia, PcbDelete, PcbDrc, PcbExportBom, PcbExportPos, PcbMoveFootprint, PcbNew, PcbOpen, PcbSave,
     PcbSetOutline,
 };
+pub use pcb_layout::{PcbExportStep, PcbFillZones};
 pub use sch::{
     PcbUpdateFromSchematic, SchAddLabel, SchAddSymbol, SchAddWire, SchDelete, SchErc, SchMove, SchNetlist, SchNew,
     SchOpen, SchSave,
