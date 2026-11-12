@@ -50,6 +50,63 @@ fn v3mm(p: V3) -> Value {
     json!([mm(p[0]), mm(p[1]), mm(p[2])])
 }
 
+/// Sketch points that lie apart by less than 1e-6 cm (0.01 µm) but not on one another, each
+/// mapped to the first of its group (by id): the ends of lines and arcs that Fusion's profiles
+/// join there (4300's board outline: an arc's end 2.8e-6 mm from the line it runs on into,
+/// where the model's sketch merges ends only within 1e-6 mm). Points on one another stay apart.
+fn near_points(points: &std::collections::BTreeMap<u64, V3>) -> HashMap<u64, u64> {
+    const NEAR: f64 = 1e-6;
+    let mut by_x: Vec<(u64, V3)> = points.iter().map(|(q, p)| (*q, *p)).collect();
+    by_x.sort_by(|a, b| a.1[0].total_cmp(&b.1[0]).then(a.0.cmp(&b.0)));
+    let mut out: HashMap<u64, u64> = HashMap::new();
+    for (i, (qa, pa)) in by_x.iter().enumerate() {
+        for (qb, pb) in by_x.iter().skip(i + 1) {
+            if pb[0] - pa[0] > NEAR {
+                break;
+            }
+            let dd = libm::hypot(pb[0] - pa[0], pb[1] - pa[1]);
+            if dd > 0.0 && dd < NEAR {
+                let (lo, hi) = if qa < qb { (*qa, *qb) } else { (*qb, *qa) };
+                let root = out.get(&lo).copied().unwrap_or(lo);
+                out.entry(hi).or_insert(root);
+            }
+        }
+    }
+    out
+}
+
+/// A line and an arc that run past each other's ends by a hair where they meet: the line's end
+/// lies on the arc's circle and the arc's end on the line, the two ends less than 1e-3 cm
+/// (10 µm) apart. Fusion cuts each at the other's end (4300's board outline: 1.9 µm, the profile
+/// lists both pieces of each); the model's sketch merges ends only within 1e-6 mm and is left
+/// with a gap. The line's end is mapped onto the arc's (it moves along the line).
+fn crossing_ends(s: &sketch::Sketch, same: &mut HashMap<u64, u64>) {
+    const NEAR: f64 = 1e-3;
+    const ON: f64 = 1e-6;
+    let at = |q: u64| s.points.get(&q).map(|p| [p[0], p[1]]);
+    for l in s.lines.values() {
+        let (Some(a), Some(b)) = (l.start_ref, l.end_ref) else { continue };
+        let (Some(pa), Some(pb)) = (at(a), at(b)) else { continue };
+        for arc in s.arcs.values() {
+            let c = [arc.center[0], arc.center[1]];
+            for &f in arc.refs.get(1..3).unwrap_or(&[]) {
+                let Some(pf) = at(f) else { continue };
+                for (e, pe) in [(a, pa), (b, pb)] {
+                    let dd = geom::dist(pe, pf);
+                    if dd <= 1e-9 || dd >= NEAR || same.contains_key(&e) {
+                        continue;
+                    }
+                    let on_circle = (geom::dist(pe, c) - arc.radius).abs() < ON;
+                    let on_line = geom::seg_dist(pf, pa, pb) < ON;
+                    if on_circle && on_line {
+                        same.insert(e, same.get(&f).copied().unwrap_or(f));
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn sketch_json(cx: &mut Ctx, fid: u64, name: &str) -> Option<(Value, u64)> {
     let d = cx.d;
     let sid = ref_ids(d, d.rec(fid)).into_iter().find(|q| d.is(*q, super::sketch::SKETCH))?;
@@ -71,6 +128,9 @@ fn sketch_json(cx: &mut Ctx, fid: u64, name: &str) -> Option<(Value, u64)> {
     }
     let mut points: Vec<Value> =
         s.points.iter().map(|(q, p)| json!({"id": format!("p{q}"), "x": mm(p[0]), "y": mm(p[1])})).collect();
+    let mut same = near_points(&s.points);
+    crossing_ends(&s, &mut same);
+    let pid = |q: u64| format!("p{}", same.get(&q).copied().unwrap_or(q));
     let mut curves = Vec::new();
     // A spline is its stored B-spline: the end control points are the curve's sketch points, the
     // inner ones points of their own; knots and weights as stored.
@@ -102,8 +162,7 @@ fn sketch_json(cx: &mut Ctx, fid: u64, name: &str) -> Option<(Value, u64)> {
             && s.points.contains_key(&a)
             && s.points.contains_key(&b)
         {
-            curves
-                .push(json!({"id": format!("c{q}"), "type": "line", "start": format!("p{a}"), "end": format!("p{b}")}));
+            curves.push(json!({"id": format!("c{q}"), "type": "line", "start": pid(a), "end": pid(b)}));
         }
     }
     for (q, a) in &s.arcs {
@@ -115,7 +174,7 @@ fn sketch_json(cx: &mut Ctx, fid: u64, name: &str) -> Option<(Value, u64)> {
         if full && has(c).is_some() {
             curves.push(json!({"id": format!("c{q}"), "type": "circle", "center": format!("p{}", c.unwrap_or(0)), "radius": mm(a.radius)}));
         } else if let (Some(c), Some(st), Some(en)) = (has(c), has(st), has(en)) {
-            curves.push(json!({"id": format!("c{q}"), "type": "arc", "center": format!("p{c}"), "start": format!("p{st}"), "end": format!("p{en}")}));
+            curves.push(json!({"id": format!("c{q}"), "type": "arc", "center": format!("p{c}"), "start": pid(st), "end": pid(en)}));
         }
     }
     j.insert("points".into(), points.into());
