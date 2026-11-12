@@ -2241,3 +2241,72 @@ fn a_wound_face_beside_a_trimmed_spline_is_measured_face_by_face() {
     let want = v(&whole) - (v(&prism) - v(&threaded));
     assert!(close(v(&nut), want, 1e-8), "{} vs {want}", v(&nut));
 }
+
+/// A helical sweep's side made by a profile line parallel to the axis is an exact cylinder face
+/// (3722's coil: a triangle with one side on the globe's base, apex out, a turn and a half):
+/// joined to a rod of that radius it becomes part of the rod's side, so the coil's ends can be
+/// chamfered. While the coil's side was a B-spline beside the rod's cylinder OCCT refused both
+/// ("ChFi3d_Builder: only 2 faces", "TopOpeBRepDS_DataStructure::Point"). The rod's seam is
+/// turned away from the coil's start: a blend that ends on a seam still fails.
+#[test]
+fn a_helical_sweep_of_an_axial_line_is_a_cylinder_face() {
+    let h = 2.0 / 3f64.sqrt();
+    let (r, z0) = (33.5, 4.0);
+    let tri = Profile {
+        frame: Frame::XZ,
+        regions: vec![Region2 {
+            outer: Loop2 {
+                edges: [[r, z0 - h], [r, z0 + h], [r + 2.0, z0]]
+                    .iter()
+                    .zip([[r, z0 + h], [r + 2.0, z0], [r, z0 - h]])
+                    .enumerate()
+                    .map(|(i, (a, b))| ProfileEdge { seg: Seg2::Line { a: *a, b }, tag: 30 + i as u64 })
+                    .collect(),
+            },
+            holes: vec![],
+        }],
+    };
+    let path = SweepPath::Helix {
+        origin: [0.0, 0.0, z0],
+        axis: [0.0, 0.0, 1.0],
+        x: [1.0, 0.0, 0.0],
+        radius: r,
+        pitch: 13.0 / 3.0,
+        height: 6.5,
+    };
+    let spec = SweepSpec { orientation: SweepOrientation::Frenet, twist: 0.0 };
+    let coil = k().sweep(&tri, &path, &spec).unwrap();
+    let t = k().topology(&coil.shape).unwrap();
+    assert!(
+        t.faces.iter().any(|f| f.kind == SurfaceKind::Cylinder),
+        "{:?}",
+        t.faces.iter().map(|f| f.kind).collect::<Vec<_>>()
+    );
+    // Pappus: area x 2 pi x centroid radius per turn (section 40: 743.6554 mm3).
+    let want = h * 2.0 * std::f64::consts::TAU * (r + 2.0 / 3.0) * 1.5;
+    let v = |s: &Shape| k().mass_properties(s).unwrap().volume;
+    // OCCT fits the slanted sides (2e-6 measured).
+    assert!(close(v(&coil.shape), want, 1e-5), "{} vs {want}", v(&coil.shape));
+    let rod = Profile { frame: Frame::XY, regions: vec![Region2 { outer: circle_loop(r, 1), holes: vec![] }] };
+    let rod = k().extrude(&rod, &ExtrudeSpec { distance: 20.0, symmetric: false }).unwrap().shape;
+    // The rod's seam a half radian from the coil's start: OCCT does not end a blend on a seam.
+    let rod =
+        k().transform(&rod, &Transform::Rotate { origin: [0.0; 3], axis: [0.0, 0.0, 1.0], angle: 0.5 }).unwrap().shape;
+    let joined = k().boolean(BoolOp::Union, &rod, &coil.shape).unwrap().shape;
+    let rod_v = std::f64::consts::PI * r * r * 20.0;
+    assert!(close(v(&joined), rod_v + want, 1e-6), "{} vs {}", v(&joined), rod_v + want);
+    // The start's upper side and the end's foot on the rod (at -x, a turn and a half on).
+    let t = k().topology(&joined).unwrap();
+    let near = |p: [f64; 3]| {
+        t.edges
+            .iter()
+            .position(|e| e.midpoint.iter().zip(p).all(|(a, b)| (a - b).abs() < 1e-3))
+            .unwrap_or_else(|| panic!("no edge at {p:?}"))
+    };
+    let edges = [near([r + 1.0, 0.0, z0 + h / 2.0]) as u32, near([-r, 0.0, z0 + 6.5]) as u32];
+    // The start's chamfer takes material, the end's (a concave edge) adds it.
+    let start = k().chamfer(&joined, &edges[..1], 1.99).unwrap().shape;
+    let end = k().chamfer(&joined, &edges[1..], 1.99).unwrap().shape;
+    assert!(v(&start) < v(&joined) && v(&end) > v(&joined));
+    assert!(k().chamfer(&joined, &edges, 1.99).is_ok());
+}

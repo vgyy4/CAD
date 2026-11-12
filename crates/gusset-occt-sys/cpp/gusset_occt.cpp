@@ -71,6 +71,11 @@
 #include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
 #include <ShapeFix_Solid.hxx>
+#include <ShapeFix_Edge.hxx>
+#include <ShapeFix_Wire.hxx>
+#include <ShapeUpgrade_ShapeDivideAngle.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
+#include <gp_Lin.hxx>
 #include <GeomAbs_JoinType.hxx>
 #include <gp_GTrsf.hxx>
 #include <gp_Trsf.hxx>
@@ -1201,13 +1206,114 @@ struct Swept {
   std::vector<Rec> recs;
 };
 
+// A helical sweep's side made by a profile line parallel to the axis lies on a cylinder about
+// the axis (a helix is a straight line on the cylinder's parameter plane); MakePipeShell gives
+// it as a B-spline approximation. Such a face is put on the exact cylinder, its edges kept and
+// their pcurves projected anew, so a join with a coaxial cylinder of that radius makes one
+// face of the two (3722's coil on its globe's base: the chamfers of the coil's ends run along
+// that face). Kept only where the solid stays valid and of the same volume (within the
+// sweep's own fit).
+void exact_helix_cylinders(Swept& sw, const std::vector<TaggedEdge>& tagged, const gp_Ax1& axis) {
+  const gp_Lin al(axis);
+  const gp_Vec ad(axis.Direction());
+  BRepBuilderAPI_Copy copy(sw.solid);
+  TopoDS_Shape solid = copy.Shape();
+  std::vector<Rec> recs = sw.recs;
+  BRep_Builder b;
+  bool changed = false;
+  for (auto& r : recs) {
+    if (copy.IsDone()) {
+      const ShapeList& m = copy.Modified(r.face);
+      if (!m.IsEmpty()) r.face = m.First();
+    }
+    if (r.kind != GS_ORIGIN_SWEPT || r.face.ShapeType() != TopAbs_FACE) continue;
+    const TaggedEdge* te = nullptr;
+    for (const auto& t : tagged) {
+      if (int64_t(t.tag) == r.a) te = &t;
+    }
+    if (!te) continue;
+    BRepAdaptor_Curve c(te->e);
+    if (c.GetType() != GeomAbs_Line || !c.Line().Direction().IsParallel(axis.Direction(), 1e-9)) continue;
+    const gp_Pnt p0 = c.Value(c.FirstParameter());
+    const double rad = al.Distance(p0);
+    if (rad < 1e-6) continue;
+    TopoDS_Face f = TopoDS::Face(r.face);
+    if (!f.Location().IsIdentity()) continue;
+    TopLoc_Location old_loc;
+    occ::handle<Geom_Surface> old = BRep_Tool::Surface(f, old_loc);
+    if (old.IsNull() || !old_loc.IsIdentity()) continue;
+    // The face must lie on the cylinder, and face the way its surface does.
+    BRepAdaptor_Surface sa(f, false);
+    bool on = true;
+    for (int i = 0; i <= 4 && on; ++i) {
+      for (int j = 0; j <= 4 && on; ++j) {
+        const double u = sa.FirstUParameter() + (sa.LastUParameter() - sa.FirstUParameter()) * i / 4.0;
+        const double v = sa.FirstVParameter() + (sa.LastVParameter() - sa.FirstVParameter()) * j / 4.0;
+        on = std::fabs(al.Distance(sa.Value(u, v)) - rad) <= 1e-6 * (1.0 + rad);
+      }
+    }
+    if (!on) continue;
+    gp_Pnt pm;
+    gp_Vec du, dv;
+    sa.D1(0.5 * (sa.FirstUParameter() + sa.LastUParameter()), 0.5 * (sa.FirstVParameter() + sa.LastVParameter()), pm,
+          du, dv);
+    gp_Vec radial(al.Location(), pm);
+    radial -= ad * radial.Dot(ad);
+    gp_Vec start(al.Location(), p0);
+    start -= ad * start.Dot(ad);
+    gp_Ax3 frame(axis.Location(), axis.Direction(), gp_Dir(start));
+    if (du.Crossed(dv).Dot(radial) < 0) frame.YReverse();
+    occ::handle<Geom_CylindricalSurface> cyl = new Geom_CylindricalSurface(frame, rad);
+    const double tol = BRep_Tool::Tolerance(f);
+    b.UpdateFace(f, cyl, TopLoc_Location(), tol);
+    for (TopExp_Explorer ee(f, TopAbs_EDGE); ee.More(); ee.Next()) {
+      TopoDS_Edge e = TopoDS::Edge(ee.Current());
+      b.UpdateEdge(e, occ::handle<Geom2d_Curve>(), old, old_loc, BRep_Tool::Tolerance(e));
+      ShapeFix_Edge sfe;
+      sfe.FixAddPCurve(e, f, false, 1e-7);
+    }
+    for (TopExp_Explorer we(f, TopAbs_WIRE); we.More(); we.Next()) {
+      ShapeFix_Wire sfw(TopoDS::Wire(we.Current()), f, 1e-7);
+      sfw.FixShifted();
+    }
+    for (TopExp_Explorer ee(f, TopAbs_EDGE); ee.More(); ee.Next()) {
+      ShapeFix_Edge().FixSameParameter(TopoDS::Edge(ee.Current()));
+    }
+    changed = true;
+  }
+  if (!changed) return;
+  // A face winding several turns round its cylinder is split into half turns: OCCT's booleans
+  // drop a solid with one (a join lost the whole coil).
+  ShapeUpgrade_ShapeDivideAngle divide(M_PI, solid);
+  if (!divide.Perform()) return;
+  solid = divide.Result();
+  occ::handle<ShapeBuild_ReShape> ctx = divide.GetContext();
+  std::vector<Rec> split;
+  for (const auto& r : recs) {
+    const TopoDS_Shape v = ctx.IsNull() ? r.face : ctx->Value(r.face);
+    if (v.ShapeType() == TopAbs_FACE) {
+      split.push_back(Rec{v, r.kind, r.a, r.b});
+      continue;
+    }
+    for (TopExp_Explorer ex(v, TopAbs_FACE); ex.More(); ex.Next()) split.push_back(Rec{ex.Current(), r.kind, r.a, r.b});
+  }
+  recs = split;
+  BRepLib::SameParameter(solid, 1e-6, true);
+  if (!BRepCheck_Analyzer(solid).IsValid()) return;
+  const double before = std::fabs(measured_volume(sw.solid)), after = std::fabs(measured_volume(solid));
+  // The sweep's other faces are fitted (2e-6 of the volume measured, ADR 0034).
+  if (std::fabs(after - before) > 1e-5 * before) return;
+  sw.solid = solid;
+  sw.recs = recs;
+}
+
 // Sweeps one closed profile wire along the spine into a solid.
 Swept sweep_loop(const TopoDS_Wire& prof, const std::vector<TaggedEdge>& tagged, const Spine& sp, const Frame& pf,
-                 int orientation, const TopoDS_Wire& guide, uint32_t region, const gp_Dir* binormal = nullptr) {
+                 int orientation, const TopoDS_Wire& guide, uint32_t region, const gp_Ax1* helix = nullptr) {
   BRepOffsetAPI_MakePipeShell mk(sp.wire);
-  if (binormal) {
+  if (helix) {
     // A helix: the profile keeps its angle to the axis (ADR 0034), so a thread stays exact.
-    mk.SetMode(*binormal);
+    mk.SetMode(helix->Direction());
   } else if (!guide.IsNull()) {
     // Parametric (not curvilinear) correspondence: the guide carries the path's parameter,
     // and OCCT's curvilinear pairing loses a few tenths of a percent of volume on twists.
@@ -1242,6 +1348,7 @@ Swept sweep_loop(const TopoDS_Wire& prof, const std::vector<TaggedEdge>& tagged,
     if (!a.IsNull() && a.ShapeType() == TopAbs_FACE) out.recs.push_back(Rec{a, GS_ORIGIN_CAP, 0, int64_t(region)});
     if (!b.IsNull() && b.ShapeType() == TopAbs_FACE) out.recs.push_back(Rec{b, GS_ORIGIN_CAP, 1, int64_t(region)});
   }
+  if (helix) exact_helix_cylinders(out, tagged, *helix);
   return out;
 }
 
@@ -1688,7 +1795,7 @@ int gs_revolve(const GsProfile* p, const double axis_origin[2], const double axi
 // Sweeps the profile faces along `sp` into the result shape and its face origins.
 int sweep_faces(const std::vector<TopoDS_Face>& faces, const std::vector<TaggedEdge>& tagged,
                 const std::vector<uint32_t>& face_region, const Spine& sp, const Frame& f, int orientation,
-                const TopoDS_Wire& guide, const gp_Dir* binormal, GsShape** out, GsBuf* origins) {
+                const TopoDS_Wire& guide, const gp_Ax1* helix, GsShape** out, GsBuf* origins) {
   std::vector<TopoDS_Shape> solids;
   std::vector<Rec> recs;
   for (size_t ri = 0; ri < faces.size(); ++ri) {
@@ -1697,7 +1804,7 @@ int sweep_faces(const std::vector<TopoDS_Face>& faces, const std::vector<TaggedE
     for (TopExp_Explorer ex(faces[ri], TopAbs_WIRE); ex.More(); ex.Next()) {
       if (!ex.Current().IsSame(outer)) holes.push_back(TopoDS::Wire(ex.Current()));
     }
-    Swept body = sweep_loop(outer, tagged, sp, f, orientation, guide, face_region[ri], binormal);
+    Swept body = sweep_loop(outer, tagged, sp, f, orientation, guide, face_region[ri], helix);
     if (holes.empty()) {
       solids.push_back(body.solid);
       recs.insert(recs.end(), body.recs.begin(), body.recs.end());
@@ -1708,7 +1815,7 @@ int sweep_faces(const std::vector<TopoDS_Face>& faces, const std::vector<TaggedE
     std::vector<Rec> all = body.recs;
     std::vector<Swept> swept_holes;
     for (const auto& h : holes) {
-      Swept hole = sweep_loop(h, tagged, sp, f, orientation, guide, face_region[ri], binormal);
+      Swept hole = sweep_loop(h, tagged, sp, f, orientation, guide, face_region[ri], helix);
       tools.Append(hole.solid);
       all.insert(all.end(), hole.recs.begin(), hole.recs.end());
       swept_holes.push_back(hole);
@@ -1806,7 +1913,8 @@ int gs_sweep_helix(const GsProfile* p, const double* h, double pitch, double hei
   std::vector<TaggedEdge> tagged;
   std::vector<uint32_t> face_region;
   std::vector<TopoDS_Face> faces = build_faces(p, f, tagged, face_region);
-  return sweep_faces(faces, tagged, face_region, sp, f, 0, TopoDS_Wire(), &axis, out, origins);
+  const gp_Ax1 helix(o, axis);
+  return sweep_faces(faces, tagged, face_region, sp, f, 0, TopoDS_Wire(), &helix, out, origins);
   GS_GUARD_END
 }
 
