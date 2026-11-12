@@ -168,7 +168,7 @@ fn face_of(cx: &mut Ctx, fid: u64) -> Result<Face, &'static str> {
     let (_, names) = super::naming::recipe(cx.d, *rid);
     let (g, ops) = names.as_ref().and_then(|n| n.first()).and_then(|f| f.first()).ok_or("its face has no name")?;
     let Some(FaceG::Cyl { feature, seg, pl, .. }) = cx.face_with_middle(g, ops) else {
-        return Err("its face is not the side of an extruded circle");
+        return stored_side(cx, g, ops).ok_or("its face is not the side of an extruded circle");
     };
     let eg = cx.ext_geom(feature).ok_or("its face's extrude is not read")?;
     let (Some(t0), Some(t1)) = (eg.t0, eg.t1) else { return Err("its face's extrude has no distance") };
@@ -182,6 +182,43 @@ fn face_of(cx: &mut Ctx, fid: u64) -> Result<Face, &'static str> {
     }
     let centre = world(&pl, [arc.center[0], arc.center[1]], 0.0);
     Ok(Face { centre, normal: pl.z, x: pl.x, t0, t1, radius: arc.radius })
+}
+
+/// The side of a whole extruded circle known from the stored bodies where the extrude's
+/// generator numbering is not (a profile with holes the stored faces do not confirm: 3350's
+/// Thread2 is on the 8 mm hole of a hexagon, generator 10 of `Extrude8`): the stored faces named
+/// (generator, the extrude) lie on one cylinder, whose axis is the extrude's direction through
+/// the centre of exactly one whole circle of the profile with that radius.
+fn stored_side(cx: &mut Ctx, g: &str, ops: &[i32]) -> Option<Face> {
+    let [op] = ops else { return None };
+    let fid = *cx.opmap.get(&u64::try_from(*op).ok()?)?;
+    if !cx.d.is(fid, super::EXTRUDE) {
+        return None;
+    }
+    let super::naming::Surface::Cylinder { origin, axis, radius } = cx.stored_face(g, ops)?.surface else {
+        return None;
+    };
+    let eg = cx.ext_geom(fid)?;
+    let (Some(t0), Some(t1)) = (eg.t0, eg.t1) else { return None };
+    let pl = eg.pl;
+    if eg.tapered || (dot(unit(axis)?, pl.z).abs() - 1.0).abs() > 1e-9 {
+        return None;
+    }
+    let mut found = None;
+    for seg in &eg.segs {
+        let Some(arc) = eg.sketch.arcs.get(&seg.curve) else { continue };
+        let closed = seg.poly.first().zip(seg.poly.last()).is_some_and(|(a, b)| super::geom::dist(*a, *b) < 1e-9);
+        let centre = world(&pl, [arc.center[0], arc.center[1]], 0.0);
+        let w = sub(centre, origin);
+        let off = norm(sub(w, mul(pl.z, dot(w, pl.z))));
+        if closed && seg.poly.len() >= 3 && (arc.radius - radius).abs() < 1e-7 && off < 1e-7 {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(Face { centre, normal: pl.z, x: pl.x, t0, t1, radius: arc.radius });
+        }
+    }
+    found
 }
 
 /// The tree features of a modeled thread (mm). Fusion's form, read from the stored bodies of
@@ -266,11 +303,13 @@ pub(super) fn features(t: &Thread, f: &Face, name: &str, body: &str) -> Result<V
         };
     // 1. The face moved to the thread's diameter.
     if t.internal {
-        if r0 > rmin + 1e-6 {
-            return Err("its hole is wider than the thread's minor diameter");
-        }
+        // The hole filled in to the minor diameter (3350's Thread2: 8 mm to 7.51775 mm), or
+        // opened out to it.
         if r0 < rmin - 1e-6 {
-            ring(&mut out, "face", &[r0, rmin], face_lo, face_hi - face_lo, "join", Some(body));
+            return Err("its hole is narrower than the thread's minor diameter");
+        }
+        if r0 > rmin + 1e-6 {
+            ring(&mut out, "face", &[rmin, r0], face_lo, face_hi - face_lo, "join", Some(body));
             moved(&mut out, k, r0, rmin, face_lo, face_hi);
         }
     } else {
@@ -433,4 +472,48 @@ fn on_cylinder(q: V3, k: usize, r: f64, lo: f64, hi: f64) -> bool {
 
 fn r9(v: f64) -> f64 {
     (v * 1e9).round() / 1e9
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+
+    fn m16(internal: bool) -> Thread {
+        Thread {
+            angle: 60.0,
+            class: "6H".into(),
+            designation: "M16x1".into(),
+            internal,
+            major: 1.61522,
+            minor: 1.50355,
+            pitch: 0.1,
+            length: None,
+            offset: None,
+            end_code: 2,
+        }
+    }
+
+    #[test]
+    fn an_internal_thread_fills_its_hole_in_to_the_minor_diameter() {
+        // 3350's Thread2: an 8 mm hole 3 mm deep, from z -5 up.
+        let face = |r: f64| Face {
+            centre: [0.0, 0.0, -0.5],
+            normal: [0.0, 0.0, 1.0],
+            x: [1.0, 0.0, 0.0],
+            t0: 0.0,
+            t1: 0.3,
+            radius: r,
+        };
+        let out = features(&m16(true), &face(0.8), "Thread2", "Extrude8").unwrap();
+        let ring = &out[1];
+        assert_eq!(ring["operation"], "join");
+        assert_eq!(ring["target"], "Extrude8");
+        let radii: Vec<f64> =
+            out[0]["curves"].as_array().unwrap().iter().map(|c| c["radius"].as_f64().unwrap()).collect();
+        assert_eq!(radii, vec![7.51775, 8.0]);
+        assert!((ring["moves_face"]["to"].as_f64().unwrap() - 7.51775).abs() < 1e-9);
+        // A hole already narrower than the thread's minor diameter is not filled.
+        assert!(features(&m16(true), &face(0.7), "Thread2", "Extrude8").is_err());
+    }
 }
