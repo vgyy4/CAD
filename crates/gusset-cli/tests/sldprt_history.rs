@@ -51,7 +51,8 @@ fn sldprt_parts_come_in_as_history_or_shapes() {
     }
     files.sort();
     let only = std::env::var("GUSSET_SLDPRT_ONLY").ok();
-    let worker = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/gusset-worker");
+    let worker = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../target/debug/gusset-worker{}", std::env::consts::EXE_SUFFIX));
     let (mut history, mut shapes, mut failed) = (0, 0, 0);
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
     for f in files.iter().filter(|f| only.as_deref().is_none_or(|o| f.to_string_lossy().contains(o))) {

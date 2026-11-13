@@ -34,7 +34,8 @@ fn inventor_parts_come_in_as_history_or_bodies() {
     if let Ok(only) = std::env::var("GUSSET_IPT_ONLY") {
         files.retain(|f| f.to_string_lossy().contains(&only));
     }
-    let worker = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/gusset-worker");
+    let worker = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../target/debug/gusset-worker{}", std::env::consts::EXE_SUFFIX));
     let (mut history, mut shapes, mut failed) = (0, 0, 0);
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
     for f in &files {

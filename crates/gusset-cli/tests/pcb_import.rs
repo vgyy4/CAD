@@ -98,7 +98,8 @@ fn a_kicad_board_comes_in_with_exact_holes() {
 
 #[test]
 fn a_footprint_step_model_replaces_its_box() {
-    let worker = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/gusset-worker");
+    let worker = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../target/debug/gusset-worker{}", std::env::consts::EXE_SUFFIX));
     if !worker.exists() {
         panic!("build gusset-worker first (cargo build -p gusset-worker)");
     }
@@ -145,7 +146,8 @@ fn the_board_exports_as_step_and_reads_back() {
     assert_eq!(r["bodies"], 3, "{r}");
     // Read back in a fresh project (through the import worker): the board (exact
     // volume), J1 and U1 as boxes.
-    let worker = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/gusset-worker");
+    let worker = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../target/debug/gusset-worker{}", std::env::consts::EXE_SUFFIX));
     assert!(worker.exists(), "build gusset-worker first (cargo build -p gusset-worker)");
     let k: Arc<dyn Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::with_worker(Some(worker.clone())).unwrap());
     let mut t = session(k.clone(), "export-step-back");

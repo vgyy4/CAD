@@ -18,7 +18,8 @@ type Placed = (String, [f64; 3], [f64; 3]);
 
 fn import(src: &Path, skip: &[&str]) -> (Value, Vec<Placed>) {
     let doc = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
-    let worker = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/gusset-worker");
+    let worker = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../target/debug/gusset-worker{}", std::env::consts::EXE_SUFFIX));
     let k: Arc<dyn gusset_kernel::Kernel> =
         Arc::new(gusset_kernel_occt::OcctKernel::with_worker(Some(worker.clone())).unwrap());
     let mut s = Session::new(&doc, k, &CmdCtx::user(0));

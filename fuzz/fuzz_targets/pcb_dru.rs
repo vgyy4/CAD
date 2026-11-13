@@ -15,7 +15,8 @@ fuzz_target!(|data: &[u8]| {
         kind: "via",
         layers: vec!["F.Cu".into(), "B.Cu".into()],
     };
-    for k in [Kind::Clearance, Kind::TrackWidth, Kind::ViaDiameter, Kind::HoleSize, Kind::HoleToHole, Kind::EdgeClearance]
+    for k in
+        [Kind::Clearance, Kind::TrackWidth, Kind::ViaDiameter, Kind::HoleSize, Kind::HoleToHole, Kind::EdgeClearance]
     {
         let _ = rules.find(k, &a, Some(&b));
         let _ = rules.find(k, &a, None);
