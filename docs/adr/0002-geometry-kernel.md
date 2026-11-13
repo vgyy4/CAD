@@ -90,3 +90,11 @@ release's OCCT source archive carries the patches next to the unmodified source
   read this way: one body blob of PC Joystick Adapter.f3d (24 bodies whose projected pcurves
   self-intersect 150-250 times) reads in 287 s instead of 417 s; the 155 shapes of that
   design read to the same B-rep bytes and volumes. To offer upstream.
+- `gusset-0004-draft-vertex-parallel-extrema.patch`: `Draft_Modification` recomputes a vertex
+  where its edge's curve meets the new face; when they do not meet it took the nearest point
+  of the curve to the face (`Extrema_ExtCS`) and read the points of a parallel result (it
+  has none) and of index 0 when no distance was below the start value: a segmentation fault (a
+  rebuild of adafruit 5981 TRRS Trinkey Case drafting a part an earlier step left different).
+  It now reports the vertex as not recomputed (`Draft_VertexRecomputation`), as it does when
+  the extremum finds nothing. Results where it found a point are unchanged (OCCT goldens
+  unchanged). To offer upstream.
