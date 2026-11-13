@@ -2530,7 +2530,10 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   if (!outward_normal(fs[0], p0, n1) || !outward_normal(fs[1], p0, n2)) return false;
   if (line && fillet && (s0.GetType() == GeomAbs_Cylinder || s1.GetType() == GeomAbs_Cylinder))
     return plane_cylinder_corner(body, fs, a, c, out);
-  if (std::fabs(n1.Dot(n2)) > 1e-9) return false;
+  // Square to 1e-6 rad: Fusion stores angles to 7 digits (5998's Fillet5: a slot turned 20
+  // degrees whose end stands 1e-7 rad off square to its sides). The corner made square is
+  // then off by some 1e-6 of a blend size, below the volume check's 1e-7 of the body.
+  if (std::fabs(n1.Dot(n2)) > 1e-6) return false;
   // Concave: the material is on the outer side of both faces' corner (512: the top corners of
   // a window cut through a wall, rounded to a half circle). Only straight edges.
   {

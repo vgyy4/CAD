@@ -672,6 +672,46 @@ fn a_chamfer_that_uses_up_a_pockets_sides_is_its_rim_tapered() {
     }
 }
 
+/// 5998's `Fillet5`: a slot 0.4 wide and 1.6 deep, turned 20 degrees, its two inner corners
+/// at one end rounded by 0.2, which uses up the end (a full round). Fusion stores the angles to
+/// 7 digits, so the end stands 1e-7 rad off square to the sides; the rounds are still the
+/// corners filled, r^2 (1 - pi / 4) each along the depth.
+#[test]
+fn rounds_of_a_slots_end_a_hair_off_square_fill_its_corners() {
+    let plate = plain_box(10.0, 10.0, 2.0);
+    let (s, c) = (libm::sin(20f64.to_radians()), libm::cos(20f64.to_radians()));
+    let (u, v) = ([c, s], [-s, c]);
+    let tilt = 1e-7;
+    let w = [v[0] * libm::cos(tilt) - v[1] * libm::sin(tilt), v[0] * libm::sin(tilt) + v[1] * libm::cos(tilt)];
+    let at = |a: f64, b: f64| [5.0 + a * u[0] + b * v[0], 5.0 + a * u[1] + b * v[1]];
+    let p1 = at(1.5, -0.2);
+    let p2 = [p1[0] + 0.4 * w[0], p1[1] + 0.4 * w[1]];
+    let pts = [at(-1.5, -0.2), p1, p2, at(-1.5, 0.2)];
+    let slot = Loop2 {
+        edges: (0..4)
+            .map(|i| ProfileEdge { seg: Seg2::Line { a: pts[i], b: pts[(i + 1) % 4] }, tag: 60 + i as u64 })
+            .collect(),
+    };
+    let frame = Frame { origin: [0.0, 0.0, 0.4], ..Frame::XY };
+    let p = Profile { frame, regions: vec![Region2 { outer: slot, holes: vec![] }] };
+    let pocket = k().extrude(&p, &ExtrudeSpec { distance: 1.6, symmetric: false }).unwrap();
+    let b = k().boolean(BoolOp::Cut, &plate.shape, &pocket.shape).unwrap();
+    let t = k().topology(&b.shape).unwrap();
+    let corner = |q: [f64; 2]| {
+        t.edges.iter().position(|e| (e.midpoint[0] - q[0]).abs() < 1e-6 && (e.midpoint[1] - q[1]).abs() < 1e-6).unwrap()
+            as u32
+    };
+    let edges = [corner(p1), corner(p2)];
+    let before = k().mass_properties(&b.shape).unwrap().volume;
+    let f = k().fillet(&b.shape, &edges, 0.2).unwrap();
+    let added = k().mass_properties(&f.shape).unwrap().volume - before;
+    let want = 2.0 * 0.04 * (1.0 - std::f64::consts::FRAC_PI_4) * 1.6;
+    assert!(close(added, want, 1e-6), "{added} vs {want}");
+    for e in edges {
+        assert!(f.face_origins.iter().any(|o| o.contains(&FaceOrigin::FromEdge { input: 0, edge: e })), "edge {e}");
+    }
+}
+
 fn plate_with_hole(cx: f64, cy: f64) -> OpResult {
     let mut region = Region2 { outer: rect(40.0, 40.0, 1), holes: vec![] };
     region
