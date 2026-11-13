@@ -3659,6 +3659,95 @@ Reader: `fusion_tree/acis.rs` (`NamedEdge::body_ops`), `fusion_tree/naming.rs` (
 * Tests: `gusset-sat` (134, new `a_stored_edge_knows_the_operations_its_body_has_been_through`), `gusset-commands`,
   `modeling_tree_import`, `modeling_chamfer` pass; clippy and fmt clean.
 
+## 59. Round 31 B: a clip's offset, a join that leaves a body apart, a thin wall about its curves, a bend's sketch where it was drawn (2026-11-13)
+Kernel: `gusset_occt.cpp` (`gs_offset_faces`, `offset_planes_by_sweeps`, `swept_by_planes`). Readers:
+`fusion_tree/naming.rs` (`truth`, `half_turn_across`), `fusion_tree/json.rs` (`joins_of_several_bodies`,
+`sketches_where_they_were_drawn_against`), `fusion_tree/thin.rs` (`chains`, `with_other_walls`),
+`fusion_tree/joint.rs` (`positions`).
+
+### 5998 OffsetFaces2: a side the first offset moved, and a body BRepOffset lost
+* The point [-10.756497, 6.917761, 9.0] is the middle of `c6026`, a side of `Extrude8 (2)` (Top's lid clips: one sketch,
+  two profiles mirrored in y, 2 mm deep from z 10 down). The face was in the model; the body it was looked for in had
+  two faces. `OffsetFaces1` (-0.15 mm, 14 faces of the clips and of three V-grooves along the lid's sides) went to
+  BRepOffset, which gave back a valid shell of two faces (`Loft1`'s oblique side and its end cap): every other face
+  of the body had no image. The same happens with a plate and a clip reaching past its edge, no loft at all.
+* Kernel: a BRepOffset result in which an input face has no image is refused, and a new fallback moves planar faces
+  whose edges are lines between planes one after the other: each face's swept solid, the ruled loft from its outline
+  to the outline where its moved plane meets its neighbours' planes (between two edges of one line, square to the
+  line), is cut from the body (inward) or joined to it (outward). A face moved later sees the faces moved before it,
+  so the two faces of a groove meet on their moved planes. Each step must change the volume by exactly its swept
+  solid's (1e-7 of the body): the solid lies wholly inside (cut) or outside (joined). The moved face is the solid's
+  far cap; a piece of its side the unification leaves takes the origin of the neighbour whose plane it is on. 5998's
+  14 steps agree to 3e-8 mm3 each. Golden test `a_clips_slanted_side_moves_between_its_neighbours_planes` (fails
+  without the fallback: BRepOffset gives the plate without its clip).
+* Reader: `OffsetFaces1`'s side `10 [394]` was read as `c6032`, a side `OffsetFaces2` moves back. The stored bodies
+  hold face `10` twice: over the clip's whole straight side (x = -12.9 mm, y 3.774..7.037, `c5903`'s piece and
+  `c6017`) and over the piece the join leaves exposed (y 6.2..7.037, `c6017`). Both counted as candidates, so the
+  generator map decided, wrongly. Candidates over the same pieces of a line now count once, the one over fewer
+  pieces kept: `10` is `c6017` (and `3`, its mirror, `c5909`, now by its own middle). By the mirror symmetry of the
+  two offsets (1: `3`, `8` / `10`, `11`; 2: `4`, `5`, `6` / `13`, `14`, `9`) the profile's sides are numbered round it
+  from `c5909` (`c6032` for the mirrored one).
+* 5998 then builds both offsets and stops at `OffsetFaces1 (2)` (Bottom, -0.4 mm on the walls of the text's glyph
+  pockets, moved alone): "the moved faces would cut through the rest of the part" (not looked into).
+
+### 2354 BoxPrimitive6: a join that leaves one of its bodies apart
+* `BoxPrimitive6` (x -2.5..0.917, y 33..60, z 5.5..7 mm) joins to `BoxPrimitive1 (2)` (the flat ribbon, z 5..5.5),
+  `BoxPrimitive3` (a strip x 0..0.5, z 4..5) and `Revolve1` (the bend about x = 0, z = 5). `Extrude5` then cuts
+  "`BoxPrimitive3` and `Revolve1`" from the box's top down 3.5 mm, and every later feature names `Revolve1`, among
+  them `Fillet2`, whose rounds at x = 60 mm are the flat ribbon's far end: the flat part is in `Revolve1`'s body. The
+  box touches the flat part (its face at z = 5.5) and the bent part, not the strip.
+* Rule (with the round-26 one for a join of several bodies): where later features name several of the join's
+  bodies, the tool joined the one every later feature naming any of them names (`Revolve1`); the others they name
+  stayed bodies of their own (`BoxPrimitive3`, still cut by `Extrude5` as a body of its own); those no later feature
+  names became part of it (`BoxPrimitive1 (2)`, a `combine`). Where no body is named by every such feature the
+  join stays refused (3802's `Extrude4`, whose later features name `Extrude1` and `Extrude2` each alone, as
+  before). A first reading (every body under one name, later references renamed) was replaced by this one before
+  the run below: it would have merged the strip, and 3802's bodies.
+* 2354 then stops at `Revolve2` (180 degrees about an edge through the middle of a box's face: the stored end cap
+  `2 [374]` reaches 0.388 mm on both sides of the axis, the join used up the start cap, and the turn's only other
+  faces are a cylinder of that radius and its two end planes). A half turn of a face the axis crosses is now read
+  either way where both sides of the face reach the same radii (the same solid), else by the side of the stored
+  points beyond the shorter side's reach (the start cap, or the end cap where the start is gone). Unit test
+  `a_half_turn_of_a_face_the_axis_crosses_turns_where_its_sides_differ`. 2354 then stops at `Fillet1` (four edges
+  unresolved, radius 6.65 mm on `Revolve1`; not looked into).
+
+### 6126 Extrude5 (2): wall location 1 is the middle
+* The thin cut (0.6 mm deep from z 15.6, wall 1 mm, location 1) follows three separate lines of `Sketch4 (2)`: a "-"
+  (x = 4, y 1.5..5.3 mm) and a "+" (x = 4, y -5.3..-1.5 and y = -3.4, x 2.1..5.9). Its stored faces (op 364 of the
+  body's names) are the slots' sides at x 3.5 and 4.5, x 3.5 and 4.5, y -3.9 and -2.9 mm: 0.5 mm either side of each
+  line. Location 1 is a wall about the middle (location 2 one side, sections 33 and 37).
+* The faces are named per selected curve k: `12 + 7k` both sides (the left one also carries the second operation, as
+  in section 33), `+3` the cap on the sketch plane, `+5` the floor, `+4` and `+6` the ends at the line's start and
+  end. Not yet used: a wall along several chains keeps no cap or side names.
+* Reading: a wall about the middle may follow several chains (curves split where their ends meet): one wall sketch
+  per chain and one extrude per chain (copies of the feature, `part 2`, `part 3`). 6126 then reads `Extrude5 (2)` and
+  stops at `Fillet2 (2)` (12 edges of the slots' rims unresolved: they name the walls' faces, after `OffsetFaces1`).
+
+### 3502 Bend1: the root sketch where Component7 stood when it was bent
+* The timeline: `Position2`, `Sketch1`, `Bend1`, `Sketch2`, `Bend2`, `Position3`, ... A Position (`8EE00B00`) captures
+  occurrence positions; each occurrence path record (`549FBB80`) lists, per Position (and component activation), the
+  path's world placement then (the steps `joint.rs` already reads; cm). Component7's path (the LCD assembly's
+  occurrence, then Component7's) stands at Position2 at x' = 24.703 - x, y' = 34.5 - z, z' = -0.865 - y (mm): its flat
+  flex's top face (y = 0.05) lies on `Sketch1`'s plane z = -0.915 and its outline on the sketch's (x 15.233..24.703,
+  y 34.5..49.13). Position3 turned the assembly over: at the end it stands at x' = x - 24.703, z' = y + 0.61, where
+  the tree placed the bends' sketches against it (1.525 mm off the plane, mirrored in x: section 51).
+* Rule: a feature of a placed component that uses a sketch of an unplaced one (the root) gets a copy of the sketch
+  moved by the component's final placement after the inverse of its placement at the last Position before the
+  feature (`<sketch> where <feature> used it`). Applied to bends; Bend1's copy lies on z = 0.66 mm, the flex's top
+  face where it ends, and its line at the flex's z = -4.9 mm (section 51's zone end). Unit test
+  `a_root_sketch_a_component_feature_used_moves_with_the_component_after_it`.
+* 3502 still stops at the importer's guard on a Base Feature's input body (left as it is: the owner's history choice
+  covers trying anyway); the bends are not rebuilt by the corpus runner.
+
+### Result
+* No design gained history. First blockers now: 5998 `OffsetFaces1 (2)` (was `OffsetFaces2`); 2354 `Fillet1` (was
+  `BoxPrimitive6`); 6126 `Fillet2 (2)` (was its thin extrude); 3502 the importer's guard on a Base Feature's input
+  body, as before (its bends' sketches now placed where they were drawn).
+* No loss: the 40 designs of round 30's sample (every 6th of adafruit-more, every 10th of adafruit-next) give the
+  same 35 as history; of the touched designs 3027, 3350, 3464, 610, 858, 1054 and 3692 (offsets of faces) come in
+  as history as before, 3722, 5981, 6299 and 3802 stop where they did.
+* Tests: `gusset-kernel-occt` (74, the new golden test), `gusset-sat` (136); clippy (`gusset-sat`,
+  `gusset-occt-sys`, `gusset-kernel-occt`) and fmt clean.
 ## 60. Round 32 K: Combine "Keep Tools": no Combine of the samples keeps its tools (2026-11-13)
 Reader: `fusion_tree/combine.rs` (`used_up`), `parse.rs` (`Sat::tags`), `lib.rs` (`body_tags`); importer:
 `import.rs` (`fusion_end_bodies`, `fusion_used_up`).
@@ -3735,3 +3824,4 @@ the same streams) was compared field by field, then with the records around it.
 * Tests: `gusset-sat` (136, new `a_bodys_tag_is_the_integer_after_its_attribute_pointer`,
   `a_combines_tool_left_out_of_its_components_body_list_is_used_up`), `gusset-commands` (277, new
   `the_tools_a_combine_used_up_are_read_from_the_tree`) pass; clippy and fmt clean.
+
