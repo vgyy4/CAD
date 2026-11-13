@@ -477,3 +477,38 @@ remaining sw-more reasons: STEP imports with no feature (540), volume mismatches
 fillet edges (39), shells (22), patterns (37), edge midpoints not on the model (18). Not decoded: the feature lists of
 mirrors and patterns (the bearings' mirror of cuts is still read as a whole-body mirror), mirror planes on user reference
 planes, dimensions kept in the configuration stream.
+
+## Amendment (2026-11-13): patterns and mirrors of features (round sw3)
+
+The feature stream is one object archive: a reference to an earlier object is its archive index. Patterns and mirrors
+of features name their seed features that way (a seed list `T n <indices> T 00 00 01 00 00 00 00 00 01 00 00 00 00 T
+m`), and the index of a feature node comes from back references to it: its own dimension objects, the owner word of
+references to its own faces, or, for a node that declares its class, the class index plus one. Decoded from the sample
+bytes (`docs/formats/solidworks-feature-tree.md` L14):
+
+- **Linear and circular feature patterns** (`moLPattern_c`, `moCirPattern_c`): seeds as above, counts `D1`/`D2` (integer
+  parameters), spacings `D3`/`D4`, step and total angles `D2`/`D3`, the direction or axis from the pattern's line
+  reference; a two-way linear pattern is two Gusset patterns. Patterns of bodies and second circular directions are not
+  read (refused with a reason).
+- **Mirrors of features** (`moMirrorPattern_c`) mirror their listed features; only `moMirrorSolid_c` mirrors the body
+  (before, both mirrored the body, which refilled mirrored cuts).
+- **Edges on a mirror's copy** (a 16-byte reference to the mirror wrapping the seed face's reference) are solved reflected
+  back through the mirror plane; selections of long edge records run on while the records follow each other.
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4 of the diagonal), and so are
+the stored-body rules.
+
+**Coverage** (history / parts; whole corpora):
+
+| corpus | round sw2 | round sw3 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 195 / 1253 | **199** / 1253 |
+| all | 235 / 1352 | **239** / 1352 |
+
+No part lost its history. arig-revisions has no single cause: 29 of its 35 refusals are mirror parts whose file keeps only
+the mirrored body of another part (a stored body, not a rebuild), the other 6 are one part's revisions that stop at a loft
+cut followed by thin extrudes. Not decoded: faces of pattern copies in later fillets (18 parts), mirror planes on user
+planes, the bearings' eight-edge chamfer (now 0.2 to 0.5 % light), lofts, shells.

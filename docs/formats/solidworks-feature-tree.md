@@ -813,3 +813,77 @@ projected-centerline fix, measured on the three parts whose trees it changes aft
 here first), fillet edges 39, `moShell_c` 22, no feature stream 21, circular/linear patterns 19 + 18, edge midpoint not on
 the model 18, up-to-surface ends 16, split body 16, loft 16, mirror plane not resolved 13, reference surfaces 12, closed
 regions 12, sketch planes 6. RJ45-LED and Link_2 are skipped by the corpus driver as in round sw1 (in-process crashes).
+
+## L14. Round 8 (sw3: patterns, mirrors of features, edges on a mirror's copy)
+Measured against round sw2's final logs (slip-pad 24, arig-revisions 15, zenodo 1, sw-more 195). The 83 sw-more
+volume mismatches were run through the per-feature harness again (scratch; what lies outside the part's own body and what
+is missing from it after each feature). Where the first divergence shows: at the first boss 26 parts (the profile or its
+plane already differs), at a cut 12, at stored or imported bodies 10 (zsCAD's `Body___<n>` parts, Hobby Motor), and 28
+where the harness's own booleans against the stored body fail (no verdict); no single cause covers more than a handful.
+The one that did repeat was the mirror: every `moMirrorPattern_c` had been rebuilt as a mirror of the whole body. Decoded
+from the sample bytes:
+* **The feature stream is one object archive, and patterns name their seeds by archive index.** References to objects
+  written earlier are their index in the archive (`u16`, or `ff 7f` and a `u32`), so a pattern's seed features are a list
+  of indices: after the pattern's header, `T n <n indices> T 00 00 01 00 00 00 00 00 01 00 00 00 00 T m`, where `T` is
+  the list's class tag (`08 80`, `58 80`, `a3 81`: it differs per file) and `m` counts the bodies a pattern of bodies
+  repeats (the Ahm3d0x gears and wheel: no seed, one body; not read). Spacer_long_base_square's LPattern1:
+  `08 80 02 00 84 04 33 06 08 80 00 00 ...` = Boss-Extrude3 and Cut-Extrude1.
+* **The index of a feature node** is not written with it; three back references give it: the feature's own dimension
+  objects (`P 01 00 01 00 00 00 P` inside its span: Cut-Extrude1 = 0x633 above), the owner word of face references to
+  the feature's own faces (`<class tag> P <class tag> u16 <u32 feature id> <stamp>`, zero in references made by other
+  features: Fillet2's faces carry 0x137c, Case_Electronics), and, for a node that declares its class, the class index
+  plus one (the index the class's later nodes write as their tag: SG90's `Furo4` declares `moHoleWzd_c`, `Furo1` is
+  `tag 709`, the linear pattern names 710). An index two nodes claim is dropped. In the 37 parts that stopped at a pattern, every seed list
+  resolves but those of Center_board_bottom and _top (a single tapped hole nothing points back to) and two SG90 patterns.
+* **Pattern parameters.** Linear: `D1`, `D2` instance counts (`moIntegerParameter_c`: a `u32` where the dimension
+  writes its `f64`), `D3`, `D4` spacings (m) along the first and second line reference. Circular: `D1` count, `D2` the
+  step angle (when written) and `D3` the total (2 pi for equal spacing), `D4` the count of a second direction (Case_Electronics: 2,
+  not read). Lines: after `c7 cf ff ff 00 00 00 00` (the marker word once to three times, then a `u32` that varies:
+  0x1770, 0x2710, 0x32c8, 0x36b0 ...) and 4 to 20 zero bytes, `f64 length`, the start point and the unit direction in
+  model coordinates (m), as the revolve axes of L13. A two-way linear pattern becomes two Gusset patterns, the second
+  repeating the seeds and the first's copies.
+* **Mirrors of features.** All 54 `moMirrorPattern_c` nodes in the corpora carry the same seed list (all with seeds);
+  the 39 `moMirrorSolid_c` none. The tree now mirrors the listed features (pulley_small's Mirror1 mirrors Cut-Extrude1;
+  the bearings' Mirror1 their Cut-Extrude2, the recess, which the body mirror had filled: 1.04 too heavy -> 1.002).
+* **Edges on a mirror's copy.** A face of the copy is written as a 16-byte reference to the mirror (`<tag> 00 00 <class>
+  u16 <u32 mirror id> <stamp>`, no face number) followed by the seed face's own reference with its extra words (the
+  bearings' Chamfer1: Mirror1, then Cut-Extrude2 face 3). The edge is solved reflected back: the copy's faces are the seed
+  faces, every other face that of its extrusion reflected in the mirror plane (origin and axes reflected, depth negated),
+  and the midpoint found is reflected again. Stepper-Bracket's Fillet2 resolves.
+* **Selections of long records.** Edge records of four references with their extra words run past 0xa0 bytes (the
+  bearings' eight chamfer edges are 132 to 204 bytes apart); a record also continues the selection when it starts right
+  after the previous one ends (its class tag and up to 14 bytes between).
+
+**Findings, not fixed.**
+* **Pattern instance faces** (fillets on a pattern's copies: Spacer_*_base_square, Front_panel, NEMA23_stepper, the
+  42-tooth pulley, 4in Hub; 18 parts list such references, 23 more list mirror-copy faces): `<16-byte reference to the pattern> <seed face reference>`,
+  then the instance number (`u32`, 1 = the first copy) and sometimes a second, context reference; the layout of that tail
+  varies and was not settled.
+* **Mirror planes on user planes.** The mirror keeps a copy of a plane's display block (`c7 cf ff ff` x3, the four
+  display extents), but the extents of the copy match the plane's only sometimes (piston's Düzlem1: then the plane-data
+  block of the plane node, `moFaceRefPlnData_c` origin and normal, gives the plane; Parça1's Aynalama7: they differ), and
+  the plane may be written after the mirror. Not committed: the one part it resolves stays a volume mismatch.
+* **The bearings** now differ by 0.2 to 0.5 % the other way: their Chamfer1 lists eight edges (a `u16 8` before the first
+  record), the bore and outer rims and the recess rims on both sides; the Parasolid body's chamfer volume matches
+  bore x2 + outer + one recess rim, not all eight. Not resolved.
+* **Fillets that add material.** The stepper motor shafts' Fillet1 (R 1 on the end circle a D-flat cut has broken) builds
+  in Gusset and adds 6.1 mm3 instead of removing about 2.9 (OCCT/Gusset fillet, not the reader).
+* **Hecatron sketches with unsolved circles.** 5 Hole T Joining Plate's Sketch2 (and the Universal L Bracket - Triple,
+  Grip_tip outlines) write a circle whose start, end and centre are one point at an arbitrary place and its size only as a
+  dimension; the reader leaves it out ("no closed regions").
+* **arig-revisions** (15 of 50 since round 1): 29 of the 35 refusals are the `_Symétrique` mirror parts (a mirrored copy of
+  another file's body: the history would be the stored body only, which is not a rebuild), the other 6 are the
+  Angle_support revisions, which stop at a loft cut (`moBlendCut_c`) followed by thin extrudes (`moBossThin_c`) and fillets
+  on them; no single cause.
+
+**Coverage after the round** (rebuild check unchanged; whole corpora, the history test through the corpus driver at
+dc3b58a; the later class-declaration rule changes only the three SG90 trees, none of which reads whole): slip-pad 24 of
+35, arig-revisions 15 of 50, zenodo 1 of 14 (unchanged), sw-more **199 of 1253** (was 195; none lost):
+combined_mount_camera_lid (its circular pattern), Example1 and Universal L Bracket - Double (mirrors of features; both
+were volume mismatches), Stepper-Bracket (an edge on a mirror's copy). All corpora: 235 -> 239 of 1352. Patterns no
+longer stop any part as unsupported (37 before): those parts now stop at their next blocker (fillets on pattern copies,
+up-to-vertex ends, combine, split, draft, delete-face, sketches with unsolved circles) or, 11 parts, at a pattern not
+read (4 patterns of bodies, 5 seeds not found, one second circular direction, one without a seed list). Remaining sw-more
+reasons, by parts: imported bodies only 540, volume mismatch 85, fillet edges 42, `moShell_c` 22, no feature stream 21,
+edge midpoint not on the model 18, up-to-surface ends 16, split body 16, loft 16, sketches without closed regions 14,
+mirror plane not resolved 12. RJ45-LED and Link_2 are skipped by the corpus driver as before.
