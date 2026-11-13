@@ -921,6 +921,8 @@ fn revolve_of_a_face(cx: &mut Ctx, fid: u64, j: &mut Map<String, Value>) {
     }
     j.insert("profiles".into(), Value::Null);
     j.insert("profile_face".into(), pick);
+    // No sketch: the document reads a face profile without one (a null is not a sketch name).
+    j.remove("sketch");
     j.insert("profile_from".into(), "a face of a body (its outline and holes)".into());
     j.insert("axis".into(), ax);
 }
@@ -1144,7 +1146,29 @@ fn profile_of_a_face(cx: &mut Ctx, fid: u64, j: &mut Map<String, Value>) {
     j.remove("profile_note");
     j.insert("profiles".into(), Value::Null);
     j.insert("profile_face".into(), pick);
+    // No sketch: the document reads a face profile without one (a null is not a sketch name).
+    j.remove("sketch");
     j.insert("profile_from".into(), "a face of a body (its outline and holes)".into());
+}
+
+/// The feature whose body holds a face profile (`profile_face.body`): the feature of the face's
+/// first operation. Where faces of two bodies touch along the profile (2354's `Revolve1` turns the
+/// end of the strip `BoxPrimitive3`, which lies on the side of the display's box), the import
+/// takes the one on that body.
+fn profile_face_body(cx: &Ctx, fid: u64, j: &mut Map<String, Value>, names: &HashMap<u64, String>) {
+    let Some(pick) = j.get_mut("profile_face").and_then(Value::as_object_mut) else { return };
+    let faces = profile_faces(cx.d, fid);
+    let [(_, ops)] = faces.as_slice() else { return };
+    let Some(body) = ops
+        .first()
+        .and_then(|o| u64::try_from(*o).ok())
+        .and_then(|o| cx.opmap.get(&o))
+        .filter(|f| **f != fid)
+        .and_then(|f| names.get(f))
+    else {
+        return;
+    };
+    pick.insert("body".into(), body.as_str().into());
 }
 
 /// A pick of a face by its name, as a shell's removed faces are picked: a cap by its stored
@@ -1871,6 +1895,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             profile_of_an_exposed_cap(cx, fid, &mut j, &feats);
             super::loft::profile_of_a_loft_cap(cx, fid, &mut j, &feats);
             profile_of_a_face(cx, fid, &mut j);
+            profile_face_body(cx, fid, &mut j, &names);
             two_sided_from_a_moved_sketch(cx, &mut j, &nm, &mut feats);
             in_own_component(&mut j, "sketch", comp, &mut feats, nbefore, format!("{nm} sketch"));
             let made = op_target(&mut j, &g, d, fid, &names);
@@ -2063,6 +2088,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             feats.push(Value::Object(j));
         } else if d.is(fid, "E3849A15") {
             let mut j = revolve_json(cx, fid, &nm, &sketch_names);
+            profile_face_body(cx, fid, &mut j, &names);
             in_own_component(&mut j, "sketch", comp, &mut feats, nbefore, format!("{nm} sketch"));
             let made = op_target(&mut j, &g, d, fid, &names);
             j.insert("creates_bodies".into(), made.into());

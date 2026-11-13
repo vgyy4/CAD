@@ -1523,6 +1523,26 @@ fn extrudes_of_body_faces() {
 }
 
 #[test]
+fn a_face_profile_on_two_touching_bodies_is_the_one_on_its_body() {
+    // Two plates meet at x = 40: the pick's points lie on both end faces alike; `body` says the
+    // face is the second plate's, whose outward normal (-x) the join runs along, into the first.
+    let pick = |body: &str| {
+        json!({"point": [40, 0, 0], "points": [[40, 0, 0], [40, 20, 0], [40, 20, 10], [40, 0, 10], [40, 10, 5]],
+               "surface": {"type": "plane", "origin": [40, 10, 5], "normal": [1, 0, 0]}, "body": body})
+    };
+    let (mut s, _) = import_v2_session(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 40.0, 20.0),
+        extrude("A", "Sketch1", 10.0, "new"),
+        rect("Sketch2", plane_at(0.0), 40.0, 0.0, 40.0, 20.0),
+        extrude("B", "Sketch2", 10.0, "new"),
+        json!({"type": "extrude", "name": "Grow", "profile_face": pick("B"), "distance": 5, "operation": "join",
+               "target": "B"}),
+    ]);
+    assert_vol(volume_of(&mut s, "B"), 45.0 * 20.0 * 10.0);
+    assert_vol(volume_of(&mut s, "A"), 40.0 * 20.0 * 10.0);
+}
+
+#[test]
 fn a_face_revolved_about_an_edge_either_way() {
     // The plate's side y = 0 a quarter turn about its bottom edge: right-handed about +x it leaves
     // the plate (towards -y), about -x it turns into it (written with a negative angle, as the

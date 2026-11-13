@@ -13,7 +13,9 @@ use std::fmt::Write as _;
 
 /// A face picked by a point on it (world mm) and optionally its outward normal; or, with
 /// `points`, by points of its boundary and optionally the surface it lies on (any surface
-/// type: the face the model holds them on, which must be the only best one).
+/// type: the face the model holds them on, which must be the only best one). `body` names the
+/// feature whose body the face is on: where faces of several bodies hold as many points (two
+/// bodies touching along the face), the one on that body.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct FacePick {
     point: [f64; 3],
@@ -23,6 +25,8 @@ pub(super) struct FacePick {
     points: Vec<[f64; 3]>,
     #[serde(default)]
     surface: Option<SurfaceF>,
+    #[serde(default)]
+    body: Option<String>,
 }
 
 /// The surface a picked face lies on (mm). A cone's radius at height `h` along the axis from
@@ -423,6 +427,7 @@ const MAX_FACE_POINTS: usize = 256;
 
 /// The face a pick names: by its point (and normal), or by its boundary points and surface.
 fn find_pick(
+    g: &Gen,
     kernel: &dyn gusset_kernel::Kernel,
     ev: &gusset_eval::Evaluation,
     meshes: &mut Meshes,
@@ -431,7 +436,14 @@ fn find_pick(
     if pick.points.is_empty() {
         return find_face(kernel, ev, meshes, finite3(pick.point, "a face point")?, pick.normal);
     }
-    find_face_by_points(kernel, ev, meshes, pick, None).map(|mut v| v.swap_remove(0))
+    // A body the import does not know (a copy renamed the feature) breaks no tie.
+    let tie = pick.body.as_deref().and_then(|b| g.features.get(b));
+    let mut hits = find_face_by_points(kernel, ev, meshes, pick, tie.map(String::as_str))?;
+    if hits.len() > 1 {
+        // Pieces of a face of its body: the one best face, as without the body.
+        hits = find_face_by_points(kernel, ev, meshes, pick, None)?;
+    }
+    Ok(hits.swap_remove(0))
 }
 
 /// The face of the model that lies on the pick's surface (every node of its tessellation within
@@ -544,7 +556,7 @@ pub(super) fn pick_face_name(
 ) -> Result<(String, String), String> {
     let fp = finite3(pick.point, "the face point")?;
     let mut meshes: Meshes = Vec::new();
-    let f = find_pick(s.kernel().as_ref(), ev, &mut meshes, pick)?;
+    let f = find_pick(g, s.kernel().as_ref(), ev, &mut meshes, pick)?;
     warn_fallback(g, &f, fp);
     Ok((f.body, f.name))
 }
@@ -789,7 +801,7 @@ pub(super) fn shell(g: &mut Gen, s: &Session, d: &ShellF) -> Result<(), String> 
     let mut meshes: Meshes = Vec::new();
     for pick in &d.faces {
         let fp = finite3(pick.point, "a face point")?;
-        let f = find_pick(s.kernel().as_ref(), &ev, &mut meshes, pick)?;
+        let f = find_pick(g, s.kernel().as_ref(), &ev, &mut meshes, pick)?;
         warn_fallback(g, &f, fp);
         if body.as_ref().is_some_and(|b| *b != f.body) {
             return Err("its faces are on several bodies".into());
@@ -1692,7 +1704,7 @@ pub(super) fn offset_face(g: &mut Gen, s: &Session, d: &OffsetFaceF) -> Result<(
     for pick in &d.faces {
         let tie = d.on_body.as_deref().and_then(|b| g.features.get(b)).map(String::as_str);
         let hits = if pick.points.is_empty() {
-            vec![find_pick(s.kernel().as_ref(), &ev, &mut meshes, pick)?]
+            vec![find_pick(g, s.kernel().as_ref(), &ev, &mut meshes, pick)?]
         } else {
             find_face_by_points(s.kernel().as_ref(), &ev, &mut meshes, pick, tie)?
         };
