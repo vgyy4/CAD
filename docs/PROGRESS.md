@@ -9,6 +9,13 @@ refuses tag pushes); the tag triggers the release workflow after the milestone r
 Phase 3 has started (see Next).
 
 ## Done
+- Importer status (2026-11-13): Fusion 277 of 318 designs as history (rounds 27-34;
+  paused after two rounds without gains, docs/formats/fusion-corpus-tally.md); SolidWorks
+  next (owner rule: one importer at a time): corpus grown by 1253 openly licensed parts
+  (scratch, never committed), round 1 took history from 85 to 195 of 1352 parts (ADR 0043
+  amendment 2026-11-13); two parts that crashed the importer in-process are fixed (an
+  unbounded face in mass properties, OCCT patch gusset-0005; the hole fit check meshes only
+  the hole's face).
 - Thread, bend and face profiles as commands (2026-11-13; ADR 0012): `feature.thread`
   (title "Face thread"; cosmetic or `modeled`), `feature.bend` (sheet metal, `line: Sketch.lN`,
   `side`, `position`), and `face: <planar body face>` as the profile of `feature.extrude` and
@@ -46,8 +53,17 @@ Phase 3 has started (see Next).
   worse), `pcb.autoroute` running the user's own Freerouting (set in the PCB panel; never
   downloaded) with timeout and Cancel, texts plotted into Gerbers in Gusset's own stroke
   font (copper texts are obstacles); editor Zone tool, pad-net, net-class and autorouter
-  panels. Next (ADR 0047): a true shove (several tracks, vias), texts in the editor's
-  stroke font, a STEP of the flow's board under OCCT (covered by `pcb_import.rs` today).
+  panels. Phase 4 (2026-11-13, ADRs 0048-0056): DRC hole-to-hole, courtyard overlap,
+  silk over pads, drill and via minimums; board texts in the stroke font, added and edited
+  (`pcb.text`); pads picked alone, tracks and vias dragged (`pcb.move`, neighbours stretch,
+  footprints carry their track ends), board outline drawn with the mouse; Gerber X2 object
+  attributes and a test-only Gerber re-reader; schematic multi/box select, orthogonal wire
+  drags, annotation options; zones over several outlines, starved-thermal DRC, fill on
+  edit, zone outline editor; per-class limits and a `.kicad_dru` subset; differential pairs,
+  net lengths and meander tuning with editor tools; a `kicad-cli` wrapper (user-set path
+  only) for KiCad's own DRC/ERC and STEP/IPC-2581/ODB++ export. MCP: `sch` is its own
+  toolset. Next (ADR 0047): a true shove (several tracks, vias), the KiCad library pack, the
+  IPC bridge, a symbol library browser, sheet editing.
 - Body patterns that keep their copies apart (2026-11-11): `merge: false` on
   `pattern_linear` / `pattern_circular` makes copy `i` a body `<pattern>_copy<i>` that later
   features target; tree import `"merge": false` with copies `<name>[i]` (ADRs 0004, 0042).
