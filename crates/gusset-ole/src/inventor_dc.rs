@@ -19,6 +19,8 @@ const MAX_RECORDS: usize = 1_000_000;
 const MAX_CLASSES: usize = 5000;
 /// Most packed-data start candidates tried in a meta stream.
 const MAX_META_CANDIDATES: usize = 256;
+/// Longest block skipped between two records.
+const MAX_BLOCK: usize = 4096;
 /// Longest list read from a record.
 pub(crate) const MAX_LIST: usize = 4096;
 
@@ -84,6 +86,10 @@ pub(crate) const G_ORDER: u32 = 0x4521_21b6;
 pub(crate) const G_PROFILE: u32 = 0xf988_4c43;
 pub(crate) const G_LOOP: u32 = 0xa477_243b;
 pub(crate) const G_LOOP_BODY: u32 = 0xcc0f_7521;
+/// The type GUID (first 32 bits) a solid body's name carries.
+const T_BODY: u32 = 0x0ca9_112d;
+/// The record that names a solid body (a part-feature record that is a body, not a feature).
+pub(crate) const G_BODY_NAME: u32 = 0x656d_d01e;
 
 /// A feature's kind, by the GUID written after its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,11 +252,31 @@ impl Dc {
             g.push(cur.checked_sub(0x100).and_then(|c| classes.get(c as usize)).copied().unwrap_or(0));
             cur = u32_at(&b, e + 5).ok_or("the feature data is cut short")?;
             p = e + 9;
+            // A non-zero byte after the size: a block follows the record (named entries such as
+            // "RDxSweepTwistAngle" or class GUID strings, not decoded) and the next class word
+            // comes after it. The next record is where its class word, content of the size the
+            // meta gives, size and separator line up.
+            if b.get(e + 4).is_some_and(|&x| x != 0)
+                && let Some(&next) = sizes.get(i + 1)
+            {
+                let ok_class =
+                    |c: Option<u32>| c.is_some_and(|c| (0x100..0x100 + classes.len() as u64).contains(&u64::from(c)));
+                let q = (e + 9..=e + 9 + MAX_BLOCK).find(|&q| {
+                    ok_class(u32_at(&b, q - 4))
+                        && u32_at(&b, q + next) == Some(next as u32)
+                        && matches!(b.get(q + next + 4), Some(0 | 1))
+                        && (ok_class(u32_at(&b, q + next + 5)) || u32_at(&b, q + next + 5) == Some(0xffff_ffff))
+                });
+                let q = q.ok_or_else(|| format!("the feature records do not frame after record {i}"))?;
+                cur = u32_at(&b, q - 4).unwrap_or(0);
+                p = q;
+            }
         }
         if b.len() - p > 64 {
             return Err("the feature data has trailing bytes".into());
         }
         let role: Vec<Role> = g.iter().map(|&x| role_of(x)).collect();
+        let (b, spans) = unshift(b, spans, &g, &role);
         let mut d = Dc { data: b, spans, g, role, ver: None };
         let first = d.role.iter().position(|r| *r == Role::PartFeature);
         d.ver = first.and_then(|i| u32_at(d.r(i), 22)).filter(|&v| v != 0);
@@ -339,7 +365,10 @@ impl Dc {
         (tail.iter().any(|&b| b != 0) && before != Some(&[0, 0][..])).then(|| u32_at(tail, 0)).flatten()
     }
 
-    /// The part and pattern features, in record order.
+    /// The part and pattern features, in record order. A part-feature record named through a
+    /// `656dd01e` record, or by a name of type `0ca9112d`, is a solid body of the part (its
+    /// name, e.g. "Solid1" or a body the user renamed, is behind that record), not a feature:
+    /// it is left out.
     pub(crate) fn features(&self) -> Vec<Feature> {
         let mut out = Vec::new();
         for i in 0..self.n() {
@@ -347,10 +376,18 @@ impl Dc {
                 continue;
             }
             let v = u32_at(self.r(i), 6).and_then(|v| reference(v, self.n()));
+            if v.is_some_and(|v| self.class(v) == G_BODY_NAME) {
+                continue;
+            }
             let (mut name, mut typ) = (None, None);
             if let Some(v) = v.filter(|&v| self.role(v) == Role::Name) {
                 name = self.namestr(v);
                 typ = self.nametype(v).map(FeatType::of);
+                // The type a body's name carries (the bodies named through `656dd01e` have it
+                // too): an imported part whose only "feature" is its body.
+                if typ == Some(FeatType::Other(T_BODY)) {
+                    continue;
+                }
             }
             out.push(Feature { rec: i, name, typ });
         }
@@ -480,6 +517,46 @@ impl Dc {
         }
         Some(out)
     }
+}
+
+/// Newer files (version word 2803 and later) put one more `u32` (zero) at offset 14 of the
+/// common header: `u32 0, u16, ref name, 4 flag bytes, u32 0, ref owner, u32 id, ...`. Those
+/// records are rewritten without it, so every offset read here is the older layout's. The file
+/// has the newer layout when its first part feature has a zero there and a reference after
+/// it (the older layout has the owner reference at 14 and the id at 18). Only the classes
+/// whose every record in the file has that shape are rewritten: some classes have no common
+/// header at all (ShapeManager blobs, edge geometry), in either layout.
+fn unshift(b: Vec<u8>, spans: Vec<(usize, usize)>, g: &[u32], role: &[Role]) -> (Vec<u8>, Vec<(usize, usize)>) {
+    let n = spans.len();
+    let rec = |i: usize| spans.get(i).and_then(|&(a, e)| b.get(a..e)).unwrap_or_default();
+    let is_ref = |v: u32| v & 0x8000_0000 != 0 && reference(v, n).is_some();
+    let shaped = |i: usize| {
+        let r = rec(i);
+        u32_at(r, 14) == Some(0) && u32_at(r, 18).is_some_and(|v| v == 0 || is_ref(v)) && r.len() >= 26
+    };
+    let Some(first) = role.iter().position(|r| *r == Role::PartFeature) else { return (b, spans) };
+    if !(shaped(first) && u32_at(rec(first), 18).is_some_and(is_ref)) {
+        return (b, spans);
+    }
+    let mut keep: HashMap<u32, bool> = HashMap::new();
+    for i in 0..n {
+        let k = keep.entry(g.get(i).copied().unwrap_or(0)).or_insert(true);
+        *k = *k && shaped(i);
+    }
+    let mut out = Vec::with_capacity(b.len());
+    let mut sp = Vec::with_capacity(n);
+    for i in 0..n {
+        let r = rec(i);
+        let a = out.len();
+        if keep.get(&g.get(i).copied().unwrap_or(0)).copied().unwrap_or(false) {
+            out.extend(r.get(..14).unwrap_or_default());
+            out.extend(r.get(18..).unwrap_or_default());
+        } else {
+            out.extend(r);
+        }
+        sp.push((a, out.len()));
+    }
+    (out, sp)
 }
 
 /// The class table: `u32 count`, then 28-byte entries (GUID, ...), after the bytes

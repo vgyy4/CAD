@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::cast_possible_truncation)]
 
 use crate::Limits;
-use crate::fixtures::{inventor_dc_part, ole};
+use crate::fixtures::{dc_segment_blocks, dc_segment_packed, inventor_dc_part, ole};
 use crate::inventor_features::feature_tree;
 use serde_json::{Value, json};
 
@@ -18,7 +18,8 @@ const PROFILE: usize = 6;
 const PARAM: usize = 7;
 const FEATURE: usize = 8;
 const ORDER: usize = 9;
-const CLASSES: [u32; 10] = [
+const BODY_NAME: usize = 10;
+const CLASSES: [u32; 11] = [
     0x2b48_a42b,
     0x9087_4d18,
     0xce52_df35,
@@ -29,6 +30,7 @@ const CLASSES: [u32; 10] = [
     0x9087_4d26,
     0x9087_4d91,
     0x4521_21b6,
+    0x656d_d01e,
 ];
 
 // Type GUIDs (first 32 bits) of the features.
@@ -178,6 +180,89 @@ fn types(t: &Value) -> Vec<(String, String)> {
         .iter()
         .map(|f| (f["type"].as_str().unwrap().to_string(), f["name"].as_str().unwrap().to_string()))
         .collect()
+}
+
+#[test]
+fn the_newer_header_with_a_word_at_14_reads_like_the_older_one() {
+    // Version 2803 and later insert a zero u32 at offset 14 of the common header, so the
+    // owner reference moves to 18 and the id to 22.
+    let base = base_records();
+    let shifted: Vec<(usize, Vec<u8>)> = base
+        .iter()
+        .map(|(c, r)| {
+            let mut r = r.clone();
+            if *c == FEATURE {
+                // The owner (a document record in real files) is what tells the layouts apart.
+                r[14..18].copy_from_slice(&rf(2).to_le_bytes());
+            }
+            let mut v = r[..14].to_vec();
+            v.extend([0u8; 4]);
+            v.extend(&r[14..]);
+            (*c, v)
+        })
+        .collect();
+    let want = tree(&base).unwrap();
+    assert_eq!(tree(&shifted).unwrap(), want);
+    // Without the owner reference after the zero word the file reads as the older layout, and
+    // the sketch's curves are lost (its records do not frame as sketch entities).
+    let plain: Vec<(usize, Vec<u8>)> = shifted
+        .iter()
+        .map(|(c, r)| {
+            let mut r = r.clone();
+            if *c == FEATURE {
+                r[18..22].copy_from_slice(&0u32.to_le_bytes());
+            }
+            (*c, r)
+        })
+        .collect();
+    assert_ne!(tree(&plain).unwrap(), want);
+}
+
+#[test]
+fn a_solid_body_record_is_not_a_feature() {
+    // A part-feature record named through a `656dd01e` record is one of the part's solid bodies.
+    let mut recs = base_records();
+    let mut body_name = hdr(0, 0, 0);
+    body_name.extend(rf(20).to_le_bytes());
+    recs.push((BODY_NAME, body_name)); // 19
+    recs.push((FEATURE, feature(19, 0, 9, &[0, 0, 0]))); // 20
+    assert_eq!(tree(&recs).unwrap(), tree(&base_records()).unwrap());
+    // Named directly by a name of the body type, it is a body too.
+    recs[19] = (NAME, name_rec("Solid1", Some(0x0ca9_112d)));
+    assert_eq!(tree(&recs).unwrap(), tree(&base_records()).unwrap());
+    // Named by an ordinary name record without a type, it is an unknown feature.
+    recs[19] = (NAME, name_rec("Solid1", None));
+    assert_eq!(types(&tree(&recs).unwrap()).last().unwrap().0, "unsupported");
+}
+
+#[test]
+fn a_zstd_packed_segment_reads_like_a_zlib_one() {
+    // Newer files pack the meta and data streams as Zstandard (`04 02` in the B header).
+    let (m, b) = dc_segment_packed(&CLASSES, &base_records(), true);
+    let part = ole(&[("MdcSegment0001", &m), ("BdcSegment0001", &b)]);
+    let t = feature_tree(&part, "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(t, tree(&base_records()).unwrap());
+}
+
+#[test]
+fn a_block_after_a_record_is_skipped() {
+    // A separator byte 1 after a record's size: a block of named entries follows (here the
+    // sweep's "RDxSweepTwistAngle" entry as the samples have it) before the next class word.
+    let mut blk = 1u32.to_le_bytes().to_vec();
+    blk.extend(18u32.to_le_bytes());
+    blk.extend(b"RDxSweepTwistAngle");
+    blk.extend([7, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0x30, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    blk.extend(18u32.to_le_bytes());
+    blk.extend(b"RDxSweepTwistAngle");
+    blk.extend(rf(3).to_le_bytes());
+    let (m, b) = dc_segment_blocks(&CLASSES, &base_records(), false, &[(2, blk.clone()), (9, blk)]);
+    let part = ole(&[("MdcSegment0001", &m), ("BdcSegment0001", &b)]);
+    let t = feature_tree(&part, "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(t, tree(&base_records()).unwrap());
+    // A block that never lines up with the next record is an error, not a guess.
+    let (m, b) = dc_segment_blocks(&CLASSES, &base_records(), false, &[(2, vec![0xee; 5000])]);
+    let part = ole(&[("MdcSegment0001", &m), ("BdcSegment0001", &b)]);
+    assert!(feature_tree(&part, "dir/part.ipt", &Limits::default()).unwrap_err().contains("do not frame"));
 }
 
 #[test]

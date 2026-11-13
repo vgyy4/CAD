@@ -145,12 +145,29 @@ pub fn dc_segment(classes: &[u32], recs: &[(usize, Vec<u8>)]) -> (Vec<u8>, Vec<u
 
 /// [`dc_segment`] with both streams packed as Zstandard (`zstd`) or zlib.
 pub fn dc_segment_packed(classes: &[u32], recs: &[(usize, Vec<u8>)], zstd: bool) -> (Vec<u8>, Vec<u8>) {
+    dc_segment_blocks(classes, recs, zstd, &[])
+}
+
+/// [`dc_segment_packed`] with `blocks`: after record `i`, the separator byte 1 and the bytes
+/// given, before the next class word (the blocks some records carry).
+pub fn dc_segment_blocks(
+    classes: &[u32],
+    recs: &[(usize, Vec<u8>)],
+    zstd: bool,
+    blocks: &[(usize, Vec<u8>)],
+) -> (Vec<u8>, Vec<u8>) {
     let mut b = Vec::new();
     b.extend((0x100 + recs.first().map_or(0, |r| r.0 as u32)).to_le_bytes());
     for (i, (_, c)) in recs.iter().enumerate() {
         b.extend(c);
         b.extend((c.len() as u32).to_le_bytes());
-        b.push(0);
+        match blocks.iter().find(|x| x.0 == i) {
+            Some((_, blk)) => {
+                b.push(1);
+                b.extend(blk);
+            }
+            None => b.push(0),
+        }
         b.extend(recs.get(i + 1).map_or(0xffff_ffffu32, |r| 0x100 + r.0 as u32).to_le_bytes());
     }
     let mut meta = vec![0u8; 14];
