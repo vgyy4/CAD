@@ -300,17 +300,18 @@ fn unit_component_index(c0: &[u8]) -> Option<usize> {
 }
 
 /// The class tag of `moUnitComponent_c` learned from the bytes of a chunk-container stream
-/// (`py/uc.py`): the most frequent `XX 80 02 00 <10 x 00>`, the first seen winning ties.
-/// The numbering of these files does not follow `Config-0`.
+/// (`py/uc.py`): the most frequent `XX YY 02 00 <10 x 00>` with the tag bit 0x80 set in `YY`,
+/// the first seen winning ties. The numbering of these files does not follow `Config-0`; in
+/// files with more than 255 classes before it the index takes the high byte too (`24 81`).
 pub(crate) fn unit_component_tag(rf: &[u8]) -> Option<usize> {
     let mut counts: Vec<(u16, usize)> = Vec::new();
     let mut i = 0usize;
     while let Some(w) = rf.get(i..i + 14) {
-        if w.get(1) == Some(&0x80)
+        if w.get(1).is_some_and(|&h| h & 0x80 != 0 && h != 0xff)
             && w.get(2..4) == Some(&[2, 0][..])
             && w.get(4..).is_some_and(|z| z.iter().all(|&c| c == 0))
         {
-            let key = u16::from_le_bytes([w.first().copied().unwrap_or(0), 0x80]) & 0x7fff;
+            let key = u16::from_le_bytes([w.first().copied().unwrap_or(0), w.get(1).copied().unwrap_or(0x80)]) & 0x7fff;
             match counts.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, v)) => *v += 1,
                 None => counts.push((key, 1)),

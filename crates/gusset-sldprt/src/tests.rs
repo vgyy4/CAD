@@ -1103,6 +1103,19 @@ fn the_unit_component_tag_is_learned_from_the_bytes() {
     assert_eq!(features::unit_component_tag(&[1, 2, 3]), None);
 }
 
+/// A part with more than 255 classes before the unit component writes its tag with the high
+/// byte too (`24 81 02 00`: Spacer_long_base_square's reference-plane components, class 0x124).
+#[test]
+fn a_unit_component_tag_above_255_is_learned() {
+    let mut rf = vec![9u8; 20];
+    for (lo, hi) in [(0x24, 0x81), (0x24, 0x81), (0x2b, 0x80), (0x10, 0xff)] {
+        rf.extend([lo, hi, 2, 0]);
+        rf.extend([0u8; 10]);
+        rf.extend([7u8; 5]);
+    }
+    assert_eq!(features::unit_component_tag(&rf), Some(0x124));
+}
+
 /// A cut named like a boss: only the flags word of its node says what it is.
 #[test]
 fn a_cut_is_told_by_the_flags_word_of_its_node() {
