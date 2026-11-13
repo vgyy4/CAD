@@ -1,7 +1,7 @@
 //! Combine `2A94257F` (ADR 0039 amendment, sections 21 and 22 of the format notes): tool bodies
 //! joined to a target body. The record's body is `u32 operation` (0 = join: written as a cut, the
-//! header part of 3900 fails its stored states, as a join it rebuilds them; 1 is not confirmed
-//! and not converted), `u32 n` and `n` references, a flag block,
+//! header part of 3900 fails its stored states, as a join it rebuilds them; 1 = cut, section
+//! 55), `u32 n` and `n` references, a flag block,
 //! then `u32 ntools` and that many `2CA5A1CD` selections (the tools), the tools' own body links
 //! and `u32 1` and one `2CA5A1CD` (the target).
 
@@ -74,9 +74,10 @@ impl Edit<'_> {
         cover::field(rec, h.body, 4, "combine.operation");
         let op = match u32_at(rec, h.body) {
             Some(0) => "join",
-            // 1 stands where a logo body is taken out of a case (5 records), which reads like a
-            // cut; no rebuild has confirmed it, so it is not converted.
-            Some(1) => return refuse("the Combine's operation (value 1) is not confirmed by a rebuild yet"),
+            // 1 stands where a logo body is taken out of a case (5 records), as the API's
+            // operations number them (join 0, cut 1); the importer's state checks confirm it
+            // (6124's Combine1, section 55).
+            Some(1) => "cut",
             _ => return refuse("the Combine's operation is not a known value"),
         };
         // The first list of selections is the tools, the next list of one selection the target.
@@ -156,6 +157,6 @@ impl Edit<'_> {
         }
         Combined::Feature(json!({"type": "combine", "name": name, "source_id": fid, "target": target,
             "tools": tools, "operation": op,
-            "note": "operation = the record's first field (0: join)"}))
+            "note": "operation = the record's first field (0: join, 1: cut)"}))
     }
 }

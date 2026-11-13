@@ -844,6 +844,9 @@ struct Gen {
     features: HashMap<String, String>,
     /// Source names of bodies a `remove_body` dropped -> the removing feature's name.
     removed: HashMap<String, String>,
+    /// Bodies a `combine` took as tools, to the combine (the document's names): Fusion keeps a
+    /// Combine's tools where it is asked to and removes them later (6124's logo body).
+    pub(super) combined_tools: HashMap<String, String>,
     /// What a feature pattern repeats for a source feature, where that is not the feature
     /// `features` names: a Thicken joined to a body repeats its `combine`; the sheet it
     /// thickened repeats nothing (`None`: the combine carries it).
@@ -967,6 +970,7 @@ pub fn apply_with(
         params: HashMap::new(),
         sketches: HashMap::new(),
         removed: HashMap::new(),
+        combined_tools: HashMap::new(),
         repeat: HashMap::new(),
         features: HashMap::new(),
         made: Vec::new(),

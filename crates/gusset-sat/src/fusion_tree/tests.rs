@@ -1464,7 +1464,7 @@ fn combine_stream(op: u32) -> (Vec<u8>, Vec<u8>) {
 }
 
 #[test]
-fn a_combine_joins_its_tool_bodies_to_its_target_and_an_unconfirmed_operation_is_refused() {
+fn a_combine_joins_or_cuts_its_tool_bodies_to_its_target() {
     use super::combine::Combined;
     let feats = vec![
         json!({"type": "extrude", "name": "Extrude1", "source_id": 100, "creates_bodies": 1}),
@@ -1484,7 +1484,14 @@ fn a_combine_joins_its_tool_bodies_to_its_target_and_an_unconfirmed_operation_is
     let several = vec![feats[0].clone(), json!({"type": "mirror", "name": "Mirror1", "source_id": 101})];
     let ed = super::bodyops::Edit { d: &d, g: &g, names: &names, feats: &several };
     assert!(matches!(ed.combine(500, "Combine1"), Combined::Refused(_)));
+    // Operation 1 cuts (6124's Combine1); other values are refused.
     let (m, bulk) = combine_stream(1);
+    let d = Design::new(&m, &bulk).unwrap();
+    let g = super::Graph::new(&d);
+    let ed = super::bodyops::Edit { d: &d, g: &g, names: &names, feats: &feats };
+    let Combined::Feature(f) = ed.combine(500, "Combine1") else { panic!("not read") };
+    assert_eq!(f["operation"], "cut");
+    let (m, bulk) = combine_stream(2);
     let d = Design::new(&m, &bulk).unwrap();
     let g = super::Graph::new(&d);
     let ed = super::bodyops::Edit { d: &d, g: &g, names: &names, feats: &feats };

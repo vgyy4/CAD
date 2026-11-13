@@ -1382,6 +1382,9 @@ pub(super) fn combine(g: &mut Gen, s: &Session, d: &CombineF) -> Result<(), Stri
     let _ = writeln!(g.text, "\ncombine {name} (body: {target}, tools: [{}], op: {op}{unrefined})", tools.join(", "));
     builds(g, s, &name)?;
     g.made.push(name.clone());
+    for t in tools {
+        g.combined_tools.insert(t, name.clone());
+    }
     // The combined body keeps its target's name for later references.
     g.features.insert(d.name.clone(), target);
     Ok(())
@@ -1573,6 +1576,17 @@ pub(super) struct RemoveBodyF {
 
 pub(super) fn remove_body(g: &mut Gen, s: &Session, d: &RemoveBodyF) -> Result<(), String> {
     let target = g.body_named(&d.target, "target")?;
+    // A tool a combine used up: Fusion kept it (the Combine's `keep tools`) to remove it here,
+    // the document's combine has taken it already (6124's `RemoveBody-Body51`, the logo body
+    // `Combine1` cut out of the case).
+    if g.combined_tools.contains_key(&target) {
+        let gone: Vec<String> = g.features.iter().filter(|(_, v)| **v == target).map(|(k, _)| k.clone()).collect();
+        for k in gone {
+            g.features.remove(&k);
+            g.removed.insert(k, d.name.clone());
+        }
+        return Ok(());
+    }
     let name = g.fresh(&d.name, "Remove");
     let _ = writeln!(g.text, "\nremove {name} (body: {target})");
     builds(g, s, &name)?;
