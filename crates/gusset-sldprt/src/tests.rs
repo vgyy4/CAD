@@ -1176,3 +1176,63 @@ fn sketch_lines_are_split_merged_and_stripped_of_shared_walls() {
     assert_eq!(curves[0]["id"], "c0_1");
     assert_eq!(curves[2]["id"], "c1");
 }
+
+/// `hay` with every `from` replaced by `to`.
+fn replaced(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < hay.len() {
+        if hay[i..].starts_with(from) {
+            out.extend(to);
+            i += from.len();
+        } else {
+            out.push(hay[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+#[test]
+fn entity_headers_of_older_modellers_and_version_3_without_a_gap() {
+    let want = history(&feature_stream(&[])).unwrap().unwrap();
+    let hdr = |schema: u8, version: u8| {
+        vec![0xff, 0xff, schema, 0, version, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0x80, 0xbf]
+    };
+    // Schema word 0x07 (setScrew, Spring): the same sketch.
+    let old = replaced(&feature_stream(&[]), &hdr(0x1f, 1), &hdr(0x07, 1));
+    assert_eq!(history(&old).unwrap().unwrap()["features"], want["features"]);
+    // Version 3 headers with the payload right after the 0.0/1.0 pair (adpator), and with the
+    // 8 zero bytes the newer parts put there.
+    let v3 = replaced(&feature_stream(&[]), &hdr(0x1f, 1), &hdr(0x1f, 3));
+    assert_eq!(history(&v3).unwrap().unwrap()["features"], want["features"]);
+    let mut pair = 0.0f64.to_le_bytes().to_vec();
+    pair.extend(1.0f64.to_le_bytes());
+    let mut gap = pair.clone();
+    gap.extend([0u8; 8]);
+    let v3gap = replaced(&v3, &pair, &gap);
+    assert_eq!(history(&v3gap).unwrap().unwrap()["features"], want["features"]);
+}
+
+#[test]
+fn a_component_base_further_on_still_gives_the_plane() {
+    let want = history(&feature_stream(&[])).unwrap().unwrap();
+    let base = comp_plane(2, 0.0);
+    // 12 more zero bytes, or 12 zero bytes and a word, before the plane feature id (newer parts).
+    for extra in [vec![0u8; 12], [vec![0u8; 12], vec![0x50, 0x46, 0, 0]].concat()] {
+        let mut later = base[..45].to_vec();
+        later.extend(&extra);
+        later.extend(&base[45..]);
+        let rf = replaced(&feature_stream(&[]), &base, &later);
+        let t = history(&rf).unwrap().unwrap();
+        assert_eq!(t["features"][0]["plane"], want["features"][0]["plane"], "{extra:?}");
+    }
+}
+
+#[test]
+fn geometry_free_nodes_are_skipped() {
+    let mut extra = feature_node("moInkMarkupFolder_c", "Markups", 40);
+    extra.extend(feature_node("moAttribute_c", "FaceIDTag-17", 41));
+    let t = history(&feature_stream(&extra)).unwrap().unwrap();
+    assert_eq!(t["features"].as_array().unwrap().len(), 2, "{t}");
+}

@@ -37,7 +37,7 @@ const PLANE_NAMES: [(u32, &str); 3] = [(2, "Front"), (3, "Top"), (4, "Right")];
 const EXTRUDE: [&str; 3] = ["moExtrusion_c", "moICE_c", "moCut_c"];
 const REVOLVE: [&str; 2] = ["moRevolution_c", "moRevCut_c"];
 /// Classes that carry nothing the tree needs (sketches are handled before this list).
-const SKIPPED: [&str; 23] = [
+const SKIPPED: [&str; 36] = [
     "moCommentsFolder_c",
     "moFavoriteFolder_c",
     "moHistoryFolder_c",
@@ -62,15 +62,37 @@ const SKIPPED: [&str; 23] = [
     // Annotations: a cosmetic thread and the configuration table add no geometry.
     "moCosmeticThread_c",
     "moConfigTableFolder_c",
+    // Geometry-free nodes of the newer parts (sw-more corpus): markups, comments, attributes,
+    // annotation alignment groups, sensors and the centre of mass, folders (cut lists, details,
+    // graphics bodies) and reference geometry other than planes (points, axes, coordinate
+    // systems; a feature that relies on one fails the rebuild check instead).
+    "moInkMarkupFolder_c",
+    "moConfigCommentsFolder_c",
+    "moAttribute_c",
+    "moAlignGroup_c",
+    "moSensor_c",
+    "moCenterOfMass_c",
+    "moCutListFolder_c",
+    "moDetailFolder_c",
+    "moMeshBodyFeatureFolder_c",
+    "moRefPoint_c",
+    "moRefAxis_c",
+    "moCoordSys_c",
+    "moFeatGraphicsBodyFolder_c",
 ];
 
 /// The 46-byte block after a feature node's comment (older files, then newer ones).
 const NODE_BLOCK: [u8; 18] = [0, 0xff, 0xff, 0, 0, 1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0x80, 0xbf];
 const NODE_BLOCK3: [u8; 18] =
     [0, 0xff, 0xff, 0, 0, 3, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0x80, 0xbf];
-/// A sketch entity header with all-`FF` middle bytes (versions 1 and 3).
-const ENT_HDR: [u8; 17] = [0xff, 0xff, 0x1f, 0, 1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0x80, 0xbf];
-const ENT_HDR3: [u8; 17] = [0xff, 0xff, 0x1f, 0, 3, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0x80, 0xbf];
+/// The schema word of a sketch entity header (`FF FF <word>`): 0x1f, or 0x07 in parts written by
+/// older modellers (setScrew, Spring), which some newer parts keep for library sketches.
+const ENT_SCHEMAS: [u8; 2] = [0x1f, 0x07];
+/// A sketch entity header with all-`FF` middle bytes (versions 1 and 3), for each schema word.
+const fn ent_hdr(schema: u8, version: u8) -> [u8; 17] {
+    [0xff, 0xff, schema, 0, version, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0x80, 0xbf]
+}
+const ENT_HDRS: [[u8; 17]; 4] = [ent_hdr(0x1f, 1), ent_hdr(0x1f, 3), ent_hdr(0x07, 1), ent_hdr(0x07, 3)];
 /// f64 0.0 then f64 1.0.
 const ONE: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f];
 /// The two-f64 sentinel of an edge record.
@@ -525,7 +547,9 @@ fn endspec_candidates(d: &[u8], a: usize, b: usize) -> Result<Vec<EndSpec>, Stri
         let Some(w) = d.get(i..i + 18) else { break };
         let matched = w.get(2..4) == Some(&[0, 0][..])
             && matches!(w.get(4), Some(0 | 1))
-            && w.get(5..18).is_some_and(|z| z.iter().all(|&c| c == 0));
+            // Byte 12 (a `u32` 0/1, set on some cuts of the newer parts: Lock Collar
+            // Cut-Extrude2) is not read; the written direction vector says the direction.
+            && w.iter().enumerate().skip(5).all(|(k, &c)| c == 0 || (k == 12 && c == 1));
         if !matched {
             i += 1;
             continue;
@@ -610,7 +634,9 @@ fn find_headers(d: &[u8], a: usize, b: usize) -> Option<Vec<usize>> {
     let end = b.min(d.len());
     while i + 17 <= end {
         let w = d.get(i..i + 17)?;
-        if w.get(..4) == Some(&[0xff, 0xff, 0x1f, 0][..])
+        if w.get(..2) == Some(&[0xff, 0xff][..])
+            && w.get(2).is_some_and(|s| ENT_SCHEMAS.contains(s))
+            && w.get(3) == Some(&0)
             && matches!(w.get(4), Some(1 | 3))
             && w.get(13..17) == Some(&[0, 0, 0x80, 0xbf][..])
         {
@@ -629,16 +655,21 @@ fn find_headers(d: &[u8], a: usize, b: usize) -> Option<Vec<usize>> {
 /// The payload of the entity whose header is at `h`, and whether it references outside
 /// geometry.
 fn payload(d: &[u8], h: usize) -> Option<(Option<usize>, bool)> {
-    let extra = if d.get(h + 4) == Some(&3) { 8 } else { 0 };
+    // Version 3 headers of the newer parts put 8 zero bytes before the payload; some
+    // (adpator, a chunk-container part of an intermediate version) do not. A payload never
+    // starts with 8 zero bytes (a point starts with its type 0x1e/0x1f, a segment with two
+    // different point indices), so the bytes say which.
+    let v3 = d.get(h + 4) == Some(&3);
+    let after = |q: usize| if v3 && d.get(q..q + 8).is_some_and(|w| w.iter().all(|&b| b == 0)) { q + 8 } else { q };
     let ext = u16_at(d, h + 35)?;
     if ext == 0 {
         let p = h + 40;
         if d.get(p..p + 16) == Some(&ONE[..]) {
-            return Some((Some(p + 16 + extra), false));
+            return Some((Some(after(p + 16)), false));
         }
     }
     // An object chain in the reference slot: the payload follows the next 0.0/1.0 pair.
-    Some((find(d, &ONE, h + 35, h + 2000).map(|k| k + 16 + extra), true))
+    Some((find(d, &ONE, h + 35, h + 2000).map(|k| after(k + 16)), true))
 }
 
 /// The sketch lists (`sketch.parse_sketch`); `None` where the prototype raised (the sketch
@@ -783,9 +814,11 @@ fn find_plane(d: &[u8], a: usize, b: usize, uc: Option<usize>) -> Result<Option<
     };
     for i0 in hits {
         let i = i0 - 2;
-        // The component base is 31 bytes after the unit component in older files and 55 in
-        // chunk-container ones: try the id (`u32 id, u32 stamp, u16 0`) at both places.
-        for off in [43usize, 67] {
+        // The component base is 31 bytes after the unit component in older files, 55 in
+        // chunk-container ones and 67 or 69 in later versions (more zero bytes, or a word, after
+        // the run of 16 FF bytes; sw-more): try the id (`u32 id, u32 stamp, u16 0`) at each
+        // place up to 112 bytes on, the first that holds a whole frame.
+        for off in 43usize..=112 {
             let p = i0 + off;
             let (Some(cid), Some(_)) = (u32_at(d, p), u32_at(d, p + 4)) else { continue };
             let p = p + 8;
@@ -2359,11 +2392,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             continue;
         }
         if cls.as_deref() == Some("moProfileFeature_c") {
-            let h = [find(rf, &ENT_HDR, n.post, b), find(rf, &ENT_HDR3, n.post, b)]
-                .into_iter()
-                .flatten()
-                .min()
-                .unwrap_or(b);
+            let h = ENT_HDRS.iter().filter_map(|p| find(rf, p, n.post, b)).min().unwrap_or(b);
             let Some(geo) = h.checked_sub(14).and_then(|body| parse_sketch(rf, body, b)) else {
                 last_sketch = None;
                 if let Some(h) = hole.as_mut() {
