@@ -3467,3 +3467,48 @@ Reader: `fusion_tree/bodyops.rs` (`draft_json`), `fusion_tree/naming.rs` (`store
   by the state checks (above); 5998 stops at `Chamfer3` (OCCT), 6299 at `Loft2` (reader), 2354 at `Revolve1`.
 * No loss on a sample of 35 designs that came in as history (every 6th of adafruit-more, every 10th of
   adafruit-next) and on the designs with offsets of faces (3027, 3464, 3350, 1054, 3692).
+
+## 56. Round 30 A: a face revolved about an edge, which way a part turn goes, a loop curve that meets nothing (2026-11-13)
+Readers: `fusion_tree/json.rs` (`revolve_of_a_face`, `revolve_angle`), `fusion_tree/naming.rs` (`revolve_turn`),
+`fusion_tree/geom.rs` (`touching`), `fusion_tree/sketch.rs`; importer: `tree_import.rs` (`face_revolve`, `edge_line`).
+Document: `revolve` takes `profile: <face>` and `axis: edge(...)`, a negative `angle` turns the other way
+(grammar.md). Tree format: a revolve's `profile_face`, its `axis.edge` (an edge pick, as a sweep's `path_edges`) and,
+for a part turn, `axis.direction`.
+
+### 2354 Revolve1, Revolve2: a box's face about an edge
+* The revolve record (`E3849A15`) names no `4BD53E5A` profile: its selections (`2CA5A1CD` -> `5662F619`) are a
+  bounded-face recipe (`1 [318]`, a face of `BoxPrimitive3`) and an edge recipe (`5 [310] | 1 [310]`). The face is
+  read as an extrude's face profile (`face_pick`), the edge as a sweep's path edges (`sweep_path_edges`, its middle).
+* Both are part turns (`AlongAngle` 4.18879 = 240 degrees, and 180). Which way a revolve turns is not in the record;
+  the stored faces tell. A revolve's faces carry its operation alone: the start cap `1 [op]`, the end cap `2 [op]`,
+  the swept faces (`11`, `12`, `13`). The swept faces are surfaces of revolution about the axis: a cylinder or cone
+  about it, a plane across it, which gives the axis line (the edge's middle must lie on it, 1e-6 cm). From the start
+  cap's side of the axis (the mean of its points' offsets from the axis; else the end cap's turned back), a
+  right-handed turn by the angle about the right direction reaches every point of the faces (their vertices and
+  points along their edges), and about the other direction does not. `Revolve1`: start cap at x = 0 below the axis
+  (y, through z 5 mm), end cap at (0.866, 0, 0.5) from it: +y, written `angle: 240 deg` about the edge.
+* The importer finds the edge by its middle and writes `axis: edge(...)`; the document's edge axis points towards +X,
+  else +Y, else +Z, so a direction against that is written as a negative angle. Golden test
+  `a_face_revolved_about_an_edge_either_way`.
+* `Revolve2` turns a face that its axis halves (the cap `2 [374]` reaches 0.0388 cm to both sides of it): a half turn
+  either way makes the same whole cylinder, the cap is on both sides, and the turn is not read ("a part revolve whose
+  stored faces do not tell which way it turns"). The document's revolve of a face across its axis would not build
+  either (OCCT's revolve of a profile crossing the axis is self-intersecting); a full turn of one half is the shape.
+
+### 6299 Loft2: a loop that lists a curve meeting none of the others
+* `Sketch3 (2)` holds a slot (rectangle with a half-circle end `c5958`, r 1.4 mm about (1.4, 7)) and the circle
+  `c6812` (r 1.25 mm, same centre), cut in two halves by the slot's side through the centre. `Loft2`'s first section's
+  loop lists both halves (1/2, 2/2) and the whole end arc, whose ends lie 0.15 mm outside the circle: it meets neither
+  half. The stored loft's start cap `1 [389]` is one whole circle (a single vertex at r 1.25 mm): the section is the
+  circle.
+* Rule: where the loop's curves do not chain (nor as a bridged hole), a curve neither of whose ends comes within a
+  thousandth of the loop's size of another's end is left out, if the others then close. Placed after the bridged-hole
+  readings: placed before them it took 2831's loop of an outline and a hole on a bridge apart (lost in a first run).
+* 6299 then reads `Loft2` (two circles) and stops at `Chamfer2` (14 of 16 edges not resolved).
+
+### Result
+* No design gained history: 2354 now reads `Revolve1` and stops at `BoxPrimitive6` (a box joined to three bodies, two
+  of which `Extrude5` then cuts as separate bodies), before `Revolve2`; 6299 reads `Loft2` and stops at `Chamfer2`.
+  Neither revolve nor the loft is rebuilt against the stored bodies yet (the readers stop first).
+* No loss on the sample of 40 designs (every 6th of adafruit-more, every 10th of adafruit-next): 35 come in as history,
+  as in round 29; the other five are 1400 and 2226 (no history), 3221 and 3502 (state check), 6299.
