@@ -2117,8 +2117,13 @@ fn fusion_end_bodies(
             }
             let step = match gusset_sat::to_step_nth(blob, "end body", &limits, None, nth, count) {
                 Ok(c) => c.step,
-                // A sheet body is no body of the rebuilt model either.
-                Err(gusset_sat::SatError::Unsupported(why)) if why.ends_with("is not a solid") => continue,
+                // A sheet body is no body of the rebuilt model either, nor is a body without
+                // faces (3722's base blob holds one beside its end bodies).
+                Err(gusset_sat::SatError::Unsupported(why))
+                    if why.ends_with("is not a solid") || why == "the file holds no body with faces" =>
+                {
+                    continue;
+                }
                 Err(_) => return Vec::new(),
             };
             let Ok(solids) = importer.import("step", step.as_bytes(), cancel) else { return Vec::new() };
