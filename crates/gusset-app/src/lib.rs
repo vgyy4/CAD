@@ -53,3 +53,5 @@ mod tests_ribbon;
 mod tests_sch;
 #[cfg(test)]
 mod tests_sch_lib;
+#[cfg(test)]
+mod tests_sch_sheet;

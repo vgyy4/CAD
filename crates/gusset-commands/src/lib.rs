@@ -70,6 +70,8 @@ mod tests_sch;
 #[cfg(test)]
 mod tests_sch_edit;
 #[cfg(test)]
+mod tests_sch_sheet;
+#[cfg(test)]
 mod tests_sheet;
 #[cfg(test)]
 mod tests_sketch;

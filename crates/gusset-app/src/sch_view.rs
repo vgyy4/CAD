@@ -33,6 +33,8 @@ pub enum Tool {
     Wire,
     Label,
     Place,
+    /// Drag a rectangle to create a hierarchical sheet (ADR 0057).
+    Sheet,
 }
 
 /// Grid choices (mm): KiCad's 50 mil grid and its halves.
@@ -79,6 +81,17 @@ pub struct State {
     pub unit: u32,
     /// The symbol library browser (ADR 0057).
     pub browser: crate::symbol_browser::Browser,
+    /// Sheets entered from (the shown sheet's parents, nearest last); `leave_sheet` pops.
+    pub trail: Vec<Option<String>>,
+    /// Name and file of the next sheet the Sheet tool makes (the file may stay empty).
+    pub sheet_name: String,
+    pub sheet_file: String,
+    /// The pin the sheet panel adds: name, kind and side.
+    pub pin_name: String,
+    pub pin_kind: usize,
+    pub pin_side: usize,
+    /// A sheet pin being renamed: (its name, the new text).
+    pub pin_rename: Option<(String, String)>,
     pub show_markers: bool,
     /// The user named a `kicad-cli` (ADR 0056): the KiCad ERC button is offered.
     pub kicad_ready: bool,
@@ -113,6 +126,13 @@ impl Default for State {
             symbol: String::new(),
             unit: 1,
             browser: crate::symbol_browser::Browser::default(),
+            trail: Vec::new(),
+            sheet_name: "Sheet".into(),
+            sheet_file: String::new(),
+            pin_name: String::new(),
+            pin_kind: 4,
+            pin_side: 0,
+            pin_rename: None,
             show_markers: true,
             kicad_ready: false,
             kicad_issues: Vec::new(),
@@ -185,6 +205,12 @@ pub fn box_select(sch: &Schematic, a: Pt, b: Pt) -> Vec<Item> {
     out.extend(sch.labels.iter().enumerate().filter(|(_, l)| inside(l.at)).map(|(i, _)| Item::Label(i)));
     out.extend(sch.junctions.iter().enumerate().filter(|(_, j)| inside(j.at)).map(|(i, _)| Item::Junction(i)));
     out.extend(sch.no_connects.iter().enumerate().filter(|(_, j)| inside(j.at)).map(|(i, _)| Item::NoConnect(i)));
+    for (i, sh) in sch.sheets.iter().enumerate() {
+        let r = [sh.at, [sh.at[0] + sh.size[0], sh.at[1] + sh.size[1]]];
+        if if window { inside(r[0]) && inside(r[1]) } else { rects(r) } {
+            out.push(Item::Sheet(i));
+        }
+    }
     out
 }
 
@@ -363,6 +389,20 @@ pub fn hit(sch: &Schematic, p: Pt, tol: f64) -> Option<Item> {
             area(&a.1).total_cmp(&area(&b.1))
         })
         .map(|(i, _)| Item::Symbol(i))
+        .or_else(|| {
+            // A sheet by its body (the smallest one when they overlap).
+            sch.sheets
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    p[0] >= s.at[0] - tol
+                        && p[0] <= s.at[0] + s.size[0] + tol
+                        && p[1] >= s.at[1] - tol
+                        && p[1] <= s.at[1] + s.size[1] + tol
+                })
+                .min_by(|a, b| (a.1.size[0] * a.1.size[1]).total_cmp(&(b.1.size[0] * b.1.size[1])))
+                .map(|(i, _)| Item::Sheet(i))
+        })
 }
 
 /// The nearest connection point (pin end, wire end, label) within `tol`, else the grid
@@ -498,6 +538,147 @@ pub fn paint_preview(ui: &mut Ui, lib: &LibSymbol, unit: u32, size: Vec2) {
     paint_symbol(&painter, &Map { origin, zoom }, &sym, lib, Vec2::ZERO, false);
 }
 
+/// The file a new sheet gets when the panel names none: the name in lower case with
+/// letters, digits, `-` and `_` only, made unique among the design's sheet files.
+pub fn default_sheet_file(open: &OpenSchematic, name: &str) -> String {
+    let base: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c.to_ascii_lowercase() } else { '_' })
+        .collect();
+    let base = if base.trim_matches('_').is_empty() { "sheet".to_string() } else { base };
+    let taken = |f: &str| open.design.sheets.iter().any(|(x, _)| x == f);
+    let first = format!("{base}.kicad_sch");
+    if !taken(&first) {
+        return first;
+    }
+    (2..10_000).map(|n| format!("{base}_{n}.kicad_sch")).find(|f| !taken(f)).unwrap_or(first)
+}
+
+/// `sch.add_sheet` for a rectangle dragged from `a` to `b` (sheet mm, snapped by the
+/// caller): `None` when it is smaller than the smallest sheet or the name is empty.
+pub fn sheet_command(st: &State, open: &OpenSchematic, a: Pt, b: Pt) -> Option<(&'static str, Value)> {
+    let (at, size) = ([a[0].min(b[0]), a[1].min(b[1])], [(a[0] - b[0]).abs(), (a[1] - b[1]).abs()]);
+    let name = st.sheet_name.trim();
+    if name.is_empty() || size[0] < gusset_pcb::sch_sheet::MIN_SIDE || size[1] < gusset_pcb::sch_sheet::MIN_SIDE {
+        return None;
+    }
+    let file = match st.sheet_file.trim() {
+        "" => default_sheet_file(open, name),
+        f => f.to_string(),
+    };
+    Some(("sch.add_sheet", with_sheet(st, json!({ "name": name, "file": file, "at": at, "size": size }))))
+}
+
+/// The pin kinds and sides the sheet panel offers, in menu order.
+pub use gusset_pcb::sch_sheet::PIN_KINDS;
+pub const PIN_SIDES: [&str; 4] = ["left", "right", "top", "bottom"];
+
+/// `sch.sheet_pin` for the picked sheet: `add` (name, kind, side from the state), `rename`
+/// or `remove`.
+pub fn sheet_pin_command(
+    st: &State,
+    sheet: usize,
+    op: &str,
+    name: &str,
+    new_name: Option<&str>,
+) -> (&'static str, Value) {
+    let mut args = json!({ "item": format!("sheet#{sheet}"), "op": op, "name": name });
+    if let Value::Object(m) = &mut args {
+        match (op, new_name) {
+            ("rename", Some(n)) => {
+                m.insert("new_name".into(), json!(n));
+            }
+            ("add", _) => {
+                m.insert("kind".into(), json!(PIN_KINDS.get(st.pin_kind).copied().unwrap_or("bidirectional")));
+                m.insert("side".into(), json!(PIN_SIDES.get(st.pin_side).copied().unwrap_or("left")));
+            }
+            _ => {}
+        }
+    }
+    ("sch.sheet_pin", with_sheet(st, args))
+}
+
+/// Where a sheet of the shown schematic is, from the root: (label, sheet file or `None`
+/// for the root) for the root and each sheet down to the one shown, by the first use of
+/// the shown sheet file. The labels are the sheet names (the root: its file name).
+pub fn breadcrumbs(open: &OpenSchematic, st: &State) -> Vec<(String, Option<String>)> {
+    let Some((shown, _)) = shown_sheet(open, st) else { return Vec::new() };
+    let uses = &open.netlist.uses;
+    let mut chain: Vec<(String, Option<String>)> = Vec::new();
+    let mut cur = uses.iter().position(|u| u.sheet == shown);
+    // Bounded by the number of uses: a loop in the hierarchy is not followed anyway.
+    for _ in 0..=uses.len() {
+        let Some(u) = cur.and_then(|c| uses.get(c)) else { break };
+        match u.parent {
+            Some((pu, k)) => {
+                let name = uses
+                    .get(pu)
+                    .and_then(|p| open.design.sheets.get(p.sheet))
+                    .and_then(|(_, s)| s.sheets.get(k))
+                    .map_or_else(String::new, |s| s.name.clone());
+                chain.push((name, open.design.sheets.get(u.sheet).map(|x| x.0.clone())));
+                cur = Some(pu);
+            }
+            None => {
+                chain.push((open.file().to_string(), None));
+                break;
+            }
+        }
+    }
+    chain.reverse();
+    chain
+}
+
+/// Enters the sheet item `index` of the shown sheet: shows the file it names (when the
+/// design has it) and remembers where it came from for [`leave_sheet`]. Returns whether
+/// a sheet was entered.
+pub fn enter_sheet(open: &OpenSchematic, st: &mut State, index: usize) -> bool {
+    let Some((_, sch)) = shown_sheet(open, st) else { return false };
+    let Some(file) = sch.sheets.get(index).map(|s| s.file.clone()) else { return false };
+    if open.design.sheet_named(&file).is_none_or(|i| i == 0) {
+        return false;
+    }
+    st.trail.push(st.sheet.clone());
+    st.sheet = Some(file);
+    st.selected = None;
+    st.extra.clear();
+    st.wire.clear();
+    true
+}
+
+/// Goes back to the sheet this one was entered from, else to its parent by the first use
+/// of the file. Returns whether the shown sheet changed (never from the root).
+pub fn leave_sheet(open: &OpenSchematic, st: &mut State) -> bool {
+    if st.sheet.is_none() {
+        return false;
+    }
+    let up = match st.trail.pop() {
+        Some(p) => p,
+        None => {
+            let crumbs = breadcrumbs(open, st);
+            match crumbs.len().checked_sub(2).and_then(|k| crumbs.get(k)) {
+                Some((_, f)) => f.clone(),
+                None => None,
+            }
+        }
+    };
+    st.sheet = up;
+    st.selected = None;
+    st.extra.clear();
+    st.wire.clear();
+    true
+}
+
+/// Shows another sheet from the chooser, the tree or a breadcrumb (no way back is kept).
+pub fn show_sheet(st: &mut State, file: Option<String>) {
+    st.sheet = file;
+    st.trail.clear();
+    st.selected = None;
+    st.extra.clear();
+    st.wire.clear();
+}
+
 /// ERC markers on the shown sheet: issues of the first use of that sheet file.
 pub fn markers(open: &OpenSchematic, st: &State) -> Vec<Marker> {
     let Some((sheet, _)) = shown_sheet(open, st) else { return Vec::new() };
@@ -598,6 +779,104 @@ pub fn kicad_issues_from(result: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The breadcrumbs, the leave button, the Sheet tool's name and file, and the picked
+/// sheet's pins (add, rename, remove).
+fn sheet_panel(ui: &mut Ui, open: &OpenSchematic, st: &mut State, out: &mut Out) {
+    let crumbs = breadcrumbs(open, st);
+    if crumbs.len() > 1 {
+        ui.horizontal_wrapped(|ui| {
+            for (k, (label, file)) in crumbs.iter().enumerate() {
+                if k > 0 {
+                    ui.weak(">");
+                }
+                let here = k + 1 == crumbs.len();
+                if ui.selectable_label(here, label.as_str()).clicked() && !here {
+                    show_sheet(st, file.clone());
+                }
+            }
+        });
+        if ui.small_button(tr("sch.leave_sheet")).on_hover_text(tr("sch.tip_leave_sheet")).clicked() {
+            leave_sheet(open, st);
+        }
+    }
+    if st.tool == Tool::Sheet {
+        ui.label(tr("sch.sheet_name"));
+        crate::theme::text_field(ui, egui::TextEdit::singleline(&mut st.sheet_name).desired_width(f32::INFINITY));
+        ui.label(tr("sch.sheet_file"));
+        crate::theme::text_field(
+            ui,
+            egui::TextEdit::singleline(&mut st.sheet_file)
+                .hint_text(tr("sch.sheet_file_hint"))
+                .desired_width(f32::INFINITY),
+        );
+    }
+    let Some(Item::Sheet(i)) = st.selected else {
+        st.pin_rename = None;
+        return;
+    };
+    let Some(sheet) = shown_sheet(open, st).and_then(|(_, s)| s.sheets.get(i)) else { return };
+    ui.separator();
+    ui.strong(&sheet.name);
+    ui.weak(&sheet.file);
+    if ui.small_button(tr("sch.enter_sheet")).clicked() {
+        enter_sheet(open, st, i);
+        return;
+    }
+    for p in &sheet.pins {
+        ui.horizontal(|ui| match st.pin_rename.as_mut().filter(|r| r.0 == p.name) {
+            Some((_, text)) => {
+                let r = crate::theme::text_field(ui, egui::TextEdit::singleline(text).desired_width(120.0));
+                let done = r.lost_focus() && ui.input(|x| x.key_pressed(egui::Key::Enter));
+                if done {
+                    let to = text.trim().to_string();
+                    if !to.is_empty() && to != p.name {
+                        out.commands.push(sheet_pin_command(st, i, "rename", &p.name, Some(&to)));
+                    }
+                    st.pin_rename = None;
+                } else if r.lost_focus() {
+                    st.pin_rename = None;
+                }
+            }
+            None => {
+                if ui.small_button(&p.name).on_hover_text(tr("sch.tip_rename_pin")).clicked() {
+                    st.pin_rename = Some((p.name.clone(), p.name.clone()));
+                }
+                ui.weak(&p.kind);
+                if ui.small_button("x").on_hover_text(tr("sch.tip_remove_pin")).clicked() {
+                    out.commands.push(sheet_pin_command(st, i, "remove", &p.name, None));
+                }
+            }
+        });
+    }
+    ui.horizontal(|ui| {
+        crate::theme::text_field(
+            ui,
+            egui::TextEdit::singleline(&mut st.pin_name).hint_text(tr("sch.pin_name")).desired_width(100.0),
+        );
+        egui::ComboBox::from_id_salt("sch_pin_kind")
+            .selected_text(PIN_KINDS.get(st.pin_kind).copied().unwrap_or("passive"))
+            .width(90.0)
+            .show_ui(ui, |ui| {
+                for (k, n) in PIN_KINDS.iter().enumerate() {
+                    ui.selectable_value(&mut st.pin_kind, k, *n);
+                }
+            });
+        egui::ComboBox::from_id_salt("sch_pin_side")
+            .selected_text(PIN_SIDES.get(st.pin_side).copied().unwrap_or("left"))
+            .width(60.0)
+            .show_ui(ui, |ui| {
+                for (k, n) in PIN_SIDES.iter().enumerate() {
+                    ui.selectable_value(&mut st.pin_side, k, *n);
+                }
+            });
+    });
+    if ui.small_button(tr("sch.add_pin")).clicked() && !st.pin_name.trim().is_empty() {
+        let name = st.pin_name.trim().to_string();
+        out.commands.push(sheet_pin_command(st, i, "add", &name, None));
+        st.pin_name.clear();
+    }
+}
+
 /// The side panel: sheet, tools, grid, label and symbol to place, ERC summary.
 pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut State) -> Out {
     let mut out = Out::default();
@@ -616,13 +895,12 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &m
             for (k, (f, _)) in open.design.sheets.iter().enumerate() {
                 let v = (k > 0).then(|| f.clone());
                 if ui.selectable_label(st.sheet == v, f.as_str()).clicked() {
-                    st.sheet = v;
-                    st.selected = None;
-                    st.wire.clear();
+                    show_sheet(st, v);
                 }
             }
         });
     }
+    sheet_panel(ui, open, st, &mut out);
     if let Some((_, s)) = shown_sheet(open, st) {
         ui.weak(format!(
             "{} {} · {} {} · {} {}",
@@ -646,6 +924,7 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &m
             (Tool::Wire, "sch.wire", "sch.tip_wire"),
             (Tool::Label, "sch.label", "sch.tip_label"),
             (Tool::Place, "sch.place", "sch.tip_place"),
+            (Tool::Sheet, "sch.sheet", "sch.tip_sheet"),
         ] {
             if ui.selectable_label(st.tool == t, tr(key)).on_hover_text(tr(tip)).clicked() {
                 st.tool = t;
@@ -795,9 +1074,7 @@ pub fn tree(ui: &mut Ui, open: Option<&OpenSchematic>, st: &mut State) {
             for (k, (f, _)) in open.design.sheets.iter().enumerate() {
                 let v = (k > 0).then(|| f.clone());
                 if ui.selectable_label(st.sheet == v, f.as_str()).clicked() {
-                    st.sheet = v;
-                    st.selected = None;
-                    st.wire.clear();
+                    show_sheet(st, v);
                 }
             }
         });
@@ -847,6 +1124,17 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
         st.extra_owner = st.selected;
     }
     st.extra.retain(|s| Item::parse(sch, &s.name()).is_some());
+    // A double click on a sheet enters it; elsewhere it fits the view.
+    if resp.double_clicked()
+        && st.tool == Tool::Select
+        && let Some(o) = open
+        && let Some(p) =
+            resp.interact_pointer_pos().map(|p| Map { origin: rect.min + st.offset, zoom: st.zoom }.from(p))
+        && let Some(Item::Sheet(i)) = hit(sch, p, f64::from(5.0 / st.zoom))
+        && enter_sheet(o, st, i)
+    {
+        return out;
+    }
     if resp.double_clicked() && st.tool == Tool::Select || st.auto_fit.is_some_and(|s| s != rect.size()) {
         st.fit(rect, sch);
     }
@@ -877,9 +1165,11 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
             (Tool::Select, false, Some(p)) => hit(sch, p, tol),
             _ => None,
         };
-        let item = under.filter(|i| matches!(i, Item::Symbol(_) | Item::Label(_)) || picked.contains(i));
+        let item =
+            under.filter(|i| matches!(i, Item::Symbol(_) | Item::Label(_) | Item::Sheet(_)) || picked.contains(i));
         let boxed = match (st.tool, middle, press, item) {
             (Tool::Select, false, Some(p), None) => Some([p, p]),
+            (Tool::Sheet, false, Some(p), _) => Some([snap(p, st.grid); 2]),
             _ => None,
         };
         if let Some(i) = item
@@ -896,7 +1186,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
             Some(Drag { item: Some(_), moved, .. }) => *moved += d / st.zoom,
             Some(Drag { boxed: Some(b), .. }) => {
                 if let Some(p) = here {
-                    b[1] = p;
+                    b[1] = if st.tool == Tool::Sheet { snap(p, st.grid) } else { p };
                 }
             }
             _ => {
@@ -914,6 +1204,13 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
                     out.commands.extend(group_move_command(st, i, &picks, delta));
                 } else if let Some(at) = drop_place(sch, i, [f64::from(moved.x), f64::from(moved.y)], st.grid) {
                     out.commands.push(move_command(st, i, at));
+                } else if matches!(i, Item::Sheet(_)) {
+                    out.commands.extend(group_move_command(st, i, &[i], delta));
+                }
+            }
+            Some(Drag { boxed: Some([a, b]), .. }) if st.tool == Tool::Sheet => {
+                if let Some(o) = open {
+                    out.commands.extend(sheet_command(st, o, a, b));
                 }
             }
             Some(Drag { boxed: Some([a, b]), .. }) if dist(a, b) * f64::from(st.zoom) > 3.0 => {
@@ -956,6 +1253,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
             }
             Tool::Label => out.commands.extend(label_command(st, snap(p, st.grid))),
             Tool::Place => out.commands.extend(place_command(st, snap(p, st.grid))),
+            Tool::Sheet => {}
         }
     }
     if resp.secondary_clicked() && st.tool == Tool::Wire {
@@ -975,6 +1273,12 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
                 i.key_pressed(egui::Key::Y),
             )
         });
+        if ui.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowUp))
+            && let Some(o) = open
+        {
+            leave_sheet(o, st);
+            return out;
+        }
         if esc {
             if let Some(c) = wire_command(st, &st.wire) {
                 out.commands.push(c);
@@ -1243,13 +1547,26 @@ fn paint(painter: &egui::Painter, map: &Map, sch: &Schematic, st: &State, dragge
     let picked = st.picked();
     let sel = |item: Item| picked.contains(&item);
     let lw = (0.152 * map.zoom).max(1.2);
-    for s in &sch.sheets {
-        let r = Rect::from_two_pos(map.to(s.at), map.to([s.at[0] + s.size[0], s.at[1] + s.size[1]]));
-        painter.rect_stroke(r, 0.0, Stroke::new(lw, SHEET), egui::StrokeKind::Middle);
-        text(painter, map, r.left_top() + Vec2::new(0.0, -2.0), &s.name, 1.27, 0.0, egui::Align2::LEFT_BOTTOM, SHEET);
+    for (i, s) in sch.sheets.iter().enumerate() {
+        let item = Item::Sheet(i);
+        let by = off_of(item);
+        let c = if sel(item) { SELECT } else { SHEET };
+        let r = Rect::from_two_pos(map.to(s.at), map.to([s.at[0] + s.size[0], s.at[1] + s.size[1]])).translate(by);
+        painter.rect_filled(r, 0.0, SHEET.gamma_multiply(0.06));
+        painter.rect_stroke(r, 0.0, Stroke::new(lw, c), egui::StrokeKind::Middle);
+        text(painter, map, r.left_top() + Vec2::new(0.0, -2.0), &s.name, 1.27, 0.0, egui::Align2::LEFT_BOTTOM, c);
+        text(painter, map, r.left_bottom() + Vec2::new(0.0, 2.0), &s.file, 1.0, 0.0, egui::Align2::LEFT_TOP, c);
         for p in &s.pins {
-            painter.circle_filled(map.to(p.at), 2.0, SHEET);
-            text(painter, map, map.to(p.at), &p.name, 1.27, 0.0, egui::Align2::LEFT_CENTER, SHEET);
+            let at = map.to(p.at) + by;
+            painter.circle_filled(at, 2.0, c);
+            // The name sits inside the sheet.
+            let (dx, align) = match p.angle.rem_euclid(360.0) as u32 {
+                0 => (-3.0, egui::Align2::RIGHT_CENTER),
+                90 => (0.0, egui::Align2::CENTER_TOP),
+                270 => (0.0, egui::Align2::CENTER_BOTTOM),
+                _ => (3.0, egui::Align2::LEFT_CENTER),
+            };
+            text(painter, map, at + Vec2::new(dx, 0.0), &p.name, 1.27, 0.0, align, c);
         }
     }
     for t in &sch.texts {

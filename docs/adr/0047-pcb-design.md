@@ -452,8 +452,9 @@ it nets and rules, route, pour, check and write every fabrication file without K
   box select, annotation options: done, see ADR 0052. Still open: bus aliases and
   KiCad's naming of bus member nets in every case (25 of 2046 video pads differ in the name
   chosen); a symbol library
-  browser; sheet creation and editing; KiCad 5 `.sch` files; back-annotation from the board
-  (`kicad-cli sch erc` for the authoritative check: done, ADR 0056).
+  browser and sheet creation and editing (done, see ADR 0057); KiCad 5 `.sch` files;
+  back-annotation from the board (`kicad-cli sch erc` for the authoritative check: done,
+  ADR 0056).
 * **KiCad library content pack** (footprints, symbols, 3D models; CC-BY-SA-4.0 with exception) as
   an optional download with notices; placing footprints from it.
 * DRC: hole-to-hole, courtyard overlap, silk on pads and drill sizes are done (ADR 0048);

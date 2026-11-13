@@ -26,6 +26,8 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<SchAddWire>(),
         spec::<SchAddLabel>(),
         spec::<SchDelete>(),
+        spec::<SchAddSheet>(),
+        spec::<SchSheetPin>(),
         spec::<SchErc>(),
         spec::<SchNetlist>(),
         spec::<SchAnnotate>(),
@@ -92,6 +94,27 @@ fn sheet_edit(
     sheet: Option<&str>,
     f: impl FnOnce(&mut Schematic, &OpenSchematic) -> Result<Value, CommandError>,
 ) -> Result<Value, CommandError> {
+    sheet_edit_ex(s, ctx, label, sheet, |sch, open, _| f(sch, open))
+}
+
+/// Changes an edit may make beyond its own sheet (ADR 0057): sheet files to start and
+/// sheet files to forget.
+#[derive(Default)]
+struct Files {
+    /// New sub-sheet files and their (empty) schematics.
+    add: Vec<(String, Schematic)>,
+    /// Sheet files no sheet uses any more.
+    drop: Vec<String>,
+}
+
+/// [`sheet_edit`] where the edit may also add or drop sheet files of the document.
+fn sheet_edit_ex(
+    s: &mut Session,
+    ctx: &CmdCtx,
+    label: &str,
+    sheet: Option<&str>,
+    f: impl FnOnce(&mut Schematic, &OpenSchematic, &mut Files) -> Result<Value, CommandError>,
+) -> Result<Value, CommandError> {
     let open = sch_session::open_schematic(s, &ctx.actor)?.ok_or_else(no_schematic)?;
     let (i, sch) = open.sheet(sheet).ok_or_else(|| {
         CommandError::not_found(format!(
@@ -100,8 +123,45 @@ fn sheet_edit(
         ))
     })?;
     let mut edited = sch.clone();
-    let extra = f(&mut edited, &open)?;
-    commit_sheets(s, ctx, label, open.doc.clone(), &[(i, &edited)], extra)
+    let mut files = Files::default();
+    let extra = f(&mut edited, &open, &mut files)?;
+    let mut doc = open.doc.clone();
+    let edited_file = open.design.sheets.get(i).map(|x| x.0.clone()).unwrap_or_default();
+    doc.sheets.retain(|(f, _)| !files.drop.contains(f));
+    for (f, _) in &files.add {
+        doc.sheets.push((f.clone(), String::new()));
+    }
+    // Indexes into the document (0: the root, then its sheets in order).
+    let at = |file: &str| doc.sheets.iter().position(|(f, _)| f == file).map(|k| k + 1);
+    let mut list: Vec<(usize, &Schematic)> = Vec::new();
+    match if i == 0 { Some(0) } else { at(&edited_file) } {
+        Some(k) => list.push((k, &edited)),
+        None => return Err(CommandError::args("the edit removed the sheet it was made on")),
+    }
+    for (f, sch) in &files.add {
+        list.extend(at(f).map(|k| (k, sch)));
+    }
+    commit_sheets(s, ctx, label, doc.clone(), &list, extra)
+}
+
+/// The sheet files no sheet reaches from the root, given the design's files with one
+/// sheet replaced by its edited version.
+fn unreachable_files(open: &OpenSchematic, edited_file: &str, edited: &Schematic) -> Vec<String> {
+    let root = open.design.sheets.first().map(|x| x.0.clone()).unwrap_or_default();
+    let sheet_of = |f: &str| -> Option<&Schematic> {
+        if f == edited_file { Some(edited) } else { open.design.sheets.iter().find(|x| x.0 == f).map(|x| &x.1) }
+    };
+    let mut seen = vec![root];
+    let mut k = 0;
+    while let Some(f) = seen.get(k).cloned() {
+        k += 1;
+        for sh in sheet_of(&f).map(|s| s.sheets.as_slice()).unwrap_or_default() {
+            if !seen.contains(&sh.file) && seen.len() < 100_000 {
+                seen.push(sh.file.clone());
+            }
+        }
+    }
+    open.design.sheets.iter().skip(1).map(|x| x.0.clone()).filter(|f| !seen.contains(f)).collect()
 }
 
 /// Stores edited sheets (by index: 0 the root) and commits a document naming them.
@@ -474,6 +534,7 @@ impl Command for SchMove {
                         let from = match item {
                             Item::Symbol(i) => sch.symbols.get(i).map(|x| x.at),
                             Item::Label(i) => sch.labels.get(i).map(|x| x.at),
+                            Item::Sheet(i) => sch.sheets.get(i).map(|x| x.at),
                             _ => None,
                         }
                         .ok_or_else(|| CommandError::args("at names a place for a symbol or label; use by"))?;
@@ -503,7 +564,17 @@ impl Command for SchMove {
                     sch.move_label(i, at, angle, &limits()).map_err(sch_err)?;
                     Ok(json!({ "at": at, "angle": angle }))
                 }
-                _ => Err(CommandError::args("only symbols and labels move; delete and redraw wires")),
+                Item::Sheet(i) => {
+                    let at = self.at.ok_or_else(|| CommandError::args("a sheet moves by at or by"))?;
+                    if self.angle.is_some() || self.mirror.is_some() {
+                        return Err(CommandError::args("sheets move; they do not turn or mirror"));
+                    }
+                    let from = sch.sheets.get(i).ok_or_else(no_schematic)?.at;
+                    let by = [at[0] - from[0], at[1] - from[1]];
+                    sch.move_items(&[item], by, &limits()).map_err(sch_err)?;
+                    Ok(json!({ "moved": 1, "by": by }))
+                }
+                _ => Err(CommandError::args("only symbols, labels and sheets move; delete and redraw wires")),
             }
         })
     }
@@ -629,7 +700,7 @@ impl Command for SchDelete {
         if self.items.is_empty() || self.items.len() > 100_000 {
             return Err(CommandError::args("name 1 to 100000 items to delete"));
         }
-        sheet_edit(s, ctx, "Delete from schematic", self.sheet.as_deref(), |sch, _| {
+        sheet_edit_ex(s, ctx, "Delete from schematic", self.sheet.as_deref(), |sch, open, files| {
             let mut items = Vec::with_capacity(self.items.len());
             for name in &self.items {
                 items.push(Item::parse(sch, name).ok_or_else(|| {
@@ -637,7 +708,184 @@ impl Command for SchDelete {
                 })?);
             }
             let n = sch.delete(&items, &limits()).map_err(sch_err)?;
+            // A sheet file nobody uses any more is dropped from the design (undo brings it back).
+            if items.iter().any(|x| matches!(x, Item::Sheet(_))) {
+                let file = self.sheet.clone().unwrap_or_else(|| open.file().to_string());
+                files.drop = unreachable_files(open, &file, sch);
+            }
             Ok(json!({ "deleted": n }))
+        })
+    }
+}
+
+/// Whether the sheet file `from` uses `target` (directly or through other sheets).
+fn reaches(open: &OpenSchematic, from: &str, target: &str) -> bool {
+    let mut seen = vec![from.to_string()];
+    let mut k = 0;
+    while let Some(f) = seen.get(k).cloned() {
+        k += 1;
+        if f == target {
+            return true;
+        }
+        for sh in open.design.sheets.iter().find(|x| x.0 == f).map(|x| x.1.sheets.as_slice()).unwrap_or_default() {
+            if !seen.contains(&sh.file) && seen.len() < 100_000 {
+                seen.push(sh.file.clone());
+            }
+        }
+    }
+    false
+}
+
+/// Places a hierarchical sheet.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SchAddSheet {
+    /// Shown name.
+    pub name: String,
+    /// Sub-sheet file (.kicad_sch beside the root); made if the design lacks it, written by sch_save.
+    pub file: String,
+    /// Top left, mm.
+    pub at: [f64; 2],
+    /// Width and height, mm (default 30 by 20).
+    #[serde(default)]
+    pub size: Option<[f64; 2]>,
+    /// Sheet to place it on (default: root).
+    #[serde(default)]
+    pub sheet: Option<String>,
+}
+
+impl Command for SchAddSheet {
+    const ID: &'static str = "sch.add_sheet";
+    const TITLE: &'static str = "Add sheet";
+    const DESCRIPTION: &'static str =
+        "Place a hierarchical sheet on the open schematic and start its empty sub-sheet file.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let mut file = self.file.trim().to_string();
+        if !file.to_ascii_lowercase().ends_with(".kicad_sch") {
+            file.push_str(".kicad_sch");
+        }
+        if !safe_sheet_name(&file) {
+            return Err(CommandError::args(
+                "the sheet file is a relative .kicad_sch name without '..' (beside the root file)",
+            ));
+        }
+        let label = format!("Add sheet {}", crate::paths::display_name(&self.name));
+        let size = self.size.unwrap_or([30.0, 20.0]);
+        let on = self.sheet.clone();
+        sheet_edit_ex(s, ctx, &label, on.as_deref(), |sch, open, files| {
+            let here = on.clone().unwrap_or_else(|| open.file().to_string());
+            if file == open.file() || file == here || reaches(open, &file, &here) {
+                return Err(CommandError::args("a sheet cannot contain itself").hint("name another sub-sheet file"));
+            }
+            let known = open.design.sheet_named(&file).is_some();
+            if !known {
+                files.add.push((file.clone(), Schematic::new_empty(&file).map_err(sch_err)?));
+            }
+            // The path of the sheet this one goes on, from its first use.
+            let parent_path = match open.sheet(on.as_deref()) {
+                Some((0, root)) => format!("/{}", root.uuid.as_deref().unwrap_or("")),
+                Some((i, _)) => {
+                    open.netlist.uses.iter().find(|u| u.sheet == i).map_or_else(|| "/".to_string(), |u| u.path.clone())
+                }
+                None => "/".to_string(),
+            };
+            let project = open
+                .design
+                .sheets
+                .iter()
+                .find_map(|(_, x)| x.project_name())
+                .unwrap_or_else(|| open.file().strip_suffix(".kicad_sch").unwrap_or(open.file()).to_string());
+            let page = (open.netlist.uses.len() + 1).to_string();
+            let i = sch
+                .add_sheet(&self.name, &file, self.at, size, &project, &parent_path, &page, &limits())
+                .map_err(sch_err)?;
+            Ok(json!({ "sheet": i, "file_user_text": file, "new_file": !known }))
+        })
+    }
+}
+
+/// Adds, renames or removes a pin on a sheet.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SchSheetPin {
+    /// sheet#i or the sheet's name.
+    pub item: String,
+    /// add, rename or remove.
+    pub op: String,
+    /// The pin (joins the hierarchical label of that name inside).
+    pub name: String,
+    /// New name (rename).
+    #[serde(default)]
+    pub new_name: Option<String>,
+    /// input/output/bidirectional/tri_state/passive (add; default bidirectional).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// left/right/top/bottom (add; default left).
+    #[serde(default)]
+    pub side: Option<String>,
+    /// mm along the edge (add; default: next free step).
+    #[serde(default)]
+    pub offset: Option<f64>,
+    /// Sheet the sheet item is on (default: root).
+    #[serde(default)]
+    pub sheet: Option<String>,
+}
+
+impl Command for SchSheetPin {
+    const ID: &'static str = "sch.sheet_pin";
+    const TITLE: &'static str = "Sheet pin";
+    const DESCRIPTION: &'static str = "Add, rename or remove a pin on a hierarchical sheet of the open schematic.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let side = match self.side.as_deref() {
+            None => gusset_pcb::sch_sheet::Side::Left,
+            Some(x) => gusset_pcb::sch_sheet::Side::parse(x)
+                .ok_or_else(|| CommandError::args("side is left, right, top or bottom"))?,
+        };
+        if !matches!(self.op.as_str(), "add" | "rename" | "remove") {
+            return Err(CommandError::args("op is add, rename or remove"));
+        }
+        let label = format!("Sheet pin {} {}", self.op, crate::paths::display_name(&self.name));
+        sheet_edit(s, ctx, &label, self.sheet.as_deref(), |sch, _| {
+            let i = match Item::parse(sch, &self.item) {
+                Some(Item::Sheet(i)) => i,
+                Some(_) => return Err(CommandError::args("item names a sheet (sheet#i or its name)")),
+                None => {
+                    let mut named = sch.sheets.iter().enumerate().filter(|(_, x)| x.name == self.item);
+                    match (named.next(), named.next()) {
+                        (Some((i, _)), None) => i,
+                        (Some(_), Some(_)) => {
+                            return Err(CommandError::args("two sheets have that name; use sheet#i"));
+                        }
+                        _ => {
+                            return Err(CommandError::not_found(format!(
+                                "no sheet '{}'",
+                                crate::paths::display_name(&self.item)
+                            )));
+                        }
+                    }
+                }
+            };
+            match self.op.as_str() {
+                "add" => {
+                    let kind = self.kind.as_deref().unwrap_or("bidirectional");
+                    let p = sch.add_sheet_pin(i, &self.name, kind, side, self.offset, &limits()).map_err(sch_err)?;
+                    let at = sch.sheets.get(i).and_then(|x| x.pins.get(p)).map(|x| x.at);
+                    Ok(json!({ "sheet": i, "pin": p, "at": at }))
+                }
+                "rename" => {
+                    let to = self.new_name.as_deref().ok_or_else(|| CommandError::args("rename needs new_name"))?;
+                    sch.rename_sheet_pin(i, &self.name, to, &limits()).map_err(sch_err)?;
+                    Ok(json!({ "sheet": i, "renamed": true }))
+                }
+                _ => {
+                    sch.remove_sheet_pin(i, &self.name, &limits()).map_err(sch_err)?;
+                    Ok(json!({ "sheet": i, "removed": true }))
+                }
+            }
         })
     }
 }

@@ -2,11 +2,12 @@
 //! unconnected pins, no-connect flags on connected nets, pin types that fight on one
 //! net, power inputs nobody drives (the `PWR_FLAG` check), dangling labels, duplicate or
 //! unannotated references, symbols whose library symbol is missing, and parts for the
-//! board without a footprint. Authoritative ERC stays KiCad's (`kicad-cli sch erc`).
+//! board without a footprint, and sheet pins and hierarchical labels without their partner.
+//! Authoritative ERC stays KiCad's (`kicad-cli sch erc`).
 
 use crate::board::Pt;
 use crate::netlist::{Design, Netlist};
-use crate::sch::PinType;
+use crate::sch::{LabelKind, PinType};
 use std::collections::HashMap;
 
 /// How bad a finding is.
@@ -203,6 +204,45 @@ pub fn check(design: &Design, nl: &Netlist, max: usize) -> Vec<Issue> {
                         message: format!("{r} has no footprint"),
                         sheet_use: u,
                         at: sym.at,
+                    },
+                );
+            }
+        }
+    }
+    // Sheet pins and the hierarchical labels they join (ADR 0057): each needs the other.
+    for (u, su) in nl.uses.iter().enumerate() {
+        let Some((pu, k)) = su.parent else { continue };
+        let Some(parent) = nl.uses.get(pu).and_then(|p| design.sheets.get(p.sheet)).map(|(_, s)| s) else { continue };
+        let (Some(sheet), Some((_, child))) = (parent.sheets.get(k), design.sheets.get(su.sheet)) else { continue };
+        let hier = |name: &str| child.labels.iter().any(|l| l.kind == LabelKind::Hierarchical && l.text == name);
+        for p in sheet.pins.iter().filter(|p| !hier(&p.name)) {
+            push(
+                &mut out,
+                Issue {
+                    code: "hier_label_mismatch",
+                    severity: Severity::Error,
+                    message: format!(
+                        "sheet pin {} of sheet {} has no hierarchical label of that name inside",
+                        p.name, sheet.name
+                    ),
+                    sheet_use: pu,
+                    at: p.at,
+                },
+            );
+        }
+        for l in child.labels.iter().filter(|l| l.kind == LabelKind::Hierarchical) {
+            if !sheet.pins.iter().any(|p| p.name == l.text) {
+                push(
+                    &mut out,
+                    Issue {
+                        code: "hier_label_mismatch",
+                        severity: Severity::Error,
+                        message: format!(
+                            "hierarchical label {} has no pin of that name on sheet {}",
+                            l.text, sheet.name
+                        ),
+                        sheet_use: u,
+                        at: l.at,
                     },
                 );
             }

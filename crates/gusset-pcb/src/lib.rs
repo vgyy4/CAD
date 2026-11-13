@@ -53,6 +53,7 @@ pub mod route;
 pub mod rules;
 pub mod sch;
 pub mod sch_edit;
+pub mod sch_sheet;
 pub mod sexpr;
 pub mod shove;
 pub mod specctra;
@@ -92,6 +93,8 @@ mod tests_route;
 mod tests_sch;
 #[cfg(test)]
 mod tests_sch_edit;
+#[cfg(test)]
+mod tests_sch_sheet;
 #[cfg(test)]
 mod tests_symlib;
 #[cfg(test)]

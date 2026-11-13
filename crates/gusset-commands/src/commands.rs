@@ -85,8 +85,8 @@ pub use pcb_layout::{
 };
 pub use pcb_nets::{PcbAddZone, PcbNetClass, PcbRenameNet, PcbSetNet, PcbZoneOutline, ZoneHatch};
 pub use sch::{
-    PcbUpdateFromSchematic, SchAddLabel, SchAddSymbol, SchAddWire, SchAnnotate, SchDelete, SchErc, SchMove, SchNetlist,
-    SchNew, SchOpen, SchSave, SchSetField,
+    PcbUpdateFromSchematic, SchAddLabel, SchAddSheet, SchAddSymbol, SchAddWire, SchAnnotate, SchDelete, SchErc,
+    SchMove, SchNetlist, SchNew, SchOpen, SchSave, SchSetField, SchSheetPin,
 };
 pub use sheet::{Bend, ContourFlange, EdgeFlange, ExportFlat, FlatPatternQuery, Tab};
 pub use sim::{FaceLoad, ModalQuery, OptimizeQuery, StaticQuery};

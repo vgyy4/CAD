@@ -11,11 +11,11 @@ const MAX_COORD: f64 = 10_000.0;
 /// Longest label or reference an edit accepts (characters).
 const MAX_NAME: usize = 200;
 
-fn bad(msg: impl Into<String>) -> Error {
+pub(crate) fn bad(msg: impl Into<String>) -> Error {
     Error::Edit(msg.into())
 }
 
-fn check_pt(p: Pt) -> Result<(), Error> {
+pub(crate) fn check_pt(p: Pt) -> Result<(), Error> {
     if p.iter().all(|v| v.is_finite() && v.abs() <= MAX_COORD) {
         Ok(())
     } else {
@@ -23,7 +23,7 @@ fn check_pt(p: Pt) -> Result<(), Error> {
     }
 }
 
-fn check_name(what: &str, t: &str) -> Result<(), Error> {
+pub(crate) fn check_name(what: &str, t: &str) -> Result<(), Error> {
     if t.is_empty() || t.chars().count() > MAX_NAME || t.chars().any(char::is_control) {
         Err(bad(format!("a {what} is 1 to {MAX_NAME} characters, without control characters")))
     } else {
@@ -31,15 +31,15 @@ fn check_name(what: &str, t: &str) -> Result<(), Error> {
     }
 }
 
-fn list(items: Vec<Node>) -> Node {
+pub(crate) fn list(items: Vec<Node>) -> Node {
     Node::List(items)
 }
 
-fn kv(head: &str, v: Node) -> Node {
+pub(crate) fn kv(head: &str, v: Node) -> Node {
     list(vec![Node::sym(head), v])
 }
 
-fn at_node(p: Pt, angle: Option<f64>) -> Node {
+pub(crate) fn at_node(p: Pt, angle: Option<f64>) -> Node {
     let mut v = vec![Node::sym("at"), Node::num(p[0]), Node::num(p[1])];
     if let Some(a) = angle {
         v.push(Node::num(a));
@@ -47,7 +47,7 @@ fn at_node(p: Pt, angle: Option<f64>) -> Node {
     list(v)
 }
 
-fn effects(justify: Option<&str>, hide: bool) -> Node {
+pub(crate) fn effects(justify: Option<&str>, hide: bool) -> Node {
     let mut v = vec![
         Node::sym("effects"),
         list(vec![Node::sym("font"), list(vec![Node::sym("size"), Node::num(1.27), Node::num(1.27)])]),
@@ -63,7 +63,7 @@ fn effects(justify: Option<&str>, hide: bool) -> Node {
     list(v)
 }
 
-fn yes(head: &str, on: bool) -> Node {
+pub(crate) fn yes(head: &str, on: bool) -> Node {
     kv(head, Node::sym(if on { "yes" } else { "no" }))
 }
 
@@ -105,11 +105,13 @@ pub enum Item {
     Label(usize),
     Junction(usize),
     NoConnect(usize),
+    /// A hierarchical sheet (ADR 0057).
+    Sheet(usize),
 }
 
 impl Item {
     /// `R1` (a symbol by reference), or `symbol#3`, `wire#2`, `bus#0`, `label#0`,
-    /// `junction#1`, `no_connect#0`.
+    /// `junction#1`, `no_connect#0`, `sheet#0`.
     pub fn parse(s: &Schematic, name: &str) -> Option<Item> {
         if let Some((kind, i)) = name.split_once('#') {
             let i: usize = i.parse().ok()?;
@@ -120,6 +122,7 @@ impl Item {
                 "label" => (Item::Label(i), s.labels.len()),
                 "junction" => (Item::Junction(i), s.junctions.len()),
                 "no_connect" => (Item::NoConnect(i), s.no_connects.len()),
+                "sheet" => (Item::Sheet(i), s.sheets.len()),
                 _ => return None,
             };
             return (i < n).then_some(item);
@@ -136,6 +139,7 @@ impl Item {
             Item::Label(i) => format!("label#{i}"),
             Item::Junction(i) => format!("junction#{i}"),
             Item::NoConnect(i) => format!("no_connect#{i}"),
+            Item::Sheet(i) => format!("sheet#{i}"),
         }
     }
 }
@@ -154,21 +158,21 @@ impl Schematic {
         Schematic::read(&text, &Limits::default())
     }
 
-    fn reread(&mut self, limits: &Limits) -> Result<(), Error> {
+    pub(crate) fn reread(&mut self, limits: &Limits) -> Result<(), Error> {
         let tree = std::mem::take(&mut self.tree);
         *self = Schematic::from_tree(tree, limits)?;
         Ok(())
     }
 
     /// A UUID for a new item from its text and the sheet's size.
-    fn new_uuid(&self, items: &[Node]) -> Node {
+    pub(crate) fn new_uuid(&self, items: &[Node]) -> Node {
         let text = sexpr::write(&list(items.to_vec()));
         let seed = format!("{}{}", self.uuid.as_deref().unwrap_or(""), text);
         kv("uuid", Node::str(uuid_for(&seed, self.tree.items().len())))
     }
 
     /// Inserts a top-level item before the trailing `sheet_instances` / `embedded_fonts`.
-    fn insert(&mut self, item: Node) -> Result<(), Error> {
+    pub(crate) fn insert(&mut self, item: Node) -> Result<(), Error> {
         let items = self.tree.items_mut().ok_or_else(|| bad("not a schematic"))?;
         let at = items
             .iter()
@@ -302,7 +306,7 @@ impl Schematic {
         self.symbols.iter().position(|s| s.uuid.as_deref() == Some(sym_uuid.as_str())).ok_or_else(|| bad("lost"))
     }
 
-    fn top_item_mut(&mut self, node: usize) -> Result<&mut Vec<Node>, Error> {
+    pub(crate) fn top_item_mut(&mut self, node: usize) -> Result<&mut Vec<Node>, Error> {
         self.tree
             .items_mut()
             .and_then(|v| v.get_mut(node))
@@ -509,6 +513,7 @@ impl Schematic {
         let mut whole: Vec<usize> = Vec::new();
         let mut symbols: Vec<(crate::sch::Symbol, crate::sch::Symbol)> = Vec::new();
         let mut shifts: Vec<usize> = Vec::new();
+        let mut sheets: Vec<usize> = Vec::new();
         for it in &sel {
             match *it {
                 Item::Symbol(i) => {
@@ -541,6 +546,13 @@ impl Schematic {
                     moves.push((m.at, shift(m.at)));
                     shifts.push(m.node);
                 }
+                Item::Sheet(i) => {
+                    let sh = self.sheets.get(i).ok_or_else(|| missing(it))?;
+                    check_pt(shift(sh.at))?;
+                    // Wires on the sheet's pins follow them.
+                    moves.extend(sh.pins.iter().map(|p| (p.at, shift(p.at))));
+                    sheets.push(sh.node);
+                }
             }
         }
         for (old, new) in &symbols {
@@ -548,6 +560,16 @@ impl Schematic {
         }
         for node in shifts {
             shift_node(self.top_item_mut(node)?, delta);
+        }
+        for node in sheets {
+            // A sheet's place, its name and file fields and its pins.
+            let items = self.top_item_mut(node)?;
+            shift_node(items, delta);
+            for c in items.iter_mut().filter(|c| matches!(c.head(), Some("property" | "pin"))) {
+                if let Some(v) = c.items_mut() {
+                    shift_node(v, delta);
+                }
+            }
         }
         // Wires outside the selection follow the points that moved.
         let (fresh, spots) = self.reroute(&moves, &whole)?;
@@ -793,6 +815,7 @@ impl Schematic {
                 Item::Label(i) => self.labels.get(i).map(|l| l.node),
                 Item::Junction(i) => self.junctions.get(i).map(|j| j.node),
                 Item::NoConnect(i) => self.no_connects.get(i).map(|j| j.node),
+                Item::Sheet(i) => self.sheets.get(i).map(|j| j.node),
             };
             nodes.push(node.ok_or_else(|| bad(format!("there is no {}", it.name())))?);
         }

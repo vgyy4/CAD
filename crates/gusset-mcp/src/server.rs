@@ -109,6 +109,8 @@ pub const SCH_COMMANDS: &[&str] = &[
     "sch.move",
     "sch.set_field",
     "sch.delete",
+    "sch.add_sheet",
+    "sch.sheet_pin",
     "sch.netlist",
     "sch.erc",
 ];

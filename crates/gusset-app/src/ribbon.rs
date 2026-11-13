@@ -303,6 +303,8 @@ const SCH: &[Group] = &[
             d("sch.move", "Move"),
             d("sch.delete", "Delete"),
             d("sch.annotate", "Annotate"),
+            d("sch.add_sheet", "Sheet"),
+            d("sch.sheet_pin", "Sheet pin"),
         ],
     },
     Group { key: "ribbon.inspect", large: 2, tools: &[d("sch.erc", "ERC"), d("sch.netlist", "Netlist")] },
