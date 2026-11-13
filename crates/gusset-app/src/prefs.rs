@@ -30,6 +30,11 @@ pub struct Prefs {
     pub browser_collapsed: bool,
     pub timeline_collapsed: bool,
     pub docks_swapped: bool,
+    /// The user's Freerouting (jar or program; empty: none), Java for a jar, and the
+    /// longest run in seconds (ADR 0047 phase 3). Never downloaded by Gusset.
+    pub freerouting: String,
+    pub freerouting_java: String,
+    pub freerouting_timeout: u64,
 }
 
 pub const MIN_SCALE: f32 = 0.75;
@@ -54,6 +59,9 @@ impl Default for Prefs {
             browser_collapsed: false,
             timeline_collapsed: false,
             docks_swapped: false,
+            freerouting: String::new(),
+            freerouting_java: String::new(),
+            freerouting_timeout: 600,
         }
     }
 }
@@ -114,7 +122,23 @@ pub fn load(path: &Path) -> Prefs {
         browser_collapsed: v.get("browser_collapsed").and_then(Value::as_bool).unwrap_or(false),
         timeline_collapsed: v.get("timeline_collapsed").and_then(Value::as_bool).unwrap_or(false),
         docks_swapped: v.get("docks_swapped").and_then(Value::as_bool).unwrap_or(false),
+        freerouting: path_pref(&v, "freerouting"),
+        freerouting_java: path_pref(&v, "freerouting_java"),
+        freerouting_timeout: v
+            .get("freerouting_timeout")
+            .and_then(Value::as_u64)
+            .filter(|t| (5..=86_400).contains(t))
+            .unwrap_or(d.freerouting_timeout),
     }
+}
+
+/// A program path from the file (empty when missing or odd).
+fn path_pref(v: &Value, key: &str) -> String {
+    v.get(key)
+        .and_then(Value::as_str)
+        .filter(|p| p.len() < 4096 && !p.chars().any(char::is_control))
+        .unwrap_or("")
+        .to_string()
 }
 
 /// A list of known command ids from the file (unknown ones are dropped).
@@ -153,6 +177,9 @@ pub fn save(path: &Path, p: &Prefs) -> Result<(), String> {
         "browser_collapsed": p.browser_collapsed,
         "timeline_collapsed": p.timeline_collapsed,
         "docks_swapped": p.docks_swapped,
+        "freerouting": p.freerouting,
+        "freerouting_java": p.freerouting_java,
+        "freerouting_timeout": p.freerouting_timeout,
     });
     let bytes = serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())?;
     let check = |b: &[u8]| serde_json::from_slice::<Value>(b).map(|_| ()).map_err(|e| e.to_string());
@@ -179,6 +206,8 @@ mod tests {
             quick_sketch: vec!["sketch.trim".into()],
             timeline_collapsed: true,
             docks_swapped: true,
+            freerouting: "C:\\fr\\freerouting.jar".into(),
+            freerouting_timeout: 90,
             ..Prefs::default()
         };
         remember(&mut want.recent, "/a.gus");

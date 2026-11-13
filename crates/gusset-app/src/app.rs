@@ -301,6 +301,11 @@ pub struct App {
     pub pcb_tab: bool,
     /// The board editor's view, tools and design rule markers.
     pub pcb_state: crate::pcb_view::State,
+    /// The running `pcb.autoroute`'s cancel flag (the status bar offers Cancel).
+    autoroute_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The Freerouting setting the session last got (so agents' `pcb.autoroute` uses the
+    /// user's setting too); `None` after a new session.
+    freerouting_sent: Option<Option<gusset_commands::pcb_session::Freerouting>>,
     /// The Schematic tab is chosen (ADR 0047 phase 2a): the schematic editor replaces the
     /// viewport.
     pub sch_tab: bool,
@@ -469,6 +474,8 @@ impl App {
             assemble_tab: false,
             pcb_tab: false,
             pcb_state: crate::pcb_view::State::default(),
+            autoroute_cancel: None,
+            freerouting_sent: None,
             sch_tab: false,
             sch_state: crate::sch_view::State::default(),
             probed: None,
@@ -543,6 +550,9 @@ impl App {
         self.docks_swapped = prefs.docks_swapped;
         self.viewport.nav_preset = prefs.nav;
         self.panel_widths = (prefs.browser_width, prefs.properties_width);
+        self.pcb_state.freerouting = prefs.freerouting;
+        self.pcb_state.freerouting_java = prefs.freerouting_java;
+        self.pcb_state.freerouting_timeout = prefs.freerouting_timeout;
     }
 
     /// The model thread this window talks to (shared with the MCP server).
@@ -605,6 +615,9 @@ impl App {
     /// the result when it arrives.
     pub fn submit_command(&mut self, id: &str, mut args: Value, then: Then) {
         let ctx = Self::ctx();
+        if id == "pcb.autoroute" {
+            self.start_autoroute();
+        }
         if id == "history.sync" {
             self.sync_args = Some(args.clone());
             self.last_sync = Some(std::time::Instant::now());
@@ -1066,6 +1079,9 @@ impl App {
     }
 
     fn apply_command(&mut self, id: &str, then: Then, result: Result<Value, CommandError>) {
+        if id == "pcb.autoroute" {
+            self.autoroute_cancel = None;
+        }
         // Design rule markers for the board editor, wherever the check was started.
         if id == "pcb.drc"
             && let Ok(v) = &result
@@ -1441,6 +1457,9 @@ impl App {
             browser_collapsed: self.browser_collapsed,
             timeline_collapsed: self.timeline_collapsed,
             docks_swapped: self.docks_swapped,
+            freerouting: self.pcb_state.freerouting.clone(),
+            freerouting_java: self.pcb_state.freerouting_java.clone(),
+            freerouting_timeout: self.pcb_state.freerouting_timeout,
         }
     }
 
@@ -1853,6 +1872,7 @@ impl App {
         let (session, project) = make(old);
         self.has_project = project.is_some();
         self.host = Host::spawn(session, project);
+        self.freerouting_sent = None;
         link::spawn_listener(self.host.subscribe(), self.waker.clone());
         self.events = self.host.subscribe();
         self.agents.attach(&self.host);
@@ -2082,6 +2102,7 @@ impl App {
         self.poll(Some(&ctx));
         self.poll_render(&ctx);
         self.auto_sync_tick(&ctx);
+        self.sync_freerouting();
         if let Some(sm) = &self.spacemouse {
             match sm.drain() {
                 Some((Some((t, r)), _)) => {
@@ -2656,6 +2677,46 @@ impl App {
         }
     }
 
+    /// Hands the session the user's Freerouting setting and a fresh cancel flag, queued
+    /// before the `pcb.autoroute` that follows (jobs run in order); keeps the setting.
+    fn start_autoroute(&mut self) {
+        let cfg = self.freerouting_setting();
+        self.freerouting_sent = Some(cfg.clone());
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.autoroute_cancel = Some(Arc::clone(&flag));
+        let _ = self.host.exec_detached(
+            move |s, _| {
+                s.freerouting = cfg;
+                s.autoroute_cancel = flag;
+            },
+            |_| {},
+        );
+        self.save_prefs();
+    }
+
+    /// The Freerouting the user named in the PCB panel, if any.
+    fn freerouting_setting(&self) -> Option<gusset_commands::pcb_session::Freerouting> {
+        let st = &self.pcb_state;
+        let path = st.freerouting.trim();
+        (!path.is_empty()).then(|| gusset_commands::pcb_session::Freerouting {
+            path: PathBuf::from(path),
+            java: Some(st.freerouting_java.trim()).filter(|j| !j.is_empty()).map(PathBuf::from),
+            timeout_s: st.freerouting_timeout.max(1),
+            args: Vec::new(),
+        })
+    }
+
+    /// Gives the session the user's Freerouting setting when it changed (or the session
+    /// is new), so agents' `pcb.autoroute` runs the same install.
+    fn sync_freerouting(&mut self) {
+        let cfg = self.freerouting_setting();
+        if self.freerouting_sent.as_ref() == Some(&cfg) {
+            return;
+        }
+        self.freerouting_sent = Some(cfg.clone());
+        let _ = self.host.exec_detached(move |s, _| s.freerouting = cfg, |_| {});
+    }
+
     /// The ribbon of the active tab.
     fn ribbon(&mut self, ui: &mut Ui) {
         let pal = *theme::palette(self.theme);
@@ -3008,6 +3069,12 @@ impl App {
                     && ui.small_button(tr("status.stop")).on_hover_text(tr("status.stop_hint")).clicked()
                 {
                     self.host.cancel_rebuild();
+                }
+            }
+            if let Some(c) = &self.autoroute_cancel {
+                ui.weak(tr("status.autorouting"));
+                if ui.small_button(tr("dialog.cancel")).clicked() {
+                    c.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
             }
             if let Some(c) = &self.import_cancel {

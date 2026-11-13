@@ -227,3 +227,79 @@ fn box_select_multi_delete_and_the_footprint_browser() {
     assert!(pcb_view::place_command(&st, [3.0, 4.0]).is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn zones_pad_nets_classes_and_the_autorouter_from_the_panel() {
+    let b = board();
+    // Pad nets of R1, and the command for one.
+    assert_eq!(pcb_view::pad_nets_of(&b, 0), vec![("1".into(), "A".into()), ("2".into(), "B".into())]);
+    assert!(pcb_view::pad_nets_of(&b, 5).is_empty());
+    assert_eq!(pcb_view::pad_net_command("R1", "2", " GND "), ("pcb.set_net", json!({"pads": ["R1.2"], "net": "GND"})));
+    assert_eq!(pcb_view::pad_net_command("R1", "2", ""), ("pcb.set_net", json!({"pads": ["R1.2"]})));
+    // Net classes: only the sizes given.
+    let c = pcb_view::ClassEdit { name: "Power".into(), track_width: 0.5, ..Default::default() };
+    assert_eq!(
+        pcb_view::class_command(&c, &["GND".into()]),
+        Some(("pcb.net_class", json!({"name": "Power", "nets": ["GND"], "track_width": 0.5})))
+    );
+    assert_eq!(pcb_view::class_command(&pcb_view::ClassEdit::default(), &[]), None);
+    // The Zone tool's corners.
+    let mut st = pcb_view::State::default();
+    st.tool = Tool::Zone;
+    st.zone_pts = vec![[0.0, 0.0], [10.0, 0.0]];
+    assert_eq!(pcb_view::zone_command(&st), None);
+    st.zone_pts.push([10.0, 10.0]);
+    st.zone_net = "GND".into();
+    st.zone_hatch = true;
+    assert_eq!(
+        pcb_view::zone_command(&st),
+        Some((
+            "pcb.add_zone",
+            json!({"outline": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]], "layers": ["F.Cu"], "net": "GND",
+                   "hatch": {"thickness": 0.5, "gap": 1.0}})
+        ))
+    );
+    pcb_view::end_route(&mut st);
+    assert!(st.zone_pts.is_empty());
+
+    // Through the app: a zone, a pad net and a class, each undoable; the autorouter
+    // refuses cleanly while no Freerouting is named.
+    let mut h = harness(app());
+    h.run();
+    h.state_mut().ribbon_action(crate::ribbon::Action::PcbTab);
+    h.state_mut().run("pcb.new", json!({"width": "40 mm", "height": "30 mm"})).unwrap();
+    h.state_mut().wait_idle();
+    let mut st = pcb_view::State::default();
+    st.tool = Tool::Zone;
+    st.zone_pts = vec![[2.0, 2.0], [38.0, 2.0], [38.0, 28.0], [2.0, 28.0]];
+    st.zone_net = "GND".into();
+    let commands = vec![
+        pcb_view::zone_command(&st).unwrap(),
+        pcb_view::class_command(
+            &pcb_view::ClassEdit { name: "Power".into(), clearance: 0.3, ..Default::default() },
+            &["GND".into()],
+        )
+        .unwrap(),
+    ];
+    h.state_mut().pcb_commands(pcb_view::Out { commands, blocked: None });
+    h.state_mut().wait_idle();
+    let open = h.state().snapshot.pcb.clone().unwrap();
+    assert_eq!(open.board.zones.len(), 1);
+    assert!((open.rules.clearance_of(Some("GND")) - 0.3).abs() < 1e-9);
+    h.state_mut().pcb_commands(pcb_view::Out { commands: vec![("pcb.autoroute", json!({}))], blocked: None });
+    h.state_mut().wait_idle();
+    h.run();
+    let notice = h.state().notice.clone().map(|n| n.text).unwrap_or_default();
+    assert!(notice.contains("Freerouting"), "{notice}");
+    // The panel's setting reaches the session (agents use it too).
+    h.state_mut().pcb_state.freerouting = "/nonexistent/freerouting.jar".into();
+    h.run();
+    h.state_mut().wait_idle();
+    let cfg = h.state().host().with_session(|s| s.freerouting.clone()).unwrap();
+    assert_eq!(cfg.map(|c| c.path), Some(std::path::PathBuf::from("/nonexistent/freerouting.jar")));
+    h.state_mut().run("history.undo", json!({})).unwrap();
+    h.state_mut().wait_idle();
+    h.state_mut().run("history.undo", json!({})).unwrap();
+    h.state_mut().wait_idle();
+    assert!(h.state().snapshot.pcb.as_ref().unwrap().board.zones.is_empty());
+}

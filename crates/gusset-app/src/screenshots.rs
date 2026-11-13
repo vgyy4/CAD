@@ -368,6 +368,41 @@ fn generate_gallery_pcb_sch() {
     }
 }
 
+/// The PCB tab after phase 3 (ADR 0047): pad nets assigned in Gusset, a routed track, a
+/// hatched GND zone on the back, and the picked part's pad nets in the panel.
+#[test]
+fn generate_gallery_pcb_nets() {
+    let Some(dir) = std::env::var_os("GUSSET_SCREENSHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&dir).ok();
+    for (theme, t) in [(ThemeKind::Dark, "dark"), (ThemeKind::Light, "light")] {
+        let mut a = demo_app(theme);
+        a.run("pcb.new", json!({"width": "40 mm", "height": "30 mm"})).ok();
+        for (r, at) in [("R1", [12, 10]), ("R2", [28, 20])] {
+            a.run("pcb.add_footprint", json!({"library": "fp", "footprint": "Pads:R_0603", "at": at, "reference": r}))
+                .ok();
+        }
+        for (pads, net) in [(json!(["R1.2", "R2.1"]), "SIG"), (json!(["R1.1", "R2.2"]), "GND")] {
+            assert!(a.run("pcb.set_net", json!({"pads": pads, "net": net})).is_ok());
+        }
+        assert!(a.run("pcb.route", json!({"points": [[12.8, 10], [27.2, 20]]})).is_ok());
+        let zone = json!({"outline": [[1, 1], [39, 1], [39, 29], [1, 29]], "layers": ["B.Cu"], "net": "GND",
+                          "hatch": {"thickness": 0.5, "gap": 1.2, "angle": 45}});
+        assert!(a.run("pcb.add_zone", zone).is_ok());
+        for (p, v) in [([11.2, 10.0], [11.2, 13.0]), ([28.8, 20.0], [28.8, 17.0])] {
+            assert!(a.run("pcb.route", json!({"points": [p, v]})).is_ok());
+            assert!(a.run("pcb.add_via", json!({"at": v, "net": "GND"})).is_ok());
+        }
+        a.run("pcb.fill_zones", json!({})).ok();
+        a.wait_idle();
+        a.ribbon_action(crate::ribbon::Action::PcbTab);
+        shoot(&dir, &format!("29-pcb-nets-{t}"), a, |h| {
+            // Picked once the view has fitted the board (a new board clears the pick).
+            h.state_mut().pcb_state.selected = Some(crate::pcb_view::Sel::Footprint(0));
+            h.run_steps(2);
+        });
+    }
+}
+
 /// The import's history question for a FreeCAD part whose history does not rebuild exactly
 /// (ADR 0042 amendment). Mock shapes, whatever kernel this build has.
 #[test]

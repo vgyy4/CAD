@@ -622,6 +622,9 @@ fn saved_preferences_come_back_in_a_new_window() {
         browser_collapsed: true,
         timeline_collapsed: false,
         docks_swapped: true,
+        freerouting: "/opt/fr/freerouting.jar".into(),
+        freerouting_java: String::new(),
+        freerouting_timeout: 120,
     };
     crate::prefs::save(&crate::prefs::path(dirs.data_dir()), &want).unwrap();
     let a = App::new(std::sync::Arc::new(gusset_kernel::mock::MockKernel), Some(dirs));
@@ -630,6 +633,7 @@ fn saved_preferences_come_back_in_a_new_window() {
     assert!((a.ui_scale - 1.25).abs() < 1e-6);
     assert_eq!(a.quick_tools, [vec!["feature.shell"], vec![]]);
     assert!(a.browser_collapsed && !a.timeline_collapsed && a.docks_swapped);
+    assert_eq!((a.pcb_state.freerouting.as_str(), a.pcb_state.freerouting_timeout), ("/opt/fr/freerouting.jar", 120));
     drop(a);
     let _ = std::fs::remove_dir_all(&dir);
 }

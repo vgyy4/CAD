@@ -131,7 +131,7 @@ impl Command for PcbAutoroute {
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let fr = s.freerouting.clone().ok_or_else(|| {
             CommandError::new("not_available", "no Freerouting is set up")
-                .hint("name your Freerouting (jar or program) in Settings > PCB; Gusset does not download it")
+                .hint("name your Freerouting (jar or program) in the PCB tab's Autorouter section; Gusset does not download it")
         })?;
         // An agent starting a program on the user's machine needs the user's yes.
         if ctx.is_agent() && s.config.approvals_required && !ctx.approved {
@@ -154,7 +154,7 @@ impl Command for PcbAutoroute {
         cancel.store(false, Ordering::Relaxed);
         let status = run_until(cmd, &cancel, Duration::from_secs(timeout)).map_err(|e| {
             CommandError::new("io", format!("could not start Freerouting: {e}"))
-                .hint("check the path (and Java for a .jar) in Settings > PCB")
+                .hint("check the path (and Java for a .jar) in the PCB tab's Autorouter section")
         })?;
         match status {
             Err(Stopped::Cancelled) => return Err(CommandError::new("cancelled", "the autoroute was cancelled")),

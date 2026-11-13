@@ -33,6 +33,9 @@ pub enum Tool {
     Via,
     /// Puts down the footprint picked in the panel's library list.
     Place,
+    /// Clicks add zone corners; a double click, Enter or a click on the first corner
+    /// closes the zone (on the active layer, with the panel's net and hatch).
+    Zone,
 }
 
 /// A picked board item (indices into the board's lists).
@@ -96,6 +99,36 @@ pub struct State {
     library_read: String,
     pub library_filter: String,
     pub footprint: String,
+    /// Zone tool: corners so far, the new zone's net, hatch and its grid (mm).
+    pub zone_pts: Vec<Pt>,
+    pub zone_net: String,
+    pub zone_hatch: bool,
+    pub hatch_thickness: f64,
+    pub hatch_gap: f64,
+    /// Pad nets of the picked footprint as edited in the panel: (board hash, footprint,
+    /// (pad number, net) per pad).
+    pub pad_nets: Option<PadNets>,
+    /// The highlighted net's new name, as typed.
+    pub rename_to: String,
+    /// The net class edited in the panel and its sizes (mm).
+    pub class: ClassEdit,
+    /// The user's Freerouting (jar or program), Java for a jar, and the run's limit (s).
+    pub freerouting: String,
+    pub freerouting_java: String,
+    pub freerouting_timeout: u64,
+}
+
+/// The picked footprint's pad nets as edited: (board hash, footprint, (pad, net) rows).
+pub type PadNets = (String, usize, Vec<(String, String)>);
+
+/// The net class form: name and sizes (mm; 0 leaves a size as it is).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ClassEdit {
+    pub name: String,
+    pub clearance: f64,
+    pub track_width: f64,
+    pub via_diameter: f64,
+    pub via_drill: f64,
 }
 
 /// The router's obstacles for the board, layer, net and width last routed, and the last
@@ -144,6 +177,17 @@ impl Default for State {
             library_read: String::new(),
             library_filter: String::new(),
             footprint: String::new(),
+            zone_pts: Vec::new(),
+            zone_net: String::new(),
+            zone_hatch: false,
+            hatch_thickness: 0.5,
+            hatch_gap: 1.0,
+            pad_nets: None,
+            rename_to: String::new(),
+            class: ClassEdit { name: "Default".into(), ..ClassEdit::default() },
+            freerouting: String::new(),
+            freerouting_java: String::new(),
+            freerouting_timeout: 600,
         }
     }
 }
@@ -263,10 +307,77 @@ pub fn delete_picked(st: &State) -> Option<(&'static str, Value)> {
     (!tracks.is_empty() || !vias.is_empty()).then(|| ("pcb.delete", json!({ "tracks": tracks, "vias": vias })))
 }
 
+/// The zone the Zone tool's corners make (at least 3): `pcb.add_zone` on the active
+/// layer with the panel's net and hatch.
+pub fn zone_command(st: &State) -> Option<(&'static str, Value)> {
+    if st.zone_pts.len() < 3 {
+        return None;
+    }
+    let mut a = serde_json::Map::new();
+    a.insert("outline".into(), json!(st.zone_pts));
+    a.insert("layers".into(), json!([st.active]));
+    let net = st.zone_net.trim();
+    if !net.is_empty() {
+        a.insert("net".into(), json!(net));
+    }
+    if st.zone_hatch {
+        a.insert("hatch".into(), json!({ "thickness": st.hatch_thickness, "gap": st.hatch_gap }));
+    }
+    Some(("pcb.add_zone", Value::Object(a)))
+}
+
+/// The pads of footprint `i` with their nets (pads without a number left out).
+pub fn pad_nets_of(board: &Board, i: usize) -> Vec<(String, String)> {
+    let Some(f) = board.footprints.get(i) else { return Vec::new() };
+    let mut v: Vec<(String, String)> = f
+        .pads
+        .iter()
+        .filter_map(|&p| board.pads.get(p))
+        .filter(|p| !p.number.is_empty())
+        .map(|p| (p.number.clone(), board.net_name(&p.net).unwrap_or_default()))
+        .collect();
+    v.dedup_by(|a, b| a.0 == b.0);
+    v
+}
+
+/// `pcb.set_net` for one pad of a footprint (an empty net takes the pad off its net).
+pub fn pad_net_command(reference: &str, number: &str, net: &str) -> (&'static str, Value) {
+    let net = net.trim();
+    let mut a = serde_json::Map::new();
+    a.insert("pads".into(), json!([format!("{reference}.{number}")]));
+    if !net.is_empty() {
+        a.insert("net".into(), json!(net));
+    }
+    ("pcb.set_net", Value::Object(a))
+}
+
+/// `pcb.net_class` for the panel's form, adding `nets` to the class.
+pub fn class_command(c: &ClassEdit, nets: &[String]) -> Option<(&'static str, Value)> {
+    let name = c.name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let mut a = serde_json::Map::new();
+    a.insert("name".into(), json!(name));
+    a.insert("nets".into(), json!(nets));
+    for (k, v) in [
+        ("clearance", c.clearance),
+        ("track_width", c.track_width),
+        ("via_diameter", c.via_diameter),
+        ("via_drill", c.via_drill),
+    ] {
+        if v > 0.0 {
+            a.insert(k.into(), json!(v));
+        }
+    }
+    Some(("pcb.net_class", Value::Object(a)))
+}
+
 /// Ends the route in progress.
 pub fn end_route(st: &mut State) {
     st.track_from = None;
     st.route_net = None;
+    st.zone_pts.clear();
 }
 
 /// Board mm (Y down, like the screen) to screen points and back.
@@ -672,6 +783,7 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
             (Tool::Route, "pcb.route", "pcb.tip_route"),
             (Tool::Via, "pcb.via", "pcb.tip_via"),
             (Tool::Place, "pcb.place", "pcb.tip_place"),
+            (Tool::Zone, "pcb.zone", "pcb.tip_zone"),
         ] {
             if ui.selectable_label(st.tool == t, tr(key)).on_hover_text(tr(tip)).clicked() {
                 st.tool = t;
@@ -782,6 +894,27 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
     if let Some(n) = &st.route_net {
         ui.weak(format!("{}: {n}", tr("pcb.net")));
     }
+    if st.tool == Tool::Zone {
+        ui.separator();
+        ui.label(tr("pcb.zone"));
+        ui.horizontal(|ui| {
+            ui.label(tr("pcb.net"));
+            crate::theme::text_field(
+                ui,
+                egui::TextEdit::singleline(&mut st.zone_net).hint_text(tr("pcb.no_net")).desired_width(120.0),
+            );
+        });
+        ui.checkbox(&mut st.zone_hatch, tr("pcb.hatched"));
+        if st.zone_hatch {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut st.hatch_thickness).range(0.05..=10.0).speed(0.05).suffix(" mm"));
+                ui.add(egui::DragValue::new(&mut st.hatch_gap).range(0.05..=10.0).speed(0.05).suffix(" mm"));
+            });
+        }
+        ui.weak(format!("{}: {}", tr("pcb.zone_corners"), st.zone_pts.len()));
+    }
+    ui.separator();
+    nets_panel(ui, open, st, &mut out);
     ui.separator();
     if ui.button(tr("pcb.fill_zones")).clicked() {
         out.commands.push(("pcb.fill_zones", json!({})));
@@ -801,6 +934,129 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
         }
     }
     out
+}
+
+/// The panel's net editing: the picked footprint's pad nets, renaming the highlighted
+/// net, net classes, and the autorouter.
+fn nets_panel(ui: &mut Ui, open: &OpenBoard, st: &mut State, out: &mut Out) {
+    let b = &open.board;
+    ui.label(tr("pcb.nets"));
+    if let Some(Sel::Footprint(i)) = st.selected {
+        let fresh = st.pad_nets.as_ref().is_none_or(|(h, k, _)| *h != open.board_hash || *k != i);
+        if fresh {
+            st.pad_nets = Some((open.board_hash.clone(), i, pad_nets_of(b, i)));
+        }
+        let reference = b.footprints.get(i).map(|f| f.reference.clone()).unwrap_or_default();
+        let now = pad_nets_of(b, i);
+        if let Some((_, _, rows)) = st.pad_nets.as_mut() {
+            egui::Grid::new("pcb_pad_nets").num_columns(2).show(ui, |ui| {
+                for (k, (num, net)) in rows.iter_mut().enumerate().take(200) {
+                    ui.label(format!("{reference}.{num}"));
+                    let r = crate::theme::text_field(
+                        ui,
+                        egui::TextEdit::singleline(net).hint_text(tr("pcb.no_net")).desired_width(110.0),
+                    );
+                    let was = now.get(k).map(|x| x.1.as_str()).unwrap_or("");
+                    if r.lost_focus() && net.trim() != was {
+                        out.commands.push(pad_net_command(&reference, num, net));
+                    }
+                    ui.end_row();
+                }
+            });
+        }
+    }
+    if let Some(h) = st.highlight.clone() {
+        ui.horizontal(|ui| {
+            crate::theme::text_field(
+                ui,
+                egui::TextEdit::singleline(&mut st.rename_to).hint_text(h.as_str()).desired_width(110.0),
+            );
+            let to = st.rename_to.trim().to_string();
+            if ui.add_enabled(!to.is_empty() && to != h, egui::Button::new(tr("pcb.rename_net"))).clicked() {
+                out.commands.push(("pcb.rename_net", json!({ "from": h, "to": to })));
+                st.highlight = Some(to);
+                st.rename_to.clear();
+            }
+        });
+    }
+    // Net classes: pick one (or type a new name), set its sizes, add the highlighted net.
+    egui::CollapsingHeader::new(tr("pcb.net_classes")).id_salt("pcb_classes").show(ui, |ui| {
+        let names: Vec<String> = std::iter::once("Default".to_string())
+            .chain(open.rules.classes.iter().map(|c| c.name.clone()).filter(|n| n != "Default"))
+            .collect();
+        ui.horizontal_wrapped(|ui| {
+            for n in &names {
+                if ui.selectable_label(st.class.name == *n, n.as_str()).clicked() {
+                    let c = open.rules.classes.iter().find(|c| c.name == *n);
+                    st.class = ClassEdit {
+                        name: n.clone(),
+                        clearance: c.and_then(|c| c.clearance).unwrap_or(open.rules.clearance),
+                        track_width: c.and_then(|c| c.track_width).unwrap_or(open.rules.track_width),
+                        via_diameter: c.and_then(|c| c.via_diameter).unwrap_or(open.rules.via_diameter),
+                        via_drill: c.and_then(|c| c.via_drill).unwrap_or(open.rules.via_drill),
+                    };
+                }
+            }
+        });
+        crate::theme::text_field(ui, egui::TextEdit::singleline(&mut st.class.name).desired_width(f32::INFINITY));
+        egui::Grid::new("pcb_class_sizes").num_columns(2).show(ui, |ui| {
+            for (key, v) in [
+                ("pcb.clearance", &mut st.class.clearance),
+                ("pcb.track_width", &mut st.class.track_width),
+                ("pcb.via_size", &mut st.class.via_diameter),
+                ("pcb.via_drill", &mut st.class.via_drill),
+            ] {
+                ui.label(tr(key));
+                ui.add(egui::DragValue::new(v).range(0.0..=10.0).speed(0.01).suffix(" mm"));
+                ui.end_row();
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button(tr("pcb.apply")).clicked()
+                && let Some(c) = class_command(&st.class, &[])
+            {
+                out.commands.push(c);
+            }
+            if let Some(h) = &st.highlight
+                && ui.button(format!("+ {h}")).on_hover_text(tr("pcb.tip_add_to_class")).clicked()
+                && let Some(c) = class_command(&st.class, std::slice::from_ref(h))
+            {
+                out.commands.push(c);
+            }
+            let known = open.rules.classes.iter().any(|c| c.name == st.class.name);
+            if st.class.name != "Default" && known && ui.button(tr("pcb.delete_class")).clicked() {
+                out.commands.push(("pcb.net_class", json!({ "name": st.class.name, "delete": true })));
+            }
+        });
+    });
+    // The autorouter: the user's own Freerouting, never downloaded.
+    egui::CollapsingHeader::new(tr("pcb.autorouter")).id_salt("pcb_autorouter").show(ui, |ui| {
+        ui.weak(tr("pcb.freerouting_hint"));
+        crate::theme::text_field(
+            ui,
+            egui::TextEdit::singleline(&mut st.freerouting)
+                .hint_text(tr("pcb.freerouting_path"))
+                .desired_width(f32::INFINITY),
+        );
+        if st.freerouting.to_ascii_lowercase().ends_with(".jar") {
+            crate::theme::text_field(
+                ui,
+                egui::TextEdit::singleline(&mut st.freerouting_java).hint_text("java").desired_width(f32::INFINITY),
+            );
+        }
+        ui.horizontal(|ui| {
+            ui.label(tr("pcb.time_limit"));
+            ui.add(egui::DragValue::new(&mut st.freerouting_timeout).range(5..=86_400).suffix(" s"));
+        });
+        let ready = !st.freerouting.trim().is_empty();
+        if ui
+            .add_enabled(ready, egui::Button::new(tr("pcb.autoroute")))
+            .on_disabled_hover_text(tr("pcb.freerouting_hint"))
+            .clicked()
+        {
+            out.commands.push(("pcb.autoroute", json!({})));
+        }
+    });
 }
 
 /// The board tree in the left panel (instead of the solid-model browser): footprints, nets
@@ -1009,6 +1265,18 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
             }
             Tool::Via => out.commands.push(via_command(snap(p, st.grid))),
             Tool::Place => out.commands.extend(place_command(st, snap(p, st.grid))),
+            Tool::Zone => {
+                let q = snap(p, st.grid);
+                // A click on the first corner closes the zone.
+                let closes =
+                    st.zone_pts.len() >= 3 && st.zone_pts.first().is_some_and(|f| map.to(*f).distance(map.to(q)) < 6.0);
+                if closes {
+                    out.commands.extend(zone_command(st));
+                    st.zone_pts.clear();
+                } else if st.zone_pts.last() != Some(&q) {
+                    st.zone_pts.push(q);
+                }
+            }
             Tool::Route => match st.track_from {
                 None => {
                     let (q, _) = route_target(b, p, &st.active, st.grid, None);
@@ -1031,6 +1299,11 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                 }
             },
         }
+    }
+    let enter = resp.hovered() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if st.tool == Tool::Zone && (resp.double_clicked() || enter) {
+        out.commands.extend(zone_command(st));
+        st.zone_pts.clear();
     }
     if resp.secondary_clicked() || (resp.double_clicked() && st.tool == Tool::Route) {
         end_route(st);
@@ -1105,6 +1378,20 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
             }
         }
         painter.circle_filled(map.to(q), w / 2.0, c);
+    }
+    if st.tool == Tool::Zone && !st.zone_pts.is_empty() {
+        let c = layer_color(&st.active);
+        let mut pts: Vec<Pos2> = st.zone_pts.iter().map(|x| map.to(*x)).collect();
+        if let Some(p) = pointer {
+            pts.push(map.to(snap(p, st.grid)));
+        }
+        if let Some(f) = pts.first().copied() {
+            pts.push(f);
+        }
+        painter.add(Shape::line(pts, Stroke::new(1.5, c)));
+        for q in &st.zone_pts {
+            painter.circle_filled(map.to(*q), 3.0, c);
+        }
     }
     if let (Some(a), Some(p)) = (st.boxing, pointer) {
         let r = Rect::from_two_pos(map.to(a), map.to(p));
