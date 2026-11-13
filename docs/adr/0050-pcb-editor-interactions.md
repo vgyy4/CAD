@@ -23,9 +23,7 @@ corners.
   default true) over `Board::move_items` in `gusset-pcb`. A track moves whole (start, mid of
   an arc, end); a via moves its place. With `attached`, a track not named whose end lies on
   a moved via (within 1e-4 mm, any layer) has that end moved too (only that end; an arc's
-  mid stays). Ends of a moved track are not followed by their neighbours (the neighbour
-  keeps its end, so the connection is left open; routing again or moving the neighbour
-  mends it). One command is one undo step; indices past the lists, an empty request, a
+  mid stays). One command is one undo step; indices past the lists, an empty request, a
   non-finite offset or a place beyond 10 m are refused and leave the board untouched.
 * **Editor drag**: dragging a track or via with the Select tool moves it (and every other
   picked track and via when it is one of them), the drop snapped by the track's start or the
@@ -36,9 +34,36 @@ corners.
   tool drops the corners. The outline so far is drawn in the Edge.Cuts colour with a rubber
   band to the pointer. The command replaces the board's outline (rectangles stay `gr_rect`).
 
+## Amendment (2026-11-13): edits that keep connections
+* **Moving a track stretches its neighbours** (`pcb.move`, `attached` default true, the
+  existing flag): the end of a track that is not moved and lies within 1e-4 mm of an end of
+  a moved track, on the same layer and net, follows that end by the same offset, so the
+  neighbour stretches (an arc neighbour keeps its mid). Rule kept plain: only coincident
+  ends follow (no end on the middle of a segment, no tracks of other layers or nets, no
+  chains: a neighbour's far end and its own neighbours stay), vias never move with a track
+  (a via at the moved end stays; the moved track's end leaves it), and tracks named in the
+  request never count as neighbours. `ends_carried` counts the ends moved by vias and
+  tracks together. `Board::followers` is the one place that decides this, also used by the
+  editor's preview.
+* **Moving a footprint carries the track ends on its pads** (`pcb.move_footprint`, new
+  `carry`, default true, false disables): a track end on a pad of that footprint (on a layer
+  of the pad, same net, inside the pad's copper or at its centre) keeps its place relative to
+  the pad: moved with it, and turned about the pad centre by the angle change when the
+  footprint is turned (`angle`). A flip carries ends by the pad's displacement only (the
+  mirror is not applied to the offset). The result has `ends_carried`. Pads are matched by
+  their position before the change (`Board::footprint_pads` / `pad_ends`, then
+  `carry_track_ends` after); each end moves once, arc mids stay. The place-from-library
+  command does not carry (a new part has no tracks).
+* **Editor**: dragging a track or via previews the neighbours' stretched ends, dragging a
+  footprint previews the ends on its pads following the drop (`pcb_view::drag_preview`); the
+  drop is the same single command, so one undo step. Rotating with the key also carries.
+
 ## MCP budget
 `pcb_move` is in the `pcb` toolset. The `pcb` toolset went from about 13.6 KB to
 14171 of 18000 bytes (24 tools, 590 per tool); modeling stays byte-identical at 17971.
+With the amendment (`carry` on `pcb_move_footprint`, a longer description) `pcb` is 14291 of
+18000 bytes (595 per tool). The modeling list is unchanged by it (the test prints 17996 for
+it both before and after the amendment).
 
 ## Results
 * gusset-pcb: 2 new tests (`tests_edit`: tracks and vias move with attached ends, with and
@@ -47,11 +72,16 @@ corners.
 * gusset-app: `a_pad_is_picked_on_its_own_and_its_net_set_through_the_registry`,
   `tracks_and_vias_are_dragged_through_pcb_move` (through the app, one undo),
   `the_outline_tool_sends_set_outline` (183 tests). gusset-mcp 40 + 34.
+* Amendment: gusset-pcb 2 new tests (`moving_a_track_stretches_its_neighbours`,
+  `a_footprint_carries_the_track_ends_on_its_pads`: move, turn 90 degrees, layers, nets, an
+  end inside the copper, nothing carried for another part; 89 tests in all); gusset-commands
+  2 (stretch with undo; footprint carry with undo and `carry: false`; 284 tests);
+  gusset-app `drag_previews_show_stretched_tracks`.
 
 ## Not done
-* A true drag that stretches the neighbours of a moved track (rubber-banding the track's
-  ends along their neighbours), moving zones and outline corners, moving a footprint's
-  attached tracks with it.
+* Moving zones and outline corners; tracks that only touch a pad edge-on without an end
+  inside it are not carried; vias under a moved footprint's pads and the other pad of a
+  dragged track are not followed; stretch is one level (no chains, no push-and-shove).
 * No drag test drives egui pointer events end to end: the logic (hit, drop delta, command,
   preview sets) is tested as functions and the commands through the app, as for ADR 0049.
 * A pad form through the app is not tested (the `pcb.new` board has no pads; `pcb.set_net`

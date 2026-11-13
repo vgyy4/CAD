@@ -401,26 +401,9 @@ impl Board {
             plan.push((v.node, [false; 3], true));
         }
         let mut carried = 0;
-        if attached && (!via_places.is_empty() || !moved_tracks.is_empty()) {
-            // Ends of the moved tracks (not their arc mids), with layer and net.
-            let ends: Vec<(Pt, &str, &crate::board::NetRef)> = moved_tracks
-                .iter()
-                .filter_map(|&i| self.tracks.get(i))
-                .flat_map(|t| [(t.start, t.layer.as_str(), &t.net), (t.end, t.layer.as_str(), &t.net)])
-                .collect();
-            let near = |p: Pt, q: Pt| libm::hypot(p[0] - q[0], p[1] - q[1]) <= 1e-4;
-            for (i, t) in self.tracks.iter().enumerate() {
-                if moved_tracks.binary_search(&i).is_ok() {
-                    continue;
-                }
-                // A moved via takes the ends on it (any layer); a moved track takes the
-                // ends of tracks on its layer and net.
-                let on = |p: Pt| {
-                    via_places.iter().any(|&v| near(p, v))
-                        || ends.iter().any(|&(q, layer, net)| near(p, q) && layer == t.layer && same_net(self, net, &t.net))
-                };
-                let (s, e) = (on(t.start), on(t.end));
-                if s || e {
+        if attached {
+            for (i, [s, e]) in self.followers(&moved_tracks, &via_places) {
+                if let Some(t) = self.tracks.get(i) {
                     carried += usize::from(s) + usize::from(e);
                     plan.push((t.node, [s, false, e], false));
                 }
@@ -447,6 +430,31 @@ impl Board {
         Ok((moved_tracks.len(), carried))
     }
 
+    /// The tracks not in `moved` whose ends follow a move of the tracks `moved` and the
+    /// vias at `via_places`: `(track, [start follows, end follows])`. An end follows a via
+    /// it lies on (within 1e-4 mm, any layer) or an end of a moved track on its layer and
+    /// net. Arc mids are not ends.
+    pub fn followers(&self, moved: &[usize], via_places: &[Pt]) -> Vec<(usize, [bool; 2])> {
+        let ends: Vec<(Pt, &crate::board::Track)> =
+            moved.iter().filter_map(|&i| self.tracks.get(i)).flat_map(|t| [(t.start, t), (t.end, t)]).collect();
+        let near = |p: Pt, q: Pt| libm::hypot(p[0] - q[0], p[1] - q[1]) <= 1e-4;
+        let mut out = Vec::new();
+        for (i, t) in self.tracks.iter().enumerate() {
+            if moved.contains(&i) {
+                continue;
+            }
+            let on = |p: Pt| {
+                via_places.iter().any(|&v| near(p, v))
+                    || ends.iter().any(|&(q, m)| near(p, q) && m.layer == t.layer && same_net(self, &m.net, &t.net))
+            };
+            let (s, e) = (on(t.start), on(t.end));
+            if s || e {
+                out.push((i, [s, e]));
+            }
+        }
+        out
+    }
+
     /// The pads of a footprint as they are now, to hand to [`Board::carry_track_ends`]
     /// after the footprint has been moved, turned or flipped.
     pub fn footprint_pads(&self, footprint: usize) -> Vec<crate::board::Pad> {
@@ -454,11 +462,37 @@ impl Board {
         fp.pads.iter().filter_map(|&p| self.pads.get(p)).cloned().collect()
     }
 
+    /// Track ends on `pads` (on a layer of the pad, same net, on its copper or at its
+    /// centre): `(track, end 0 = start / 1 = end, index in pads)`.
+    pub fn pad_ends(&self, pads: &[crate::board::Pad]) -> Vec<(usize, usize, usize)> {
+        let mut out = Vec::new();
+        for (t, track) in self.tracks.iter().enumerate() {
+            for (k, p) in [track.start, track.end].into_iter().enumerate() {
+                let hit = pads.iter().position(|o| {
+                    let at_centre = libm::hypot(p[0] - o.at[0], p[1] - o.at[1]) <= 1e-4;
+                    let in_copper = || match crate::geom::pad_contour(o, 0.0) {
+                        Some(crate::geom::Contour::Circle { center, radius }) => {
+                            libm::hypot(p[0] - center[0], p[1] - center[1]) <= radius
+                        }
+                        Some(ct) => crate::geom::inside(&ct.polygon(0.05), p),
+                        None => false,
+                    };
+                    self.on_layer(&o.layers, &track.layer)
+                        && same_net(self, &o.net, &track.net)
+                        && (at_centre || in_copper())
+                });
+                if let Some(j) = hit {
+                    out.push((t, k, j));
+                }
+            }
+        }
+        out
+    }
+
     /// After a footprint changed (`old` from [`Board::footprint_pads`] taken before),
-    /// moves the track ends that sat on its old pads (on a layer of the pad, same net, on
-    /// the pad's copper or at its centre) with them: the end keeps its place relative to
-    /// the pad, turned by `turned` degrees (0 for a flip or a plain move). Arc mids stay.
-    /// Returns the number of ends moved.
+    /// moves the track ends that sat on its old pads (see [`Board::pad_ends`]) with them:
+    /// the end keeps its place relative to the pad, turned by `turned` degrees (0 for a
+    /// flip or a plain move). Arc mids stay. Returns the number of ends moved.
     ///
     /// # Errors
     /// A failed re-read.
@@ -472,33 +506,26 @@ impl Board {
         let Some(fp) = self.footprints.get(footprint) else { return Ok(0) };
         let (s, c) = (turned.to_radians().sin(), turned.to_radians().cos());
         // New place of an end: pad centre moved, the offset from it turned.
-        let mut edits: Vec<(usize, [Option<Pt>; 2])> = Vec::new();
-        for (t, track) in self.tracks.iter().enumerate() {
-            let mut one = [None, None];
-            for (k, p) in [track.start, track.end].into_iter().enumerate() {
-                let hit = old.iter().zip(&fp.pads).find_map(|(o, &np)| {
-                    let n = self.pads.get(np)?;
-                    let layer_ok = self.on_layer(&o.layers, &track.layer);
-                    let net_ok = same_net(self, &o.net, &track.net);
-                    let at_centre = libm::hypot(p[0] - o.at[0], p[1] - o.at[1]) <= 1e-4;
-                    let in_copper = || match crate::geom::pad_contour(o, 0.0) {
-                        Some(crate::geom::Contour::Circle { center, radius }) => {
-                            libm::hypot(p[0] - center[0], p[1] - center[1]) <= radius
-                        }
-                        Some(ct) => crate::geom::inside(&ct.polygon(0.05), p),
-                        None => false,
-                    };
-                    (layer_ok && net_ok && (at_centre || in_copper())).then_some((o.at, n.at))
-                });
-                if let Some((from, to)) = hit {
-                    let (dx, dy) = (p[0] - from[0], p[1] - from[1]);
-                    one[k] = Some([to[0] + dx * c + dy * s, to[1] - dx * s + dy * c]);
+        let mut by_track: Vec<(usize, [Option<Pt>; 2])> = Vec::new();
+        for (t, k, j) in self.pad_ends(old) {
+            let (Some(track), Some(o), Some(n)) =
+                (self.tracks.get(t), old.get(j), fp.pads.get(j).and_then(|&np| self.pads.get(np)))
+            else {
+                continue;
+            };
+            let p = if k == 0 { track.start } else { track.end };
+            let (dx, dy) = (p[0] - o.at[0], p[1] - o.at[1]);
+            let q = [n.at[0] + dx * c + dy * s, n.at[1] - dx * s + dy * c];
+            match by_track.iter_mut().find(|(i, _)| *i == t) {
+                Some((_, one)) => one[k] = Some(q),
+                None => {
+                    let mut one = [None, None];
+                    one[k] = Some(q);
+                    by_track.push((t, one));
                 }
             }
-            if one.iter().any(Option::is_some) {
-                edits.push((t, one));
-            }
         }
+        let edits = by_track;
         let mut carried = 0;
         let mut nodes = Vec::new();
         for (t, one) in &edits {

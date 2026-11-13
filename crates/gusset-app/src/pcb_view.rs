@@ -1635,12 +1635,10 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
     }
 
     let dragged = st.drag.as_ref().and_then(|d| d.footprint.map(|i| (i, d.moved)));
-    let moving = st.drag.as_ref().and_then(|d| {
-        let x = d.item?;
-        let by = item_drop_delta(b, x, [f64::from(d.moved.x), f64::from(d.moved.y)], st.grid)?;
-        let (t, v) = dragged_items(st, x);
-        Some((t, v, by))
-    });
+    let moving = st
+        .drag
+        .as_ref()
+        .and_then(|d| drag_preview(st, b, d.item, d.footprint, [f64::from(d.moved.x), f64::from(d.moved.y)]));
     paint(&painter, &map, open, st, dragged, moving.as_ref());
 
     // Route preview: the way around, or a thin red line when there is none.
@@ -1750,8 +1748,33 @@ fn paint_shape(painter: &egui::Painter, map: &Map, s: &BShape, width: f64, fille
     }
 }
 
-/// Tracks, vias and the offset (board mm) of a drag in progress.
-type Moving = (Vec<usize>, Vec<usize>, Pt);
+/// Tracks, vias, the offset (board mm) of a drag in progress and the ends of other tracks
+/// that follow it (stretching their tracks), as `pcb.move` and `pcb.move_footprint` do.
+pub type Moving = (Vec<usize>, Vec<usize>, Pt, Vec<(usize, [bool; 2])>);
+
+/// What a drag of a track or via (`item`) or of a footprint, by `moved` mm, would move.
+pub fn drag_preview(st: &State, b: &Board, item: Option<Sel>, footprint: Option<usize>, moved: Pt) -> Option<Moving> {
+    if let Some(x) = item {
+        let by = item_drop_delta(b, x, moved, st.grid)?;
+        let (t, v) = dragged_items(st, x);
+        let places: Vec<Pt> = v.iter().filter_map(|&i| b.vias.get(i)).map(|v| v.at).collect();
+        let ends = b.followers(&t, &places);
+        return Some((t, v, by, ends));
+    }
+    // A dragged footprint carries the track ends on its pads.
+    let i = footprint?;
+    let to = drop_place(b, i, moved, st.grid)?;
+    let at = b.footprints.get(i)?.at;
+    let by = [to[0] - at[0], to[1] - at[1]];
+    let mut ends: Vec<(usize, [bool; 2])> = Vec::new();
+    for (t, k, _) in b.pad_ends(&b.footprint_pads(i)) {
+        match ends.iter_mut().find(|(j, _)| *j == t) {
+            Some((_, e)) => e[k] = true,
+            None => ends.push((t, [k == 0, k == 1])),
+        }
+    }
+    Some((Vec::new(), Vec::new(), by, ends))
+}
 
 fn paint(
     painter: &egui::Painter,
@@ -1765,14 +1788,10 @@ fn paint(
     // Tracks and vias being dragged are drawn where they would land; track ends on a
     // dragged via follow it.
     let shifted = |p: Pt, d: Pt| [p[0] + d[0], p[1] + d[1]];
-    let end_of = |i: usize, p: Pt| -> Pt {
-        let Some((tracks, vias, by)) = moving else { return p };
-        if tracks.contains(&i) {
-            return shifted(p, *by);
-        }
-        let on_via =
-            vias.iter().filter_map(|&v| b.vias.get(v)).any(|v| libm::hypot(p[0] - v.at[0], p[1] - v.at[1]) <= 1e-4);
-        if on_via { shifted(p, *by) } else { p }
+    let end_of = |i: usize, is_start: bool, p: Pt| -> Pt {
+        let Some((tracks, _, by, ends)) = moving else { return p };
+        let follows = tracks.contains(&i) || ends.iter().any(|(j, e)| *j == i && e[usize::from(!is_start)]);
+        if follows { shifted(p, *by) } else { p }
     };
     let view = painter.clip_rect();
     // Items of the dragged footprint are drawn where they would land.
@@ -1855,10 +1874,10 @@ fn paint(
         for (i, t) in b.tracks.iter().enumerate().filter(|(_, t)| t.layer == layer) {
             let w = (t.width as f32 * map.zoom).max(1.0);
             let col = if is_picked(st, Sel::Track(i)) { Color32::WHITE } else { lit(&t.net, c) };
-            let (ts, te) = (end_of(i, t.start), end_of(i, t.end));
+            let (ts, te) = (end_of(i, true, t.start), end_of(i, false, t.end));
             match t.mid {
                 Some(m) => {
-                    let m = if moving.is_some_and(|x| x.0.contains(&i)) { end_of(i, m) } else { m };
+                    let m = if moving.is_some_and(|x| x.0.contains(&i)) { end_of(i, true, m) } else { m };
                     let pts: Vec<Pos2> = geom::arc_points(ts, m, te, f64::from(0.5 / map.zoom).max(1e-3))
                         .into_iter()
                         .map(|p| map.to(p))
@@ -1902,7 +1921,7 @@ fn paint(
     for (i, v) in b.vias.iter().enumerate() {
         let col = if is_picked(st, Sel::Via(i)) { Color32::WHITE } else { via_c.gamma_multiply(0.8) };
         let at = match moving {
-            Some((_, vias, by)) if vias.contains(&i) => shifted(v.at, *by),
+            Some((_, vias, by, _)) if vias.contains(&i) => shifted(v.at, *by),
             _ => v.at,
         };
         painter.circle_filled(map.to(at), v.size as f32 / 2.0 * map.zoom, col);

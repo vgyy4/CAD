@@ -382,6 +382,29 @@ fn tracks_and_vias_are_dragged_through_pcb_move() {
 }
 
 #[test]
+fn drag_previews_show_stretched_tracks() {
+    let mut b = board();
+    let l = Limits::default();
+    b.add_track([9.0, 10.0], [9.0, 5.0], 0.25, "F.Cu", Some("A"), &l).unwrap(); // 1: on R1 pad 1
+    b.add_track([9.0, 5.0], [15.0, 5.0], 0.25, "F.Cu", Some("A"), &l).unwrap(); // 2: joins 1 at its end
+    b.add_track([9.0, 5.0], [9.0, 2.0], 0.25, "B.Cu", Some("A"), &l).unwrap(); // 3: other layer
+    let st = pcb_view::State::default();
+    // Dragging track 1 moves it whole and its neighbour's coincident end follows.
+    let (t, v, by, ends) = pcb_view::drag_preview(&st, &b, Some(Sel::Track(1)), None, [0.1, 1.1]).unwrap();
+    assert_eq!((t, v, by), (vec![1], vec![], [0.0, 1.0]));
+    assert_eq!(ends, vec![(2, [true, false])]);
+    // Dragging the footprint carries the end on its pad, where the drop lands.
+    let (t, v, by, ends) = pcb_view::drag_preview(&st, &b, None, Some(0), [1.1, 0.0]).unwrap();
+    assert_eq!((t, v, by), (vec![], vec![], [1.0, 0.0]));
+    assert_eq!(ends, vec![(1, [true, false])]);
+    // The preview agrees with the command: moving the footprint stretches the same end.
+    let old = b.footprint_pads(0);
+    b.move_footprint(0, [11.0, 10.0], 0.0, &l).unwrap();
+    assert_eq!(b.carry_track_ends(0, &old, 0.0, &l).unwrap(), 1);
+    assert_eq!(b.tracks[1].start, [10.0, 10.0]);
+}
+
+#[test]
 fn the_outline_tool_sends_set_outline() {
     let mut st = pcb_view::State::default();
     st.tool = Tool::Outline;

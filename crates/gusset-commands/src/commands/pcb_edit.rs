@@ -227,7 +227,8 @@ pub struct PcbMoveFootprint {
 impl Command for PcbMoveFootprint {
     const ID: &'static str = "pcb.move_footprint";
     const TITLE: &'static str = "Move footprint";
-    const DESCRIPTION: &'static str = "Move, rotate or flip a footprint of the open board; track ends on its pads follow.";
+    const DESCRIPTION: &'static str =
+        "Move, rotate or flip a footprint of the open board; track ends on its pads follow.";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
