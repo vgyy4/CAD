@@ -2313,6 +2313,25 @@ fn midpoint_sketch(
                 let Some(at) = point_at(&pa, *t) else { return Ok(None) };
                 snap(at, f, gf, sa)
             };
+            // The ends where the two vertex faces cut the edge's line, when both are planes
+            // across it: a cap, or a flat side of another feature (T-Nut-M4-DropIn's Fillet2: a
+            // corner of the boss from its top down to the wall of a cut made from the side).
+            let dir = normal(f);
+            let ends: Vec<f64> = [fc, fd]
+                .into_iter()
+                .flatten()
+                .filter(|x| !matches!(x, Face::Cap(_, s, _) if s.through))
+                .filter_map(|x| face_plane(&x, sketches))
+                .filter_map(|(o, nv)| {
+                    let den = dot(dir, nv);
+                    (den.abs() > 1e-6).then(|| dot(sub(o, p0), nv) / den)
+                })
+                .collect();
+            if let [t0, t1] = ends[..]
+                && (t0 - t1).abs() > 1e-6
+            {
+                return Ok(Some(round3(comb(p0, 1.0, dir, f64::midpoint(t0, t1)))));
+            }
             // Height: halfway between the bounding caps, or between this feature's own caps.
             let bc: Vec<(u32, &Swept, u32)> = [fc, fd]
                 .into_iter()
@@ -3689,6 +3708,44 @@ mod end_face_tests {
         let d = node(3);
         assert_eq!(end_face_ref(&d, 0, d.len()).map(|r| r.idx), Some(1));
         assert!(end_face_ref(&d, 0, 40).is_none());
+    }
+
+    #[test]
+    fn an_edge_ends_where_its_vertex_planes_cut_it() {
+        let (mut swept, mut sketches) = plate();
+        // A cut drawn on the plane y = 0 (x along x, y along z) whose line (key 7) runs at z = 3:
+        // its wall is the plane z = 3.
+        let line = Seg {
+            kind: SegKind::Line,
+            id: 7,
+            a: 7,
+            s: 0,
+            e: 1,
+            c: 0,
+            dir: 0,
+            construction: false,
+            centerline: false,
+            external: false,
+        };
+        sketches.push(Geometry {
+            pts: vec![pt(-0.01, 0.003), pt(0.03, 0.003)],
+            segs: vec![line],
+            ellipse_axes: Vec::new(),
+        });
+        let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 0.0, 1.0] };
+        swept.insert(33, Swept { sketch: 1, plane, distance: -500.0, symmetric: false, through: true });
+        let cap_tags = HashSet::from([9u16]);
+        let rep = |tag, fid, idx| Rep { tag, fid, idx, ext: false, ext2: false, via: None };
+        let mut work = 0;
+        // The corner of sides 3 and 4 at (20, 10), from the plate's far cap (z = 5) down to the
+        // cut's wall (z = 3): its middle is at z = 4, not at the plate's mid-depth.
+        let reps = [rep(1, 32, 3), rep(1, 32, 4), rep(9, 32, 1), rep(1, 33, 7)];
+        let m = midpoint(&reps, &swept, &HashMap::new(), &sketches, &cap_tags, &mut work).unwrap();
+        assert_eq!(m, Some([20.0, 10.0, 4.0]));
+        // Between the plate's own caps it stays at mid-depth.
+        let reps = [rep(1, 32, 3), rep(1, 32, 4), rep(9, 32, 1), rep(9, 32, 0)];
+        let m = midpoint(&reps, &swept, &HashMap::new(), &sketches, &cap_tags, &mut work).unwrap();
+        assert_eq!(m, Some([20.0, 10.0, 2.5]));
     }
 
     #[test]
