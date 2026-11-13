@@ -1330,3 +1330,102 @@ async fn pcb_schematic_simulation_and_cam_are_reachable_through_commands_and_run
     run_cmd(&c, "sch_erc", json!({})).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---------------------------------------------------------------- toolsets
+
+/// A client that counts `notifications/tools/list_changed`.
+#[derive(Clone, Default)]
+struct ListWatcher(Arc<AtomicUsize>);
+
+impl ClientHandler for ListWatcher {
+    fn get_info(&self) -> InitializeRequestParams {
+        InitializeRequestParams::new(ClientCapabilities::default(), Implementation::new("watcher", "1.0"))
+    }
+
+    async fn on_tool_list_changed(&self, _context: rmcp::service::NotificationContext<RoleClient>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+async fn connect_watcher(server: &McpServer, w: ListWatcher) -> RunningService<RoleClient, ListWatcher> {
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let s = server.clone();
+    tokio::spawn(async move {
+        let (r, w) = tokio::io::split(a);
+        let _ = s.serve_io(r, w).await;
+    });
+    w.serve(b).await.unwrap()
+}
+
+async fn tool_names<S: ClientHandler>(c: &RunningService<RoleClient, S>) -> Vec<String> {
+    c.list_all_tools().await.unwrap().into_iter().map(|t| t.name.to_string()).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_default_tool_list_is_the_modeling_set_and_unchanged() {
+    use gusset_mcp::server::{Toolset, tool_list, tool_list_for};
+    let server = McpServer::new(host());
+    let c = connect(&server, Client::new("bot", None), false).await;
+    let listed = c.list_all_tools().await.unwrap();
+    // Byte for byte what tool_list() (and the modeling set) serialize to, no `toolset` tool.
+    let a = serde_json::to_string(&listed).unwrap();
+    assert_eq!(a, serde_json::to_string(&tool_list()).unwrap());
+    assert_eq!(a, serde_json::to_string(&tool_list_for(&[Toolset::Modeling])).unwrap());
+    assert!(!tool_names(&c).await.contains(&"toolset".to_string()));
+    assert!(a.len() <= 18_000, "{}", a.len());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_started_with_toolsets_lists_them() {
+    use gusset_mcp::server::Toolset;
+    let server = McpServer::new(host());
+    server.set_toolsets(&[Toolset::Pcb, Toolset::Cam]);
+    let c = connect(&server, Client::new("bot", None), false).await;
+    let names = tool_names(&c).await;
+    for n in ["pcb_drc", "sch_netlist", "cam_toolpath", "commands", "run", "toolset"] {
+        assert!(names.contains(&n.to_string()), "{n}");
+    }
+    for n in ["feature_extrude", "sim_static"] {
+        assert!(!names.contains(&n.to_string()), "{n}");
+    }
+    // What is listed as a tool is no longer in `commands`; the rest still is.
+    let list = ok(&call(&c, "commands", json!({})).await);
+    let listed: Vec<&str> = list["commands"].as_array().unwrap().iter().filter_map(|e| e["name"].as_str()).collect();
+    assert!(!listed.contains(&"pcb_drc") && listed.contains(&"sim_static") && listed.contains(&"pcb_export_step"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_toolset_tool_switches_the_list_and_notifies() {
+    let server = McpServer::new(host());
+    let w = ListWatcher::default();
+    let c = connect_watcher(&server, w.clone()).await;
+    assert!(!tool_names(&c).await.contains(&"sim_static".to_string()));
+    // Unlisted, but callable by name; the result shows the state.
+    let r = ok(&call_w(&c, "toolset", json!({})).await);
+    assert_eq!(r["active"], json!(["modeling"]), "{r}");
+    assert_eq!(w.0.load(Ordering::SeqCst), 0, "no change, no notification");
+    let r = ok(&call_w(&c, "toolset", json!({"enable": ["sim", "pcb"], "disable": ["modeling"]})).await);
+    assert_eq!(r["active"], json!(["pcb", "sim"]), "{r}");
+    for _ in 0..100 {
+        if w.0.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(w.0.load(Ordering::SeqCst), 1, "list_changed arrives once");
+    let names = tool_names(&c).await;
+    assert!(names.contains(&"sim_static".to_string()) && names.contains(&"sch_erc".to_string()));
+    assert!(names.contains(&"toolset".to_string()) && names.contains(&"run".to_string()));
+    assert!(!names.contains(&"feature_extrude".to_string()));
+    // Another connection is not affected.
+    let other = connect(&server, Client::new("other", None), false).await;
+    assert!(!tool_names(&other).await.contains(&"sim_static".to_string()));
+    // Unknown sets are refused.
+    let r = call_w(&c, "toolset", json!({"enable": ["nope"]})).await;
+    assert_eq!(err_code(&r), "invalid_args");
+}
+
+async fn call_w(c: &RunningService<RoleClient, ListWatcher>, tool: &str, args: Value) -> CallToolResult {
+    let Value::Object(m) = args else { panic!("args must be an object") };
+    c.call_tool(CallToolRequestParams::new(tool.to_string()).with_arguments(m)).await.unwrap()
+}

@@ -201,3 +201,25 @@ cap of 600 bytes. Command definitions carry no `title` (it repeated the readable
 name); clients show the name. Trade-off: an agent needs one `commands` call before using a rare
 command for the first time; the server instructions and the `commands` description
 name the categories so it knows they exist.
+
+## Amendment (2026-11-13): toolsets
+tools/list is a context cost per session, so areas beyond modelling (PCB, simulation,
+CAM) are not added to the core list (its 18 KB cap is spent). Instead tools/list is the
+union of named **toolsets**: `modeling` (`CORE_COMMANDS`, the default), `pcb` (the
+everyday `pcb.*` and `sch.*` commands, `PCB_COMMANDS`), `sim` (`sim.*`) and `cam`
+(`cam.*`). `commands`, `run`, `render_view` and `get_text` are in every set, so no
+command is ever unreachable; commands already listed as tools are left out of the
+`commands` list. The `commands` list also carries `groups` (the id prefix with a one-line
+hint for PCB, schematic, simulation and CAM) so an agent finds an area at once.
+- Choose at start: `gusset mcp --tools modeling,pcb` (headless; an app-hosted server
+  lists its default and the client switches with `toolset`).
+- Switch during a session: the `toolset {enable, disable}` tool changes this connection's
+  list and sends `notifications/tools/list_changed` (`tools.listChanged: true` is
+  declared). Clients that ignore the notification still have `commands`/`run`. With the
+  default selection `toolset` is not listed (the default list stays byte-for-byte as
+  before, 17.97 KB) but is callable by name; it is listed in every other selection.
+  State is per connection; stateless HTTP requests start from the server's selection.
+- Budget: each set alone stays within 18 KB and 2.4 KB per tool (modeling 17.97 KB, pcb
+  17.91 KB, sim 7.8 KB, cam about 4.5 KB); the 600-byte average applies to the broad
+  sets (20 tools or more), as sim/cam are a few commands with large schemas. Combined
+  selections add up and are the user's choice.

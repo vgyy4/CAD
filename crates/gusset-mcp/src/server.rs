@@ -71,6 +71,131 @@ pub const CORE_COMMANDS: &[&str] = &[
     "branch.switch",
 ];
 
+/// Name of the tool that switches toolsets during a session.
+pub const TOOLSET: &str = "toolset";
+
+/// The `pcb` toolset: the everyday PCB and schematic commands (the rest stay behind
+/// `commands`/`run`).
+pub const PCB_COMMANDS: &[&str] = &[
+    "sch.new",
+    "sch.open",
+    "sch.save",
+    "sch.add_symbol",
+    "sch.add_wire",
+    "sch.add_label",
+    "sch.move",
+    "sch.set_field",
+    "sch.delete",
+    "sch.netlist",
+    "sch.erc",
+    "pcb.new",
+    "pcb.open",
+    "pcb.save",
+    "pcb.import",
+    "pcb.info",
+    "pcb.update_from_schematic",
+    "pcb.add_footprint",
+    "pcb.move_footprint",
+    "pcb.set_outline",
+    "pcb.add_track",
+    "pcb.add_via",
+    "pcb.delete",
+    "pcb.route",
+    "pcb.fill_zones",
+    "pcb.drc",
+    "pcb.export_gerbers",
+    "pcb.export_drill",
+];
+
+/// A named set of command tools listed in tools/list. `commands`, `run`, `render_view`
+/// and `get_text` are in every set, so no command is ever unreachable; the list a client
+/// pays for in context is only what the chosen sets add (ADR 0012 amendment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Toolset {
+    /// The everyday modelling commands ([`CORE_COMMANDS`]); the default.
+    Modeling,
+    /// PCB layout and schematic capture ([`PCB_COMMANDS`]).
+    Pcb,
+    /// Simulation: every `sim.*` command.
+    Sim,
+    /// CAM: every `cam.*` command.
+    Cam,
+}
+
+impl Toolset {
+    /// All sets, in listing order.
+    pub const ALL: [Toolset; 4] = [Toolset::Modeling, Toolset::Pcb, Toolset::Sim, Toolset::Cam];
+
+    /// The name used on the command line and by the `toolset` tool.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Toolset::Modeling => "modeling",
+            Toolset::Pcb => "pcb",
+            Toolset::Sim => "sim",
+            Toolset::Cam => "cam",
+        }
+    }
+
+    /// One line on what the set holds.
+    #[must_use]
+    pub fn about(self) -> &'static str {
+        match self {
+            Toolset::Modeling => "sketches, features, parameters, history, branches (default)",
+            Toolset::Pcb => {
+                "schematic capture and PCB layout: symbols, wires, netlist, ERC, footprints, tracks, DRC, Gerbers"
+            }
+            Toolset::Sim => "simulation: sim_static, sim_modal, sim_optimize",
+            Toolset::Cam => "CAM: cam_toolpath, cam_export_gcode",
+        }
+    }
+
+    /// The set called `name`.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Toolset> {
+        let name = name.trim().to_ascii_lowercase();
+        Toolset::ALL.into_iter().find(|t| t.name() == name)
+    }
+
+    /// Parse a comma-separated list (`modeling,pcb`), the form of `gusset mcp --tools`.
+    ///
+    /// # Errors
+    /// A message naming the unknown set and the valid ones.
+    pub fn parse_list(list: &str) -> Result<Vec<Toolset>, String> {
+        let mut out = Vec::new();
+        for part in list.split(',').filter(|p| !p.trim().is_empty()) {
+            let t = Toolset::parse(part).ok_or_else(|| {
+                let valid: Vec<&str> = Toolset::ALL.iter().map(|t| t.name()).collect();
+                format!("unknown toolset '{}' (valid: {})", clean_short(part, 40), valid.join(", "))
+            })?;
+            if !out.contains(&t) {
+                out.push(t);
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    fn contains(self, id: &str) -> bool {
+        match self {
+            Toolset::Modeling => CORE_COMMANDS.contains(&id),
+            Toolset::Pcb => PCB_COMMANDS.contains(&id),
+            Toolset::Sim => id.starts_with("sim."),
+            Toolset::Cam => id.starts_with("cam."),
+        }
+    }
+}
+
+/// The default selection: [`Toolset::Modeling`].
+#[must_use]
+pub fn default_toolsets() -> Vec<Toolset> {
+    vec![Toolset::Modeling]
+}
+
+fn listed_in(sets: &[Toolset], id: &str) -> bool {
+    sets.iter().any(|t| t.contains(id))
+}
+
 /// The registry command a tool name refers to (`feature_shell`; `feature.shell` too).
 fn find_command(name: &str) -> Option<&'static CommandSpec> {
     registry().iter().find(|s| s.tool_name() == name || s.id == name)
@@ -119,6 +244,8 @@ pub(crate) struct Shared {
     told: std::sync::Mutex<std::collections::HashSet<String>>,
     request_deadline: RwLock<Duration>,
     next_instance: AtomicU64,
+    /// Toolsets a new connection starts with.
+    toolsets: RwLock<Vec<Toolset>>,
 }
 
 impl std::fmt::Debug for Shared {
@@ -147,7 +274,13 @@ impl Shared {
             told: std::sync::Mutex::new(std::collections::HashSet::new()),
             request_deadline: RwLock::new(DEFAULT_REQUEST_DEADLINE),
             next_instance: AtomicU64::new(1),
+            toolsets: RwLock::new(default_toolsets()),
         }
+    }
+
+    pub(crate) fn set_toolsets(&self, sets: &[Toolset]) {
+        let sets = if sets.is_empty() { default_toolsets() } else { sets.to_vec() };
+        *self.toolsets.write().unwrap_or_else(std::sync::PoisonError::into_inner) = sets;
     }
 
     pub(crate) fn set_renderer(&self, r: Option<Arc<dyn ViewRenderer>>) {
@@ -289,6 +422,8 @@ pub struct GussetMcp {
     shared: Arc<Shared>,
     transport: Transport,
     instance: u64,
+    /// The toolsets listed on this connection (`toolset` changes them).
+    toolsets: Arc<std::sync::Mutex<Vec<Toolset>>>,
 }
 
 fn now() -> u64 {
@@ -588,10 +723,10 @@ fn group_hint(prefix: &str) -> Option<&'static str> {
 /// The `commands` result: the commands not in tools/list (with the groups they fall
 /// into, so an area such as PCB is found without scanning the list), or one command's
 /// definition.
-fn commands_result(args: &CommandsArgs) -> Result<Value, CommandError> {
+fn commands_result(args: &CommandsArgs, sets: &[Toolset]) -> Result<Value, CommandError> {
     match &args.name {
         None => {
-            let listed: Vec<&CommandSpec> = registry().iter().filter(|s| !CORE_COMMANDS.contains(&s.id)).collect();
+            let listed: Vec<&CommandSpec> = registry().iter().filter(|s| !listed_in(sets, s.id)).collect();
             let mut groups: Vec<(&str, usize)> = Vec::new();
             for s in &listed {
                 let prefix = s.id.split('.').next().unwrap_or(s.id);
@@ -614,7 +749,8 @@ fn commands_result(args: &CommandsArgs) -> Result<Value, CommandError> {
                     .map(|s| json!({ "name": s.tool_name(), "summary": summary(s) }))
                     .collect::<Vec<_>>(),
                 "hint": "a group is the command-name prefix (pcb_, sch_, sim_, cam_...); call commands with a name \
-                         for its arguments, then run it with run",
+                         for its arguments, then run it with run. To list a whole area as tools, call toolset \
+                         (enable: pcb, sim or cam)",
             }))
         }
         Some(name) => {
@@ -631,7 +767,15 @@ fn commands_result(args: &CommandsArgs) -> Result<Value, CommandError> {
 /// `render_view` and `get_text`.
 #[must_use]
 pub fn tool_list() -> Vec<Tool> {
-    let mut tools: Vec<Tool> = registry().iter().filter(|s| CORE_COMMANDS.contains(&s.id)).map(command_tool).collect();
+    tool_list_for(&default_toolsets())
+}
+
+/// [`tool_list`] for the given toolsets. The `toolset` tool itself is listed only when
+/// the selection is not the default, so the default list is unchanged (it is callable
+/// by name either way; the server instructions and `commands` mention it).
+#[must_use]
+pub fn tool_list_for(sets: &[Toolset]) -> Vec<Tool> {
+    let mut tools: Vec<Tool> = registry().iter().filter(|s| listed_in(sets, s.id)).map(command_tool).collect();
     tools.push(
         Tool::new(
             COMMANDS,
@@ -652,6 +796,9 @@ pub fn tool_list() -> Vec<Tool> {
         .with_title("Run command")
         .with_annotations(ToolAnnotations::with_title("Run command").open_world(false)),
     );
+    if sets != default_toolsets().as_slice() {
+        tools.push(toolset_tool());
+    }
     tools.push(
         Tool::new(
             RENDER_VIEW,
@@ -676,6 +823,29 @@ pub fn tool_list() -> Vec<Tool> {
         ),
     );
     tools
+}
+
+fn toolset_tool() -> Tool {
+    Tool::new(
+        TOOLSET,
+        "Choose which command groups are listed as tools: modeling, pcb, sim, cam. Nothing becomes unreachable: \
+         `commands` and `run` reach every command.",
+        schema_object::<ToolsetArgs>(),
+    )
+    .with_title("Toolsets")
+    .with_annotations(ToolAnnotations::with_title("Toolsets").read_only(true).idempotent(true).open_world(false))
+}
+
+/// Arguments of the `toolset` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolsetArgs {
+    /// Sets to list as tools. Omit both to just see the state.
+    #[serde(default)]
+    pub enable: Vec<String>,
+    /// Sets to stop listing.
+    #[serde(default)]
+    pub disable: Vec<String>,
 }
 
 /// Resources (static ones; plus the `sketch/{name}/status` template).
@@ -732,7 +902,10 @@ pub fn resource_list() -> Vec<Resource> {
 impl GussetMcp {
     pub(crate) fn new(shared: Arc<Shared>, transport: Transport) -> GussetMcp {
         let instance = shared.next_instance.fetch_add(1, Ordering::Relaxed);
-        GussetMcp { shared, transport, instance }
+        let toolsets = Arc::new(std::sync::Mutex::new(
+            shared.toolsets.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+        ));
+        GussetMcp { shared, transport, instance, toolsets }
     }
 
     /// Stable agent name for the connection behind `ctx`.
@@ -1110,6 +1283,51 @@ impl GussetMcp {
         }
     }
 
+    fn active_toolsets(&self) -> Vec<Toolset> {
+        self.toolsets.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    /// `toolset`: change what tools/list holds on this connection, then tell the client.
+    async fn toolset(&self, req: &CallToolRequestParams, ctx: &RequestContext<RoleServer>) -> CallToolResult {
+        let agent = self.agent(ctx);
+        let args = Value::Object(req.arguments.clone().unwrap_or_default());
+        let a: ToolsetArgs = match serde_json::from_value(args) {
+            Ok(a) => a,
+            Err(e) => return self.err_result(&agent, &CommandError::args(format!("toolset: {e}"))),
+        };
+        let parse = |names: &[String]| Toolset::parse_list(&names.join(",")).map_err(CommandError::args);
+        let (on, off) = match (parse(&a.enable), parse(&a.disable)) {
+            (Ok(on), Ok(off)) => (on, off),
+            (Err(e), _) | (_, Err(e)) => return self.err_result(&agent, &e),
+        };
+        let (before, after) = {
+            let mut g = self.toolsets.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let before = g.clone();
+            g.retain(|t| !off.contains(t));
+            for t in on {
+                if !g.contains(&t) {
+                    g.push(t);
+                }
+            }
+            g.sort();
+            (before, g.clone())
+        };
+        if before != after {
+            // Clients that ignore the notification still reach everything with `run`.
+            let _ = ctx.peer.notify_tool_list_changed().await;
+        }
+        let result = json!({
+            "active": after.iter().map(|t| t.name()).collect::<Vec<_>>(),
+            "tools": tool_list_for(&after).len(),
+            "available": Toolset::ALL
+                .iter()
+                .map(|t| json!({ "name": t.name(), "about": t.about() }))
+                .collect::<Vec<_>>(),
+            "note": "commands and run reach every command whichever sets are listed",
+        });
+        CallToolResult::success(vec![ContentBlock::text(compact_result(result))])
+    }
+
     fn commands(&self, req: &CallToolRequestParams, ctx: &RequestContext<RoleServer>) -> CallToolResult {
         let agent = self.agent(ctx);
         let args = Value::Object(req.arguments.clone().unwrap_or_default());
@@ -1120,7 +1338,7 @@ impl GussetMcp {
         if let Err(e) = self.limit(&agent, Class::Text) {
             return self.err_result(&agent, &e);
         }
-        match commands_result(&a) {
+        match commands_result(&a, &self.active_toolsets()) {
             Ok(v) => CallToolResult::success(vec![ContentBlock::text(compact_result(v))]),
             Err(e) => self.err_result(&agent, &e),
         }
@@ -1295,9 +1513,11 @@ fn elicitation_approved(answer: Option<&Value>) -> bool {
 
 impl ServerHandler for GussetMcp {
     fn get_info(&self) -> InitializeResult {
-        InitializeResult::new(ServerCapabilities::builder().enable_tools().enable_resources().build())
-            .with_server_info(Implementation::new("gusset", env!("CARGO_PKG_VERSION")).with_title("Gusset CAD"))
-            .with_instructions(INSTRUCTIONS)
+        InitializeResult::new(
+            ServerCapabilities::builder().enable_tools().enable_tool_list_changed().enable_resources().build(),
+        )
+        .with_server_info(Implementation::new("gusset", env!("CARGO_PKG_VERSION")).with_title("Gusset CAD"))
+        .with_instructions(INSTRUCTIONS)
     }
 
     async fn initialize(
@@ -1318,12 +1538,16 @@ impl ServerHandler for GussetMcp {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult::with_all_items(tool_list()))
+        Ok(ListToolsResult::with_all_items(tool_list_for(&self.active_toolsets())))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
         // Commands outside tools/list can still be called by name.
-        tool_list().into_iter().find(|t| t.name == name).or_else(|| find_command(name).map(command_tool))
+        tool_list_for(&self.active_toolsets())
+            .into_iter()
+            .find(|t| t.name == name)
+            .or_else(|| (name == TOOLSET).then(toolset_tool))
+            .or_else(|| find_command(name).map(command_tool))
     }
 
     async fn call_tool(
@@ -1337,6 +1561,7 @@ impl ServerHandler for GussetMcp {
                 RENDER_VIEW => Ok(self.render_view(&request, &context).await.into()),
                 GET_TEXT => Ok(self.get_text(&request, &context).into()),
                 COMMANDS => Ok(self.commands(&request, &context).into()),
+                TOOLSET => Ok(self.toolset(&request, &context).await.into()),
                 RUN => Ok(self.run_tool(&request, &context).await),
                 name => match registry().iter().find(|s| s.tool_name() == name) {
                     Some(spec) => Ok(self.call_command(spec, &request, &context).await),
@@ -1497,6 +1722,40 @@ mod size_tests {
         for noise in ["\"format\"", "\"$schema\"", "\"additionalProperties\"", "\"null\"", "\"default\":null"] {
             assert!(!text.contains(noise), "{noise} in tools/list");
         }
+    }
+
+    /// Every toolset, alone, keeps the same budget as the default list (combinations are
+    /// the user's choice and add up).
+    #[test]
+    fn every_toolset_fits_the_budget() {
+        for set in Toolset::ALL {
+            let tools = tool_list_for(&[set]);
+            let bytes = serde_json::to_string(&tools).map(|s| s.len()).unwrap_or(usize::MAX);
+            let per_tool = bytes / tools.len().max(1);
+            eprintln!("toolset {}: {} tools, {bytes} bytes ({per_tool} per tool)", set.name(), tools.len());
+            assert!(bytes <= 18_000, "{}: {bytes} bytes", set.name());
+            // The average rule is for broad sets; sim and cam are a few commands with big
+            // schemas (each still within the 1,300-byte per-command cap) and a small total.
+            if tools.len() >= 20 {
+                assert!(per_tool <= 600, "{}: {per_tool} bytes per tool", set.name());
+            }
+            for t in &tools {
+                let n = serde_json::to_string(t).map_or(usize::MAX, |s| s.len());
+                assert!(n <= 2_400, "{}: {} is {n} bytes", set.name(), t.name);
+            }
+            // The way to reach everything is in every set.
+            for always in [COMMANDS, RUN] {
+                assert!(tools.iter().any(|t| t.name == always), "{} lacks {always}", set.name());
+            }
+            // The default selection has no `toolset` tool (its list is unchanged).
+            assert_eq!(tools.iter().any(|t| t.name == TOOLSET), set != Toolset::Modeling, "{}", set.name());
+        }
+        // Every name in the pcb set is a real command.
+        for id in PCB_COMMANDS {
+            assert!(find_command(id).is_some(), "{id}");
+        }
+        assert_eq!(Toolset::parse_list("pcb, modeling,pcb"), Ok(vec![Toolset::Modeling, Toolset::Pcb]));
+        assert!(Toolset::parse_list("pcb,foo").is_err());
     }
 
     #[test]

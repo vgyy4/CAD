@@ -191,3 +191,26 @@ fn text_json(r: &Value) -> Value {
     let t = r["content"].as_array().and_then(|c| c.iter().find(|x| x["type"] == "text")).map(|x| x["text"].clone());
     serde_json::from_str(t.as_ref().and_then(Value::as_str).unwrap_or("null")).unwrap_or(Value::Null)
 }
+
+/// `gusset mcp --tools modeling,pcb` lists the PCB tools next to the modelling ones; an
+/// unknown set is refused before the server starts.
+#[test]
+fn mcp_stdio_tools_option_selects_toolsets() {
+    let home = tmpdir("tools");
+    let mut p = McpProc::spawn(&["--no-attach", "--tools", "modeling,pcb"], &home);
+    p.initialize();
+    let tools = p.request("tools/list", json!({}));
+    let names: Vec<&str> = tools["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+    for want in ["feature_extrude", "pcb_drc", "sch_erc", "toolset", "commands", "run"] {
+        assert!(names.contains(&want), "{want} missing from {names:?}");
+    }
+    assert!(!names.contains(&"sim_static"), "{names:?}");
+    p.finish();
+    let _ = std::fs::remove_dir_all(&home);
+    let bad = std::process::Command::new(env!("CARGO_BIN_EXE_gusset"))
+        .args(["mcp", "--no-attach", "--tools", "nope"])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown toolset"), "{:?}", bad.stderr);
+}

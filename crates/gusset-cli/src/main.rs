@@ -4,7 +4,7 @@
 //! gusset build <model.gus|model.gus.txt> [--branch NAME] [--import FILE]... [--export OUT]... [--tolerance MM]
 //! gusset text  <model.gus> [--branch NAME]          print the code view
 //! gusset pack  <model.gus.txt> -o <model.gus>      create a project from text
-//! gusset mcp [model.gus] [--read-only] [--no-attach] MCP server on stdio (ADR 0012)
+//! gusset mcp [model.gus] [--read-only] [--no-attach] [--tools SETS] MCP server on stdio (ADR 0012)
 //! gusset info                                       hardware / kernel diagnostics
 //! gusset self-test                                  quick end-to-end check (used by the updater)
 //! gusset --version
@@ -26,7 +26,7 @@ const USAGE: &str = "usage:
                OUT: .step .iges .stl .3mf .obj, or .png (path traced; [--samples N] [--size WxH])
   gusset text <model.gus> [--branch NAME]
   gusset pack <model.gus.txt> -o <model.gus>
-  gusset mcp [model.gus] [--read-only] [--no-attach]
+  gusset mcp [model.gus] [--read-only] [--no-attach] [--tools modeling,pcb,sim,cam]
   gusset info
   gusset self-test
   gusset --version
@@ -387,10 +387,19 @@ fn pack(args: &[String]) -> Result<ExitCode, String> {
 fn mcp(args: &[String]) -> Result<ExitCode, String> {
     let mut file: Option<PathBuf> = None;
     let (mut read_only, mut attach) = (false, true);
-    for a in args {
+    let mut toolsets = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
         match a.as_str() {
             "--read-only" => read_only = true,
             "--no-attach" => attach = false,
+            "--tools" => {
+                let v = it.next().ok_or("--tools needs a list, e.g. --tools modeling,pcb")?;
+                toolsets = gusset_mcp::server::Toolset::parse_list(v)?;
+            }
+            s if s.starts_with("--tools=") => {
+                toolsets = gusset_mcp::server::Toolset::parse_list(s.get(8..).unwrap_or_default())?;
+            }
             s if s.starts_with('-') => return Err(format!("unknown option '{s}'")),
             s if file.is_none() => file = Some(PathBuf::from(s)),
             s => return Err(format!("unexpected argument '{s}'")),
@@ -439,6 +448,9 @@ fn mcp(args: &[String]) -> Result<ExitCode, String> {
     options.kernel_note = kernel_note;
     options.attach = attach;
     options.read_only = read_only;
+    if !toolsets.is_empty() {
+        options.toolsets = toolsets;
+    }
     options.renderer = Some(Arc::new(gusset_mcp::SceneRenderer::new()));
     options.importer = importer();
     let r = match protocol_out {

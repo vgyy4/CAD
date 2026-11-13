@@ -143,6 +143,11 @@ impl McpServer {
         self.shared.host.with_session(|s| s.config.read_only_agents = read_only)
     }
 
+    /// The toolsets a new connection starts with (default: modeling). Empty means the default.
+    pub fn set_toolsets(&self, sets: &[server::Toolset]) {
+        self.shared.set_toolsets(sets);
+    }
+
     /// Standing approvals ("always allow", ADR 0012): list, revoke, suspend/resume and
     /// load the remembered ones. New grants come only from the in-app prompt.
     #[must_use]

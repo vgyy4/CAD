@@ -62,6 +62,9 @@ pub struct StdioOptions {
     /// Headless it maps to `SessionConfig::read_only_agents`; when relaying to a running
     /// app the bridge itself refuses mutating `tools/call` requests.
     pub read_only: bool,
+    /// Toolsets listed as tools (`gusset mcp --tools`); headless only, an app-hosted server
+    /// lists its own default and the client switches with the `toolset` tool.
+    pub toolsets: Vec<crate::server::Toolset>,
     /// Headless: why the kernel is not in its worker process, if it is not; the
     /// `diagnostics` resource says so (dogfooding F4-12).
     pub kernel_note: Option<String>,
@@ -91,6 +94,7 @@ impl StdioOptions {
             approvals: None,
             importer: None,
             read_only: false,
+            toolsets: crate::server::default_toolsets(),
             kernel_note: None,
         }
     }
@@ -136,6 +140,12 @@ where
             match find_instance(&dir, options.project.as_deref()).await {
                 Found::App(app) => {
                     eprintln!("gusset mcp: attaching to the running Gusset app on port {}", app.port);
+                    if options.toolsets != crate::server::default_toolsets() {
+                        eprintln!(
+                            "gusset mcp: note: --tools applies to a server started here; the running app lists its \
+                             default tools (switch with the toolset tool)"
+                        );
+                    }
                     return relay(app, options.read_only, read, write).await;
                 }
                 Found::Paused => {
@@ -404,6 +414,7 @@ where
     });
     server.set_renderer(options.renderer.clone());
     server.set_read_only(options.read_only).map_err(McpError::Command)?;
+    server.set_toolsets(&options.toolsets);
     if let Some(a) = options.approvals.clone() {
         server.set_approval_provider(a);
     }
