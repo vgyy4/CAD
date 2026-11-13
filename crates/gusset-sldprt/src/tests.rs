@@ -1147,6 +1147,35 @@ fn a_cut_is_told_by_the_flags_word_of_its_node() {
     assert_eq!(operation(0x4000_0140), (serde_json::json!("join"), serde_json::json!(2.0)));
 }
 
+/// Byte 12 of the end condition reverses the default direction: a boss runs against its sketch
+/// normal and a cut along it (200mm Topmost Platform's cuts, no direction vector written).
+#[test]
+fn end_condition_byte_12_reverses_the_extrusion() {
+    let base = feature_stream(&[]);
+    let sk = base.windows(4).position(|w| w == [0x01, 0x80, 2, 0]).unwrap();
+    let ex = base.windows(13).position(|w| w == b"moExtrusion_c").unwrap() - 6;
+    let distance = |flags: u32, b12: u8| {
+        let mut node = feature_node("moICE_c", "Extrude2", 9);
+        let at = class_decl("moICE_c").len() + node_name("Extrude2").len() + 4;
+        node[at..at + 4].copy_from_slice(&flags.to_le_bytes());
+        let mut extra = feature_node("moProfileFeature_c", "Sketch2", 8);
+        extra.extend(&base[sk..ex]);
+        extra.extend(node);
+        extra.extend(class_decl("moEndSpec_c"));
+        extra.extend([0, 0, 1, 0, 0, 0]);
+        extra.extend([0, 0, 0, 0, b12, 0, 0, 0, 0, 0]);
+        extra.extend(0u32.to_le_bytes());
+        extra.extend([0u8; 12]);
+        extra.extend(parameter("D1", 0.002));
+        let t = history(&feature_stream(&extra)).unwrap().unwrap();
+        t["features"][3]["distance"].as_f64().unwrap()
+    };
+    assert_eq!(distance(0x4002_01ca, 0), -2.0);
+    assert_eq!(distance(0x4002_01ca, 1), 2.0);
+    assert_eq!(distance(0x4000_0140, 0), 2.0);
+    assert_eq!(distance(0x4000_0140, 1), -2.0);
+}
+
 #[test]
 fn a_localised_hole_wizard_takes_its_parameters_in_order() {
     let plane = comp_plane(2, -0.005);

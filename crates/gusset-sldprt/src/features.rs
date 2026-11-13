@@ -537,6 +537,8 @@ struct EndSpec {
     x: u32,
     kind: u32,
     flag: u32,
+    /// Byte 12 of the head (`u32` 0/1).
+    b12: u8,
 }
 
 /// End-condition-like objects in `[a, b)` (`feat.endspec_candidates`): class reference tag,
@@ -567,7 +569,8 @@ fn endspec_candidates(d: &[u8], a: usize, b: usize) -> Result<Vec<EndSpec>, Stri
             continue;
         }
         let x = u32::from(*need(d.get(p + 4), "an end condition")?);
-        out.push(EndSpec { cls: Some(t & 0x7fff), x, kind, flag });
+        let b12 = *need(d.get(p + 12), "an end condition")?;
+        out.push(EndSpec { cls: Some(t & 0x7fff), x, kind, flag, b12 });
         if out.len() > MAX_MATCHES {
             return Err("too many end conditions".into());
         }
@@ -585,7 +588,8 @@ fn endspec_decl(d: &[u8], a: usize, b: usize, name: &[u8]) -> Result<Option<EndS
     let x = need(u32_at(d, p + 4), "an end condition")?;
     let kind = need(u32_at(d, p + 18), "an end condition")?;
     let flag = need(u32_at(d, p + 22), "an end condition")?;
-    Ok(Some(EndSpec { cls: None, x, kind, flag }))
+    let b12 = *need(d.get(p + 12), "an end condition")?;
+    Ok(Some(EndSpec { cls: None, x, kind, flag, b12 }))
 }
 
 // --- sketches --------------------------------------------------------------------------------
@@ -2594,6 +2598,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if op == "cut" && !symmetric && distance.is_some_and(|v| v > 0.0) {
                 distance = distance.map(|v| -v);
             }
+            // Byte 12 of the end condition reverses that default direction (a boss against its
+            // sketch normal, a cut along it): where a direction vector is written it agrees on
+            // every sample, and parts that write none need it (200mm Topmost Platform's cuts).
+            if es.is_some_and(|e| e.b12 == 1) && !symmetric {
+                distance = distance.map(|v| -v);
+            }
             // The written direction vector says which way the extrusion really runs; a distance
             // against it is reversed (MicroGearMotor Boss-Extrude1).
             if let (Some(d), Some(sk), false, false) = (distance, last_sketch.as_ref(), symmetric, through_all)
@@ -2728,8 +2738,11 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 js.insert("through_all".into(), json!(true));
             }
             js.insert("symmetric".into(), json!(symmetric));
+            if let Some(v) = extrude_direction(rf, a, b) {
+                js.insert("sw_dir".into(), json!(v));
+            }
             let sw: Vec<Value> =
-                cands.iter().take(3).map(|c| json!({"X": c.x, "type": c.kind, "flag": c.flag})).collect();
+                cands.iter().take(3).map(|c| json!({"X": c.x, "type": c.kind, "flag": c.flag, "b12": c.b12})).collect();
             js.insert("sw_end".into(), json!(sw));
             if let (Some(sk), Some(dist)) = (last_sketch.as_ref(), end_s.or(distance))
                 && let Some(&(i, plane)) = sketch_by_name.get(sk)
