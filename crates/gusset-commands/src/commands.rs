@@ -2162,7 +2162,7 @@ pub struct Extrude {
     /// Region ids (query_sketch) or an entity bounding one; empty = all, holes left open.
     #[serde(default)]
     pub regions: Vec<String>,
-    /// Instead of sketch: a planar body face, `Base/cap(end)`.
+    /// Or a planar body face, `Base/cap(end)`.
     #[serde(default)]
     pub face: Option<String>,
     /// `10 mm`, `depth`; negative flips.
@@ -2339,10 +2339,14 @@ impl Command for ExtrudeToFace {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Revolve {
+    #[serde(default)]
     pub sketch: String,
     #[serde(default)]
     pub regions: Vec<String>,
-    /// `X` or `Y` (sketch axes) or a sketch line, e.g. `Sketch1.l3`.
+    /// Or a planar body face.
+    #[serde(default)]
+    pub face: Option<String>,
+    /// `X`, `Y` (sketch axes), `Sketch1.l3` or `edge(...)`.
     pub axis: String,
     /// Angle expression, default `360 deg`.
     #[serde(default)]
@@ -2361,7 +2365,7 @@ pub struct Revolve {
 impl Command for Revolve {
     const ID: &'static str = "feature.revolve";
     const TITLE: &'static str = "Revolve";
-    const DESCRIPTION: &'static str = "Revolve closed sketch regions around a sketch axis or line.";
+    const DESCRIPTION: &'static str = "Revolve sketch regions or a planar face about an axis.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -2370,13 +2374,19 @@ impl Command for Revolve {
         let axis = match self.axis.as_str() {
             "X" => AxisRef::X,
             "Y" => AxisRef::Y,
+            "Z" if self.face.is_some() => AxisRef::Z,
+            other if other.starts_with("edge(") => {
+                AxisRef::Edge(EdgeRef::parse(other).map_err(|e| CommandError::args(format!("axis '{other}': {e}")))?)
+            }
             other => {
-                let (sk, ent) =
-                    other.split_once('.').ok_or_else(|| CommandError::args("axis must be X, Y or <Sketch>.<line>"))?;
+                let (sk, ent) = other
+                    .split_once('.')
+                    .ok_or_else(|| CommandError::args("axis must be X, Y, <Sketch>.<line> or edge(...)"))?;
                 AxisRef::SketchLine { sketch: sk.to_string(), entity: ent.to_string() }
             }
         };
-        let (sketch_name, all_regions) = (self.sketch.clone(), self.regions.is_empty());
+        let profile = profile_of(self.sketch, self.regions, self.face)?;
+        let (sketch_name, all_regions) = (profile.sketch.clone(), profile.regions.is_empty());
         let seen = std::cell::RefCell::new((String::new(), None::<String>));
         edit_post(
             s,
@@ -2390,15 +2400,7 @@ impl Command for Revolve {
                 let created = (op == BodyOp::New).then(|| body_name.clone().unwrap_or_else(|| name.clone()));
                 let f = Feature::new(
                     name.clone(),
-                    FeatureKind::Revolve(RevolveDef {
-                        profile: ProfileRef { sketch: self.sketch, regions: self.regions, face: None },
-                        axis,
-                        angle,
-                        op,
-                        body,
-                        body_name,
-                        refine: true,
-                    }),
+                    FeatureKind::Revolve(RevolveDef { profile, axis, angle, op, body, body_name, refine: true }),
                 );
                 insert_feature(doc, rb, f);
                 Ok(json!({ "feature": name, "body": created }))
@@ -2874,10 +2876,8 @@ fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
             FeatureKind::Import(_) => {}
             other => ops::rename_refs(other, from, to),
         }
-        if let FeatureKind::Revolve(RevolveDef { axis: AxisRef::SketchLine { sketch, .. }, .. }) = &mut f.kind
-            && sketch == from
-        {
-            *sketch = to.to_string();
+        if let FeatureKind::Revolve(r) = &mut f.kind {
+            r.axis.rename_feature(from, to);
         }
     }
     // Drawings: base views showing the feature's body and dimension edges (review D4).

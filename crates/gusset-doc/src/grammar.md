@@ -290,7 +290,7 @@ extrude Extrude1 (profile: Sketch1.regions(l5), distance: 5 mm, op: new)
 
 ```
 extrude  <Name> (profile: <P>, distance: <expr> | to: <face> [, offset: <expr>] [, reverse: true], [symmetric: true], [op: new|add|cut|intersect], [body: <Feature>], [body_name: <Body>], [refine: false])
-revolve  <Name> (profile: <P>, axis: X|Y|Z|<Sketch>.<line>, angle: <expr>, [op: ...], [body: ...], [body_name: ...], [refine: false])
+revolve  <Name> (profile: <P>, axis: X|Y|Z|<Sketch>.<line>|<edge>, angle: <expr>, [op: ...], [body: ...], [body_name: ...], [refine: false])
 fillet   <Name> (edges: [<edge>, ...], radius: <expr>)
 fillet   <Name> (full_round: [<face>, ...])
 chamfer  <Name> (edges: [<edge>, ...], distance: <expr>, [distance2: <expr> | angle: <expr>], [faces: [<face>, ...]])
@@ -299,12 +299,12 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
 
 - Profile `<P>` is a sketch name (all its closed regions) or `Sketch1.regions(l5, c7)`
   naming the wanted regions (see "Regions" below), or a planar face of an earlier body
-  (`profile: Extrude1/cap(end)`; extrude, sweep and loft). A face profile is the face's outer
+  (`profile: Extrude1/cap(end)`; extrude, revolve, sweep and loft). A face profile is the face's outer
   boundary with its holes, on the face's plane; it extrudes along the face's outward normal
   (a positive distance grows the body out of the face, a `cut` into it needs a negative one).
   The face must be bounded by lines, circles and arcs. Its lateral faces are named after the
   body edge they come from, `<Feature>/along(<edge>)`, its caps `cap(start)` and `cap(end)`
-  (a loft section's sides likewise). `revolve` and helical sweeps take sketch profiles only.
+  (a loft section's sides and a revolve's likewise). Helical sweeps take sketch profiles only.
   `extrude Boss (profile: Base/cap(end), distance: 3 mm, op: add, body: Base)` raises the whole
   top of `Base` by 3 mm.
 - `op` defaults to `new`, which creates a body named after the feature, or after
@@ -329,7 +329,10 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
   rebuild the same way; a later fillet then sees the extra seam edges. It has no effect with
   `op: new`. Prefer the default unless a model must match an unrefined source.
 - A revolve axis `X` or `Y` is the sketch's own x or y axis through its origin (`Z`, its normal,
-  is refused); `Sketch1.l5` is a line of a sketch.
+  is refused); `Sketch1.l5` is a line of a sketch; `edge(...)` a straight edge of an earlier
+  body. With a face profile `X`, `Y` and `Z` are the world axes. An axis that is not a sketch
+  axis must lie in the profile's plane: `revolve R (profile: Box/cap(end), axis:
+  edge(Box/cap(end), Box/side(S/l1)), angle: 90 deg, op: new)` turns the box's top about its edge.
 - `fillet` and `chamfer` take persistent edge names (copy them from `query_body` with
   `names: true`; never guess them).
 - `full_round` replaces `edges` and `radius`: each named face must be planar and lie between two
@@ -428,7 +431,7 @@ loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [op: ...], [body: ...], 
   needs `frenet` and an open path); a helical gear is a sweep of the tooth outline along a
   straight line with a twist.
 - `path: helix(axis: Z, pitch: 1.5 mm, height: 20 mm[, left: true])` screws the profile about an
-  axis (`X`, `Y`, `Z` or a sketch line `Sketch.l3`), climbing `pitch` per turn for `height`
+  axis (`X`, `Y`, `Z`, a sketch line `Sketch.l3` or a straight body edge), climbing `pitch` per turn for `height`
   (at most 2000 turns), right-handed unless `left: true` (ADR 0034). The profile keeps its angle
   to the axis, so a thread profile drawn in a plane through the axis stays exact; the helix
   starts level with the profile and passes through it. No `twist`.

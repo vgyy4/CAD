@@ -1,4 +1,4 @@
-//! A body face as the profile of an extrude, sweep or loft, with the real OCCT kernel: the
+//! A body face as the profile of an extrude, revolve, sweep or loft, with the real OCCT kernel: the
 //! face's outline (and holes) sweeps like a sketch region, and the lateral faces are named
 //! after the body edges they come from (`along(<edge>)`).
 
@@ -116,7 +116,35 @@ loft Bridge (profiles: [Post/cap(end), Plate/side(Sketch1/l6)], op: new)",
 }
 
 #[test]
-fn a_revolve_or_a_curved_face_is_refused() {
+fn a_face_revolves_about_one_of_its_edges() {
+    // The side y = 0 (x 0..40, z 0..10) a quarter turn about its bottom edge (along +x): a
+    // quarter cylinder of r 10 that leaves the plate towards -y.
+    let (ev, r) = eval(
+        "revolve Hinge (profile: Plate/side(Sketch1/l5), axis: edge(Plate/cap(start), Plate/side(Sketch1/l5)), angle: 90 deg, op: new)",
+    );
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let b = r.body("Hinge").unwrap();
+    let m = ev.kernel().mass_properties(&b.shape).unwrap();
+    assert!(near(m.volume, 40.0 * 25.0 * std::f64::consts::PI), "{}", m.volume);
+    let bb = ev.kernel().bbox(&b.shape).unwrap();
+    assert!(near(bb.min[1], -10.0) && near(bb.max[1], 0.0) && near(bb.max[2], 10.0), "{:?}", bb);
+    let names: Vec<String> = b.names.faces.iter().map(ToString::to_string).collect();
+    assert!(names.iter().any(|n| n == "Hinge/along(edge(Plate/cap(end), Plate/side(Sketch1/l5)))"), "{names:?}");
+    assert!(names.iter().any(|n| n == "Hinge/cap(start)") && names.iter().any(|n| n == "Hinge/cap(end)"), "{names:?}");
+
+    // The top with its hole, a whole turn about its edge x = 0 (Pappus: 2 pi times the
+    // region's first moment about the axis).
+    let (ev, r) = eval(
+        "revolve Ring (profile: Plate/cap(end), axis: edge(Plate/cap(end), Plate/side(Sketch1/l8)), angle: 360 deg, op: new)",
+    );
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let m = ev.kernel().mass_properties(&r.body("Ring").unwrap().shape).unwrap();
+    let pi = std::f64::consts::PI;
+    assert!(near(m.volume, 2.0 * pi * (800.0 * 20.0 - 25.0 * pi * 10.0)), "{}", m.volume);
+}
+
+#[test]
+fn a_curved_face_or_an_axis_off_the_plane_is_refused() {
     let (_, r) = eval(
         "extrude Post (profile: Sketch1.regions(c10), distance: 30 mm, op: new)
 
@@ -124,7 +152,8 @@ extrude Bad (profile: Post/side(Sketch1/c10), distance: 1 mm, op: new)",
     );
     let e = r.errors();
     assert!(e.iter().any(|e| e.feature == "Bad" && e.message.contains("planar")), "{e:?}");
+    // World X runs 10 mm below the top: not in the face's plane.
     let (_, r) = eval("revolve Turn (profile: Plate/cap(end), axis: X, angle: 90 deg, op: new)");
     let e = r.errors();
-    assert!(e.iter().any(|e| e.feature == "Turn" && e.message.contains("sketch profile")), "{e:?}");
+    assert!(e.iter().any(|e| e.feature == "Turn" && e.message.contains("profile's plane")), "{e:?}");
 }

@@ -59,36 +59,42 @@ fn plane_axis(feature: &str, axis: &PlaneAxis, bodies: &[Arc<Body>]) -> Result<(
         PlaneAxis::X => Ok(([0.0; 3], [1.0, 0.0, 0.0])),
         PlaneAxis::Y => Ok(([0.0; 3], [0.0, 1.0, 0.0])),
         PlaneAxis::Z => Ok(([0.0; 3], [0.0, 0.0, 1.0])),
-        PlaneAxis::Edge(r) => {
-            let (bi, edges) = resolve_edges(feature, std::slice::from_ref(r), bodies)?;
-            let body = bodies
-                .get(bi)
-                .ok_or_else(|| EvalError::new(feature, ErrorCode::InvalidReference, "the axis edge has no body"))?;
-            let edge = edges.first().and_then(|&i| body.topology.edges.get(i as usize)).ok_or_else(|| {
-                EvalError::new(feature, ErrorCode::MissingReference, format!("edge {r} no longer exists"))
-                    .with_hint("re-select the axis edge")
-            })?;
-            let ends = match edge.vertices.as_slice() {
-                [a, b] if edge.kind == CurveKind::Line => {
-                    body.topology.vertices.get(*a as usize).zip(body.topology.vertices.get(*b as usize))
-                }
-                _ => None,
-            };
-            let Some((a, b)) = ends else {
-                let mut e =
-                    EvalError::new(feature, ErrorCode::InvalidReference, format!("edge {r} is not a straight edge"))
-                        .with_hint("use X, Y, Z or a straight edge as the axis");
-                e.reference = Some(r.to_string());
-                return Err(e);
-            };
-            let along = sub(b.point, a.point);
-            let dir = canonical_direction(along).ok_or_else(|| {
-                EvalError::new(feature, ErrorCode::InvalidReference, format!("edge {r} has no length"))
-                    .with_hint("use X, Y, Z or a straight edge as the axis")
-            })?;
-            Ok((a.point, dir))
-        }
+        PlaneAxis::Edge(r) => edge_axis(feature, r, bodies),
     }
+}
+
+/// A point on the straight body edge `r` and its canonical unit direction (an axis).
+pub(crate) fn edge_axis(
+    feature: &str,
+    r: &gusset_doc::EdgeRef,
+    bodies: &[Arc<Body>],
+) -> Result<([f64; 3], [f64; 3]), EvalError> {
+    let (bi, edges) = resolve_edges(feature, std::slice::from_ref(r), bodies)?;
+    let body = bodies
+        .get(bi)
+        .ok_or_else(|| EvalError::new(feature, ErrorCode::InvalidReference, "the axis edge has no body"))?;
+    let edge = edges.first().and_then(|&i| body.topology.edges.get(i as usize)).ok_or_else(|| {
+        EvalError::new(feature, ErrorCode::MissingReference, format!("edge {r} no longer exists"))
+            .with_hint("re-select the axis edge")
+    })?;
+    let ends = match edge.vertices.as_slice() {
+        [a, b] if edge.kind == CurveKind::Line => {
+            body.topology.vertices.get(*a as usize).zip(body.topology.vertices.get(*b as usize))
+        }
+        _ => None,
+    };
+    let Some((a, b)) = ends else {
+        let mut e = EvalError::new(feature, ErrorCode::InvalidReference, format!("edge {r} is not a straight edge"))
+            .with_hint("use X, Y, Z or a straight edge as the axis");
+        e.reference = Some(r.to_string());
+        return Err(e);
+    };
+    let along = sub(b.point, a.point);
+    let dir = canonical_direction(along).ok_or_else(|| {
+        EvalError::new(feature, ErrorCode::InvalidReference, format!("edge {r} has no length"))
+            .with_hint("use X, Y, Z or a straight edge as the axis")
+    })?;
+    Ok((a.point, dir))
 }
 
 /// Positional noise of a vertex that the direction of an edge must not depend on (mm): ten

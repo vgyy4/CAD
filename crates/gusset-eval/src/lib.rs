@@ -1089,39 +1089,7 @@ impl Evaluator {
                 let ctx = input.ctx(name, &e.profile);
                 self.combine_refined(s, name, &ctx, r, e.op, (e.body.as_deref(), e.body_name.as_deref()), e.refine)
             }
-            FeatureKind::Revolve(r) => {
-                let (solved, frame) = sketch_input(name, &r.profile.sketch, s)?;
-                let (profile, regions) =
-                    sketch::kernel_profile(name, &r.profile.sketch, &solved, frame, &r.profile.regions)?;
-                let angle = eval_expr(name, &r.angle, Dim::ANGLE, params, units)?;
-                let (axis_origin, axis_dir) = match &r.axis {
-                    AxisRef::X => ([0.0, 0.0], [1.0, 0.0]),
-                    AxisRef::Y => ([0.0, 0.0], [0.0, 1.0]),
-                    AxisRef::Z => {
-                        return Err(EvalError::new(
-                            name,
-                            ErrorCode::InvalidReference,
-                            "the Z axis is normal to the sketch",
-                        )
-                        .with_hint("revolve around X, Y or a sketch line"));
-                    }
-                    AxisRef::SketchLine { sketch, entity } => {
-                        let sv = s.solved.get(sketch).ok_or_else(|| {
-                            EvalError::new(
-                                name,
-                                ErrorCode::InvalidReference,
-                                format!("'{sketch}' is not an evaluated sketch"),
-                            )
-                        })?;
-                        line_axis(name, sketch, entity, sv)?
-                    }
-                };
-                let res = k
-                    .revolve(&profile, &RevolveSpec { axis_origin, axis_dir, angle })
-                    .map_err(|ke| kernel_err(name, "revolve", ke))?;
-                let ctx = OpContext::Sweep { feature: name, sketch: &r.profile.sketch, regions: &regions };
-                self.combine_refined(s, name, &ctx, res, r.op, (r.body.as_deref(), r.body_name.as_deref()), r.refine)
-            }
+            FeatureKind::Revolve(r) => self.run_revolve(s, name, r, units, params),
             FeatureKind::Sweep(d) => self.run_sweep(s, name, d, units, params),
             FeatureKind::Loft(d) => self.run_loft(s, name, d),
             FeatureKind::Fillet(b) if !b.full_round.is_empty() => self.run_full_round(s, name, b),

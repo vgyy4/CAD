@@ -298,9 +298,7 @@ impl FeatureKind {
             }
             FeatureKind::Revolve(r) => {
                 r.profile.features(&mut add);
-                if let AxisRef::SketchLine { sketch, .. } = &r.axis {
-                    add(sketch);
-                }
+                r.axis.features(&mut add);
                 if let Some(b) = &r.body {
                     add(b);
                 }
@@ -310,11 +308,7 @@ impl FeatureKind {
                 match &d.path {
                     PathRef::Sketch { sketch, .. } => add(sketch),
                     PathRef::Edges(edges) => edges.iter().for_each(|e| e.features(&mut add)),
-                    PathRef::Helix(h) => {
-                        if let AxisRef::SketchLine { sketch, .. } = &h.axis {
-                            add(sketch);
-                        }
-                    }
+                    PathRef::Helix(h) => h.axis.features(&mut add),
                 }
                 add_body(&mut add, &d.body);
             }
@@ -1122,6 +1116,28 @@ pub enum AxisRef {
         sketch: String,
         entity: String,
     },
+    /// A straight edge of an earlier body (`edge(Base/cap(end), Base/side(Sketch1/l4))`).
+    Edge(EdgeRef),
+}
+
+impl AxisRef {
+    /// Calls `f` with every feature name the axis refers to.
+    pub fn features(&self, f: &mut dyn FnMut(&str)) {
+        match self {
+            AxisRef::SketchLine { sketch, .. } => f(sketch),
+            AxisRef::Edge(e) => e.features(f),
+            AxisRef::X | AxisRef::Y | AxisRef::Z => {}
+        }
+    }
+
+    /// Renames every occurrence of feature `from` to `to`.
+    pub fn rename_feature(&mut self, from: &str, to: &str) {
+        match self {
+            AxisRef::SketchLine { sketch, .. } if sketch == from => *sketch = to.to_string(),
+            AxisRef::Edge(e) => e.rename_feature(from, to),
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

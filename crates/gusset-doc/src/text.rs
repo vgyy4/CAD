@@ -1698,21 +1698,27 @@ fn parse_edge_list(c: &mut Cursor<'_>) -> Result<Vec<EdgeRef>, ParseError> {
     Ok(list)
 }
 
-/// `X`, `Y`, `Z` or `Sketch.l3`.
+/// `X`, `Y`, `Z`, `Sketch.l3` or `edge(...)`.
 fn print_axis(a: &AxisRef) -> String {
     match a {
         AxisRef::X => "X".to_string(),
         AxisRef::Y => "Y".to_string(),
         AxisRef::Z => "Z".to_string(),
         AxisRef::SketchLine { sketch, entity } => format!("{sketch}.{entity}"),
+        AxisRef::Edge(e) => e.to_string(),
     }
 }
 
 fn parse_axis(c: &mut Cursor<'_>) -> Result<AxisRef, ParseError> {
+    let start = c.clone();
     Ok(match c.ident()? {
         "X" => AxisRef::X,
         "Y" => AxisRef::Y,
         "Z" => AxisRef::Z,
+        "edge" if c.peek() == Some('(') => {
+            *c = start;
+            AxisRef::Edge(parse_edge(c)?)
+        }
         sketch => {
             c.expect('.')?;
             AxisRef::SketchLine { sketch: sketch.to_string(), entity: c.ident()?.to_string() }

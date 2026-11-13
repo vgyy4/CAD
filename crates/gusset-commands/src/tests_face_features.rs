@@ -1,4 +1,4 @@
-//! `feature.thread`, `feature.bend` and face profiles for extrude and sweep (mock kernel:
+//! `feature.thread`, `feature.bend` and face profiles for extrude, sweep and revolve (mock kernel:
 //! the text a command writes and the refusals; geometry is tested with OCCT).
 
 use crate::*;
@@ -126,4 +126,30 @@ fn extrude_and_sweep_take_a_face_as_the_profile() {
         json!({"profiles": ["Extrude1/cap(end)", "Sketch1"], "name": "Lo"}),
     );
     assert!(text(&s).contains("loft Lo (profiles: [Extrude1/cap(end), Sketch1]"), "{}", text(&s));
+}
+
+#[test]
+fn revolve_takes_a_face_and_an_edge_axis() {
+    let mut s = session();
+    block(&mut s);
+    let _ = execute(
+        &mut s,
+        &CmdCtx::user(1),
+        "feature.revolve",
+        json!({"face": "Extrude1/cap(end)", "axis": "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l1))",
+               "angle": "90 deg", "name": "Rv"}),
+    );
+    let t = text(&s);
+    assert!(
+        t.contains("revolve Rv (profile: Extrude1/cap(end), axis: edge(Extrude1/cap(end), Extrude1/side(Sketch1/l1)), angle: 90 deg"),
+        "{t}"
+    );
+    for args in [
+        json!({"sketch": "Sketch1", "face": "Extrude1/cap(end)", "axis": "X"}),
+        json!({"axis": "X"}),
+        json!({"face": "Extrude1/cap(end)", "axis": "edge(nonsense"}),
+        json!({"sketch": "Sketch1", "axis": "Z"}),
+    ] {
+        assert_eq!(err(&mut s, "feature.revolve", args).code, "invalid_args");
+    }
 }

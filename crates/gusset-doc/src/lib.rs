@@ -467,6 +467,15 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             }
         }
         assert!(renamed.to_text().contains("extrude E2 (profile: Body/cap(end)"));
+        // A revolve of a face about a body edge; an edge axis is a dependency.
+        let rev = format!(
+            "{HOLE_BASE}revolve R (profile: E/side(P/l4), axis: edge(E/cap(start), E/side(P/l4)), angle: 90 deg, op: new)\n"
+        );
+        let doc = Document::from_text(&rev).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), rev);
+        let FeatureKind::Revolve(r) = &doc.feature("R").unwrap().kind else { panic!() };
+        assert!(matches!(r.axis, crate::AxisRef::Edge(_)));
+        assert_eq!(doc.feature("R").unwrap().kind.dependencies(), vec!["E".to_string(), "P".to_string()]);
         // A sketch is not a body.
         let bad = format!("{HOLE_BASE}extrude E2 (profile: S/cap(end), distance: 2 mm, op: new)\n");
         let err = Document::from_text(&bad).unwrap_err().to_string();
