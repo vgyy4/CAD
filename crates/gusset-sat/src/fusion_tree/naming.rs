@@ -1441,6 +1441,7 @@ impl Ctx<'_> {
     /// whether it is an arc.
     pub(super) fn edge_midpoint(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
         self.modelled_edge(faces)
+            .or_else(|| self.rim_of_a_thin_cap(faces))
             .or_else(|| self.stored_edge(faces))
             .or_else(|| self.side_at_cap(faces))
             .or_else(|| self.rim_at_plane(faces))
@@ -1450,6 +1451,37 @@ impl Ctx<'_> {
             .or_else(|| self.mirrored_edge(faces))
             .or_else(|| self.line_on_cylinder(faces))
             .or_else(|| self.across_the_extrude(faces))
+    }
+
+    /// A rim edge named by a thin wall's cap and a plane the cap lies on (a cut through a plate
+    /// from one face to the other, [`super::thin::Rims`]): the rim of the side of that cap's
+    /// curve that the recipe names beside it, on the plane.
+    fn rim_of_a_thin_cap(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
+        let (f0, f1) = (faces.first()?, faces.get(1)?);
+        for (cap, other) in [(f0, f1), (f1, f0)] {
+            let [(g, ops)] = cap.as_slice() else { continue };
+            let [op] = ops.as_slice() else { continue };
+            let Some(fid) = u64::try_from(*op).ok().and_then(|o| self.opmap.get(&o)).copied() else { continue };
+            let Some(rims) = self.thin_caps.get(&fid).and_then(|c| c.rims()) else { continue };
+            let Some((k, far)) = rims.cap(g) else { continue };
+            // The side of that curve beside the edge (one of them).
+            let mut sides = faces.iter().skip(2).filter_map(|f| {
+                let (sg, sops) = f.first()?;
+                let caps = self.thin_caps.get(&fid)?;
+                let by = sops.first().and_then(|o| u64::try_from(*o).ok()).and_then(|o| self.opmap.get(&o));
+                (by == Some(&fid) && caps.side_of(sg) == Some(k)).then_some(sops.len() > 1)
+            });
+            let (Some(on_chain), None) = (sides.next(), sides.next()) else { continue };
+            let (mid, arc, path) = rims.rim(k, on_chain, far)?;
+            // The other face is a plane through the rim.
+            let (og, oops) = other.first()?;
+            let Some(FaceG::Plane { n, p, .. }) = self.face(og, oops) else { continue };
+            if dot(n, sub(mid, p)).abs() > 1e-6 {
+                continue;
+            }
+            return Some((mid, arc, path));
+        }
+        None
     }
 
     /// An edge between a cap of an extrude and a face that runs straight across the extrude

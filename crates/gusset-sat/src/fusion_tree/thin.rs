@@ -41,6 +41,67 @@ pub(super) struct Caps {
     off: f64,
     /// The walls about separate lines (empty for a wall along one chain).
     lines: Vec<LineWall>,
+    /// The rims of a wall along one chain where its caps lie ([`Rims`]).
+    rims: Option<Rims>,
+}
+
+/// The first operation of a thin extrude along one chain names its caps per curve: `-m` on the
+/// sketch plane, `m` at the far end, where m counts on along the chain (1 for its start, 2 per
+/// line, 3 per arc: 3, 6, 8 for a line, an arc and a line, as 6299's `Extrude10 (2)` and 5981's
+/// `Extrude3`; 3, 6, 9 for 6126's three lines, each a chain of its own). A cut through a plate
+/// whose face lies on a cap leaves no cap there, but its rim edges keep the cap's name: 6299's
+/// `Chamfer2` takes the top rims of the slot as (cap `3`, the plate's top), told apart by the
+/// side beside them (`10 [387]` off the chain, `10 [387, 388]` on it).
+pub(super) struct Rims {
+    pl: super::geom::Plane,
+    /// The chain in selection order (sketch mm) and the off-chain side's offset to its left (mm).
+    chain: Vec<Piece>,
+    off: f64,
+    /// The far cap's offset along the sketch normal (cm).
+    depth: f64,
+    /// The cap name of each curve.
+    names: Vec<i64>,
+}
+
+impl Rims {
+    fn new(pl: super::geom::Plane, chain: Vec<Piece>, off: f64, depth: f64) -> Rims {
+        let mut m = 1;
+        let names = chain
+            .iter()
+            .map(|p| {
+                m += if matches!(p, Piece::Line { .. }) { 2 } else { 3 };
+                m
+            })
+            .collect();
+        Rims { pl, chain, off, depth, names }
+    }
+
+    /// The curve whose cap the generator names, and whether the cap is the far one.
+    pub(super) fn cap(&self, g: &str) -> Option<(usize, bool)> {
+        let m = g.parse::<i64>().ok()?;
+        let k = self.names.iter().position(|n| *n == m.abs())?;
+        Some((k, m > 0))
+    }
+
+    /// The rim of curve k's side (on the chain or off it) at a cap: its middle, whether it is an
+    /// arc and its points (cm).
+    pub(super) fn rim(&self, k: usize, on_chain: bool, far: bool) -> Option<(V3, bool, Vec<V3>)> {
+        let p = self.chain.get(k)?.offset(if on_chain { 0.0 } else { self.off })?;
+        let t = if far { self.depth } else { 0.0 };
+        let at = |q: P2| world(&self.pl, [q[0] / 10.0, q[1] / 10.0], t);
+        match p {
+            Piece::Line { .. } => Some((at(p.middle()), false, Vec::new())),
+            Piece::Arc { c, r, a0, a1, .. } => {
+                let path = (0..=16)
+                    .map(|i| {
+                        let a = a0 + (a1 - a0) * f64::from(i) / 16.0;
+                        at([c[0] + r * libm::cos(a), c[1] + r * libm::sin(a)])
+                    })
+                    .collect();
+                Some((at(p.middle()), true, path))
+            }
+        }
+    }
 }
 
 /// A wall about the middle of one line (cm): the line's start on the sketch plane, its unit run
@@ -103,6 +164,17 @@ impl LineWall {
 }
 
 impl Caps {
+    /// The rims of a wall along one chain, where they are known.
+    pub(super) fn rims(&self) -> Option<&Rims> {
+        self.rims.as_ref()
+    }
+
+    /// The selected curve whose side the generator names (walls along one chain).
+    pub(super) fn side_of(&self, g: &str) -> Option<usize> {
+        let k = g.parse::<usize>().ok()?.checked_sub(10)?;
+        (self.lines.is_empty() && k < self.n).then_some(k)
+    }
+
     /// The line and the face of a wall about separate lines that the generator names.
     pub(super) fn role(&self, g: &str, on_chain: bool) -> Option<(usize, Role)> {
         let j = g.parse::<usize>().ok()?.checked_sub(12)?;
@@ -591,8 +663,19 @@ pub(super) fn thin_extrude(
             })
             .collect();
         let off = if lo != 0.0 { lo } else { hi } / 10.0;
-        cx.thin_caps
-            .insert(fid, Caps { n: ids.len(), start: cap(s0, u0), end: cap(e1, u1), sides, off, lines: Vec::new() });
+        // The caps' rims, where the chain runs in selection order.
+        let same = |p: &Piece, q: &Piece| {
+            let ((a, b), (c, e)) = (p.ends(), q.ends());
+            let close = |x: P2, y: P2| libm::hypot(x[0] - y[0], x[1] - y[1]) < CLOSE;
+            (close(a, c) && close(b, e)) || (close(a, e) && close(b, c))
+        };
+        let in_order = sel.len() == ch.len() && sel.iter().zip(&ch).all(|(p, q)| same(p, q));
+        let depth = j.get("distance").and_then(Value::as_f64).map(|v| v / 10.0);
+        let rims = depth.filter(|_| in_order).map(|t| Rims::new(pl, ch.clone(), off * 10.0, t));
+        cx.thin_caps.insert(
+            fid,
+            Caps { n: ids.len(), start: cap(s0, u0), end: cap(e1, u1), sides, off, lines: Vec::new(), rims },
+        );
     }
     // A wall about the middle of lines that are chains of their own: named per line.
     if let (Some(pl), 1, false) = (plane, loc, more.is_empty()) {
@@ -622,6 +705,7 @@ pub(super) fn thin_extrude(
                     sides: Vec::new(),
                     off: 0.0,
                     lines,
+                    rims: None,
                 },
             );
         }
@@ -745,6 +829,7 @@ mod tests {
             sides: Vec::new(),
             off: 0.0,
             lines: vec![line([0.4, 0.15, 1.56]), line(at)],
+            rims: None,
         };
         let plane = |g: &str, on: bool, shift: f64| match caps.face(g, on, shift).unwrap() {
             FaceG::Plane { n, p, .. } => (n, p),
@@ -765,6 +850,37 @@ mod tests {
         assert!((plane("21", false, -0.025).1[1] + 0.125).abs() < 1e-12);
         assert!((plane("20", false, -0.025).1[1] + 0.555).abs() < 1e-12);
         assert!(caps.face("33", false, 0.0).is_none());
+    }
+
+    #[test]
+    fn a_walls_caps_are_named_per_curve_along_its_chain() {
+        // A hairpin as 6299's Extrude10 (2): a line, a half circle and a line back, cut 1.6 mm up
+        // from z = 13 with a 0.6 mm wall to the left of the chain (outside its clockwise arc).
+        let pl = super::super::geom::Plane {
+            x: [1.0, 0.0, 0.0],
+            y: [0.0, 1.0, 0.0],
+            z: [0.0, 0.0, 1.0],
+            origin: [0.0, 0.0, 1.3],
+        };
+        let chain = vec![
+            Piece::Line { a: [0.0, 0.0], b: [0.0, 10.0] },
+            Piece::Arc { c: [1.0, 10.0], r: 1.0, a0: 0.0, a1: std::f64::consts::PI, ccw: false },
+            Piece::Line { a: [2.0, 10.0], b: [2.0, 0.0] },
+        ];
+        let rims = Rims::new(pl, chain, 0.6, 0.16);
+        assert_eq!(rims.names, vec![3, 6, 8]);
+        assert_eq!(
+            (rims.cap("3"), rims.cap("-6"), rims.cap("8"), rims.cap("9")),
+            (Some((0, true)), Some((1, false)), Some((2, true)), None)
+        );
+        // The first line's rims at the far cap (z = 1.46 cm): on the chain, and 0.6 mm to its left.
+        let (m, arc, _) = rims.rim(0, true, true).unwrap();
+        assert!(!arc && (m[0]).abs() < 1e-12 && (m[1] - 0.5).abs() < 1e-12 && (m[2] - 1.46).abs() < 1e-12);
+        let (m, ..) = rims.rim(0, false, true).unwrap();
+        assert!((m[0] + 0.06).abs() < 1e-12);
+        // The arc's rim off the chain: radius 1.6 mm about (1, 10), its middle on top.
+        let (m, arc, path) = rims.rim(1, false, false).unwrap();
+        assert!(arc && path.len() == 17 && (m[1] - 1.16).abs() < 1e-12 && (m[2] - 1.3).abs() < 1e-12);
     }
 
     #[test]
