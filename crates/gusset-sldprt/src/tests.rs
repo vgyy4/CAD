@@ -1236,3 +1236,53 @@ fn geometry_free_nodes_are_skipped() {
     let t = history(&feature_stream(&extra)).unwrap().unwrap();
     assert_eq!(t["features"].as_array().unwrap().len(), 2, "{t}");
 }
+
+#[test]
+fn an_imported_body_is_a_stored_body_named_like_its_node() {
+    let mut rf = vec![3, 0];
+    rf.extend(feature_node("moBaseBody_c", "Imported1", 4));
+    rf.extend(&feature_stream(&[])[2..]);
+    let t = history(&rf).unwrap().unwrap();
+    let f = &t["features"];
+    assert_eq!(f[0]["type"], "stored_body");
+    assert_eq!(f[0]["local_body"], "Imported1");
+    // The extrude after it joins the imported body.
+    assert_eq!(f[2]["operation"], "join");
+    assert_eq!(f[2]["target"], "Imported1");
+}
+
+#[test]
+fn local_bodies_keep_their_names_and_chunks_past_one_mib() {
+    // One body in two zlib chunks (`u32 inflated, u32 deflated, data`, ended by two zeros).
+    let body = xt("imported", 3000);
+    let (a, b) = body.split_at(1200);
+    let (za, zb) = (compress_to_vec_zlib(a, 6), compress_to_vec_zlib(b, 6));
+    let mut blk = Vec::new();
+    blk.extend(((24 + za.len() + 8 + zb.len() + 8) as u32).to_le_bytes());
+    blk.extend([0x23u8; 16]);
+    blk.extend((a.len() as u32).to_le_bytes());
+    blk.extend((za.len() as u32).to_le_bytes());
+    blk.extend(&za);
+    blk.extend((b.len() as u32).to_le_bytes());
+    blk.extend((zb.len() as u32).to_le_bytes());
+    blk.extend(&zb);
+    blk.extend([0u8; 8]);
+    let mut local = 2u32.to_le_bytes().to_vec();
+    for (name, blk) in [("Imported1", blk), ("Imp2", block(&xt("second", 70)))] {
+        local.extend([0xff, 0xfe, 0xff, name.len() as u8]);
+        local.extend(name.encode_utf16().flat_map(u16::to_le_bytes));
+        local.extend([1, 0, 0, 0, 0]);
+        local.extend(((blk.len() + 5) as u32).to_le_bytes());
+        local.push(0);
+        local.extend(blk);
+    }
+    let f = ole(&[("Config-0-Partition", &[0u8; 8]), ("LocalBodies", &local)]);
+    let got = named_local_bodies(&f, &Limits::default(), &Default::default()).unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!((got[0].name.as_str(), &got[0].xt), ("Imported1", &body));
+    assert_eq!((got[1].name.as_str(), &got[1].xt), ("Imp2", &xt("second", 70)));
+    for cut in [5, 40, 90, local.len() - 3] {
+        let f = ole(&[("LocalBodies", &local[..cut])]);
+        let _ = named_local_bodies(&f, &Limits::default(), &Default::default());
+    }
+}

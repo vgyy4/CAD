@@ -434,7 +434,8 @@ impl ImportJob {
                 // own bodies (ADR 0043 amendment); else the bodies themselves.
                 let stock = sldprt_stock(&bytes, &stem, importer.as_ref(), cancel);
                 let mut attempt = None;
-                let r = solidworks_history(&bytes, &out, &self.kernel, &self.file_name, stock, &mut attempt);
+                let local = || sldprt_local(&bytes, &stem, importer.as_ref(), cancel);
+                let r = solidworks_history(&bytes, &out, &self.kernel, &self.file_name, stock, &local, &mut attempt);
                 let h = history::classify(
                     r,
                     attempt,
@@ -1324,11 +1325,20 @@ fn solidworks_history(
     kernel: &Arc<dyn gusset_kernel::Kernel>,
     file_name: &str,
     stock: Result<Vec<Vec<u8>>, String>,
+    local: &dyn Fn() -> Result<Vec<(String, Vec<u8>)>, String>,
     attempt: &mut Option<crate::tree_import::Tree>,
 ) -> Result<(crate::tree_import::Tree, Option<String>), String> {
     let mut tree = gusset_sldprt::features::feature_tree(bytes, file_name, &gusset_sldprt::Limits::default())?
         .ok_or_else(String::new)?;
-    let (stored, stock_note) = stored_stock(&mut tree, bodies, kernel, stock)?;
+    let imported = tree
+        .get("features")
+        .and_then(Value::as_array)
+        .is_some_and(|fs| fs.iter().any(|f| f.get("local_body").is_some()));
+    let (stored, stock_note) = if imported {
+        (local_stored(&mut tree, bodies, kernel, local()?)?, None)
+    } else {
+        stored_stock(&mut tree, bodies, kernel, stock)?
+    };
     let text = serde_json::to_vec(&tree).map_err(|e| e.to_string())?;
     let mut tree = crate::tree_import::parse(&text).map_err(|e| e.message)?;
     tree.stored_bodies = stored;
@@ -1359,6 +1369,89 @@ fn sldprt_stock(
     let c = gusset_xt::to_step(&part.xt, stem, &gusset_xt::Limits::default()).map_err(|e| e.to_string())?;
     let bodies = importer.import("step", c.step.as_bytes(), cancel)?;
     Ok(bodies.into_iter().map(|(_, blob)| blob).collect())
+}
+
+/// The bodies of a part's imported features (`LocalBodies`), by record name, as native
+/// bodies.
+fn sldprt_local(
+    bytes: &[u8],
+    stem: &str,
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let locals = gusset_sldprt::named_local_bodies(bytes, &gusset_sldprt::Limits::default(), cancel)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for (i, b) in locals.into_iter().enumerate() {
+        let c = gusset_xt::to_step(&b.xt, &format!("{stem}_{}", i + 1), &gusset_xt::Limits::default())
+            .map_err(|e| e.to_string())?;
+        let mut got = importer.import("step", c.step.as_bytes(), cancel)?;
+        let (Some((_, blob)), true) = (got.pop(), got.is_empty()) else {
+            return Err(format!("the imported body {} is not one solid", b.name));
+        };
+        out.push((b.name, blob));
+    }
+    Ok(out)
+}
+
+/// Hands the bodies of the tree's imported features (`stored_body` with `local_body`, the
+/// node name) to the tree. An imported body is where SolidWorks' own history starts, so the
+/// features after it are a rebuild only when there are some and the body is not already the
+/// finished part (replaying a cut or a join on the finished part changes nothing, which would
+/// pass the rebuild check trivially).
+fn local_stored(
+    tree: &mut Value,
+    bodies: &[PreparedBody],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    local: Vec<(String, Vec<u8>)>,
+) -> Result<Vec<Vec<u8>>, String> {
+    let Some(feats) = tree.get_mut("features").and_then(Value::as_array_mut) else { return Ok(Vec::new()) };
+    let mut stored: Vec<Vec<u8>> = Vec::new();
+    for f in feats.iter_mut() {
+        let Some(o) = f.as_object_mut() else { continue };
+        let Some(name) = o.remove("local_body") else { continue };
+        let name = name.as_str().unwrap_or_default().to_string();
+        let blob = local
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, b)| b.clone())
+            .ok_or_else(|| format!("the body of the imported feature {name} is not in the file"))?;
+        o.insert("body".into(), Value::from(stored.len()));
+        stored.push(blob);
+    }
+    let editable = feats
+        .iter()
+        .filter(|f| !matches!(f.get("type").and_then(Value::as_str), Some("stored_body" | "sketch" | "unsupported")))
+        .count();
+    if editable == 0 {
+        return Err("the history is the imported bodies only".into());
+    }
+    let measure = |blobs: &mut dyn Iterator<Item = &Vec<u8>>| -> Result<(f64, Option<gusset_kernel::BBox>), String> {
+        let (mut v, mut bb): (f64, Option<gusset_kernel::BBox>) = (0.0, None);
+        for b in blobs {
+            let shape = kernel.read_native(b).map_err(|e| e.message)?;
+            v += kernel.mass_properties(&shape).map_err(|e| e.message)?.volume;
+            let x = kernel.bbox(&shape).map_err(|e| e.message)?;
+            bb = Some(bb.map_or(x, |a| gusset_kernel::BBox {
+                min: [0, 1, 2].map(|k| a.min.get(k).copied().unwrap_or(0.0).min(x.min.get(k).copied().unwrap_or(0.0))),
+                max: [0, 1, 2].map(|k| a.max.get(k).copied().unwrap_or(0.0).max(x.max.get(k).copied().unwrap_or(0.0))),
+            }));
+        }
+        Ok((v, bb))
+    };
+    let (sv, sb) = measure(&mut stored.iter())?;
+    let (fv, fb) = measure(&mut bodies.iter().map(|b| &b.blob))?;
+    if let (Some(s), Some(f)) = (sb, fb) {
+        let tol = 1e-4 * (1.0 + gusset_kernel::norm(f.size()));
+        let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() <= tol);
+        if (sv - fv).abs() <= FREECAD_VOLUME_TOLERANCE * fv.abs().max(sv.abs())
+            && near(s.min, f.min)
+            && near(s.max, f.max)
+        {
+            return Err("the imported bodies already are the finished part".into());
+        }
+    }
+    Ok(stored)
 }
 
 /// A plane normal to axis `ax` at `c`: its origin and unit normal.

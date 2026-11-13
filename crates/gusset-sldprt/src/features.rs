@@ -2862,6 +2862,14 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if first_solid.as_deref().is_none_or(str::is_empty) {
                 first_solid = Some(n.name.clone());
             }
+        } else if cls.as_deref() == Some("moBaseBody_c") {
+            // An imported body: the part keeps it, as imported, in its `LocalBodies` stream
+            // under the node's name; the importer hands it over as a stored body.
+            feats.push(json!({"type": "stored_body", "name": n.name, "body": 0, "local_body": n.name}));
+            solid = true;
+            if first_solid.as_deref().is_none_or(str::is_empty) {
+                first_solid = Some(n.name.clone());
+            }
         } else if cls.is_none() || is_in(&cls, &SKIPPED) {
             continue;
         } else {

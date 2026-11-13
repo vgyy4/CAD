@@ -103,6 +103,26 @@ pub fn local_bodies(
     limits: &Limits,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Vec<Vec<u8>>, SldprtError> {
+    Ok(named_local_bodies(bytes, limits, cancel)?.into_iter().map(|b| b.xt).collect())
+}
+
+/// A body of a `LocalBodies` stream: the name of its record (the imported feature's node
+/// name, `Imported1`, or a body name such as `0780-001-1-solid1`) and its Parasolid transmit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalBody {
+    pub name: String,
+    pub xt: Vec<u8>,
+}
+
+/// [`local_bodies`] with the name of each body's record (empty when none is found).
+///
+/// # Errors
+/// [`SldprtError`] for unknown containers and damaged or over-limit files.
+pub fn named_local_bodies(
+    bytes: &[u8],
+    limits: &Limits,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Vec<LocalBody>, SldprtError> {
     let is_local = |n: &str| n.ends_with("LocalBodies") && (n == "LocalBodies" || n.contains("-FeatureBodies/"));
     let stream = match detect(bytes).ok_or(SldprtError::NotSldprt)? {
         Container::Ole2 => {
@@ -126,12 +146,35 @@ pub fn local_bodies(
     local_blocks(&stream, limits, cancel)
 }
 
+/// The name of the record that ends just before the block at `at`: `FF FE FF <n>`, n UTF-16
+/// units, then at most 16 bytes of sizes and flags.
+fn record_name(stream: &[u8], at: usize) -> String {
+    let lo = at.saturating_sub(4 + 2 * 255 + 16);
+    for p in (lo..at).rev() {
+        if stream.get(p..p + 3) != Some(&[0xff, 0xfe, 0xff][..]) {
+            continue;
+        }
+        let n = usize::from(stream.get(p + 3).copied().unwrap_or(0));
+        let end = p + 4 + 2 * n;
+        if end <= at && at - end <= 16 {
+            let units: Vec<u16> = stream
+                .get(p + 4..end)
+                .unwrap_or_default()
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0)]))
+                .collect();
+            return String::from_utf16_lossy(&units);
+        }
+    }
+    String::new()
+}
+
 /// The Parasolid transmits of a `LocalBodies` stream.
 fn local_blocks(
     stream: &[u8],
     limits: &Limits,
     cancel: &std::sync::atomic::AtomicBool,
-) -> Result<Vec<Vec<u8>>, SldprtError> {
+) -> Result<Vec<LocalBody>, SldprtError> {
     let u32_at = |off: usize| -> Option<usize> {
         usize::try_from(u32::from_le_bytes(stream.get(off..off.checked_add(4)?)?.try_into().ok()?)).ok()
     };
@@ -164,11 +207,34 @@ fn local_blocks(
         {
             return Err(SldprtError::TooLarge("the bodies inflate beyond the limit".into()));
         }
-        let data = stream.get(at + 28..at + 28 + deflated).unwrap_or_default();
-        let xt = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, plain.saturating_add(1))
-            .map_err(|e| SldprtError::Malformed(format!("a body block does not inflate ({:?})", e.status)))?;
+        let inflate = |data: &[u8], plain: usize| {
+            miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, plain.saturating_add(1))
+                .map_err(|e| SldprtError::Malformed(format!("a body block does not inflate ({:?})", e.status)))
+        };
+        let mut xt = inflate(stream.get(at + 28..at + 28 + deflated).unwrap_or_default(), plain)?;
+        // A body over 1 MiB goes on in further chunks of the same block (`u32` inflated
+        // size, `u32` deflated size, zlib data), ended by two zero sizes (GT2_Spur's
+        // imported gear: 1 MiB, then 582 kB).
+        let mut c = at + 28 + deflated;
+        while let (Some(p2), Some(d2)) = (u32_at(c), u32_at(c + 4)) {
+            if p2 == 0 || c.saturating_add(8).saturating_add(d2) > end {
+                break;
+            }
+            spent = spent.saturating_add(p2);
+            if xt.len().saturating_add(p2) > limits.max_stream_bytes
+                || spent > limits.max_total_bytes
+                || p2 / limits.max_ratio.max(1) > d2
+            {
+                return Err(SldprtError::TooLarge("the bodies inflate beyond the limit".into()));
+            }
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(SldprtError::TooLarge("cancelled".into()));
+            }
+            xt.extend(inflate(stream.get(c + 8..c + 8 + d2).unwrap_or_default(), p2)?);
+            c += 8 + d2;
+        }
         if xt.get(..2) == Some(b"PS") {
-            out.push(xt);
+            out.push(LocalBody { name: record_name(stream, at), xt });
         }
         // The next block: after its name record, carrying the same tag.
         let rest = stream.get(end..).unwrap_or_default();
