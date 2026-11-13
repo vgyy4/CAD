@@ -181,6 +181,16 @@ pub fn apply_project(rules: &mut Rules, pro: &Value) {
     }
 }
 
+/// The `kicad-cli` the user named in Settings (ADR 0056). Gusset never downloads, bundles
+/// or searches for KiCad (no PATH lookup): `pcb.kicad_drc`, `sch.kicad_erc` and
+/// `pcb.kicad_export` run exactly this program, as a separate process, or refuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KicadCli {
+    pub path: std::path::PathBuf,
+    /// Longest run before it is stopped (seconds).
+    pub timeout_s: u64,
+}
+
 /// A Freerouting install the user named in Settings (ADR 0047 phase 3). Gusset never
 /// downloads or bundles it (GPL; ADR 0001): `pcb.autoroute` runs it as a separate process
 /// on a DSN export and reads its SES back.

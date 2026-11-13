@@ -140,6 +140,8 @@ pub struct Session {
     pub(crate) sch_cache: crate::sch_session::Cache,
     /// The user's Freerouting setup (Settings; never set by agents). `None`: not set up.
     pub freerouting: Option<crate::pcb_session::Freerouting>,
+    /// The user's `kicad-cli` (Settings; never set by agents; ADR 0056). `None`: not set up.
+    pub kicad_cli: Option<crate::pcb_session::KicadCli>,
     /// Pour the zones an edit touched in the same undo step (the PCB panel's toggle;
     /// ADR 0053). Off by default.
     pub pcb_fill_on_edit: bool,
@@ -203,6 +205,7 @@ impl Session {
             pcb_cache: crate::pcb_session::Cache::default(),
             sch_cache: crate::sch_session::Cache::default(),
             freerouting: None,
+            kicad_cli: None,
             pcb_fill_on_edit: false,
             autoroute_cancel: Arc::default(),
         }

@@ -13,6 +13,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
     v.extend(super::pcb_layout::specs());
     v.extend(super::pcb_nets::specs());
     v.extend(super::pcb_autoroute::specs());
+    v.extend(super::kicad_cli::specs());
     v
 }
 

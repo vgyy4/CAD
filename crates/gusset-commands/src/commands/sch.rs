@@ -49,7 +49,7 @@ fn sch_err(e: gusset_pcb::sch::Error) -> CommandError {
     }
 }
 
-fn no_schematic() -> CommandError {
+pub(super) fn no_schematic() -> CommandError {
     CommandError::not_found("no schematic is open").hint("open one with sch.open or start one with sch.new")
 }
 

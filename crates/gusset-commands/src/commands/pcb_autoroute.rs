@@ -24,12 +24,12 @@ const MAX_SES_BYTES: u64 = 64 << 20;
 const MAX_TIMEOUT_S: u64 = 24 * 3600;
 
 /// A private temporary folder, removed when dropped.
-struct TempDir(PathBuf);
+pub(super) struct TempDir(pub(super) PathBuf);
 
 impl TempDir {
-    fn new() -> Result<TempDir, CommandError> {
+    pub(super) fn new(prefix: &str) -> Result<TempDir, CommandError> {
         let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        let p = std::env::temp_dir().join(format!("gusset-autoroute-{}-{n}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("gusset-{prefix}-{}-{n}", std::process::id()));
         let mut b = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -49,16 +49,20 @@ impl Drop for TempDir {
 
 /// How a run ended, when it did not finish.
 #[derive(Debug, PartialEq, Eq)]
-enum Stopped {
+pub(super) enum Stopped {
     Cancelled,
     TimedOut,
+    /// The caller's watch said the run's output grew too large.
+    Runaway,
 }
 
-/// Runs `cmd` until it exits, `cancel` is set or `timeout` passes (then it is killed).
-fn run_until(
+/// Runs `cmd` until it exits, `cancel` is set, `timeout` passes or `runaway` says its
+/// output is too large (then it is killed).
+pub(super) fn run_until(
     mut cmd: std::process::Command,
     cancel: &AtomicBool,
     timeout: Duration,
+    runaway: &dyn Fn() -> bool,
 ) -> Result<Result<std::process::ExitStatus, Stopped>, std::io::Error> {
     // A program written just before may be busy for a moment (ETXTBSY while another
     // thread's fork still holds it open).
@@ -81,6 +85,8 @@ fn run_until(
             Some(Stopped::Cancelled)
         } else if start.elapsed() >= timeout {
             Some(Stopped::TimedOut)
+        } else if runaway() {
+            Some(Stopped::Runaway)
         } else {
             None
         };
@@ -91,6 +97,20 @@ fn run_until(
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// The last 400 printable characters of a log file the run wrote.
+pub(super) fn log_tail(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .chars()
+        .rev()
+        .take(400)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .collect()
 }
 
 /// The command line for an install: `java -jar <jar>` or the executable itself.
@@ -140,7 +160,7 @@ impl Command for PcbAutoroute {
         let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
         let timeout = self.timeout_s.unwrap_or(fr.timeout_s).clamp(1, MAX_TIMEOUT_S);
         let passes = self.passes.unwrap_or(20).clamp(1, 10_000);
-        let dir = TempDir::new()?;
+        let dir = TempDir::new("autoroute")?;
         let (dsn, ses) = (dir.0.join("board.dsn"), dir.0.join("board.ses"));
         let text = specctra::write_dsn(&open.board, &open.rules, "board");
         std::fs::write(&dsn, text).map_err(|e| CommandError::new("io", format!("could not write the DSN: {e}")))?;
@@ -152,27 +172,19 @@ impl Command for PcbAutoroute {
         }
         let cancel = std::sync::Arc::clone(&s.autoroute_cancel);
         cancel.store(false, Ordering::Relaxed);
-        let status = run_until(cmd, &cancel, Duration::from_secs(timeout)).map_err(|e| {
+        let status = run_until(cmd, &cancel, Duration::from_secs(timeout), &|| false).map_err(|e| {
             CommandError::new("io", format!("could not start Freerouting: {e}"))
                 .hint("check the path (and Java for a .jar) in the PCB tab's Autorouter section")
         })?;
         match status {
             Err(Stopped::Cancelled) => return Err(CommandError::new("cancelled", "the autoroute was cancelled")),
+            Err(Stopped::Runaway) => return Err(CommandError::new("io", "Freerouting produced too much output")),
             Err(Stopped::TimedOut) => {
                 return Err(CommandError::new("timeout", format!("Freerouting did not finish in {timeout} s"))
                     .hint("give a longer timeout_s, or fewer passes"));
             }
             Ok(st) if !st.success() || !ses.is_file() => {
-                let tail: String = std::fs::read_to_string(dir.0.join("err.log"))
-                    .unwrap_or_default()
-                    .chars()
-                    .rev()
-                    .take(400)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .filter(|c| !c.is_control() || *c == '\n')
-                    .collect();
+                let tail = log_tail(&dir.0.join("err.log"));
                 return Err(CommandError::new("io", format!("Freerouting wrote no session (exit {:?})", st.code()))
                     .details(json!({ "stderr_user_text": tail })));
             }

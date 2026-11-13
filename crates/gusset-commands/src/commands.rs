@@ -32,6 +32,7 @@ mod feature_edit;
 mod generate;
 mod hole;
 mod joint;
+pub(crate) mod kicad_cli;
 mod lettering;
 mod measure;
 mod ops;
@@ -68,6 +69,7 @@ pub use generate::{
 };
 pub use hole::{Hole, Thread};
 pub use joint::{JointCommand, QueryJoints};
+pub use kicad_cli::{PcbKicadDrc, PcbKicadExport, SchKicadErc};
 pub use lettering::Text;
 pub use measure::QueryMeasure;
 pub use ops::{DeleteFace, Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Shell};
