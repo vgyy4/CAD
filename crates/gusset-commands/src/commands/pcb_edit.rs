@@ -7,6 +7,7 @@ use super::pcb::{board_source, length_mm, no_board, read_board_text, write_outpu
 use super::*;
 use crate::pcb_session::{self, OpenBoard};
 use gusset_eval::BlobSource;
+use gusset_pcb::text_edit::{NewText, TextPatch};
 use gusset_pcb::{Board, Limits, drc, fab};
 use std::sync::atomic::AtomicBool;
 
@@ -20,6 +21,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<PcbAddVia>(),
         spec::<PcbDelete>(),
         spec::<PcbSetOutline>(),
+        spec::<PcbText>(),
         spec::<PcbDrc>(),
         spec::<PcbExportPos>(),
         spec::<PcbExportBom>(),
@@ -99,8 +101,7 @@ pub struct PcbOpen {
 impl Command for PcbOpen {
     const ID: &'static str = "pcb.open";
     const TITLE: &'static str = "Open PCB";
-    const DESCRIPTION: &'static str =
-        "Open a KiCad board for editing in the PCB tab (undoable; replaces an open board).";
+    const DESCRIPTION: &'static str = "Open a KiCad board for editing (undoable; replaces an open one).";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -142,7 +143,7 @@ pub struct PcbNew {
     /// Outline width, e.g. "50 mm".
     pub width: String,
     pub height: String,
-    /// File name to save under (default board.kicad_pcb).
+    /// Default board.kicad_pcb.
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -150,7 +151,7 @@ pub struct PcbNew {
 impl Command for PcbNew {
     const ID: &'static str = "pcb.new";
     const TITLE: &'static str = "New PCB";
-    const DESCRIPTION: &'static str = "Start an empty two-layer board with a rectangular outline (1.6 mm FR4).";
+    const DESCRIPTION: &'static str = "Start an empty two-layer board (1.6 mm FR4).";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -169,7 +170,7 @@ impl Command for PcbNew {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PcbSave {
-    /// .kicad_pcb (default: the name it was opened with).
+    /// .kicad_pcb (default: its name).
     #[serde(default)]
     pub path: Option<String>,
     #[serde(default)]
@@ -208,10 +209,10 @@ impl Command for PcbSave {
 pub struct PcbMoveFootprint {
     /// Reference (R1) or #index.
     pub footprint: String,
-    /// New place, mm.
+    /// mm.
     #[serde(default)]
     pub at: Option<[f64; 2]>,
-    /// New angle, degrees.
+    /// Degrees.
     #[serde(default)]
     pub angle: Option<f64>,
     /// To the other side.
@@ -265,7 +266,7 @@ pub struct PcbAddTrack {
     /// mm (default: the net class's).
     #[serde(default)]
     pub width: Option<f64>,
-    /// Default: the net of the copper at either end.
+    /// Default: the net at either end.
     #[serde(default)]
     pub net: Option<String>,
 }
@@ -292,7 +293,7 @@ impl Command for PcbAddTrack {
 #[serde(deny_unknown_fields)]
 pub struct PcbAddVia {
     pub at: [f64; 2],
-    /// Default: the net of the copper there.
+    /// Default: the net there.
     #[serde(default)]
     pub net: Option<String>,
     /// mm (default: the net class's).
@@ -362,7 +363,7 @@ impl Command for PcbDelete {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PcbSetOutline {
-    /// Polygon corners, mm (4 axis-aligned: a rectangle).
+    /// Corners, mm (4 axis-aligned: a rectangle).
     pub points: Vec<[f64; 2]>,
 }
 
@@ -376,6 +377,91 @@ impl Command for PcbSetOutline {
         board_edit(s, ctx, "Board outline", |b, _| {
             b.set_outline(&self.points, &limits()).map_err(pcb_err)?;
             Ok(json!({ "points": self.points.len() }))
+        })
+    }
+}
+
+/// Adds, changes or deletes a board text.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PcbText {
+    /// Text to change (pcb.info); none adds.
+    #[serde(default)]
+    pub index: Option<usize>,
+    #[serde(default)]
+    pub delete: bool,
+    /// Words; \n breaks lines.
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub at: Option<[f64; 2]>,
+    /// Default F.SilkS.
+    #[serde(default)]
+    pub layer: Option<String>,
+    /// Height, mm (default 1).
+    #[serde(default)]
+    pub size: Option<f64>,
+    #[serde(default)]
+    pub thickness: Option<f64>,
+    /// Degrees.
+    #[serde(default)]
+    pub angle: Option<f64>,
+    /// Default: on B.* layers.
+    #[serde(default)]
+    pub mirrored: Option<bool>,
+}
+
+impl Command for PcbText {
+    const ID: &'static str = "pcb.text";
+    const TITLE: &'static str = "Board text";
+    const DESCRIPTION: &'static str = "Add a text to the open board, or change or delete one by index.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if self.delete {
+            let i = self.index.ok_or_else(|| CommandError::args("name the text to delete with index"))?;
+            return board_edit(s, ctx, "Delete text", |b, _| {
+                let n = b.delete_texts(&[i], &limits()).map_err(pcb_err)?;
+                Ok(json!({ "deleted": n }))
+            });
+        }
+        if let Some(i) = self.index {
+            let patch = TextPatch {
+                text: self.text,
+                at: self.at,
+                layer: self.layer,
+                size: self.size,
+                thickness: self.thickness,
+                angle: self.angle,
+                mirrored: self.mirrored,
+                justify: None,
+            };
+            if patch == TextPatch::default() {
+                return Err(CommandError::args("give what to change"));
+            }
+            return board_edit(s, ctx, "Edit text", |b, _| {
+                b.edit_text(i, &patch, &limits()).map_err(pcb_err)?;
+                let t = b.texts.get(i).ok_or_else(no_board)?;
+                Ok(json!({ "text": i, "at": t.at, "layer": t.layer, "mirrored": t.mirrored }))
+            });
+        }
+        let (Some(text), Some(at)) = (self.text, self.at) else {
+            return Err(CommandError::args("to add a text give text and at"));
+        };
+        let new = NewText {
+            text,
+            at,
+            layer: self.layer,
+            size: self.size,
+            thickness: self.thickness,
+            angle: self.angle,
+            mirrored: self.mirrored,
+            justify: None,
+        };
+        board_edit(s, ctx, "Add text", |b, _| {
+            let i = b.add_text(&new, &limits()).map_err(pcb_err)?;
+            let t = b.texts.get(i).ok_or_else(no_board)?;
+            Ok(json!({ "text": i, "layer": t.layer, "mirrored": t.mirrored }))
         })
     }
 }
@@ -399,7 +485,7 @@ impl Command for PcbDrc {
     const ID: &'static str = "pcb.drc";
     const TITLE: &'static str = "Design rule check";
     const DESCRIPTION: &'static str =
-        "Check the open board: clearances (net classes), track width, annular rings, holes and copper near the edge.";
+        "Check the open board: clearances, track width, annular rings, holes, copper near the edge.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

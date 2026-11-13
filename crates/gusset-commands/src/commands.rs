@@ -75,7 +75,7 @@ pub use pcb::{PcbExportDrill, PcbExportGerbers, PcbImport, PcbInfo};
 pub use pcb_autoroute::PcbAutoroute;
 pub use pcb_edit::{
     PcbAddTrack, PcbAddVia, PcbDelete, PcbDrc, PcbExportBom, PcbExportPos, PcbMoveFootprint, PcbNew, PcbOpen, PcbSave,
-    PcbSetOutline,
+    PcbSetOutline, PcbText,
 };
 pub use pcb_layout::{PcbAddFootprint, PcbExportDsn, PcbExportStep, PcbFillZones, PcbImportSes, PcbRoute};
 pub use pcb_nets::{PcbAddZone, PcbNetClass, PcbRenameNet, PcbSetNet, ZoneHatch};

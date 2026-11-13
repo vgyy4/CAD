@@ -166,7 +166,6 @@ pub struct PcbNetClass {
     pub via_diameter: Option<f64>,
     #[serde(default)]
     pub via_drill: Option<f64>,
-    /// Nets to put in this class.
     #[serde(default)]
     pub nets: Vec<String>,
     /// Net name patterns (* and ?).
@@ -179,8 +178,7 @@ pub struct PcbNetClass {
 impl Command for PcbNetClass {
     const ID: &'static str = "pcb.net_class";
     const TITLE: &'static str = "Net class";
-    const DESCRIPTION: &'static str =
-        "Set a net class's clearance, track width and via, and assign nets (kept in the .kicad_pro).";
+    const DESCRIPTION: &'static str = "Set a net class's clearance, track width and via; assign nets (.kicad_pro).";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

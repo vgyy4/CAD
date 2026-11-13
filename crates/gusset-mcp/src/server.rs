@@ -99,6 +99,7 @@ pub const PCB_COMMANDS: &[&str] = &[
     "pcb.set_outline",
     "pcb.add_track",
     "pcb.add_via",
+    "pcb.text",
     "pcb.delete",
     "pcb.route",
     "pcb.fill_zones",

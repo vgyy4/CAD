@@ -39,7 +39,7 @@ impl Command for PcbFillZones {
     const ID: &'static str = "pcb.fill_zones";
     const TITLE: &'static str = "Fill zones";
     const DESCRIPTION: &'static str =
-        "Pour the open board's copper zones: clearances, thermal reliefs, minimum width, islands removed.";
+        "Pour the open board's copper zones: clearances, thermals, minimum width, islands removed.";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -170,7 +170,7 @@ impl Command for PcbRoute {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PcbAddFootprint {
-    /// Folder holding Lib.pretty libraries (or .kicad_mod files).
+    /// Folder of Lib.pretty libraries.
     pub library: String,
     /// Lib:Name (or Name).
     pub footprint: String,

@@ -146,8 +146,7 @@ pub struct SchOpen {
 impl Command for SchOpen {
     const ID: &'static str = "sch.open";
     const TITLE: &'static str = "Open schematic";
-    const DESCRIPTION: &'static str =
-        "Open a KiCad schematic and its sheets for editing in the Schematic tab (undoable).";
+    const DESCRIPTION: &'static str = "Open a KiCad schematic and its sheets for editing (undoable).";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -202,7 +201,7 @@ impl Command for SchOpen {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SchNew {
-    /// File name (default schematic.kicad_sch).
+    /// Default schematic.kicad_sch.
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -229,7 +228,7 @@ impl Command for SchNew {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SchSave {
-    /// Root .kicad_sch (default: its name); sub-sheets go beside it.
+    /// Root .kicad_sch (default: its name).
     #[serde(default)]
     pub path: Option<String>,
     #[serde(default)]
@@ -350,11 +349,10 @@ impl Command for SchAnnotate {
 pub struct SchAddSymbol {
     /// .kicad_sym file.
     pub library: String,
-    /// Symbol name in it.
     pub symbol: String,
     /// mm.
     pub at: [f64; 2],
-    /// Default: next free (R1, R2...).
+    /// Default: next free.
     #[serde(default)]
     pub reference: Option<String>,
     /// 0/90/180/270.
@@ -365,7 +363,7 @@ pub struct SchAddSymbol {
     pub mirror: Option<String>,
     #[serde(default)]
     pub unit: Option<u32>,
-    /// Sub-sheet file (default: root).
+    /// Sub-sheet (default: root).
     #[serde(default)]
     pub sheet: Option<String>,
 }
@@ -490,7 +488,6 @@ impl Command for SchMove {
 pub struct SchSetField {
     /// Reference (R1) or symbol#i.
     pub symbol: String,
-    /// Value, Footprint, Reference, ...
     pub field: String,
     pub value: String,
     #[serde(default)]
@@ -500,8 +497,7 @@ pub struct SchSetField {
 impl Command for SchSetField {
     const ID: &'static str = "sch.set_field";
     const TITLE: &'static str = "Set field";
-    const DESCRIPTION: &'static str =
-        "Set a symbol's field (Value, Footprint as Lib:Name, Reference...) in the open schematic.";
+    const DESCRIPTION: &'static str = "Set a symbol's field (Value, Footprint as Lib:Name, ...).";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -534,8 +530,7 @@ pub struct SchAddWire {
 impl Command for SchAddWire {
     const ID: &'static str = "sch.add_wire";
     const TITLE: &'static str = "Add wire";
-    const DESCRIPTION: &'static str =
-        "Draw a wire (polyline) on the open schematic; junction dots are added where it joins a wire's middle.";
+    const DESCRIPTION: &'static str = "Draw a wire (polyline); junctions are added where it joins a wire's middle.";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -600,8 +595,7 @@ pub struct SchDelete {
 impl Command for SchDelete {
     const ID: &'static str = "sch.delete";
     const TITLE: &'static str = "Delete from schematic";
-    const DESCRIPTION: &'static str =
-        "Delete symbols, wires, labels, junctions or no-connect flags of the open schematic.";
+    const DESCRIPTION: &'static str = "Delete items of the open schematic.";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -635,7 +629,7 @@ impl Command for SchErc {
     const ID: &'static str = "sch.erc";
     const TITLE: &'static str = "Electrical rule check";
     const DESCRIPTION: &'static str =
-        "Check the open schematic: unconnected pins, pin type conflicts, undriven power, labels, references.";
+        "Check the open schematic: unconnected and conflicting pins, undriven power, labels, references.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -728,7 +722,7 @@ pub(crate) fn footprint_candidates(dir: &str, lib_id: &str) -> Vec<String> {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PcbUpdateFromSchematic {
-    /// Folder of footprint libraries (Lib.pretty) for parts not yet on the board.
+    /// Folder of Lib.pretty libraries.
     #[serde(default)]
     pub footprints: Option<String>,
     /// Report only.
@@ -739,7 +733,8 @@ pub struct PcbUpdateFromSchematic {
 impl Command for PcbUpdateFromSchematic {
     const ID: &'static str = "pcb.update_from_schematic";
     const TITLE: &'static str = "Update PCB from schematic";
-    const DESCRIPTION: &'static str = "Set the open board's pad nets from the open schematic, add missing footprints found in a folder, report differences.";
+    const DESCRIPTION: &'static str =
+        "Set pad nets from the open schematic, add missing footprints from a folder, report differences.";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

@@ -120,7 +120,7 @@ impl Command for PcbInfo {
     const ID: &'static str = "pcb.info";
     const TITLE: &'static str = "PCB info";
     const DESCRIPTION: &'static str =
-        "Read a KiCad board (.kicad_pcb/.kicad_mod): layers, thickness, counts, outline size and sanity issues.";
+        "Read a KiCad board (.kicad_pcb/.kicad_mod): layers, counts, size, texts, sanity issues.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -136,6 +136,12 @@ impl Command for PcbInfo {
             check::check(&b, 50).into_iter().map(|i| json!({"code": i.code, "message_user_text": i.message})).collect();
         let (plated, npth) = drill::holes(&b);
         let models = b.footprints.iter().map(|f| f.models.len()).sum::<usize>();
+        // Board texts with the index pcb.text takes (footprint texts are counted only).
+        let texts: Vec<Value> = (b.texts.iter().enumerate())
+            .filter(|(_, t)| t.footprint.is_none())
+            .take(100)
+            .map(|(i, t)| json!({"index": i, "text_user_text": t.text, "at": t.at, "layer": t.layer}))
+            .collect();
         Ok(json!({
             "version": b.version,
             "thickness_mm": round3(b.thickness),
@@ -147,6 +153,8 @@ impl Command for PcbInfo {
             "tracks": b.tracks.len(),
             "vias": b.vias.len(),
             "zones": b.zones.len(),
+            "texts": b.texts.len(),
+            "board_texts": texts,
             "nets": b.nets.len(),
             "holes": {"plated": plated.len(), "non_plated": npth.len()},
             "model_references": models,
@@ -183,7 +191,7 @@ pub struct PcbImport {
     /// Box height, e.g. "2 mm".
     #[serde(default)]
     pub component_height: Option<String>,
-    /// Folder with the footprints' STEP models (variables in their paths are dropped).
+    /// Folder of the footprints' STEP models.
     #[serde(default)]
     pub models_dir: Option<String>,
 }
@@ -345,7 +353,8 @@ impl PcbImport {
 impl Command for PcbImport {
     const ID: &'static str = "pcb.import";
     const TITLE: &'static str = "Import PCB";
-    const DESCRIPTION: &'static str = "Bring a KiCad board in as bodies: the board with its holes, component boxes (or STEP models from models_dir), copper optional. For enclosure design.";
+    const DESCRIPTION: &'static str =
+        "Import a KiCad board as bodies (holes, component boxes or STEP models, optional copper) for enclosures.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -369,7 +378,7 @@ pub struct PcbExportGerbers {
     /// .kicad_pcb (default: the open board).
     #[serde(default)]
     pub path: Option<String>,
-    /// Existing folder for the files (<board>-<layer>.gbr).
+    /// Existing folder.
     pub folder: String,
     #[serde(default)]
     pub overwrite: bool,
@@ -378,8 +387,7 @@ pub struct PcbExportGerbers {
 impl Command for PcbExportGerbers {
     const ID: &'static str = "pcb.export_gerbers";
     const TITLE: &'static str = "Export Gerbers";
-    const DESCRIPTION: &'static str =
-        "Write Gerber X2 files of a KiCad board: copper, mask, paste, silkscreen and outline layers.";
+    const DESCRIPTION: &'static str = "Write Gerber X2 files: copper, mask, paste, silkscreen, outline layers.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -402,7 +410,7 @@ pub struct PcbExportDrill {
     /// .kicad_pcb (default: the open board).
     #[serde(default)]
     pub path: Option<String>,
-    /// Existing folder for <board>-PTH.drl and <board>-NPTH.drl.
+    /// Existing folder.
     pub folder: String,
     #[serde(default)]
     pub overwrite: bool,
@@ -411,8 +419,7 @@ pub struct PcbExportDrill {
 impl Command for PcbExportDrill {
     const ID: &'static str = "pcb.export_drill";
     const TITLE: &'static str = "Export drill files";
-    const DESCRIPTION: &'static str =
-        "Write Excellon drill files of a KiCad board: plated and non-plated holes, slots.";
+    const DESCRIPTION: &'static str = "Write Excellon drill files: plated and non-plated holes, slots.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

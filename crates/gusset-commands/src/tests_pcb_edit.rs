@@ -150,3 +150,49 @@ fn import_info_and_exports_use_the_open_board() {
     assert_eq!(r["plated"], 1, "{r}");
     assert!(s.project_dir.clone().unwrap().join("fab/board-PTH.drl").exists());
 }
+
+#[test]
+fn board_texts_are_added_edited_deleted_and_undone_one_step_each() {
+    let mut s = session();
+    run(&mut s, &u(1), "pcb.open", json!({"path": "board.kicad_pcb"}));
+    let n0 = open(&mut s).board.texts.len();
+    let r = run(&mut s, &u(2), "pcb.text", json!({"text": "REV A", "at": [12, 3], "size": 1.5, "layer": "B.SilkS"}));
+    assert_eq!((r["text"].as_u64(), r["mirrored"].as_bool()), (Some(n0 as u64), Some(true)), "{r}");
+    let t = open(&mut s).board.texts[n0].clone();
+    assert_eq!((t.text.as_str(), t.at, t.size, t.layer.as_str()), ("REV A", [12.0, 3.0], 1.5, "B.SilkS"));
+    // pcb.info lists it with its index.
+    let info = run(&mut s, &u(3), "pcb.info", json!({}));
+    let listed =
+        info["board_texts"].as_array().unwrap().iter().any(|x| x["index"] == n0 && x["text_user_text"] == "REV A");
+    assert!(listed, "{info}");
+    // Editing is one step too.
+    run(
+        &mut s,
+        &u(4),
+        "pcb.text",
+        json!({"index": n0, "text": "REV B", "at": [13, 4], "angle": 90, "layer": "F.SilkS"}),
+    );
+    let t = open(&mut s).board.texts[n0].clone();
+    assert_eq!((t.text.as_str(), t.at, t.angle, t.mirrored), ("REV B", [13.0, 4.0], 90.0, false));
+    run(&mut s, &u(5), "history.undo", json!({}));
+    assert_eq!(open(&mut s).board.texts[n0].text, "REV A");
+    run(&mut s, &u(6), "history.redo", json!({}));
+    assert_eq!(open(&mut s).board.texts[n0].text, "REV B");
+    run(&mut s, &u(7), "pcb.text", json!({"index": n0, "delete": true}));
+    assert_eq!(open(&mut s).board.texts.len(), n0);
+    run(&mut s, &u(8), "history.undo", json!({}));
+    assert_eq!(open(&mut s).board.texts.len(), n0 + 1);
+    // Mistakes are refused and leave the board as it was.
+    for args in [
+        json!({"text": "x"}),
+        json!({"at": [1, 1]}),
+        json!({"text": "x", "at": [1, 1], "layer": "F.Cu1"}),
+        json!({"index": 999, "text": "x"}),
+        json!({"index": n0}),
+        json!({"delete": true}),
+        json!({"text": "x", "at": [1, 1], "size": -1}),
+    ] {
+        assert!(execute(&mut s, &u(9), "pcb.text", args.clone()).is_err(), "{args}");
+    }
+    assert_eq!(open(&mut s).board.texts.len(), n0 + 1);
+}
