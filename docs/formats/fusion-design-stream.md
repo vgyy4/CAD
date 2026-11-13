@@ -3317,6 +3317,65 @@ Kernel: `gusset_occt.cpp` (`revolved_blend`, `seam_moved_blend`, `merge_pieces`)
 * The 55 designs of the three sets that came in as history with fillets or chamfers (21 adafruit-next, 33
   adafruit-more, 1 adafruit) all still do; the new fallbacks run only where every earlier way has failed.
 
+## 54. Round 29: the kernel's volume measure, face by face by Gauss-Kronrod (2026-11-13)
+Kernel: `gusset_occt.cpp` (`measured_props`, `seam_moved_blend`).
+
+### 3722: the coil body's volume moved between equal shapes
+* Root cause: not the coil's B-spline flanks but the dome. Measured face by face (standalone, on the dumped body
+  before `Chamfer1`), the flanks differ between OCCT's quadratures by at most 2e-4 mm3; the two faces of revolution
+  of the shelled dome (the arcs of r 54 and 52 mm revolved, reaching the axis) carry 596765 and -533427 mm3 about
+  the reference point, and OCCT's adaptive quadrature (`VolumeProperties` with a relative 1e-7 asked for) put them
+  4.83 and -4.32 mm3 off (8e-6). Their sum, 0.4 mm3, is the 73243.80 against 73243.40 mm3 of section 53, and it
+  changes with the reference point (the mean of the shape's vertices, so with every new vertex): the 0.1 to 0.2 mm3
+  between equal shapes. The dome alone (`Revolve2` with its arc): Pappus 725020.81653 mm3, default quadrature
+  725020.81653, adaptive 725028.20, Gauss-Kronrod 725020.81653.
+* The default quadrature is no cure either: on 916's thread flanks it is 5e-5 mm3 off per face (1.6e-7 of the
+  body), and on the rim of section 44 (`fillet_of_a_rim_between_two_flats...`) the flats that the torus trims
+  (their edges B-splines) are 4e-4 mm3 off: integrated face by face about one point, the default quadrature on the
+  planes and Gauss-Kronrod on the torus gave the two equal rims 1294.28479 and 1294.28517 mm3; Gauss-Kronrod on
+  every face 1294.2846405 both.
+* Also wrong before: a shape with a wound face (section 36) was integrated as two compounds, each about its own
+  vertex mean; the volume of a set of faces that does not close depends on that point.
+
+### The measure now
+* A shape of planes, cylinders, cones and spheres alone: OCCT's default quadrature, unchanged.
+* Otherwise face by face about one point (the mean of the shape's vertices): the default quadrature first, then
+  every face that does not wind round its surface again by Gauss-Kronrod (`BRepGProp_VinertGK`, over the spans of
+  the surface, a relative 1e-9). Wound faces keep the default quadrature (section 36).
+* Gauss-Kronrod asks a relative error of every integral. Two cases never meet it and subdivide a thousand times
+  (inside each piece the inner integral again): a face whose volume about the point is nothing but rounding (a
+  plane through it: a helical sweep's end caps hold its axis; the generated M10 nut took 354 s instead of 1 s), and
+  the moments for the centre of a face round the point (an extruded circle's side: 3 s instead of 1 ms). A face
+  the default quadrature puts below 1e-9 of the sum of all faces' volumes keeps that value, and Gauss-Kronrod
+  integrates the volume only; the centre is the default quadrature's.
+* Result: the coil body 73243.40114 mm3 (default 73243.40154); the cap body before `Chamfer1 (2)`, its copy with
+  the seam moved and that copy cut, three equal shapes, 7346.0875757 mm3 all (adaptive 7346.087810, 812, 808;
+  default 7346.087482, 406, 409); the two rims 1294.2846405 both. `seam_moved_blend` now checks the moved copy to
+  1e-7 (was 1e-5).
+* Golden test `a_revolved_dome_measures_its_exact_volume_however_it_is_turned` (`gusset-kernel-occt`): 3722's
+  dome section (a surface of revolution) revolved, its Pappus volume in closed form to 1e-9, turned by three angles
+  and moved, the same.
+
+### Time
+* Kernel tests (`gusset-kernel-occt`, 69): 3.5 to 4.4 s. `modeling_gear`, `modeling_thread`, `modeling_sweep`, `modeling_tree_import` per test as before
+  (gear 274 s against 292 s in all, thread 66 s against 66 s; sweep and tree import within a second per test).
+* Corpus (31 designs: 3722, the helical and spline ones 3350, 1145, 5753, 2219, 6299, 5358, 3651, 4863, 916, 3221,
+  5998, 6002, 3692, 3000, 3429, 1119 and a sample of the designs with blends), each run with the old and the new
+  kernel in turn: 628 s against 624 s in all, no design slower by more than 7 s (5753: 40.5 to 47.5 s; 916 102 to
+  92 s, 3722 9 s both).
+
+### Result
+* The 31 designs come in as before (24 as history, the others with the same reasons); none lost.
+* 3722 passes the check that stopped it in section 53 (`Extrude2`'s tool of 1462.4114 mm3 is now explained: the
+  coil body's change measures true) and stops at the next stored solid: "a stored solid of 46358.0566 mm3 is
+  neither a state of the model nor the cut tool of a feature". The rebuilt globe base runs 725030.05 (`Revolve2`),
+  725058.52 (`Fillet2`), 72499.74 (`Shell3`), 73243.40 (with the coil), 73888.99 (end) mm3; the file stores no
+  solid of any of these, and its end bodies hold 86440.36 mm3 against the rebuild's 81241.19. The cap's stored
+  states (6451.26, 10551.04, 11309.21 mm3) are the rebuild's, so if its end (7352.20) is too, the base differs
+  from Fusion's by 5199.17 mm3 at the end. Next for 3722:
+  which of the base's features (most likely `Shell3`'s cavity) Fusion makes otherwise, from the stored solid of
+  46358.0566 mm3.
+
 ## 55. Round 29 D: next blockers: a draft's cap by its neighbours, blends on mirrored copies, a logo, coincident points (2026-11-13)
 Reader: `fusion_tree/bodyops.rs` (`draft_json`), `fusion_tree/naming.rs` (`stored_face_beside`, `mirrored_face`,
 `fillet_crossings`, `on_stored_round`), `fusion_tree/geom.rs` (`piece_at`, `bridged_chains`), `fusion_tree/sketch.rs`
