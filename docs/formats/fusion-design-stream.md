@@ -3825,3 +3825,95 @@ the same streams) was compared field by field, then with the records around it.
   `a_combines_tool_left_out_of_its_components_body_list_is_used_up`), `gusset-commands` (277, new
   `the_tools_a_combine_used_up_are_read_from_the_tree`) pass; clippy and fmt clean.
 
+## 61. Round 33: a thin wall's faces per line and per curve, faces through joins, face profiles on touching bodies (2026-11-13)
+Readers: `fusion_tree/thin.rs` (`Caps::role`, `LineWall`, `Rims`), `fusion_tree/naming.rs` (`face_of_extrude`,
+`stored_plane`, `modelled_edge`, `rim_of_a_thin_cap`), `fusion_tree/json.rs` (`offset_faces_json`,
+`profile_face_body`); importer: `tree_import/v2.rs` (`FacePick.body`, `find_pick`); kernel: `gusset_occt.cpp`
+(`gs_move_faces`); OCCT patch `gusset-0004-draft-vertex-parallel-extrema.patch` (ADR 0002).
+
+### 6126 Fillet2 (2): the slots' ends, as the offset left them
+* Section 59's numbering of a wall about the middle of separate lines is now modelled (`LineWall`): per selected
+  line k of n, from b = 3 + 3n (12 for 6126's three lines, 6 for 6299's `Extrude14`, one line): `b + 7k` both
+  sides, `+3` the cap on the sketch plane, `+5` the far cap, `+4` / `+6` the ends at the line's start / end. The
+  first operation names the same ends `+1` and `+2`: `Fillet2 (2)`'s edges run between `13 [363]` and a side and
+  end on `16 [364]`'s plane; `OffsetFaces1` selects `23 [364]` where `Fillet2 (2)` names `20 [363]`.
+* Which side carries the second operation, and which of `+1`/`+2` is the start, depends on the way the wall
+  goes: against the sketch normal (6126, -0.6 mm) the left side about the normal and the line's run, and `+1` the
+  start; along it (6299's `Extrude14`, 2 mm: the stored `6 [406, 407]` at x = -14.8 mm of a line x = -16.1, y -8
+  -> 8, and `Fillet7` pairing `8 [406]` with `10 [407]` at y = -8) the right one and `+2`.
+* `OffsetFaces1` (-0.25 mm) moved four of the ends before the fillet, and the fillet still names them by the
+  extrude alone (no `-368` in its recipes; the stored sides beside them carry it). An offset of faces now records
+  the faces it moved and how far; a wall's face under either of its names is moved that far out of the part (into
+  the slot for a cut: 6126's "+" grows from y -1.5 to -1.25 mm, as the stored sides show: they end 0.5 mm, the
+  round's radius, before it). Unit test `a_wall_about_separate_lines_names_its_faces_per_line`.
+* 6126 then reads every feature and the rebuild runs to `RemoveInstance1` (`D3DC9613`, the root's removal of one
+  occurrence `2D6E13A1`), which is not read: the next blocker.
+
+### 2354 Fillet1 and Fillet2: faces through a join, an end two states give two places
+* `Fillet1`'s four unresolved edges name a box's end `6 [376, 377, 380, -381]` (a copy `R-Pattern2` made, trimmed
+  by `Extrude6`'s join); the stored states hold `6 [376, 377, 380]` (before the join) and none with `-381`. A
+  negative entry is an operation that changed the face's bounds; where it is one of the trimming kinds (extrude,
+  sweep, revolve, hole, blend, combine, loft) a stored plane is now found through it, on either name.
+* `Fillet2`'s two last edges name tab ends `6 [310, 326, 359]` and `6 [310]` whose names later states also give
+  to other faces (a face across the tab at y = 54.5 mm, a face at x = 54.5): the stored planes disagree. An edge's
+  face that the model does not give and the stored planes do not agree on is now the plane of the stored faces of
+  that name that meet a stored face of every name at the edge's ends (`stored_face_beside` with the recipe's end
+  faces; the edge's other face, the top the blend rounds, no longer meets it in those states).
+* The rebuild then refused `Extrude1 (2)` ("invalid type: null, expected a string"): a face profile was written
+  with `"sketch": null`, which the document's reader does not take. It now carries no sketch. `Revolve1`'s profile
+  face (the end of the strip `BoxPrimitive3` at x = 0) lies on the display box's side too, and both hold all of
+  the pick's points: a face profile now names the feature whose body holds it (`profile_face.body`, the feature of
+  the face's first operation), and the import takes the face on that body where faces of several bodies tie (as
+  an offset's `on_body` does). Test `a_face_profile_on_two_touching_bodies_is_the_one_on_its_body`.
+* 2354 then stops in the rebuild at `Extrude3`: "body 'BoxPrimitive5' does not exist". `BoxPrimitive5` (record
+  1665) is a cut (operation 2) that names a body link of its own (section 43), and later features use that body
+  (`R-Pattern1` patterns it, `Extrude4` joins the copies to the ribbon); what such a cut makes is not decoded.
+
+### 6299 Chamfer2: the rims of a slot cut through a plate keep the wall's cap names
+* The six edges name faces `3`, `6`, `8 [387]` (`Extrude10 (2)`, a thin cut of 0.6 mm, location 2, along a line,
+  an arc and a line, from the plate's bottom z = 13 mm up through its top z = 14.6) with the plate's top
+  `2 [353]`: the slot's top rims. No stored body holds those names. Each name occurs in two edges told apart by the
+  side beside it (`10 [387]` off the chain, `10 [387, 388]` on it): it is the wall's cap over one curve, which the
+  cut through the plate leaves only as the rims' name.
+* The first operation of a thin extrude along one chain names its caps per curve: `-m` on the sketch plane, `m`
+  at the far end, m counting on along the chain (1 for its start, 2 per line, 3 per arc): 3, 6, 8 for 6299's line,
+  arc and line, the same for 5981's hairpin (`Chamfer6`: `-3`, `-6`, `-8` at its sketch plane), and ±3, ±6, ±9
+  for 6126's three single-line chains (the vertical edges of `Fillet2 (2)` end on `-3` and `3`). An edge between a
+  cap and a plane through it is the rim of the side the recipe names beside it, on that plane: a line's middle, an
+  arc's points (`Rims`). Unit test `a_walls_caps_are_named_per_curve_along_its_chain`.
+* 6299 then stopped at `Fillet7` (Bottom, r 1.3 mm: the ends of `Extrude14`'s 2.6 mm slot), which the side and
+  end naming above reads; it now reads every feature and the rebuild stops at `Extrude2` (Bottom, a join from a
+  sketch moved 1.6 mm, lines and circles of 1.1 and 2.5 mm): "could not build an arc of the profile" (not looked
+  into). 5981's `Chamfer6` resolves six of its eight edges (not confirmed by a rebuild); the two left are rims of
+  `Fillet3`'s rounds, whose stored faces lie elsewhere (x 10.4 mm, not at the slot): not taken.
+
+### 5998 OffsetFaces1 (2): the part failed the self check before the move
+* The offset moves the two ends of the minus glyph's pocket 0.4 mm into the part (y 3.46 -> 3.06 and 4.591 ->
+  4.991 mm, as the stored states show) with `move_faces`, which then refused: "the moved faces would cut through the
+  rest of the part". The part fails `BRepAlgoAPI_Check`'s self-interference test before the move already (the
+  glyph solids the file stores, cut into the case). A move on such a part now passes where the result has no more
+  faults than the part had and every faulty shape of the result is one the move made of a faulty shape of the
+  part; a part that passed must still pass.
+* 5998 then rebuilds every feature and stops at the step check: "a stored solid of 1.8263 mm3 is neither a state
+  of the model nor the cut tool of a feature" (`Extrude2` of `Component Insert1`, the inserted board).
+
+### A draft that crashed
+* With `Chamfer6`'s last two edges taken from those stored rounds (an experiment, not kept: its chamfer then
+  failed on an edge of length 0), 5981's rebuild drafted a part the failed chamfer left different, and
+  `Draft_Modification` dereferenced the points of an extremum between a curve parallel to the new face and that
+  face, which has none: a segmentation fault of the importer. OCCT patch `gusset-0004` refuses the vertex instead
+  (`Draft_VertexRecomputation`), as when the extremum finds nothing; `gusset-kernel-occt`'s goldens are unchanged.
+
+### Result
+* No design gained history; all four blockers of the round are past. First blockers now: 6126 `RemoveInstance1`
+  (was `Fillet2 (2)`); 2354 the rebuild of `Extrude3` on `BoxPrimitive5`'s body (was `Fillet1`); 5998 the step
+  check at the inserted board's `Extrude2` (was `OffsetFaces1 (2)`); 6299 the rebuild of `Extrude2` (was
+  `Chamfer2`, then `Fillet7`). 6124 also passes its `Fillet4` and stops at the step check of an extrude.
+* No loss: round 30's sample of 40 history designs gives the same 35 as history and the same 6 refusals but 2354's
+  and 6299's (later blockers); of the touched designs 3027, 3350, 3464, 610, 858, 1054, 3692, 3722 and 3900 come
+  in as history as before, 3221, 3502, 3802 and 5981 stop where they did.
+* Tests: `gusset-sat` (141; new `a_wall_about_separate_lines_names_its_faces_per_line`,
+  `a_walls_caps_are_named_per_curve_along_its_chain`), `gusset-commands` (277), `gusset-kernel-occt` (74),
+  `gusset-cli` `modeling_tree_import` (80, new `a_face_profile_on_two_touching_bodies_is_the_one_on_its_body`),
+  `modeling_draft`, `modeling_move`, `modeling_offset` pass; clippy (`gusset-sat`, `gusset-commands`,
+  `gusset-occt-sys`, `gusset-kernel-occt`, `gusset-cli`) and fmt clean.
