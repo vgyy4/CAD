@@ -2677,11 +2677,12 @@ impl App {
     /// Sends what the board editor asked for: registry commands, like every other edit.
     pub(crate) fn pcb_commands(&mut self, out: crate::pcb_view::Out) {
         for (id, args) in out.commands {
-            let then = if matches!(id, "pcb.drc" | "sch.erc" | "pcb.update_from_schematic") {
-                Then::Notice
-            } else {
-                Then::Quiet
-            };
+            let then =
+                if matches!(id, "pcb.drc" | "sch.erc" | "pcb.update_from_schematic" | "pcb.route_pair" | "pcb.tune") {
+                    Then::Notice
+                } else {
+                    Then::Quiet
+                };
             self.submit_command(id, args, then);
         }
     }

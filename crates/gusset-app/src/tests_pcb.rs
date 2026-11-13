@@ -588,3 +588,196 @@ fn zone_outlines_are_edited_by_corner_through_the_registry() {
     assert!(h.state().host().with_session(|s| s.pcb_fill_on_edit).unwrap());
     h.run();
 }
+
+/// 40 x 24 mm: USB_P/USB_N pads at both ends, a SIG wall between them, a short USB_P run
+/// (12 mm) and a longer jogged USB_N run (ADR 0055's test board).
+const PAIR_BOARD: &str = r#"(kicad_pcb (version 20240108) (generator "test")
+  (general (thickness 1.6))
+  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))
+  (net 0 "") (net 1 "USB_P") (net 2 "USB_N") (net 3 "SIG")
+  (gr_rect (start 0 0) (end 40 24) (stroke (width 0.05) (type default)) (fill none) (layer "Edge.Cuts"))
+  (footprint "J" (layer "F.Cu") (at 4 10)
+    (property "Reference" "J1" (at 0 0) (layer "F.Fab"))
+    (pad "1" smd rect (at 0 -1) (size 0.8 0.5) (layers "F.Cu") (net 1 "USB_P"))
+    (pad "2" smd rect (at 0 1) (size 0.8 0.5) (layers "F.Cu") (net 2 "USB_N")))
+  (footprint "J" (layer "F.Cu") (at 36 10)
+    (property "Reference" "J2" (at 0 0) (layer "F.Fab"))
+    (pad "1" smd rect (at 0 -1) (size 0.8 0.5) (layers "F.Cu") (net 1 "USB_P"))
+    (pad "2" smd rect (at 0 1) (size 0.8 0.5) (layers "F.Cu") (net 2 "USB_N")))
+  (segment (start 20 2) (end 20 14) (width 0.5) (layer "F.Cu") (net 3))
+  (segment (start 22 20) (end 34 20) (width 0.2) (layer "F.Cu") (net 1))
+  (segment (start 22 22) (end 25 22) (width 0.2) (layer "F.Cu") (net 2))
+  (segment (start 25 22) (end 26 23) (width 0.2) (layer "F.Cu") (net 2))
+  (segment (start 26 23) (end 30 23) (width 0.2) (layer "F.Cu") (net 2))
+  (segment (start 30 23) (end 31 22) (width 0.2) (layer "F.Cu") (net 2))
+  (segment (start 31 22) (end 34 22) (width 0.2) (layer "F.Cu") (net 2)))"#;
+
+type TestApp = egui_kittest::Harness<'static, crate::app::App>;
+
+/// An app with the pair board open on the PCB tab.
+fn pair_app(tag: &str) -> TestApp {
+    let mut h = harness(app());
+    h.run();
+    h.state_mut().ribbon_action(crate::ribbon::Action::PcbTab);
+    h.run();
+    let dir = std::env::temp_dir().join(format!("gusset-pcb-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("pair.kicad_pcb");
+    std::fs::write(&path, PAIR_BOARD).unwrap();
+    h.state_mut().run("pcb.open", json!({"path": path.to_string_lossy()})).unwrap();
+    h.state_mut().wait_idle();
+    h
+}
+
+fn send(h: &mut TestApp, commands: Vec<(&'static str, serde_json::Value)>) {
+    h.state_mut().pcb_commands(pcb_view::Out { commands, blocked: None });
+    h.state_mut().wait_idle();
+}
+
+fn undo(h: &mut TestApp) {
+    h.state_mut().run("history.undo", json!({})).unwrap();
+    h.state_mut().wait_idle();
+}
+
+fn tracks_now(h: &TestApp) -> usize {
+    h.state().snapshot.pcb.as_ref().unwrap().board.tracks.len()
+}
+
+#[test]
+fn arc_segments_are_previewed_and_laid_through_add_track() {
+    // The preview is the arc through the three points; a line has no arc.
+    let path = pcb_view::arc_preview([0.0, 0.0], [5.0, 5.0], [10.0, 0.0]).unwrap();
+    assert_eq!((path[0], *path.last().unwrap()), ([0.0, 0.0], [10.0, 0.0]));
+    assert!(path.len() > 8 && path.iter().all(|p| (libm::hypot(p[0] - 5.0, p[1]) - 5.0).abs() < 1e-6));
+    assert!(pcb_view::arc_preview([0.0, 0.0], [5.0, 0.0], [10.0, 0.0]).is_none());
+    // The command: `pcb.add_track` with `mid`, on the route's net.
+    let (id, args) = pcb_view::arc_track_command([0.0, 0.0], [5.0, 5.0], [10.0, 0.0], "F.Cu", Some("A"));
+    assert_eq!((id, args["mid"].clone(), args["net"].clone()), ("pcb.add_track", json!([5.0, 5.0]), json!("A")));
+    assert!(pcb_view::arc_track_command([0.0, 0.0], [5.0, 5.0], [10.0, 0.0], "F.Cu", None).1.get("net").is_none());
+    // Esc or leaving the tool drops the point.
+    let mut st = pcb_view::State::default();
+    st.arc_through = Some([5.0, 5.0]);
+    pcb_view::end_route(&mut st);
+    assert!(st.arc_through.is_none());
+    // Through the app: one arc track, one undo step; three points on a line are refused.
+    let mut h = harness(app());
+    h.run();
+    h.state_mut().ribbon_action(crate::ribbon::Action::PcbTab);
+    h.run();
+    h.state_mut().run("pcb.new", json!({"width": "40 mm", "height": "30 mm"})).unwrap();
+    h.state_mut().wait_idle();
+    send(&mut h, vec![pcb_view::arc_track_command([10.0, 10.0], [15.0, 15.0], [20.0, 10.0], "F.Cu", None)]);
+    {
+        let b = &h.state().snapshot.pcb.as_ref().unwrap().board;
+        assert_eq!(b.tracks.len(), 1);
+        assert_eq!(b.tracks[0].mid, Some([15.0, 15.0]));
+        let len = gusset_pcb::length::track_length(&b.tracks[0]);
+        assert!((len - std::f64::consts::PI * 5.0).abs() < 1e-6, "{len}");
+    }
+    let (id, args) = pcb_view::arc_track_command([10.0, 10.0], [15.0, 10.0], [20.0, 10.0], "F.Cu", None);
+    assert!(h.state_mut().run(id, args).is_err());
+    undo(&mut h);
+    assert_eq!(tracks_now(&h), 0);
+}
+
+#[test]
+fn the_pair_tool_previews_both_tracks_and_routes_the_pair() {
+    let mut h = pair_app("pair");
+    let open = h.state().snapshot.pcb.clone().unwrap();
+    let b = &open.board;
+    // A pad of a pair net names the pair (either half); other nets and bare board do not.
+    let pr = pcb_view::pair_at(b, [4.0, 11.0], "F.Cu").unwrap();
+    assert_eq!((pr.p.as_str(), pr.n.as_str()), ("USB_P", "USB_N"));
+    assert_eq!(pcb_view::pair_at(b, [4.0, 9.0], "F.Cu").unwrap().base, "USB");
+    assert!(pcb_view::pair_at(b, [20.0, 5.0], "F.Cu").is_none());
+    assert!(pcb_view::pair_at(b, [10.0, 10.0], "F.Cu").is_none());
+    // Fewer than two points: nothing to send, nothing to preview.
+    let mut st = pcb_view::State::default();
+    st.tool = Tool::Pair;
+    st.pair_net = Some("USB_P".into());
+    st.pair_pts = vec![[6.0, 10.0]];
+    assert!(pcb_view::pair_command("USB_P", &st.pair_pts, "F.Cu").is_none());
+    assert!(pcb_view::pair_preview(&open, &mut st, None).is_none());
+    // With the pointer as the end: both offset tracks round the wall.
+    let r = pcb_view::pair_preview(&open, &mut st, Some([34.0, 10.0])).unwrap().unwrap();
+    assert!(!r.p.is_empty() && !r.n.is_empty());
+    assert!(r.p.iter().chain(r.n.iter()).any(|s| s.start[1] > 14.0), "round the wall");
+    // A centre line that cannot be laid says why (the command's own message).
+    let e = pcb_view::pair_preview(&open, &mut st, Some([20.0, 5.0])).unwrap().unwrap_err();
+    assert!(!e.is_empty());
+    // Clicking is the centre line; Enter sends it.
+    st.pair_pts = vec![[6.0, 10.0], [34.0, 10.0]];
+    let c = pcb_view::pair_command("USB_P", &st.pair_pts, "F.Cu").unwrap();
+    assert_eq!(
+        (c.0, c.1["pair"].clone(), c.1["points"].clone()),
+        ("pcb.route_pair", json!("USB_P"), json!(st.pair_pts))
+    );
+    let before = b.tracks.len();
+    send(&mut h, vec![c]);
+    assert!(tracks_now(&h) > before);
+    undo(&mut h);
+    assert_eq!(tracks_now(&h), before);
+    // A refused route changes nothing; the error reaches the status bar.
+    let bad = pcb_view::pair_command("USB_P", &[[6.0, 10.0], [20.0, 5.0]], "F.Cu").unwrap();
+    send(&mut h, vec![bad]);
+    assert_eq!(tracks_now(&h), before);
+    assert!(h.state().notice.as_ref().is_some_and(|n| n.error));
+    // Esc drops the pair and its points.
+    pcb_view::end_route(&mut st);
+    assert!(st.pair_net.is_none() && st.pair_pts.is_empty());
+}
+
+#[test]
+fn the_tune_tool_shows_lengths_and_tunes_through_the_registry() {
+    let mut h = pair_app("tune");
+    let open = h.state().snapshot.pcb.clone().unwrap();
+    let b = &open.board;
+    // The picked track's net: its length, and the pair's skew.
+    let p = pcb_view::net_info(b, "USB_P");
+    assert_eq!((p.tracks, p.vias, p.total), (1, 0, 12.0));
+    let pair = p.pair.unwrap();
+    assert_eq!((pair.partner.as_str(), pair.shorter.as_str()), ("USB_N", "USB_P"));
+    assert!((pair.skew - (10.0 + 2.0 * std::f64::consts::SQRT_2 - 12.0)).abs() < 1e-3, "{}", pair.skew);
+    let sig = pcb_view::net_info(b, "SIG");
+    assert!(sig.total == 12.0 && sig.pair.is_none());
+    // The panel draws the lengths and the tune form for the picked net without trouble.
+    {
+        let st = &mut h.state_mut().pcb_state;
+        st.tool = Tool::Tune;
+        st.selected = Some(Sel::Track(1));
+        st.highlight = Some("USB_P".into());
+    }
+    h.run();
+    assert_eq!(h.state().pcb_state.tune_target, 12.0);
+    h.state_mut().pcb_state.tool = Tool::Pair;
+    h.run();
+    // The picked track names the track to meander, only when it is on the net.
+    assert_eq!(pcb_view::tune_track(b, Some(Sel::Track(1)), "USB_P"), Some(1));
+    assert_eq!(pcb_view::tune_track(b, Some(Sel::Track(0)), "USB_P"), None);
+    assert_eq!(pcb_view::tune_track(b, Some(Sel::Via(0)), "USB_P"), None);
+    // A click on the track picks it (the Tune tool uses the Select hit test).
+    assert_eq!(pcb_view::hit(b, [28.0, 20.0], 0.05, &|_: &str| true), Some(Sel::Track(1)));
+    // Command construction: target and options, or none (match the pair).
+    let c = pcb_view::tune_command("USB_P", Some(16.0), 1.5, 0.3, Some(1));
+    assert_eq!(c.1, json!({"net": "USB_P", "amplitude": 1.5, "target": 16.0, "spacing": 0.3, "track": 1}));
+    let m = pcb_view::tune_command("USB_P", None, 1.0, 0.0, None);
+    assert_eq!(m.1, json!({"net": "USB_P", "amplitude": 1.0}));
+    // Through the app: to a target, one undo step.
+    let before = b.tracks.len();
+    send(&mut h, vec![c]);
+    let o = h.state().snapshot.pcb.clone().unwrap();
+    let len = pcb_view::net_info(&o.board, "USB_P").total;
+    assert!((len - 16.0).abs() <= 0.05, "{len}");
+    assert!(o.board.tracks.len() > before);
+    undo(&mut h);
+    assert_eq!(tracks_now(&h), before);
+    // Match pair: the shorter net reaches the other's length.
+    send(&mut h, vec![m]);
+    let o = h.state().snapshot.pcb.clone().unwrap();
+    assert!(pcb_view::net_info(&o.board, "USB_P").pair.unwrap().skew <= 0.05);
+    undo(&mut h);
+    // Already at the target: refused, the status bar says so, nothing changes.
+    send(&mut h, vec![pcb_view::tune_command("USB_P", Some(12.0), 1.0, 0.0, None)]);
+    assert_eq!(tracks_now(&h), before);
+    assert!(h.state().notice.as_ref().is_some_and(|n| n.error));
+}

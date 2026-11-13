@@ -46,6 +46,12 @@ pub enum Tool {
     /// Picks a zone; its corners drag, an edge's middle handle adds a corner, Delete
     /// takes the picked corner away (`pcb.zone_outline`, ADR 0053).
     ZoneEdit,
+    /// Click a pad of a differential pair, then the coupled centre line; double click or
+    /// Enter sends `pcb.route_pair` (ADR 0050 amendment).
+    Pair,
+    /// Click a track: its net's length and pair skew show in the panel, with the form for
+    /// `pcb.tune`.
+    Tune,
 }
 
 /// A picked board item (indices into the board's lists).
@@ -145,6 +151,30 @@ pub struct State {
     pub zone_edit: Option<crate::pcb_zone_edit::ZoneEdit>,
     /// Pour the zones an edit touched in the same undo step (a session option, ADR 0053).
     pub fill_on_edit: bool,
+    /// Route tool: each segment is an arc through a clicked point (`A` toggles).
+    pub arc_segment: bool,
+    /// Route tool, arc segments: the point the arc being drawn passes through.
+    pub arc_through: Option<Pt>,
+    /// Pair tool: the picked pair (its positive net) and the centre line so far.
+    pub pair_net: Option<String>,
+    pub pair_pts: Vec<Pt>,
+    /// The last coupled-route preview's problem, shown in the panel.
+    pub pair_problem: Option<String>,
+    pair_cache: Option<PairCache>,
+    /// Tune tool: target length (mm), match the pair, amplitude and spacing (0 = the
+    /// net's clearance), and the net the target was last set for.
+    pub tune_target: f64,
+    pub tune_match: bool,
+    pub tune_amplitude: f64,
+    pub tune_spacing: f64,
+    tune_net: Option<String>,
+}
+
+/// The last coupled-route preview: the board, layer, pair and centre line it is for.
+#[derive(Debug)]
+struct PairCache {
+    key: (String, String, String, Vec<Pt>),
+    result: Result<gusset_pcb::pair::PairRoute, String>,
 }
 
 /// The picked text as edited: (board hash, index, words, height mm, angle, mirrored).
@@ -229,6 +259,17 @@ impl Default for State {
             freerouting_timeout: 600,
             zone_edit: None,
             fill_on_edit: false,
+            arc_segment: false,
+            arc_through: None,
+            pair_net: None,
+            pair_pts: Vec::new(),
+            pair_problem: None,
+            pair_cache: None,
+            tune_target: 0.0,
+            tune_match: false,
+            tune_amplitude: 1.0,
+            tune_spacing: 0.0,
+            tune_net: None,
         }
     }
 }
@@ -422,6 +463,10 @@ pub fn end_route(st: &mut State) {
     st.route_net = None;
     st.zone_pts.clear();
     st.outline_pts.clear();
+    st.arc_through = None;
+    st.pair_net = None;
+    st.pair_pts.clear();
+    st.pair_problem = None;
 }
 
 /// Board mm (Y down, like the screen) to screen points and back.
@@ -717,6 +762,135 @@ pub fn track_command(a: Pt, b: Pt, layer: &str) -> (&'static str, Value) {
     ("pcb.add_track", json!({ "start": a, "end": b, "layer": layer }))
 }
 
+/// An arc track from `a` through `mid` to `b` (`pcb.add_track` with `mid`), on the route's net.
+pub fn arc_track_command(a: Pt, mid: Pt, b: Pt, layer: &str, net: Option<&str>) -> (&'static str, Value) {
+    let mut v = json!({ "start": a, "mid": mid, "end": b, "layer": layer });
+    if let (Some(m), Some(n)) = (v.as_object_mut(), net) {
+        m.insert("net".into(), json!(n));
+    }
+    ("pcb.add_track", v)
+}
+
+/// The arc a → mid → b as a polyline for the preview (`None` when the three points lie on
+/// a line, which no arc can pass through).
+pub fn arc_preview(a: Pt, mid: Pt, b: Pt) -> Option<Vec<Pt>> {
+    geom::circle_through(a, mid, b)?;
+    Some(geom::arc_points(a, mid, b, 0.02))
+}
+
+/// The pair a pad under `p` belongs to (the pad's net is half of a pair on the board),
+/// for the Pair tool's first click.
+pub fn pair_at(board: &Board, p: Pt, layer: &str) -> Option<gusset_pcb::pair::Pair> {
+    let net = board.net_at(p, layer)?;
+    let on_pad = board.pads.iter().any(|pad| {
+        board.on_layer(&pad.layers, layer)
+            && geom::pad_contour(pad, 0.0).is_some_and(|c| match c {
+                Contour::Circle { center, radius } => libm::hypot(center[0] - p[0], center[1] - p[1]) <= radius,
+                c => geom::inside(&c.polygon(0.05), p),
+            })
+    });
+    if !on_pad {
+        return None;
+    }
+    gusset_pcb::pair::find(board, &net)
+}
+
+/// `pcb.route_pair` for the centre line (at least two points); width and gap are the
+/// class's.
+pub fn pair_command(pair: &str, points: &[Pt], layer: &str) -> Option<(&'static str, Value)> {
+    (points.len() >= 2).then(|| ("pcb.route_pair", json!({ "pair": pair, "points": points, "layer": layer })))
+}
+
+/// The coupled route for the centre line so far (plus `to` when it is not the last
+/// point), as `pcb.route_pair` would lay it; cached while nothing changes. `None` while
+/// there are fewer than two points.
+pub fn pair_preview(
+    open: &OpenBoard,
+    st: &mut State,
+    to: Option<Pt>,
+) -> Option<Result<gusset_pcb::pair::PairRoute, String>> {
+    let net = st.pair_net.clone()?;
+    let mut pts = st.pair_pts.clone();
+    if let Some(q) = to
+        && pts.last().is_none_or(|l| !same_pt(*l, q))
+    {
+        pts.push(q);
+    }
+    if pts.len() < 2 {
+        return None;
+    }
+    let key = (open.board_hash.clone(), st.active.clone(), net.clone(), pts.clone());
+    if st.pair_cache.as_ref().is_none_or(|c| c.key != key) {
+        let result = match gusset_pcb::pair::find(&open.board, &net) {
+            None => Err("that is not a differential pair on this board".to_string()),
+            Some(pr) => {
+                let (w, g) = open.rules.diff_pair_of(&pr.p, &pr.n);
+                gusset_pcb::pair::route_pair(&open.board, &open.rules, &st.active, &pr, &pts, w, g)
+            }
+        };
+        st.pair_cache = Some(PairCache { key, result });
+    }
+    st.pair_cache.as_ref().map(|c| c.result.clone())
+}
+
+/// A net's routed length for the panel: the numbers of `pcb.lengths`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NetInfo {
+    pub net: String,
+    pub tracks: usize,
+    pub vias: usize,
+    pub total: f64,
+    pub pair: Option<PairInfo>,
+}
+
+/// The other half of the net's pair and the difference.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PairInfo {
+    pub partner: String,
+    pub partner_total: f64,
+    pub skew: f64,
+    /// The shorter net of the two.
+    pub shorter: String,
+}
+
+/// Length of `net` and, when it is half of a pair, the pair's skew (`gusset-pcb::length`,
+/// the same sums `pcb.lengths` reports).
+pub fn net_info(board: &Board, net: &str) -> NetInfo {
+    let l = gusset_pcb::length::length_of(board, net);
+    let pair = gusset_pcb::pair::find(board, net).map(|p| {
+        let partner = if p.p == net { p.n.clone() } else { p.p.clone() };
+        let other = gusset_pcb::length::length_of(board, &partner);
+        let (a, b) = (l.total(), other.total());
+        let shorter = if b < a { partner.clone() } else { net.to_string() };
+        PairInfo { partner, partner_total: b, skew: (a - b).abs(), shorter }
+    });
+    NetInfo { net: net.to_string(), tracks: l.tracks, vias: l.vias, total: l.total(), pair }
+}
+
+/// `pcb.tune` for a net: to `target` mm, or (`None`) to its pair's longer length; a
+/// spacing of 0 leaves the net's clearance; `track` names the track the meander replaces.
+pub fn tune_command(
+    net: &str,
+    target: Option<f64>,
+    amplitude: f64,
+    spacing: f64,
+    track: Option<usize>,
+) -> (&'static str, Value) {
+    let mut v = json!({ "net": net, "amplitude": amplitude });
+    if let Some(m) = v.as_object_mut() {
+        if let Some(t) = target {
+            m.insert("target".into(), json!(t));
+        }
+        if spacing > 0.0 {
+            m.insert("spacing".into(), json!(spacing));
+        }
+        if let Some(i) = track {
+            m.insert("track".into(), json!(i));
+        }
+    }
+    ("pcb.tune", v)
+}
+
 pub fn via_command(at: Pt) -> (&'static str, Value) {
     ("pcb.add_via", json!({ "at": at }))
 }
@@ -951,7 +1125,7 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
     let n = open.ratsnest.unrouted();
     ui.colored_label(if n == 0 { pal.success } else { pal.warning }, unrouted_text(n));
     ui.separator();
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for (t, key, tip) in [
             (Tool::Select, "pcb.select", "pcb.tip_select"),
             (Tool::Route, "pcb.route", "pcb.tip_route"),
@@ -961,11 +1135,12 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
             (Tool::Zone, "pcb.zone", "pcb.tip_zone"),
             (Tool::Outline, "pcb.outline", "pcb.tip_outline"),
             (Tool::ZoneEdit, "pcb.edit_zone", "pcb.tip_edit_zone"),
+            (Tool::Pair, "pcb.pair", "pcb.tip_pair"),
+            (Tool::Tune, "pcb.tune", "pcb.tip_tune"),
         ] {
             if ui.selectable_label(st.tool == t, tr(key)).on_hover_text(tr(tip)).clicked() {
                 st.tool = t;
-                st.track_from = None;
-                st.outline_pts.clear();
+                end_route(st);
                 st.zone_edit = None;
             }
         }
@@ -1070,8 +1245,26 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
             ui.add(egui::DragValue::new(&mut st.arc_radius).range(0.05..=20.0).speed(0.05).suffix(" mm"));
         }
     });
+    if ui.checkbox(&mut st.arc_segment, tr("pcb.arc_segment")).on_hover_text(tr("pcb.tip_arc_segment")).changed() {
+        st.arc_through = None;
+    }
     if let Some(n) = &st.route_net {
         ui.weak(format!("{}: {n}", tr("pcb.net")));
+    }
+    if st.tool == Tool::Pair {
+        ui.separator();
+        ui.label(tr("pcb.pair"));
+        match &st.pair_net {
+            None => {
+                ui.weak(tr("pcb.pair_pick"));
+            }
+            Some(n) => {
+                ui.weak(format!("{n} · {}: {}", tr("pcb.pair_points"), st.pair_pts.len()));
+            }
+        }
+        if let Some(m) = &st.pair_problem {
+            ui.colored_label(pal.warning, m);
+        }
     }
     if st.tool == Tool::Text {
         ui.separator();
@@ -1128,6 +1321,7 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
     }
     ui.separator();
     nets_panel(ui, open, st, &mut out);
+    lengths_panel(ui, open, st, &mut out);
     ui.separator();
     if ui.button(tr("pcb.fill_zones")).clicked() {
         out.commands.push(("pcb.fill_zones", json!({})));
@@ -1202,6 +1396,78 @@ fn zone_edit_panel(ui: &mut Ui, b: &Board, st: &mut State) -> Option<(&'static s
 /// net, net classes, and the autorouter.
 fn b_text(open: &OpenBoard, i: usize) -> Option<&gusset_pcb::board::Text> {
     open.board.texts.get(i)
+}
+
+/// The highlighted net's length and pair skew, and (Tune tool) the form for `pcb.tune`.
+fn lengths_panel(ui: &mut Ui, open: &OpenBoard, st: &mut State, out: &mut Out) {
+    let Some(net) = st.highlight.clone() else {
+        if st.tool == Tool::Tune {
+            ui.separator();
+            ui.weak(tr("pcb.tune_pick"));
+        }
+        return;
+    };
+    let info = net_info(&open.board, &net);
+    if info.tracks == 0 && info.vias == 0 && st.tool != Tool::Tune {
+        return;
+    }
+    ui.separator();
+    ui.label(tr("pcb.lengths"));
+    ui.weak(format!(
+        "{net}: {:.3} mm ({} {}, {} {})",
+        info.total,
+        info.tracks,
+        tr("pcb.length_tracks"),
+        info.vias,
+        tr("pcb.length_vias")
+    ));
+    if let Some(p) = &info.pair {
+        ui.weak(format!("{}: {:.3} mm · {}: {:.3} mm", p.partner, p.partner_total, tr("pcb.skew"), p.skew));
+    }
+    if st.tool != Tool::Tune {
+        return;
+    }
+    if st.tune_net.as_deref() != Some(net.as_str()) {
+        st.tune_net = Some(net.clone());
+        st.tune_target = (info.total * 1000.0).round() / 1000.0;
+        st.tune_match = false;
+    }
+    let paired = info.pair.is_some();
+    if !paired {
+        st.tune_match = false;
+    }
+    ui.horizontal(|ui| {
+        ui.label(tr("pcb.target_length"));
+        ui.add_enabled(
+            !st.tune_match,
+            egui::DragValue::new(&mut st.tune_target).range(0.0..=100_000.0).speed(0.1).suffix(" mm"),
+        );
+        ui.add_enabled_ui(paired, |ui| ui.checkbox(&mut st.tune_match, tr("pcb.match_pair")));
+    });
+    ui.horizontal(|ui| {
+        ui.label(tr("pcb.amplitude"));
+        ui.add(egui::DragValue::new(&mut st.tune_amplitude).range(0.1..=50.0).speed(0.05).suffix(" mm"));
+    });
+    ui.horizontal(|ui| {
+        ui.label(tr("pcb.spacing"));
+        ui.add(egui::DragValue::new(&mut st.tune_spacing).range(0.0..=50.0).speed(0.05).suffix(" mm"));
+    });
+    let track = tune_track(&open.board, st.selected, &net);
+    let target = (!st.tune_match).then_some(st.tune_target);
+    let ready = target.is_none_or(|t| t > 0.0);
+    if ui.add_enabled(ready, egui::Button::new(tr("pcb.tune_apply"))).clicked() {
+        out.commands.push(tune_command(&net, target, st.tune_amplitude, st.tune_spacing, track));
+    }
+}
+
+/// The picked track, when it belongs to `net` (the track `pcb.tune` replaces).
+pub fn tune_track(board: &Board, selected: Option<Sel>, net: &str) -> Option<usize> {
+    match selected {
+        Some(Sel::Track(i)) if board.tracks.get(i).and_then(|t| board.net_name(&t.net)).as_deref() == Some(net) => {
+            Some(i)
+        }
+        _ => None,
+    }
 }
 
 fn nets_panel(ui: &mut Ui, open: &OpenBoard, st: &mut State, out: &mut Out) {
@@ -1644,6 +1910,49 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                     st.outline_pts.push(q);
                 }
             }
+            Tool::Tune => {
+                if let Some(x @ Sel::Track(_)) = hit(b, p, tol, &shown) {
+                    st.selected = Some(x);
+                    st.highlight = net_of(b, x);
+                }
+            }
+            Tool::Pair => match st.pair_net {
+                None => {
+                    if let Some(pr) = pair_at(b, p, &st.active) {
+                        st.highlight = Some(pr.p.clone());
+                        st.pair_net = Some(pr.p);
+                    }
+                }
+                Some(_) => {
+                    let q = snap(p, st.grid);
+                    if st.pair_pts.last() != Some(&q) {
+                        st.pair_pts.push(q);
+                    }
+                }
+            },
+            Tool::Route if st.arc_segment && st.track_from.is_some() => {
+                if let Some(a) = st.track_from {
+                    let (q, finish) = route_target(b, p, &st.active, st.grid, st.route_net.as_deref());
+                    match st.arc_through {
+                        None => {
+                            if libm::hypot(q[0] - a[0], q[1] - a[1]) > 1e-6 {
+                                st.arc_through = Some(snap(p, st.grid));
+                            }
+                        }
+                        Some(mid) => {
+                            if arc_preview(a, mid, q).is_some() {
+                                out.commands.push(arc_track_command(a, mid, q, &st.active, st.route_net.as_deref()));
+                                st.arc_through = None;
+                                if finish {
+                                    end_route(st);
+                                } else {
+                                    st.track_from = Some(q);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             Tool::Route => match st.track_from {
                 None => {
                     let (q, _) = route_target(b, p, &st.active, st.grid, None);
@@ -1685,6 +1994,15 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         out.commands.extend(zone_command(st));
         st.zone_pts.clear();
     }
+    if st.tool == Tool::Pair
+        && (resp.double_clicked() || enter)
+        && let Some(c) = st.pair_net.as_deref().and_then(|n| pair_command(n, &st.pair_pts, &st.active))
+    {
+        out.commands.push(c);
+        st.pair_pts.clear();
+        st.pair_net = None;
+        st.pair_problem = None;
+    }
     if st.tool == Tool::Outline && (resp.double_clicked() || enter) {
         out.commands.extend(outline_command(st));
         st.outline_pts.clear();
@@ -1712,6 +2030,10 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         }
         if slash {
             st.diagonal_first = !st.diagonal_first;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::A)) && st.tool == Tool::Route {
+            st.arc_segment = !st.arc_segment;
+            st.arc_through = None;
         }
         // A layer change while routing: a via where the route stands, then the other side.
         if v && st.tool == Tool::Route
@@ -1756,7 +2078,75 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
     paint(&painter, &map, open, st, dragged, moving.as_ref());
 
     // Route preview: the way around, or a thin red line when there is none.
-    if let (Tool::Route, Some(a), Some(p)) = (st.tool, st.track_from, pointer) {
+    if let (Tool::Route, Some(a), Some(p), true) = (st.tool, st.track_from, pointer, st.arc_segment) {
+        // Arc segments: a guide to the point it passes through, then the arc to the pointer.
+        let (q, _) = route_target(b, p, &st.active, st.grid, st.route_net.as_deref());
+        let width = open.rules.track_width_of(st.route_net.as_deref());
+        let w = (width as f32 * map.zoom).max(1.0);
+        let c = layer_color(&st.active).gamma_multiply(0.8);
+        match st.arc_through {
+            None => {
+                painter.line_segment([map.to(a), map.to(q)], Stroke::new(1.0, c.gamma_multiply(0.6)));
+            }
+            Some(mid) => match arc_preview(a, mid, q) {
+                Some(path) => {
+                    let pts: Vec<Pos2> = path.iter().map(|x| map.to(*x)).collect();
+                    for s in pts.windows(2) {
+                        if let [u, v] = s {
+                            stroke_line(&painter, *u, *v, w, c);
+                        }
+                    }
+                    painter.circle_stroke(map.to(mid), 3.0, Stroke::new(1.0, c));
+                }
+                None => {
+                    painter.line_segment([map.to(a), map.to(q)], Stroke::new(1.5, Color32::from_rgb(255, 60, 60)));
+                }
+            },
+        }
+        painter.circle_filled(map.to(q), w / 2.0, c);
+    }
+    if st.tool == Tool::Pair && st.pair_net.is_some() {
+        let to = pointer.map(|p| snap(p, st.grid));
+        let c = layer_color(&st.active).gamma_multiply(0.8);
+        for s in st.pair_pts.windows(2) {
+            if let [u, v] = s {
+                painter.line_segment([map.to(*u), map.to(*v)], Stroke::new(1.0, c.gamma_multiply(0.6)));
+            }
+        }
+        if let (Some(l), Some(q)) = (st.pair_pts.last(), to) {
+            painter.line_segment([map.to(*l), map.to(q)], Stroke::new(1.0, c.gamma_multiply(0.6)));
+        }
+        match pair_preview(open, st, to) {
+            Some(Ok(r)) => {
+                st.pair_problem = None;
+                let w = (r.width as f32 * map.zoom).max(1.0);
+                for seg in r.p.iter().chain(r.n.iter()) {
+                    let path = match seg.mid {
+                        Some(m) => geom::arc_points(seg.start, m, seg.end, 0.02),
+                        None => vec![seg.start, seg.end],
+                    };
+                    let pts: Vec<Pos2> = path.iter().map(|x| map.to(*x)).collect();
+                    for s in pts.windows(2) {
+                        if let [u, v] = s {
+                            stroke_line(&painter, *u, *v, w, c);
+                        }
+                    }
+                }
+            }
+            Some(Err(m)) => st.pair_problem = Some(m),
+            None => st.pair_problem = None,
+        }
+        if let Some(m) = &st.pair_problem {
+            painter.text(
+                rect.left_bottom() + Vec2::new(8.0, -8.0),
+                egui::Align2::LEFT_BOTTOM,
+                m,
+                FontId::proportional(12.0),
+                Color32::from_rgb(255, 120, 120),
+            );
+        }
+    }
+    if let (Tool::Route, Some(a), Some(p), false) = (st.tool, st.track_from, pointer, st.arc_segment) {
         let (q, _) = route_target(b, p, &st.active, st.grid, st.route_net.as_deref());
         let width = open.rules.track_width_of(st.route_net.as_deref());
         let w = (width as f32 * map.zoom).max(1.0);
