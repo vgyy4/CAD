@@ -3254,3 +3254,65 @@ kernel: `gusset_occt.cpp` (`revolved_cavity`, `shell_by_cavity`).
   none lost). adafruit: 13 of 18 (unchanged, none lost).
 * First blockers: 2315 passes; 3722 `Chamfer1` (the seam); 858 `Extrude13` (arcs drawn twice); 1119 the step
   check (the leg's sweep).
+
+## 53. Round 28: blends OCCT fails beside a thread's end and on a seam (2026-11-13)
+Kernel: `gusset_occt.cpp` (`revolved_blend`, `seam_moved_blend`, `merge_pieces`); both are the last fallbacks of
+`blend_edges`, tried only where OCCT's blend at once, in passes, concave first and by corners has failed.
+
+### 916 Fillet1: rounds of circles about one axis made on the revolved half section
+* Root cause (section 50): the convex round of the r 7.942 edge rolls on the concave one beside it and meets the
+  rod at z -16.0017, 1.7 um below the thread groove's square end (z -16); ChFi3d's first guess of the contact runs
+  along the groove's boundary and the fillet fails, at once and in passes. Reproduced on the dumped shape with a
+  standalone program (fails at once, and in the passes 0 1 2 and 0 2 1 at the third round).
+* The blend of whole circles about one axis is made on a solid of revolution with the same circles: the shape's
+  section in a half plane through the axis, in a window 3.1 blend sizes round the circles (`BRepAlgoAPI_Common` of
+  the solid and the planar window, which must be one face), revolved. OCCT blends that (at once, or concave first).
+  What the blend took away (the solid less the blended one) is cut from the shape and what it added joined to it.
+  Kept only where the change stays inside the window, the shape's volume changes by exactly those two volumes
+  (1e-7: so the shape is that solid of revolution wherever the blend touched it, the thread being 1.7 um away) and
+  the result is valid; else the half plane is tried at five more angles. The blend faces are the blended solid's
+  faces made from the circles, through both booleans.
+* Golden test `rounds_at_a_threads_square_end_are_made_in_the_half_section` (`modeling_thread.rs`, 916's foot): the
+  rounds and the thread do not meet, so the threaded, rounded rod's volume is the threaded rod's plus what the
+  rounds change on the plain rod (OCCT rounds that directly), to 1e-7.
+* 916 comes in as history.
+
+### 3722 Chamfer1 and Chamfer1 (2): the seam moved away from the coils' ends
+* Root cause: the coil's start edge (`Chamfer1`, the globe's base) ends on the parameter origin of the base's
+  cylinder r 33.5 mm: the revolve's profile and the coil both start at +x. The coil, a strip one and a half turns
+  long, cuts that cylinder into two faces (below and above the strip) which meet on the old seam line between the
+  strip's turns; the start's vertex lies on that line, and ChFi3d does not end a blend there. `Chamfer1 (2)` (the
+  cap's internal coil): its end edge at +x is 2.6e-5 mm (0.7 urad) beside the cap's seam and fails the same way
+  (its start at -x builds alone). With the rod turned half a radian both build (section 47's golden test).
+* The blend is made on a copy of the shape whose seams near the edges are moved: the faces of revolution at an
+  edge's end that wrap round their axis and whose parameter origin passes within twice the blend size of the end
+  are cut along the line at the angle farthest from the edges' ends and from the faces' corners
+  (`BRepFeat_SplitShape` with the section of each face by a half plane through the axis: it splits the edges the
+  line crosses in the neighbouring faces too), and the pieces of faces on one surface (same points at the same
+  parameters) are made again into faces on the surface turned about its axis to that angle (`merge_pieces`): the
+  edges two pieces share off the line are dropped (the old seam), the ones on it become the seam (their two curves
+  on the plane by orientation: the material lies left of an edge), the others keep their curves shifted into one
+  period; one face per region of the parameter plane (a strip that winds a whole turn round the face cuts it in two
+  at the new seam as it did at the old). The copy must be valid and of the same volume (1e-5: the adaptive
+  integration of 3722's coil body moves by some 1e-6 when its faces are cut anew); the blend's edges must be single
+  edges of it. Faces of the result take the origins of the copy's faces they came from; a face ShapeFix's repair of
+  the blend rebuilt beyond its context takes those of the face of the moved shape it lies on.
+* Tried, not kept: `ShapeUpgrade_UnifySameDomain` with every edge but the old seam kept merged nothing; a
+  `BRepAlgoAPI_Splitter` with the whole half plane split every face it crossed and the solid itself (volume changed).
+* Golden test `a_chamfer_that_ends_on_a_seam_is_made_with_the_seam_moved` (`gusset-kernel-occt`, section 47's coil):
+  each chamfer and both together equal the rod-turned-half-a-radian ones to 1e-7, every face has an origin and each
+  edge's chamfer face is named from it. OCCT's own spread is that size: the start's chamfer with the rod turned by
+  -1.5 to 0.5 rad ranges over 0.0043 mm3 (6e-8 of the body).
+
+### Also
+* Two tests of `modeling_tree_import.rs` were left open by a merge (the file did not compile with OCCT); closed.
+
+### Result
+* 916 comes in as history (adafruit-next +1). 3722 builds every feature now and stops at the step check: "a stored
+  solid of 1462.4114 mm3 is neither a state of the model nor the cut tool of a feature". That solid is `Extrude2`'s
+  tool (the ring r 31.5 to 35 mm, 2 mm: 1462.41 mm3, 816.8 of it in the wall and the coil's end); the body's measured
+  change is 645.64 mm3. The coil body's adaptive volume (`measured_props`) is 73243.80 mm3 before the chamfers
+  where the default quadrature gives 73243.40, and moves by 0.1 to 0.2 mm3 between equal shapes: more than the step
+  check's 2e-5 of the change. Next for 3722: the integration of the coil's B-spline flanks.
+* The 55 designs of the three sets that came in as history with fillets or chamfers (21 adafruit-next, 33
+  adafruit-more, 1 adafruit) all still do; the new fallbacks run only where every earlier way has failed.
