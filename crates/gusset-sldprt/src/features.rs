@@ -610,6 +610,8 @@ struct Pt {
 enum SegKind {
     Line,
     Arc,
+    /// An elliptical arc: its axis end points are in [`Geometry::ellipse_axes`].
+    Ellipse,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -630,6 +632,9 @@ struct Seg {
 struct Geometry {
     pts: Vec<Option<Pt>>,
     segs: Vec<Seg>,
+    /// Per elliptical segment (its index in `segs`), the point indices of its axis ends:
+    /// major +, minor +, major -, minor -.
+    ellipse_axes: Vec<(usize, [usize; 4])>,
 }
 
 /// Entity headers in `[a, b)`: `FF FF 1F 00 <1|3> <8 bytes> 00 00 80 BF`, non-overlapping.
@@ -718,7 +723,31 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
             // A line of kind 0 is a centerline only when its flags say so (0x8000, or the
             // construction bit): newer files write ordinary profile lines with kind 0.
             let centerline = one == 0 && flags & 0x8008 != 0;
-            if d.get(p + 22..p + 38).is_some_and(|w| w.chunks(4).all(|c| c == [0xfe, 0xff, 0xff, 0xff])) {
+            // An ellipse (arc) lists the four axis end points after the arc fields where an arc
+            // writes four -2 words (Y-Plate's notch: a circle-shaped ellipse arc, `dir` 1 =
+            // counter-clockwise from start to end as for arcs).
+            let axes = [22usize, 24, 26, 28].map(|o| u16_at(d, p + o).map(usize::from));
+            if let [Some(a0), Some(a1), Some(a2), Some(a3)] = axes
+                && [a0, a1, a2, a3].iter().all(|&q| q < npts && q != s && q != e)
+                && a0 != a2
+                && a1 != a3
+                && d.get(p + 30..p + 38).is_some_and(|w| w.iter().all(|&b| b == 0))
+                && one == 1
+            {
+                let dir = i32_at(d, p + 16)?;
+                g.ellipse_axes.push((g.segs.len(), [a0, a1, a2, a3]));
+                g.segs.push(Seg {
+                    kind: SegKind::Ellipse,
+                    id: rid,
+                    a: aval,
+                    s,
+                    e,
+                    c: 0,
+                    dir,
+                    construction,
+                    centerline: false,
+                });
+            } else if d.get(p + 22..p + 38).is_some_and(|w| w.chunks(4).all(|c| c == [0xfe, 0xff, 0xff, 0xff])) {
                 let dir = i32_at(d, p + 16)?;
                 let c = usize::from(u16_at(d, p + 20)?);
                 g.segs.push(Seg {
@@ -964,6 +993,37 @@ fn sketch_json(name: &str, g: &Geometry, plane: Option<&Plane>, jp: &JsonPlane) 
         let (Some(ps), Some(_), Some(pc)) = (pt(s.s), pt(s.e), pt(c)) else { continue };
         let mut o = Map::new();
         o.insert("id".into(), json!(format!("c{k}")));
+        if s.kind == SegKind::Ellipse {
+            // The centre is halfway between the major axis ends; it is written as a point of
+            // its own (`pe<k>`).
+            let Some(&(_, [a0, a1, a2, _])) = g.ellipse_axes.iter().find(|(i, _)| *i == k) else { continue };
+            let (Some(q0), Some(q1), Some(q2)) = (pt(a0), pt(a1), pt(a2)) else { continue };
+            let (cx, cy) = (f64::midpoint(q0.x, q2.x), f64::midpoint(q0.y, q2.y));
+            let (ra, rb) = (libm::hypot(q0.x - cx, q0.y - cy), libm::hypot(q1.x - cx, q1.y - cy));
+            if ra < 1e-12 || rb < 1e-12 {
+                continue;
+            }
+            let id = format!("pe{k}");
+            points.push(json!({"id": id, "x": mm(cx), "y": mm(cy)}));
+            let (a, b) = if s.dir > 0 { (s.s, s.e) } else { (s.e, s.s) };
+            o.insert("type".into(), json!(if s.s == s.e { "ellipse" } else { "ellipse_arc" }));
+            o.insert("center".into(), json!(id));
+            o.insert(
+                "major".into(),
+                json!([round_to((q0.x - cx) / ra, 12) + 0.0, round_to((q0.y - cy) / ra, 12) + 0.0]),
+            );
+            o.insert("a".into(), json!(mm(ra)));
+            o.insert("b".into(), json!(mm(rb)));
+            if s.s != s.e {
+                o.insert("start".into(), json!(pid(a)));
+                o.insert("end".into(), json!(pid(b)));
+            }
+            if s.construction {
+                o.insert("construction".into(), json!(true));
+            }
+            curves.push(Value::Object(o));
+            continue;
+        }
         match s.kind {
             SegKind::Line => {
                 o.insert("type".into(), json!("line"));
@@ -975,7 +1035,7 @@ fn sketch_json(name: &str, g: &Geometry, plane: Option<&Plane>, jp: &JsonPlane) 
                 o.insert("center".into(), json!(pid(s.c)));
                 o.insert("radius".into(), json!(mm(libm::hypot(ps.x - pc.x, ps.y - pc.y))));
             }
-            SegKind::Arc => {
+            SegKind::Arc | SegKind::Ellipse => {
                 // Counter-clockwise from start to end.
                 let (a, b) = if s.dir > 0 { (s.s, s.e) } else { (s.e, s.s) };
                 o.insert("type".into(), json!("arc"));
@@ -1672,6 +1732,8 @@ fn seg_uv(g: &Geometry, s: &Seg) -> Option<Vec<(f64, f64)>> {
     let (p, q) = (point(&g.pts, s.s)?, point(&g.pts, s.e)?);
     Some(if s.kind == SegKind::Line {
         vec![(p.x, p.y), (q.x, q.y)]
+    } else if s.kind == SegKind::Ellipse {
+        return None;
     } else {
         let c = point(&g.pts, s.c)?;
         let r = libm::hypot(p.x - c.x, p.y - c.y);
@@ -2908,6 +2970,18 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let mut stale = 0usize;
             let mut unresolved = false;
             let mut made: Vec<Option<Round>> = Vec::new();
+            let mut missed: Vec<String> = Vec::new();
+            // The references of an edge left out, by feature name and face number (`c`: a cap).
+            let describe = |reps: &[Rep]| -> String {
+                let names: Vec<String> = reps
+                    .iter()
+                    .map(|r| {
+                        let nm = nodes.iter().find(|q| q.id == r.fid).map_or("?", |q| q.name.as_str());
+                        format!("{nm}/{}{}", r.idx, if cap_tags.contains(&r.tag) { "c" } else { "" })
+                    })
+                    .collect();
+                names.join(" ")
+            };
             for (_, reps) in &sel {
                 if let Some((m, path)) = revolve_circle(reps, &revolved, &sketches) {
                     mids.push(Some(m));
@@ -2926,8 +3000,16 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     }) =>
                     {
                         stale += 1;
+                        if missed.len() < 8 {
+                            missed.push(format!("stale: {}", describe(reps)));
+                        }
                     }
-                    None => unresolved = true,
+                    None => {
+                        unresolved = true;
+                        if missed.len() < 8 {
+                            missed.push(describe(reps));
+                        }
+                    }
                 }
             }
             unresolved |= edges.is_empty();
@@ -2970,6 +3052,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if unresolved {
                 js.insert("edges_unresolved".into(), json!(true));
                 js.insert("edges_selected".into(), json!(sel.len()));
+                js.insert("sw_unresolved".into(), json!(missed));
             }
             feats.push(Value::Object(js));
         } else if cls.as_deref() == Some("moMirrorStock_c") {
@@ -3120,6 +3203,7 @@ mod end_face_tests {
         let g = Geometry {
             pts: vec![pt(0.0, 0.0), pt(0.02, 0.0), pt(0.02, 0.01), pt(0.0, 0.01)],
             segs: vec![line(2, 0, 1), line(3, 1, 2), line(4, 2, 3), line(5, 3, 0)],
+            ellipse_axes: Vec::new(),
         };
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
         let f = Swept { sketch: 0, plane, distance: 5.0, symmetric: false, through: false };

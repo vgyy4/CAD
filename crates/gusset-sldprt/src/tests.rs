@@ -1147,6 +1147,52 @@ fn a_cut_is_told_by_the_flags_word_of_its_node() {
     assert_eq!(operation(0x4000_0140), (serde_json::json!("join"), serde_json::json!(2.0)));
 }
 
+/// An ellipse arc lists its four axis end points where an arc writes four -2 words; a
+/// circle-shaped one (Y-Plate's notch) comes out as an `ellipse_arc` about the point halfway
+/// between the major axis ends, counter-clockwise for `dir` 1.
+#[test]
+fn an_ellipse_arc_is_read_with_its_axes() {
+    let mut rf = vec![3, 0];
+    rf.extend(feature_node("moProfileFeature_c", "Sketch1", 5));
+    rf.extend(comp_plane(2, 0.0));
+    rf.extend([0u8; 16]);
+    let pts = [(-0.005, 0.0), (0.005, 0.0), (0.005, 0.0), (0.0, 0.005), (-0.005, 0.0), (0.0, -0.005)];
+    rf.extend((pts.len() as u32).to_le_bytes());
+    for (i, (x, y)) in pts.iter().enumerate() {
+        rf.extend(sketch_item(100 + i as u32, 10 + i as u32, 0));
+        rf.extend(0x1eu16.to_le_bytes());
+        rf.extend(f64::to_le_bytes(*x));
+        rf.extend(f64::to_le_bytes(*y));
+        rf.extend([0u8; 12]);
+    }
+    rf.extend(2u32.to_le_bytes());
+    // The diameter, then the ellipse arc from point 0 to point 1 (dir 1) with axes 2, 3, 4, 5.
+    rf.extend(sketch_item(1, 20, 1));
+    rf.extend([0, 0, 1, 0, 1, 0, 0, 0]);
+    rf.extend((-1.0f64).to_le_bytes());
+    rf.extend([0u8; 24]);
+    rf.extend(sketch_item(2, 21, 1));
+    rf.extend([0, 0, 1, 0, 1, 0, 0, 0]);
+    rf.extend((-1.0f64).to_le_bytes());
+    rf.extend(1i32.to_le_bytes());
+    rf.extend([0, 0, 2, 0, 3, 0, 4, 0, 5, 0]);
+    rf.extend([0u8; 10]);
+    rf.extend([0u8; 16]);
+    let base = feature_stream(&[]);
+    let ex = base.windows(13).position(|w| w == b"moExtrusion_c").unwrap() - 6;
+    rf.extend(&base[ex..]);
+    let t = history(&rf).unwrap().unwrap();
+    let sk = &t["features"][0];
+    let curves = sk["curves"].as_array().unwrap();
+    let e = curves.iter().find(|c| c["type"] == "ellipse_arc").unwrap_or_else(|| panic!("{sk}"));
+    assert_eq!((e["start"].as_str(), e["end"].as_str()), (Some("p0"), Some("p1")));
+    assert_eq!((e["a"].as_f64(), e["b"].as_f64()), (Some(5.0), Some(5.0)));
+    assert_eq!(e["major"], serde_json::json!([1.0, 0.0]));
+    let c = e["center"].as_str().unwrap();
+    let cp = sk["points"].as_array().unwrap().iter().find(|p| p["id"] == c).unwrap();
+    assert_eq!((cp["x"].as_f64(), cp["y"].as_f64()), (Some(0.0), Some(0.0)));
+}
+
 /// Byte 12 of the end condition reverses the default direction: a boss runs against its sketch
 /// normal and a cut along it (200mm Topmost Platform's cuts, no direction vector written).
 #[test]
