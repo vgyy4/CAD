@@ -243,6 +243,11 @@ fn zones_pad_nets_classes_and_the_autorouter_from_the_panel() {
         Some(("pcb.net_class", json!({"name": "Power", "nets": ["GND"], "track_width": 0.5})))
     );
     assert_eq!(pcb_view::class_command(&pcb_view::ClassEdit::default(), &[]), None);
+    // A click where no way shows: the router is asked to shove.
+    assert_eq!(
+        pcb_view::shove_command([1.0, 2.0], [3.0, 2.0], "B.Cu", Some("A")),
+        ("pcb.route", json!({"points": [[1.0, 2.0], [3.0, 2.0]], "layer": "B.Cu", "net": "A"}))
+    );
     // The Zone tool's corners.
     let mut st = pcb_view::State::default();
     st.tool = Tool::Zone;

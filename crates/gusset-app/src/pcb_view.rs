@@ -8,7 +8,8 @@
 //! the preview walks around other nets' copper in 45° segments with the clearance rules
 //! and the net class's width ([`gusset_pcb::route`]); a click lays it, a click on a pad
 //! of the net finishes, V places a via and goes on on the other side, `/` turns the bend
-//! the other way; Esc, a right click or a double click ends. The picked item's net is
+//! the other way; Esc, a right click or a double click ends. A click where the preview
+//! finds no way asks the router to shove one blocking track aside (phase 3). The picked item's net is
 //! highlighted. Zone fills are drawn filled (triangulated). Ratsnest lines show the
 //! connections still to route; design rule markers show where `pcb.drc` found problems.
 //!
@@ -573,6 +574,19 @@ pub fn route_command(path: &[Pt], layer: &str, net: Option<&str>, arc_radius: f6
         }
     }
     ("pcb.route", v)
+}
+
+/// `pcb.route` from `a` to `b` searched by the router itself, which shoves one blocking
+/// track of another net aside when there is no way round (the Route tool's click where
+/// the preview finds none).
+pub fn shove_command(a: Pt, b: Pt, layer: &str, net: Option<&str>) -> (&'static str, Value) {
+    let mut m = serde_json::Map::new();
+    m.insert("points".into(), json!([a, b]));
+    m.insert("layer".into(), json!(layer));
+    if let Some(n) = net {
+        m.insert("net".into(), json!(n));
+    }
+    ("pcb.route", Value::Object(m))
 }
 
 /// The via a layer change while routing places (on the route's net).
@@ -1286,14 +1300,27 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                 }
                 Some(a) => {
                     let (q, finish) = route_target(b, p, &st.active, st.grid, st.route_net.as_deref());
-                    if libm::hypot(q[0] - a[0], q[1] - a[1]) > 1e-6
-                        && let Some(path) = route_preview(open, st, q)
-                    {
-                        out.commands.push(route_command(&path, &st.active, st.route_net.as_deref(), st.arc_radius));
-                        if finish {
-                            end_route(st);
-                        } else {
-                            st.track_from = Some(q);
+                    if libm::hypot(q[0] - a[0], q[1] - a[1]) > 1e-6 {
+                        match route_preview(open, st, q) {
+                            Some(path) => {
+                                out.commands.push(route_command(
+                                    &path,
+                                    &st.active,
+                                    st.route_net.as_deref(),
+                                    st.arc_radius,
+                                ));
+                                if finish {
+                                    end_route(st);
+                                } else {
+                                    st.track_from = Some(q);
+                                }
+                            }
+                            None => {
+                                // No way round: the router may shove another net's track
+                                // aside; the route ends there either way.
+                                out.commands.push(shove_command(a, q, &st.active, st.route_net.as_deref()));
+                                end_route(st);
+                            }
                         }
                     }
                 }
