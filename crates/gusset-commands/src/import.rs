@@ -1407,15 +1407,20 @@ fn local_stored(
 ) -> Result<Vec<Vec<u8>>, String> {
     let Some(feats) = tree.get_mut("features").and_then(Value::as_array_mut) else { return Ok(Vec::new()) };
     let mut stored: Vec<Vec<u8>> = Vec::new();
+    // Each body is taken once: imported features of one name (Hobby Motor 3v's seven) take
+    // `name`, then `name_1`, `name_2`, ... in their order.
+    let mut used = vec![false; local.len()];
     for f in feats.iter_mut() {
         let Some(o) = f.as_object_mut() else { continue };
         let Some(name) = o.remove("local_body") else { continue };
         let name = name.as_str().unwrap_or_default().to_string();
-        let blob = local
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, b)| b.clone())
+        let names: Vec<&str> = local.iter().map(|(n, _)| n.as_str()).collect();
+        let k = local_body_index(&names, &used, &name)
             .ok_or_else(|| format!("the body of the imported feature {name} is not in the file"))?;
+        if let Some(u) = used.get_mut(k) {
+            *u = true;
+        }
+        let blob = local.get(k).map(|(_, b)| b.clone()).unwrap_or_default();
         o.insert("body".into(), Value::from(stored.len()));
         stored.push(blob);
     }
@@ -1452,6 +1457,21 @@ fn local_stored(
         }
     }
     Ok(stored)
+}
+
+/// The `LocalBodies` record an imported feature called `name` takes: the first one not `used`
+/// named `name`, else the first named `name_<n>` (SolidWorks numbers the bodies of imported
+/// features that share a name: Hobby Motor 3v's seven are `Hobby Motor 3v`, `.._1` .. `.._6`).
+fn local_body_index(names: &[&str], used: &[bool], name: &str) -> Option<usize> {
+    let free = |k: usize| !used.get(k).copied().unwrap_or(true);
+    let numbered = |n: &str| {
+        n.strip_prefix(name)
+            .and_then(|r| r.strip_prefix('_'))
+            .is_some_and(|k| !k.is_empty() && k.bytes().all(|c| c.is_ascii_digit()))
+    };
+    (0..names.len())
+        .find(|&k| free(k) && names.get(k).is_some_and(|n| *n == name))
+        .or_else(|| (0..names.len()).find(|&k| free(k) && names.get(k).is_some_and(|n| numbered(n))))
 }
 
 /// A plane normal to axis `ax` at `c`: its origin and unit normal.
@@ -4871,5 +4891,25 @@ mod fusion_steps_tests {
         )
         .unwrap_err();
         assert!(why.contains("cannot be derived"), "{why}");
+    }
+}
+
+#[cfg(test)]
+mod local_body_tests {
+    use super::*;
+
+    /// Imported features that share a name take the numbered bodies in order, each once.
+    #[test]
+    fn imported_features_of_one_name_take_numbered_bodies() {
+        let names = ["Hobby Motor 3v", "Hobby Motor 3v_1", "Other", "Hobby Motor 3v_2", "Hobby Motor 3vx_3"];
+        let mut used = vec![false; names.len()];
+        let mut picks = Vec::new();
+        while let Some(k) = local_body_index(&names, &used, "Hobby Motor 3v") {
+            used[k] = true;
+            picks.push(k);
+        }
+        assert_eq!(picks, [0, 1, 3]);
+        assert_eq!(local_body_index(&names, &used, "Other"), Some(2));
+        assert_eq!(local_body_index(&names, &used, "Missing"), None);
     }
 }
