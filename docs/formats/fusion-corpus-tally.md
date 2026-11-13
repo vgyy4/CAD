@@ -395,3 +395,11 @@ same tree (wall): none gained, none lost. 4632 now builds its blades and stops a
 file stores the fan hub without blades); 3221 reads and builds in full and is refused by the stored-body check
 (Base Feature copies moved); 6002 reads its edge-path sweep and stops at a thin extrude; 6299 reads its face
 extrude and stops at `Fillet4 (2)`; 2530 stops at `Fillet1` on its thickened bodies (section 49).
+
+## Re-run after rounds 27 to 32 (2026-11-13)
+
+Rounds 27 (helical bands split only on true helices), the blend round, 29, and 30 to 32 (face naming
+through joins, thin walls, bends, offsets), each run against the one before on all three sets:
+adafruit-more 136 of 150 as history (3350, 858, 3722 added since round 27 Y), adafruit-next 128 of 150
+(1054, 2315, 3692, 916 added), adafruit 13 of 18. In all 277 of 318 designs (87 %); none lost in any run.
+Round 33 (section 61) moves 6126, 2354, 5998 and 6299 each past its blocker to a later one without a gain.
