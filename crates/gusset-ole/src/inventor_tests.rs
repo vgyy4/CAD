@@ -308,6 +308,15 @@ fn extrude_direction_extent_and_operation() {
     let t = tree(&r).unwrap();
     assert_eq!(t["features"][1]["distance"], -1e4);
     assert_eq!(t["features"][1]["through_all"], true);
+    // To the next face / to a face: the reach is measured on the result body, which this
+    // file does not have.
+    for e in [4, 7] {
+        r[17].1 = tail(e);
+        let t = tree(&r).unwrap();
+        assert_eq!(t["features"][0]["type"], "unsupported");
+        let why = t["features"][0]["reason"].as_str().unwrap();
+        assert!(why.contains(&format!("extent {e}: the result body is not readable")), "{why}");
+    }
     // An extent that is not read: the feature is unsupported, with the reason.
     r[17].1 = tail(9);
     let t = tree(&r).unwrap();
@@ -528,8 +537,10 @@ mod sab {
         D(f64),
         Pos([f64; 3]),
         Vec([f64; 3]),
+        /// A string token (0x07): the name of a custom attribute.
+        S(&'static str),
     }
-    use It::{D, I, P, Pos, Vec as V};
+    use It::{D, I, P, Pos, S, Vec as V};
 
     fn blob(recs: &[(&[&str], Vec<It>)]) -> Vec<u8> {
         let mut b = b"ASM BinaryFile4\0\0\0\0".to_vec();
@@ -552,6 +563,11 @@ mod sab {
                     It::D(v) => {
                         b.push(0x06);
                         b.extend(v.to_le_bytes());
+                    }
+                    It::S(t) => {
+                        b.push(0x07);
+                        b.push(t.len() as u8);
+                        b.extend(t.as_bytes());
                     }
                     It::Pos(v) | It::Vec(v) => {
                         b.push(if matches!(it, It::Pos(_)) { 0x13 } else { 0x14 });
@@ -596,6 +612,11 @@ mod sab {
     /// Two planes (x = 0 and z = 0, 2 cm long along y) and the cylinder of radius 0.5 cm that
     /// blends them, tagged `NMx_blend_tag` with feature id `fid`.
     fn blend(fid: i32, with_second_support: bool) -> Vec<u8> {
+        blend_with(fid, with_second_support, Vec::new())
+    }
+
+    /// [`blend`] with more records after it (numbered from 30).
+    fn blend_with(fid: i32, with_second_support: bool, more: Vec<(&[&str], Vec<It>)>) -> Vec<u8> {
         let tag: &[&str] = &["NMx_blend_tag", "NMx_Brep_Name_tag", "NMx_Brep_tag", "NamingMatching", "attrib"];
         let p2_partner = if with_second_support { 16 } else { -1 };
         // Record numbers (the header is 0): body 1, faces 2 (the blend), 3 (x = 0), 4 (z = 0),
@@ -635,6 +656,8 @@ mod sab {
             (&["point"], vec![Pos([0.5, 0.0, 0.0])]),
             (tag, vec![I(0), I(0), I(0), I(fid), P(2)]),
         ];
+        let mut r = r;
+        r.extend(more);
         blob(&r)
     }
 
@@ -664,6 +687,33 @@ mod sab {
         // One support missing: the reason.
         let a = Acis::parse(&blend(42, false)).unwrap();
         assert!(a.edge_mid(2).unwrap_err().contains("1 usable supports"));
+    }
+
+    /// The faces a sweep made carry its id in `NMx_Sweep_Generated_Brep_tag` (side faces) and
+    /// `NMx_Generated_Brep_tag` (caps), or in newer files in `ATTRIB_CUSTOM` records named
+    /// `INV_NMX_SWEEPGENERATED_TAG` / `INV_NMX_GEN_TAG` with one more int before the version.
+    #[test]
+    fn the_faces_a_sweep_made_are_found_by_its_id() {
+        let side: &[&str] =
+            &["NMx_Sweep_Generated_Brep_tag", "NMx_Brep_Name_tag", "NMx_Brep_tag", "NamingMatching", "attrib"];
+        let custom: &[&str] = &["ATTRIB_CUSTOM", "attrib"];
+        let a = Acis::parse(&blend_with(
+            42,
+            true,
+            vec![
+                (side, vec![I(-1), I(43), I(1), I(7), P(3)]),
+                (custom, vec![S("INV_NMX_GEN_TAG"), I(-1), I(1), I(44), I(1), I(7), P(4)]),
+                (custom, vec![S("INV_NMX_SWEEPGENERATED_TAG"), I(-1), I(1), I(44), I(1), I(8), P(2)]),
+                (custom, vec![S("INV_NMX_SHELL_TAG"), I(-1), I(1), I(44), I(1), I(9), P(2)]),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(a.sweep_faces(7), [3, 4]);
+        assert_eq!(a.sweep_faces(8), [2]);
+        assert!(a.sweep_faces(9).is_empty());
+        // Face 3 (x = 0) runs 2 cm along y.
+        let ys: Vec<f64> = a.verts(3).iter().map(|v| v[1]).collect();
+        assert!(ys.iter().any(|y| (y - 2.0).abs() < 1e-12) && ys.iter().any(|y| y.abs() < 1e-12), "{ys:?}");
     }
 
     #[test]

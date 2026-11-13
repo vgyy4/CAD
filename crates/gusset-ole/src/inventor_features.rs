@@ -444,6 +444,37 @@ impl Reader<'_> {
         }
     }
 
+    /// How far an extrude that ends on a face (extent 4, to the next face, or 7, to a chosen
+    /// face) reached, in mm along its sketch's normal: the face is named through the naming
+    /// records, so the reach is measured instead on the faces the feature made in the result
+    /// body (side faces and caps carry its id). All their corners must lie on one side of the
+    /// sketch plane; the farthest is the reach. A later feature that trimmed every face back,
+    /// or an end face that is not parallel to the sketch, gives a reach the rebuild check
+    /// refuses.
+    fn swept_distance(&self, sk: &Sketch, fid: i64) -> Result<f64, String> {
+        let b = self.result().ok_or("the result body is not readable")?;
+        let faces = b.sweep_faces(fid);
+        if faces.is_empty() {
+            return Err("no face of the feature is in the result body".into());
+        }
+        let (o, x, y) = frame(&sk.m);
+        let n = unit3(cross(x, y));
+        let (mut lo, mut hi) = (0.0f64, 0.0f64);
+        for f in faces {
+            for v in b.verts(f) {
+                let t = dot(sub3([v[0] * CM, v[1] * CM, v[2] * CM], o), n);
+                lo = lo.min(t);
+                hi = hi.max(t);
+            }
+        }
+        match (lo < -1e-6, hi > 1e-6) {
+            (true, true) => Err("the feature's faces lie on both sides of its sketch".into()),
+            (false, false) => Err("the feature's faces lie in its sketch plane".into()),
+            (true, false) => Ok(lo),
+            (false, true) => Ok(hi),
+        }
+    }
+
     fn slots(&self, f: &Feature) -> Result<Slots, String> {
         self.dc.slots(f.rec).map(Slots).ok_or_else(|| "the feature has no slot list".into())
     }
@@ -519,6 +550,12 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                 put(&mut j, "distance", json!(rnd(if rev { -THROUGH } else { THROUGH })));
                 put(&mut j, "symmetric", json!(false));
                 put(&mut j, "through_all", json!(true));
+            }
+            Some(e @ (4 | 7)) => {
+                let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
+                let d = r.swept_distance(&sketch, fid).map_err(|w| format!("extrude extent {e}: {w}"))?;
+                put(&mut j, "distance", json!(rnd(d)));
+                put(&mut j, "symmetric", json!(false));
             }
             e => return Err(format!("extrude extent {e:?}")),
         }

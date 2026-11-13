@@ -177,8 +177,12 @@ fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
 /// type name in front and loses that int, so the readers below see one layout. Only the names
 /// read here are mapped.
 fn custom_attribute(r: &mut Rec, text: Option<&[u8]>) {
-    const MAP: [(&[u8], &str); 2] =
-        [(b"INV_NMX_BLEND_TAG", "NMx_blend_tag"), (b"INV_NMX_EDGE_BLEND_TAG", "NMx_edge_blend_tag")];
+    const MAP: [(&[u8], &str); 4] = [
+        (b"INV_NMX_BLEND_TAG", "NMx_blend_tag"),
+        (b"INV_NMX_EDGE_BLEND_TAG", "NMx_edge_blend_tag"),
+        (b"INV_NMX_SWEEPGENERATED_TAG", "NMx_Sweep_Generated_Brep_tag"),
+        (b"INV_NMX_GEN_TAG", "NMx_Generated_Brep_tag"),
+    ];
     if !r.ty.starts_with("ATTRIB_CUSTOM") {
         return;
     }
@@ -658,6 +662,23 @@ impl Acis {
         near.sort_unstable();
         near.dedup();
         corners.len() == 3 && near.iter().filter(|g| feature_faces.contains(g)).count() >= 2
+    }
+
+    /// Faces a sweep (extrude, revolve) with id `fid` made: those that carry an
+    /// `NMx_Sweep_Generated_Brep_tag` (side faces) or `NMx_Generated_Brep_tag` (caps) attribute
+    /// whose 4th int is `fid`.
+    pub(crate) fn sweep_faces(&self, fid: i64) -> Vec<i64> {
+        let mut out = Vec::new();
+        for r in &self.recs {
+            if (r.ty.starts_with("NMx_Sweep_Generated_Brep_tag") || r.ty.starts_with("NMx_Generated_Brep_tag"))
+                && r.ints.get(3) == Some(&fid)
+                && let Some(&f) = r.refs.iter().find(|&&y| self.is(y, "face"))
+                && !out.contains(&f)
+            {
+                out.push(f);
+            }
+        }
+        out
     }
 
     /// Faces that carry an `NMx_blend_tag` (or `NMx_edge_blend_tag`, which the chamfers of
@@ -1293,7 +1314,7 @@ mod tests {
         let mut b = tok(0x0d, b"asmheader");
         b.push(0x11);
         b.extend(attr(b"INV_NMX_BLEND_TAG"));
-        b.extend(attr(b"INV_NMX_GEN_TAG"));
+        b.extend(attr(b"INV_NMX_SHELL_TAG"));
         let r = records(&b).unwrap();
         assert!(r[1].ty.starts_with("NMx_blend_tag-"), "{}", r[1].ty);
         assert_eq!(r[1].ints, [-1, 44, 1, 209, -1, 1, 1, 24]);
