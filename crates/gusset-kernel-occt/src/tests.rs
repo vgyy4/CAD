@@ -482,6 +482,53 @@ fn offset_faces_golden() {
     assert!(k().offset_faces(&b.shape, &[], 1.0).is_err());
 }
 
+#[test]
+fn a_shafts_end_between_flats_is_pushed_out_by_its_prism() {
+    // 858's shaft: a rod of radius 2.5 from z 1.6 to 4, on it the same rod with two flats 1.5
+    // from its axis up to z 10, its right arc in two at the seam (as the sketch's circle drawn
+    // twice leaves it). Pushing its lower end out by 0.4 mm adds the end's area times
+    // 0.4 (the cylinder runs on straight); the faces' move and BRepOffset give no shape here.
+    let (arc, line) = (
+        |a: [f64; 2], b: [f64; 2], tag| ProfileEdge {
+            seg: Seg2::Arc { center: [0.0, 0.0], start: a, end: b, ccw: true },
+            tag,
+        },
+        |a, b, tag| ProfileEdge { seg: Seg2::Line { a, b }, tag },
+    );
+    let outer = Loop2 {
+        edges: vec![
+            arc([2.0, -1.5], [2.5, 0.0], 1),
+            arc([2.5, 0.0], [2.0, 1.5], 5),
+            line([2.0, 1.5], [-2.0, 1.5], 2),
+            arc([-2.0, 1.5], [-2.0, -1.5], 3),
+            line([-2.0, -1.5], [2.0, -1.5], 4),
+        ],
+    };
+    let flat = Profile {
+        frame: Frame { origin: [0.0, 0.0, 4.0], ..Frame::XY },
+        regions: vec![Region2 { outer, holes: vec![] }],
+    };
+    let b = k().extrude(&flat, &ExtrudeSpec { distance: 6.0, symmetric: false }).unwrap().shape;
+    let b = k().boolean(BoolOp::Union, &b, &disc(2.5, 2.4, 1.6).shape).unwrap().shape;
+    let t = k().topology(&b).unwrap();
+    let end = t.faces.iter().position(|f| f.normal[2] < -0.9).unwrap() as u32;
+    let area = t.faces.get(end as usize).unwrap().area;
+    let before = k().mass_properties(&b).unwrap().volume;
+    let r = k().offset_faces(&b, &[end], 0.4).unwrap();
+    assert!(close(k().mass_properties(&r.shape).unwrap().volume, before + area * 0.4, 1e-9));
+    let rt = k().topology(&r.shape).unwrap();
+    let moved = rt.faces.iter().position(|f| f.normal[2] < -0.9 && (f.centroid[2] - 1.2).abs() < 1e-9).unwrap();
+    assert_eq!(r.face_origins.get(moved).unwrap().as_slice(), [FaceOrigin::Input { input: 0, face: end }]);
+    // Every face comes from one of the input's (a piece of the cylinder the unification leaves
+    // at the seam from the cylinder).
+    assert!(
+        r.face_origins.iter().all(|o| matches!(o.as_slice(), [FaceOrigin::Input { input: 0, .. }, ..])),
+        "{:?}",
+        r.face_origins
+    );
+    assert_eq!(r.face_origins.len(), rt.faces.len());
+}
+
 fn disc(r: f64, h: f64, z0: f64) -> OpResult {
     let frame = Frame { origin: [0.0, 0.0, z0], ..Frame::XY };
     let outer = Loop2 { edges: vec![ProfileEdge { seg: Seg2::Circle { center: [0.0, 0.0], radius: r }, tag: 1 }] };

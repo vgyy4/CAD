@@ -4759,6 +4759,105 @@ int gs_draft(const GsShape* s, const uint32_t* faces, size_t nfaces, const doubl
   GS_GUARD_END
 }
 
+// One planar face whose neighbours all stand along its normal (planes across it, cylinders whose
+// axis runs along it): the offset is the boolean with the prism the face sweeps by `d` along its
+// outward normal (joined outward, cut inward), the neighbours growing or shrinking straight on.
+// BRepOffset gives no result for 858's OffsetFaces2, a shaft's end (a cylinder cut by two flats)
+// pushed out by 0.4 mm. The volume must change by the face's area times |d| (1e-7) and the moved
+// face, the prism's far cap, stands for the face.
+static int offset_plane_by_prism(const GsShape* s, const std::vector<TopoDS_Face>& fs, double d, GsShape** out,
+                                 GsBuf* origins) {
+  if (fs.size() != 1) return fail("not one face");
+  const TopoDS_Face& f = fs[0];
+  BRepAdaptor_Surface sf(f, false);
+  if (sf.GetType() != GeomAbs_Plane) return fail("not a plane");
+  double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+  BRepTools::UVBounds(f, u0, u1, v0, v1);
+  gp_Dir n;
+  if (!outward_normal(f, sf.Value(0.5 * (u0 + u1), 0.5 * (v0 + v1)), n)) return fail("no normal");
+  AncMap anc;
+  TopExp::MapShapesAndAncestors(s->s, TopAbs_EDGE, TopAbs_FACE, anc);
+  for (TopExp_Explorer ex(f, TopAbs_EDGE); ex.More(); ex.Next()) {
+    if (!anc.Contains(ex.Current())) return fail("an edge without faces");
+    for (ShapeList::Iterator it(anc.FindFromKey(ex.Current())); it.More(); it.Next()) {
+      if (it.Value().IsSame(f)) continue;
+      BRepAdaptor_Surface g(TopoDS::Face(it.Value()), false);
+      bool along = false;
+      if (g.GetType() == GeomAbs_Plane) along = std::fabs(gp_Vec(g.Plane().Axis().Direction()).Dot(gp_Vec(n))) < 1e-9;
+      else if (g.GetType() == GeomAbs_Cylinder) along = g.Cylinder().Axis().Direction().IsParallel(n, 1e-9);
+      if (!along) return fail("a neighbour does not stand along the face's normal");
+    }
+  }
+  BRepPrimAPI_MakePrism prism(f, gp_Vec(n) * d);
+  prism.Build();
+  if (!prism.IsDone()) return fail("no prism");
+  TopoDS_Shape tool = prism.Shape();
+  if (signed_volume(tool) < 0) tool.Reverse();
+  const TopoDS_Shape far_cap = prism.LastShape();
+  GProp_GProps area;
+  BRepGProp::SurfaceProperties(f, area);
+  const double change = area.Mass() * std::fabs(d);
+  ShapeList args, tools;
+  args.Append(s->s);
+  tools.Append(tool);
+  auto b = run_boolean_checked(d > 0 ? GS_BOOL_UNION : GS_BOOL_CUT, args, tools);
+  const TopoDS_Shape result = b->Shape();
+  if (result.IsNull()) return fail("no result");
+  const double before = std::fabs(signed_volume(s->s)), after = std::fabs(signed_volume(result));
+  if (std::fabs(std::fabs(after - before) - change) > 1e-7 * std::max(1.0, before))
+    return fail("the prism changed more than the face sweeps");
+  ShapeMap out_faces, in_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  TopExp::MapShapes(s->s, TopAbs_FACE, in_faces);
+  std::vector<int64_t> o;
+  record_input_faces(*b, s->s, 0, out_faces, o);
+  const int fi = in_faces.FindIndex(f);
+  bool found = false;
+  std::vector<TopoDS_Shape> res;
+  const ShapeList& mods = b->Modified(far_cap);
+  for (ShapeList::Iterator it(mods); it.More(); it.Next()) res.push_back(it.Value());
+  if (mods.IsEmpty() && !b->IsDeleted(far_cap)) res.push_back(far_cap);
+  for (const auto& g : res) {
+    const int k = out_faces.FindIndex(g);
+    if (k <= 0 || fi <= 0) continue;
+    found = true;
+    push_origin(o, k - 1, GS_ORIGIN_INPUT, 0, fi - 1);
+  }
+  if (!found) return fail("the offset face is missing");
+  // A piece of the prism's side the unification left apart from the neighbour it continues (a
+  // cylinder in two at its seam): that neighbour's.
+  std::vector<bool> has(size_t(out_faces.Extent()), false);
+  for (size_t k = 0; k + 3 < o.size(); k += 4)
+    if (o[k] >= 0 && o[k] < int64_t(has.size())) has[size_t(o[k])] = true;
+  for (int k = 1; k <= out_faces.Extent(); ++k) {
+    if (has[size_t(k - 1)]) continue;
+    BRepAdaptor_Surface q(TopoDS::Face(out_faces(k)), false);
+    for (int i = 1; i <= in_faces.Extent(); ++i) {
+      if (in_faces(i).IsSame(f)) continue;
+      BRepAdaptor_Surface w(TopoDS::Face(in_faces(i)), false);
+      bool same = false;
+      if (q.GetType() == GeomAbs_Plane && w.GetType() == GeomAbs_Plane)
+        same = q.Plane().Axis().IsParallel(w.Plane().Axis(), 1e-9) && w.Plane().Distance(q.Plane().Location()) <= 1e-7;
+      else if (q.GetType() == GeomAbs_Cylinder && w.GetType() == GeomAbs_Cylinder)
+        same = std::fabs(q.Cylinder().Radius() - w.Cylinder().Radius()) <= 1e-7 &&
+               q.Cylinder().Axis().IsParallel(w.Cylinder().Axis(), 1e-9) &&
+               gp_Lin(w.Cylinder().Axis()).Distance(q.Cylinder().Location()) <= 1e-7;
+      // Only a neighbour of the moved face continues into the prism's side.
+      bool beside = false;
+      for (TopExp_Explorer ex(f, TopAbs_EDGE); same && !beside && ex.More(); ex.Next())
+        for (ShapeList::Iterator it(anc.FindFromKey(ex.Current())); it.More(); it.Next())
+          beside = beside || it.Value().IsSame(in_faces(i));
+      if (!same || !beside) continue;
+      push_origin(o, k - 1, GS_ORIGIN_INPUT, 0, i - 1);
+      break;
+    }
+  }
+  check_valid(result, "offset");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+}
+
 int gs_offset_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, double distance, GsShape** out,
                     GsBuf* origins) {
   GS_GUARD_BEGIN
@@ -4826,6 +4925,10 @@ int gs_offset_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, doub
   }
   try {
     if (offset_cylinders(s, fs, idx, distance, out, origins) == GS_OK) return GS_OK;
+  } catch (const Standard_Failure&) {
+  }
+  try {
+    if (offset_plane_by_prism(s, fs, distance, out, origins) == GS_OK) return GS_OK;
   } catch (const Standard_Failure&) {
   }
   return fail(why);
