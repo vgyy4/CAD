@@ -30,12 +30,15 @@ impl TempDir {
     pub(super) fn new(prefix: &str) -> Result<TempDir, CommandError> {
         let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let p = std::env::temp_dir().join(format!("gusset-{prefix}-{}-{n}", std::process::id()));
-        let mut b = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let b = {
             use std::os::unix::fs::DirBuilderExt;
+            let mut b = std::fs::DirBuilder::new();
             b.mode(0o700);
-        }
+            b
+        };
+        #[cfg(not(unix))]
+        let b = std::fs::DirBuilder::new();
         b.create(&p).map_err(|e| CommandError::new("io", format!("could not make a temporary folder: {e}")))?;
         Ok(TempDir(p))
     }

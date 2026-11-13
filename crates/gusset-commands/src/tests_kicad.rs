@@ -150,10 +150,12 @@ fn fake_kicad(body: &str) -> std::path::PathBuf {
     path
 }
 
+#[cfg(unix)]
 fn set_up(s: &mut Session, program: std::path::PathBuf, timeout_s: u64) {
     s.kicad_cli = Some(pcb_session::KicadCli { path: program, timeout_s });
 }
 
+#[cfg(unix)]
 /// Names and sizes of the files in the project folder, to see nothing else was touched.
 fn listing(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
     let mut v: Vec<_> = std::fs::read_dir(dir)
