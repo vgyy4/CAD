@@ -30,6 +30,7 @@ pub mod board3d;
 pub mod check;
 pub mod copper;
 pub mod drc;
+mod drc_more;
 pub mod drill;
 pub mod edit;
 pub mod erc;
@@ -55,6 +56,8 @@ pub use board::{Board, Limits};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_drc_more;
 #[cfg(test)]
 mod tests_dsn;
 #[cfg(test)]

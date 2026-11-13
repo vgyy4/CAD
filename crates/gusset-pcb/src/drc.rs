@@ -11,7 +11,8 @@ use crate::rules::Rules;
 /// One rule broken somewhere.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Violation {
-    /// `clearance`, `short`, `track_width`, `annular_ring`, `hole_to_edge`, `copper_to_edge`.
+    /// `clearance`, `short`, `track_width`, `annular_ring`, `hole_to_edge`, `copper_to_edge`, and ADR 0048's
+    /// `hole_to_hole`, `drill_size`, `courtyard_overlap`, `silk_over_pad`.
     pub code: &'static str,
     pub message: String,
     /// Where (board mm, Y down).
@@ -23,10 +24,10 @@ pub struct Violation {
 
 /// What a gap may fall short by and still pass (mm): rounding in the file and in arc
 /// chords, well below any fabrication tolerance.
-const SLACK: f64 = 5e-4;
+pub(crate) const SLACK: f64 = 5e-4;
 
 /// Rounds for messages (µm).
-fn mm(v: f64) -> String {
+pub(crate) fn mm(v: f64) -> String {
     format!("{:.3} mm", (v * 1000.0).round() / 1000.0)
 }
 
@@ -96,6 +97,7 @@ pub fn check(board: &Board, rules: &Rules, max: usize) -> Vec<Violation> {
     zones(board, rules, &copper, max, &mut out);
     annular_rings(board, rules, max, &mut out);
     edges(board, rules, &copper, max, &mut out);
+    crate::drc_more::holes(board, rules, max, &mut out);
     out.truncate(max);
     out
 }

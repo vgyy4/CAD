@@ -464,8 +464,17 @@ pub struct Board {
     pub net_classes: Vec<crate::rules::NetClass>,
     /// `(setup (aux_axis_origin x y))`: the origin of placement files.
     pub aux_origin: Pt,
+    /// Minimums the board's own `(setup ...)` gives (KiCad 5 writes them there).
+    pub setup_mins: SetupMins,
     /// Things read but not understood, for the user (at most a few dozen).
     pub notes: Vec<String>,
+}
+
+/// Fabrication minimums read from `(setup (via_min_size ..) (via_min_drill ..))`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SetupMins {
+    pub via_min_size: Option<f64>,
+    pub via_min_drill: Option<f64>,
 }
 
 /// Default thickness when the file gives none (KiCad's default).
@@ -507,6 +516,7 @@ impl Board {
             numbered_nets: false,
             net_classes: Vec::new(),
             aux_origin: [0.0, 0.0],
+            setup_mins: SetupMins::default(),
             notes: Vec::new(),
         };
         let mut r = Reader { limits, board: &mut b };
@@ -873,6 +883,8 @@ impl Reader<'_> {
             b.mask_margin = num(setup, "pad_to_mask_clearance").unwrap_or(0.0);
             b.paste_margin = num(setup, "pad_to_paste_clearance").unwrap_or(0.0);
             b.aux_origin = pt(setup.child("aux_axis_origin")).unwrap_or([0.0, 0.0]);
+            let min = |h: &str| num(setup, h).filter(|v| v.is_finite() && (0.0..100.0).contains(v));
+            b.setup_mins = SetupMins { via_min_size: min("via_min_size"), via_min_drill: min("via_min_drill") };
             if let Some(st) = setup.child("stackup") {
                 for l in st.children("layer").take(1000) {
                     b.stackup.push(StackupLayer {

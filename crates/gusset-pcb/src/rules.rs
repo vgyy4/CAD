@@ -49,6 +49,16 @@ pub struct Rules {
     pub hole_to_edge: f64,
     /// Copper to board edge.
     pub edge_clearance: f64,
+    /// Edge to edge of two drilled holes (pads and vias): KiCad's `min_hole_to_hole`.
+    pub hole_to_hole: f64,
+    /// Smallest drill of a through-hole pad (`min_through_hole_diameter`).
+    pub min_through_hole: f64,
+    /// Smallest via drill (the board setup's `via_min_drill`).
+    pub min_via_drill: f64,
+    /// Smallest via copper diameter (`via_min_size` / `min_via_diameter`; 0: no limit).
+    pub min_via_diameter: f64,
+    /// Silkscreen to pad copper and mask opening (`min_silk_clearance`).
+    pub silk_clearance: f64,
     /// Width of new tracks, via size and drill, when no class says otherwise.
     pub track_width: f64,
     pub via_diameter: f64,
@@ -69,6 +79,11 @@ impl Default for Rules {
             min_annular_ring: 0.1,
             hole_to_edge: 0.3,
             edge_clearance: 0.3,
+            hole_to_hole: 0.25,
+            min_through_hole: 0.3,
+            min_via_drill: 0.2,
+            min_via_diameter: 0.0,
+            silk_clearance: 0.0,
             track_width: 0.25,
             via_diameter: 0.6,
             via_drill: 0.3,
@@ -84,6 +99,12 @@ impl Rules {
     pub fn for_board(b: &Board) -> Rules {
         let mut r = Rules { classes: b.net_classes.clone(), ..Rules::default() };
         r.apply_default_class();
+        if let Some(v) = b.setup_mins.via_min_drill {
+            r.min_via_drill = v;
+        }
+        if let Some(v) = b.setup_mins.via_min_size {
+            r.min_via_diameter = v;
+        }
         r
     }
 
