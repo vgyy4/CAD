@@ -202,16 +202,25 @@ fn the_panel_draws_the_list_and_the_preview() {
     h.state_mut().run("sch.new", json!({})).unwrap();
     h.state_mut().wait_idle();
     h.state_mut().sch_state.browser.folder = dir.to_string_lossy().into_owned();
-    for _ in 0..50 {
-        h.run();
+    // The scan runs on its own thread and the panel repaints until it is done: step frames
+    // until then (a slow runner needs more than `run`'s settle limit), at most 10 s.
+    for _ in 0..1000 {
+        h.step();
+        if h.state().sch_state.browser.progress().2 && h.state().sch_state.browser.libraries() == 2 {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(h.state().sch_state.browser.libraries(), 2);
     h.state_mut().sch_state.browser.pick("Passives.kicad_sym", "R");
-    for _ in 0..50 {
-        h.run();
+    for _ in 0..1000 {
+        h.step();
+        if h.state().sch_state.browser.preview().is_some() {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    h.step();
     assert!(matches!(h.state().sch_state.browser.preview(), Some(Ok(_))));
     let _ = std::fs::remove_dir_all(&dir);
 }
