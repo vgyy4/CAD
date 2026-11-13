@@ -58,6 +58,41 @@ corners.
   footprint previews the ends on its pads following the drop (`pcb_view::drag_preview`); the
   drop is the same single command, so one undo step. Rotating with the key also carries.
 
+## Amendment (2026-11-13): arc segments, the Pair tool and the Tune tool
+All three send existing registry commands (ADR 0012), one undo step each; the status bar shows
+a refusal (`pcb.route_pair` and `pcb.tune` also report their result there).
+* **Arc segments** (Route tool). The panel switch "Arc segments (A)" or the `A` key makes each
+  segment an arc: after the route has started, one click gives a point the arc passes through
+  (snapped), the next its end (a pad of the route's net ends the route, as for straight
+  segments); start, through and end are three points on a circle, and the end becomes the next
+  segment's start. The preview is a guide line to the pointer, then the arc through the point
+  to the pointer (a red line when the three points are collinear, which no arc fits). The
+  command is `pcb.add_track` with the new optional `mid` (an arc piece through `Board::add_route`;
+  collinear points are refused with `invalid_args`), with the route's net. This is not "Arc
+  corners" (that setting rounds the corners of a `pcb.route` by radius); the two are independent.
+  The arc is a three-point arc, not constrained tangent to the previous segment.
+* **Pair tool.** The first click must be on a pad whose net is half of a pair (ADR 0055
+  recognition: `pair::find`); it names the pair (and highlights its positive net). Later clicks
+  add the coupled centre line at the grid (the first one where the coupled part begins; the
+  fan-out to the pads is the command's). Double click or Enter sends `pcb.route_pair`
+  `{pair, points, layer}` (class width and gap); Esc, a right click or leaving the tool drops
+  it. The preview is `pair::route_pair` itself, both offset tracks drawn at their width, cached
+  by (board, layer, pair, points), so what is shown is what the command lays; when it cannot be
+  laid, its message shows at the bottom of the canvas and in the panel, and a send that fails
+  reports in the status bar. Only the first pad click names the pair; there is no pair picker
+  in the panel.
+* **Tune tool and lengths.** A click on a track picks it (and highlights its net). The PCB panel
+  shows, for the highlighted net in every tool, the net's length with tracks and vias, and for a
+  pair the partner's length and the skew (`gusset-pcb::length`, the sums `pcb.lengths` reports,
+  computed in the app from the open board instead of one command round trip per frame). With the
+  Tune tool the panel adds a target (set to the net's length when the net changes), "Match
+  pair" (no target is sent; `pcb.tune` then tunes the shorter of the two, which is the partner
+  when the picked net is the longer), amplitude and spacing (0 = the net's clearance, not sent),
+  and Apply sends `pcb.tune {net, target?, amplitude, spacing?, track?}` with the picked track
+  when it belongs to the net (else the command chooses).
+* **Budget.** `pcb.add_track` gained `mid` (the description is unchanged): the `pcb` toolset is
+  14360 of 18000 bytes (24 tools, 598 per tool, the limit being 600); modeling is unchanged.
+
 ## MCP budget
 `pcb_move` is in the `pcb` toolset. The `pcb` toolset went from about 13.6 KB to
 14171 of 18000 bytes (24 tools, 590 per tool); modeling stays byte-identical at 17971.
@@ -86,3 +121,15 @@ it both before and after the amendment).
   preview sets) is tested as functions and the commands through the app, as for ADR 0049.
 * A pad form through the app is not tested (the `pcb.new` board has no pads; `pcb.set_net`
   itself is tested with undo in gusset-commands).
+
+## Results of the arcs, pairs and tuning amendment
+* gusset-commands `add_track_takes_a_mid_point_for_an_arc`
+  (undo; collinear refused; 294 tests); gusset-app `arc_segments_are_previewed_and_laid_through_add_track`,
+  `the_pair_tool_previews_both_tracks_and_routes_the_pair`,
+  `the_tune_tool_shows_lengths_and_tunes_through_the_registry` (preview geometry, command
+  construction, runs through the app with undo and refusals in the status bar; 189 tests);
+  gusset-pcb 120, gusset-mcp 40 + 34.
+* Not done there: arcs constrained tangent to the previous segment, arc corners for pairs, a pair
+  picker in the panel (the pair is named by its first pad click), tuning several tracks of a net
+  or both nets of a pair together, a "tune" preview of the meander, and driving egui pointer
+  events end to end.

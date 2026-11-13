@@ -70,4 +70,4 @@ published documentation of pair naming and the usual meander practice; no KiCad 
   rule (`diff_pair`, `skew`, `length` constraints are still skipped with a warning, ADR 0054).
 * Tuning: several tracks of one net, trombone sections with arcs, tuning a pair's tracks
   together (phase tuning), and a limit on the coupled length lost to a meander.
-* A GUI tool for pair routing and a tune dialog.
+* A GUI tool for pair routing and a tune dialog: done, see the ADR 0050 amendment.

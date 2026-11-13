@@ -461,7 +461,8 @@ it nets and rules, route, pour, check and write every fabrication file without K
   ADR 0054. Still open there: area functions, `severity`, `B.` in single-item constraints.
 * Editor: (texts in our stroke font, mirrored on flip, adding and editing board texts: done,
   see ADR 0049; a pad picked on its own, moving tracks and vias, and the board outline drawn
-  with the mouse: done, see ADR 0050), arc tracks drawn freehand.
+  with the mouse: done, see ADR 0050; arc tracks drawn freehand, a pair routing tool and a
+  length tuning tool: done, see the ADR 0050 amendment).
 * From phase 1a: Gerber object attributes (`.N`, `.P`, `.C`), a test-only re-reader and a local
   corpus test: done, see ADR 0051.
 * **KiCad IPC bridge** (protobuf over NNG to a running KiCad, after the `.proto` licence is confirmed)
