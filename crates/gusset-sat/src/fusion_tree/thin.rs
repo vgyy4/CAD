@@ -26,11 +26,14 @@ const HOLDER: &str = "D91D429C";
 /// along arcs are not modelled.
 ///
 /// A wall about the middle of lines that are chains of their own (6126's `Extrude5 (2)`: a "-"
-/// and a "+", [`LineWall`]) is named per selected line k instead: `12 + 7k` both sides (the
-/// left one, about the sketch normal and the line's run, also carries the second operation),
-/// `+3` the cap on the sketch plane, `+5` the floor, `+4` and `+6` the ends at the line's start
-/// and end. The first operation's `+1` and `+2` are the same two ends: a later offset selects
-/// the end `+4`, a blend's edge runs between `+1` and a side and ends on `+4`'s plane.
+/// and a "+"; 6299's `Extrude14`: one line, [`LineWall`]) is named per selected line k of n
+/// instead, from b = 3 + 3n (12 for 6126, 6 for 6299): `b + 7k` both sides, `+3` the cap on the
+/// sketch plane, `+5` the far cap, `+4` and `+6` the ends at the line's start and end. The first
+/// operation's `+1` and `+2` are the same two ends (a later offset selects the end `+4`, a
+/// blend's edge runs between `+1` and a side and ends on `+4`'s plane). The side that also
+/// carries the second operation is the left one about the sketch normal and the line's run, and
+/// `+1` the start, where the wall goes against the normal (6126); along it (6299) the right one
+/// and the end.
 pub(super) struct Caps {
     n: usize,
     start: (V3, V3),
@@ -177,17 +180,18 @@ impl Caps {
 
     /// The line and the face of a wall about separate lines that the generator names.
     pub(super) fn role(&self, g: &str, on_chain: bool) -> Option<(usize, Role)> {
-        let j = g.parse::<usize>().ok()?.checked_sub(12)?;
+        let base = 3 + 3 * self.lines.len();
+        let j = g.parse::<usize>().ok()?.checked_sub(base)?;
         let (k, r) = (j / 7, j % 7);
-        if k >= self.lines.len() {
-            return None;
-        }
-        let role = match r {
-            0 if on_chain => Role::Left,
-            0 => Role::Right,
-            1 | 4 => Role::Start,
-            2 | 6 => Role::End,
-            3 => Role::Cap,
+        // Extruded along the sketch normal, the side and end names swap.
+        let along = self.lines.get(k)?.depth > 0.0;
+        let role = match (r, along) {
+            (0, false) if on_chain => Role::Left,
+            (0, true) if !on_chain => Role::Left,
+            (0, _) => Role::Right,
+            (1, false) | (2, true) | (4, _) => Role::Start,
+            (2, false) | (1, true) | (6, _) => Role::End,
+            (3, _) => Role::Cap,
             _ => Role::Floor,
         };
         Some((k, role))
@@ -678,7 +682,7 @@ pub(super) fn thin_extrude(
         );
     }
     // A wall about the middle of lines that are chains of their own: named per line.
-    if let (Some(pl), 1, false) = (plane, loc, more.is_empty()) {
+    if let (Some(pl), 1) = (plane, loc) {
         let sel = pieces_of(&sketch_feat, &ids).unwrap_or_default();
         let depth = j.get("distance").and_then(Value::as_f64).map(|v| v / 10.0);
         let cut = j.get("operation").and_then(Value::as_str) == Some("cut");
@@ -828,7 +832,7 @@ mod tests {
             end: ([0.0; 3], [0.0; 3]),
             sides: Vec::new(),
             off: 0.0,
-            lines: vec![line([0.4, 0.15, 1.56]), line(at)],
+            lines: vec![line([0.4, 0.15, 1.56]), line(at), line([0.21, -0.34, 1.56])],
             rims: None,
         };
         let plane = |g: &str, on: bool, shift: f64| match caps.face(g, on, shift).unwrap() {
@@ -850,6 +854,14 @@ mod tests {
         assert!((plane("21", false, -0.025).1[1] + 0.125).abs() < 1e-12);
         assert!((plane("20", false, -0.025).1[1] + 0.555).abs() < 1e-12);
         assert!(caps.face("33", false, 0.0).is_none());
+        // 6299's Extrude14: one line, the wall cut along the sketch normal: names from 6, the
+        // right side carrying both operations and `+2` the start.
+        let up = Caps { lines: vec![LineWall { depth: 0.2, ..line(at) }], ..caps };
+        assert_eq!(up.role("6", true), Some((0, Role::Right)));
+        assert_eq!(up.role("6", false), Some((0, Role::Left)));
+        assert_eq!((up.role("8", false), up.role("10", false)), (Some((0, Role::Start)), Some((0, Role::Start))));
+        assert_eq!((up.role("7", false), up.role("12", false)), (Some((0, Role::End)), Some((0, Role::End))));
+        assert_eq!((up.role("9", false), up.role("11", false)), (Some((0, Role::Cap)), Some((0, Role::Floor))));
     }
 
     #[test]
