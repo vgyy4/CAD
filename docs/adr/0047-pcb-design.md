@@ -462,8 +462,8 @@ it nets and rules, route, pour, check and write every fabrication file without K
 * Editor: (texts in our stroke font, mirrored on flip, adding and editing board texts: done,
   see ADR 0049; a pad picked on its own, moving tracks and vias, and the board outline drawn
   with the mouse: done, see ADR 0050), arc tracks drawn freehand.
-* From phase 1a: Gerber object attributes (`.N`, `.P`, `.C`); re-reading our Gerbers with a
-  permissive parser in tests; a corpus test over local KiCad samples.
+* From phase 1a: Gerber object attributes (`.N`, `.P`, `.C`), a test-only re-reader and a local
+  corpus test: done, see ADR 0051.
 * **KiCad IPC bridge** (protobuf over NNG to a running KiCad, after the `.proto` licence is confirmed)
   and a `kicad-cli` wrapper for authoritative DRC/ERC and STEP/IPC-2581/ODB++ export.
 
