@@ -3917,3 +3917,137 @@ Readers: `fusion_tree/thin.rs` (`Caps::role`, `LineWall`, `Rims`), `fusion_tree/
   `gusset-cli` `modeling_tree_import` (80, new `a_face_profile_on_two_touching_bodies_is_the_one_on_its_body`),
   `modeling_draft`, `modeling_move`, `modeling_offset` pass; clippy (`gusset-sat`, `gusset-commands`,
   `gusset-occt-sys`, `gusset-kernel-occt`, `gusset-cli`) and fmt clean.
+
+## 62. Round 34: an occurrence removed, an elliptical cylinder, a slit that cuts a piece off, a pattern by its extent, an insert moved by a joint, an arc a hair off its circle (2026-11-13)
+Readers: `fusion_tree/mirrorcomp.rs` (`removed_component`), `fusion_tree/json.rs` (`made_body_box`,
+`cuts_that_split_off_bodies`, `pattern_extent`, `op_target`), `fusion_tree/joint.rs` (`moved_insert`,
+`place_moved_inserts`), `step.rs` (elliptical cones); importer: `tree_import.rs` (`solid`, `face_extrude`),
+`tree_import/v2.rs` (`split_off`); kernel: `gusset_occt.cpp` (`make_seg_edge`).
+
+### 6126 RemoveInstance1: the removal of an occurrence
+* `D3DC9613` (RemoveInstance, one in the three sets) names, as its first reference, the occurrence holder
+  `2D6E13A1` it removes; the holder names its occurrence `CE2913AA`, which names the component
+  (`E03784ED`): 6126's `RemoveInstance1` removes the occurrence of `Adafruit Logo Body v1`, after `Combine1`
+  cut the logo out of the case.
+* Read as the removal of the bodies that component still has (one `remove_body` each, from the component's
+  features so far, as a mirrored component's bodies are found); a body a combine took as its tool is gone
+  already. 6126's logo body is `Combine1`'s tool, so the removal leaves nothing to remove and is listed as
+  skipped. A component that stands in several places (another holder names it) is refused. Unit test
+  `a_removed_instance_names_its_component_where_it_stands_once`.
+
+### 6126 Extrude17: the logo's petals are elliptical cylinders
+* 6126 then stopped at the step check: "Extrude17 changes the volume by 3428.0243 mm3, not 5 copies of a stored
+  cut tool". `Extrude17` cuts five ellipses (7.04 by 3.10 mm) 10 mm into the logo: 5 x 68.56 mm2 x 10 mm. The
+  file stores the five tools, but each is an ACIS `cone-surface` of ratio 0.44 without slope (an elliptical
+  cylinder) between two planes, and the STEP writer refused such cones ("a face was left out"): the tools came
+  in without their sides.
+* An elliptical cylinder is now written as a `SURFACE_OF_LINEAR_EXTRUSION` of its ellipse (the major vector's
+  length and ratio times it, placed as an `ellipse-curve` is) along the axis; its normal points out, as a
+  cylinder's does, and `cos < 0` flips it the same way. Elliptical cones with a slope stay unread. Tests
+  `an_elliptical_cylinder_is_its_ellipse_swept_along_the_axis` (`gusset-sat`) and
+  `a_sat_elliptical_cylinder_imports_with_its_volume` (`gusset-kernel-occt`: pi a b h to 1e-9).
+* 6126 then explains `Extrude17` and stops at `Combine1`: "how many copies Combine1 makes cannot be derived from
+  the tree, and it follows the last stored state". Counted as one copy per tool (an experiment, not kept), it
+  changes the case by 498.0730 mm3, which no stored solid holds (the logo's last shape is a state of the logo
+  body, not of the cut). The file's end bodies, which confirm the steps after the last state elsewhere, are
+  not consulted where the tree holds stored bodies (the inserted board's Base Features). Not changed: taking
+  the combine's change from the model itself would be no check.
+
+### 2354 BoxPrimitive5 and Extrude3: a slit that cuts a strip off the ribbon
+* `BoxPrimitive5` (a box cut 0.3 by 22 by 0.5 mm, x 55.9 to 56.2, y 33 to 55) and `Extrude3` (a cut 0.6 mm
+  along -x from the end of `BoxPrimitive4`'s slit) each name a body link (`D26351F0`) of their own: a cut
+  that leaves its target in pieces makes one piece a new body. The slit runs across the ribbon's band
+  (y 33 to 55, after `Extrude1 (2)`, `BoxPrimitive2` and `Extrude2`), cutting off the strip x 56.2 to 60;
+  `Extrude3` then cuts that strip at y 33.47 to 33.6.
+* Which piece is the new body is not the larger or the smaller (the ribbon keeps the large piece after
+  `BoxPrimitive5`; the strip keeps the small one after `Extrude3`). The file says it: the new body's record
+  (`D3937028`) is paired in its component's blob map (`74CA4562`, section 60) with a tag, and the history
+  blob's own bodies (before its history stream: 48 bodies, then 116 in `Begin-of-ASM-History-Data`) hold
+  the body's last shape: `BoxPrimitive5`'s is the strip's end y 33 to 33.47 (patterned 40 times later),
+  `Extrude3`'s the rest y 33.6 to 55, 5.5 mm along -x (`Move1` +7.5, `Move2` -13).
+* The tree writes `split_off`: the plane through the middle of the cut's tool across its thinnest world
+  axis (the slit's width: x = 56.0535 and y = 33.535 mm), its normal towards the stored shape, moved back by
+  the moves of that body that follow (only translations; any other change after the cut leaves no
+  `split_off`). The importer cuts, then splits the body by that plane (the existing `split`), and the
+  piece on the normal's side becomes the tree's body. The plane must run through no material: the split
+  must leave every face of the body as it was; a plane through material adds a face to each side and the
+  cut is refused. Tests `a_cut_that_makes_a_body_parts_it_by_the_middle_of_its_slit` (`gusset-sat`) and
+  `a_cut_that_cuts_a_piece_off_makes_it_a_body_of_its_own` (`modeling_tree_import`).
+
+### 2354 R-Pattern1 and R-Pattern2: a pattern's distance is its extent
+* `R-Pattern1` was read as 40 copies 21.5 mm apart; the blob holds them 0.5513 mm apart (21.5 / 39), and
+  `R-Pattern2`'s 4 copies 1.6667 mm apart (5 / 3). The pattern's definition record (`EA0E146E`) has, behind
+  its direction reference (`F2A7590D`), `02 00 00 00 02 00 00 00`, a byte and the count less one (`u32`):
+  the byte is 1 in 2354's two patterns and 0 in the 22 other patterns of the three sets with this layout
+  (the remaining 51 have another layout and keep the spacing reading). 1 is read as "the distance is the
+  extent": the copies stand extent / (count - 1) apart. An extent in two directions is not read.
+
+### 2354 Extrude4 and Extrude6: a join of every copy of a body pattern
+* `Extrude4` joins the strip and its 39 copies to the ribbon: the tree's "joins several bodies" combine named
+  `R-Pattern1` as one tool, which no body stands for (the copies are `R-Pattern1[i]`). A feature whose body
+  links hold every link a body pattern made now names each copy; one that holds some of them names the
+  pattern, as before.
+
+### 2354 Extrude5: a face extrude that cuts two bodies
+* `Extrude5` cuts 3.5 mm from a face of `BoxPrimitive6` through `BoxPrimitive3` and `Revolve1`: an extrude of a
+  face now cuts several bodies as one from a sketch does (one cut per body), the body of the face last.
+* 2354 then stops at `Fillet1` (5 features fail): its seven edges, the 0.67 mm gaps between `R-Pattern2`'s
+  copies on the ribbon's fold, take a 6.65 mm radius (the record's `Radius` is "6.65 mm"), which they cannot.
+  The edges resolved are likely not the ones the file rounds (the fold is `Revolve2`, a half turn): not
+  looked into.
+
+### 5998: the inserted board stands where the root's joint put it
+* The step check refused "a stored solid of 1.8263 mm3 is neither a state of the model nor the cut tool of a
+  feature" at the inserted board's `Extrude2` (28 holes, 21.7457 mm3), and none of the 28 stored tools lay
+  inside the board it changes: the tree's board stood at z 15 to 16.57 mm, x 0 to 25.4, the stored tools at
+  z 3.2 to 4.77, x -12.56 to 12.84.
+* `Component Insert1` and its occurrence (830) store z = 15 mm; the root's joint `Assemble2` then moved the
+  board. The path record of the insert's occurrence alone (`[830]`) has one step (the insert); the records of
+  the paths into the inserted design (`[830, <occurrences of that design>]`, 27 of them) have two: the insert
+  (z 15 / 16.57) and `Assemble2` ((-12.563, 0, 3.2) / 4.77 mm), the same move for all. Their later entries
+  reference the inserted design's occurrences as `01`, the `u64` id there, `01`, a `u64` key, `00` and the class
+  as text (`CE2913AA-...`), which the path reader did not read, so the joint placements were empty and the
+  insert stayed where it was made.
+* Now each path from an insert's occurrence into its design gives the move from its placement at the insert
+  step to its last; where all of them moved alike, the insert's placement is moved so before the inserted
+  design is spliced in (where they differ, or a record is not laid out as known, nothing changes). Unit test
+  `an_occurrence_of_an_inserted_design_is_read_by_its_class_text`.
+* 5998 then explains the board and stops later in the step check: "how many copies Extrude11 (2) makes cannot
+  be derived from the tree, and it follows the last stored state" (Bottom's sketch text, cut as the four
+  glyph solids the file stores; it changes the case by 4.0725 mm3). Not looked into.
+
+### 6299 Extrude2: an arc whose ends lie a hair off its circle
+* `Extrude2` (Bottom: rings between 1.1 and 2.5 mm circles at the case's corners, one cut by a chord at
+  y = -10.9 mm) failed in OCCT: "could not build an arc of the profile". The chord's end the file stores
+  (5.567565, -10.9), rounded to the micrometre, lies 1.1e-7 mm inside the 2.5 mm circle; the arc from it to an
+  exact crossing (with the line x = 7.3025) took its radius from its start, and OCCT refuses an end more than
+  1e-7 off the circle.
+* The shim now builds a profile arc on the circle of its ends' mean radius: both lie on it within half their
+  difference; an arc whose ends agree is built as before. Test
+  `an_arc_whose_ends_are_a_hair_off_its_circle_builds` (`gusset-kernel-occt`).
+* 6299 then rebuilds to `Chamfer10` (7 features fail): a 0.6 mm chamfer of the edge at (10.2, 1.6, 9.9) mm,
+  where `Draft4`'s 45-degree faces of the side port meet the boss face x = 10.2: "chamfer failed" in OCCT. Not
+  looked into.
+
+### 5981 Chamfer6
+* Not attempted this round (the two edges left are rims of `Fillet3`'s rounds whose stored faces lie
+  elsewhere, section 61).
+
+### Result
+* No design gained history; the four blockers looked into are past, and each design stops later:
+  6126 at `Combine1`'s step check (was `RemoveInstance1`, then `Extrude17`); 2354 at `Fillet1` (was the
+  rebuild of `Extrude3`); 5998 at the step check of `Extrude11 (2)` (was the inserted board's `Extrude2`); 6299
+  at `Chamfer10` (was `Extrude2`). 6124 (the 3 V case, the same logo) also passes its `Extrude17` and stops at
+  `Combine1`. 5981 not attempted.
+* No loss: round 30's sample of 40 history designs gives 35 as history and 6 as bodies, as in round 33; only
+  2354's and 6299's refusals changed (later blockers). Of the touched designs 3027, 3350, 3464, 3722, 3900,
+  610, 858, 1054 and 3692 come in as history as before; 3221, 3502, 3802 and 5981 stop where they did.
+* Tests: `gusset-sat` (145; new `a_removed_instance_names_its_component_where_it_stands_once`,
+  `an_elliptical_cylinder_is_its_ellipse_swept_along_the_axis`,
+  `a_cut_that_makes_a_body_parts_it_by_the_middle_of_its_slit`,
+  `an_occurrence_of_an_inserted_design_is_read_by_its_class_text`), `gusset-commands` (277),
+  `gusset-kernel-occt` (76; new `a_sat_elliptical_cylinder_imports_with_its_volume`,
+  `an_arc_whose_ends_are_a_hair_off_its_circle_builds`), `gusset-cli` `modeling_tree_import` (81, new
+  `a_cut_that_cuts_a_piece_off_makes_it_a_body_of_its_own`), `modeling_face_profile`,
+  `modeling_extrude_to_face` pass; clippy (`gusset-sat`, `gusset-commands`, `gusset-occt-sys`,
+  `gusset-kernel-occt`, `gusset-cli`) and fmt clean.
