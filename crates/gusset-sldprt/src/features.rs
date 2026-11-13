@@ -1301,6 +1301,92 @@ struct Revolved {
     axis: usize,
 }
 
+/// Chamfers whose bevel stands square on the reference face (a 90-degree distance-angle
+/// chamfer), one per edge, for edges that are circles of a full revolve between two profile
+/// lines: `distance` d on the reference face (the plane or cylinder of the two, the other being
+/// a cone; one sample, adpator) and `distance2` d / cos(corner angle) on the
+/// other, which the square bevel meets only at an acute corner. `None` when an edge is not such
+/// a circle.
+fn square_chamfer(
+    name: &str,
+    d: f64,
+    sel: &[(usize, Vec<Rep>)],
+    revolved: &HashMap<u32, Revolved>,
+    sketches: &[Geometry],
+) -> Option<Vec<Value>> {
+    let mut out = Vec::new();
+    for (_, reps) in sel {
+        let (m, path) = revolve_circle(reps, revolved, sketches)?;
+        let [r0, r1, ..] = reps.as_slice() else { return None };
+        let rv = revolved.get(&r0.fid)?;
+        let g = sketches.get(rv.on.sketch)?;
+        let line = |k: u32| {
+            let mut it = g.segs.iter().filter(|s| s.a == k && !s.construction && !s.centerline);
+            match (it.next(), it.next()) {
+                (Some(s), None) if s.kind == SegKind::Line => Some(*s),
+                _ => None,
+            }
+        };
+        let (s0, s1) = (line(r0.idx)?, line(r1.idx)?);
+        let shared = [s0.s, s0.e].into_iter().find(|v| *v == s1.s || *v == s1.e)?;
+        let v = point(&g.pts, shared)?;
+        let ax = g.segs.get(rv.axis)?;
+        let (a0, a1) = (point(&g.pts, ax.s)?, point(&g.pts, ax.e)?);
+        let al = libm::hypot(a1.x - a0.x, a1.y - a0.y);
+        if al < 1e-12 {
+            return None;
+        }
+        let (tx, ty) = ((a1.x - a0.x) / al, (a1.y - a0.y) / al);
+        // The reference face is the plane or cylinder of the two (a profile line square to or
+        // along the axis), the other a cone; any other pair is not read.
+        let simple = |s: &Seg| -> Option<bool> {
+            let (p, q) = (point(&g.pts, s.s)?, point(&g.pts, s.e)?);
+            let (dx, dy) = (q.x - p.x, q.y - p.y);
+            let len = libm::hypot(dx, dy);
+            let c = ((dx * tx + dy * ty) / len.max(1e-300)).abs();
+            Some(len > 1e-12 && !(1e-9..=1.0 - 1e-12).contains(&c))
+        };
+        let (sa, sb) = match (simple(&s0)?, simple(&s1)?) {
+            (true, false) => (s0, s1),
+            (false, true) => (s1, s0),
+            _ => return None,
+        };
+        // Unit directions in the sketch from the corner along each line.
+        let away = |s: &Seg| -> Option<(f64, f64)> {
+            let o = point(&g.pts, if s.s == shared { s.e } else { s.s })?;
+            let (dx, dy) = (o.x - v.x, o.y - v.y);
+            let len = libm::hypot(dx, dy);
+            (len > 1e-12).then(|| (dx / len, dy / len))
+        };
+        let (ua, ub) = (away(&sa)?, away(&sb)?);
+        let cos = ua.0 * ub.0 + ua.1 * ub.1;
+        // Only an acute corner (not too sharp) has a square bevel that meets the other face.
+        if !(0.05..0.999).contains(&cos) {
+            return None;
+        }
+        // A point on the reference face beside the edge, where the edge's midpoint is: half way
+        // round from the profile, so the radial part of the direction turns over.
+        let along = ua.0 * tx + ua.1 * ty;
+        let (rx, ry) = (ua.0 - along * tx, ua.1 - along * ty);
+        let flipped = (along * tx - rx, along * ty - ry);
+        let origin = lift(&rv.on, 0.0, 0.0, 0.0);
+        let dir = sub(lift(&rv.on, flipped.0, flipped.1, 0.0), origin);
+        let t = (0.5 * d).min(1.0);
+        let q = [0, 1, 2]
+            .map(|i| round_to(m.get(i).copied().unwrap_or(0.0) + t * dir.get(i).copied().unwrap_or(0.0), 6) + 0.0);
+        let nm = if out.is_empty() { name.to_string() } else { format!("{name}_{}", out.len() + 1) };
+        out.push(json!({
+            "type": "chamfer",
+            "name": nm,
+            "distance": round_to(d, 9),
+            "distance2": round_to(d / cos, 9),
+            "edges": [{"midpoint": m, "path": path}],
+            "face": {"point": q},
+        }));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 /// The circle where two profile segments of a full revolve meet, from an edge record whose
 /// first two references are the revolve's faces (the index is the key of the profile
 /// segment): a point on it, opposite the profile plane, and the whole circle as a closed
@@ -2836,6 +2922,18 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 && angle < TAU / 4.0 - 1e-6
                 && let Some(chs) =
                     chamfer_angle(&n.name, (d1, angle), &mids, &sel, &Corners { swept: &swept, sketches: &sketches })
+            {
+                feats.extend(chs);
+                continue;
+            }
+            // A 90-degree distance-angle chamfer: the bevel stands square on the face D1 runs
+            // along (adpator 倒角1: D1 0.3 mm, the part's top face ends 0.3 mm short of the rim
+            // and the bevel is a cylinder). On the circle edges of a revolve that is two distances.
+            if !fillet
+                && !unresolved
+                && let (Some(&d1), Some(&angle)) = (ps.first(), ps.get(1))
+                && (angle - TAU / 4.0).abs() < 1e-6
+                && let Some(chs) = square_chamfer(&n.name, mm(d1), &sel, &revolved, &sketches)
             {
                 feats.extend(chs);
                 continue;
