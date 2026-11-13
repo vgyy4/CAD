@@ -460,10 +460,8 @@ it nets and rules, route, pour, check and write every fabrication file without K
 * DRC: hole-to-hole, courtyard overlap, silk on pads and drill sizes are done (ADR 0048);
   per-class rules beyond clearance; KiCad's custom rules (`.kicad_dru`).
 * Editor: (texts in our stroke font, mirrored on flip, adding and editing board texts: done,
-  see ADR 0049), a pad picked on its own (pad nets are edited
-  per footprint in the panel), arc tracks
-  drawn freehand, board outline drawing with the mouse (today: the `pcb.set_outline` form),
-  moving tracks and vias.
+  see ADR 0049; a pad picked on its own, moving tracks and vias, and the board outline drawn
+  with the mouse: done, see ADR 0050), arc tracks drawn freehand.
 * From phase 1a: Gerber object attributes (`.N`, `.P`, `.C`); re-reading our Gerbers with a
   permissive parser in tests; a corpus test over local KiCad samples.
 * **KiCad IPC bridge** (protobuf over NNG to a running KiCad, after the `.proto` licence is confirmed)
