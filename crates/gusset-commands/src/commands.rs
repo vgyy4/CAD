@@ -74,8 +74,8 @@ pub use ops::{DeleteFace, Draft, Mirror, MoveFace, OffsetFace, PatternCircular, 
 pub use pcb::{PcbExportDrill, PcbExportGerbers, PcbImport, PcbInfo};
 pub use pcb_autoroute::PcbAutoroute;
 pub use pcb_edit::{
-    PcbAddTrack, PcbAddVia, PcbDelete, PcbDrc, PcbExportBom, PcbExportPos, PcbMove, PcbMoveFootprint, PcbNew, PcbOpen, PcbSave,
-    PcbSetOutline, PcbText,
+    PcbAddTrack, PcbAddVia, PcbDelete, PcbDrc, PcbExportBom, PcbExportPos, PcbMove, PcbMoveFootprint, PcbNew, PcbOpen,
+    PcbSave, PcbSetOutline, PcbText,
 };
 pub use pcb_layout::{PcbAddFootprint, PcbExportDsn, PcbExportStep, PcbFillZones, PcbImportSes, PcbRoute};
 pub use pcb_nets::{PcbAddZone, PcbNetClass, PcbRenameNet, PcbSetNet, ZoneHatch};

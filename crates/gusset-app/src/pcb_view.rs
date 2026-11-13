@@ -39,11 +39,16 @@ pub enum Tool {
     /// Clicks add zone corners; a double click, Enter or a click on the first corner
     /// closes the zone (on the active layer, with the panel's net and hatch).
     Zone,
+    /// Clicks add outline corners; a double click, Enter or a click on the first corner
+    /// replaces the board outline (`pcb.set_outline`).
+    Outline,
 }
 
 /// A picked board item (indices into the board's lists).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sel {
+    /// A pad on its own, index in the board's pads.
+    Pad(usize),
     Footprint(usize),
     Track(usize),
     Via(usize),
@@ -106,6 +111,8 @@ pub struct State {
     pub footprint: String,
     /// Zone tool: corners so far, the new zone's net, hatch and its grid (mm).
     pub zone_pts: Vec<Pt>,
+    /// Outline tool: corners so far.
+    pub outline_pts: Vec<Pt>,
     pub zone_net: String,
     /// Text tool: the words, height (mm), angle and side of a new text.
     pub text_words: String,
@@ -120,6 +127,8 @@ pub struct State {
     /// Pad nets of the picked footprint as edited in the panel: (board hash, footprint,
     /// (pad number, net) per pad).
     pub pad_nets: Option<PadNets>,
+    /// The picked pad's net as typed: (board hash, pad, net).
+    pub pad_edit: Option<(String, usize, String)>,
     /// The highlighted net's new name, as typed.
     pub rename_to: String,
     /// The net class edited in the panel and its sizes (mm).
@@ -193,6 +202,7 @@ impl Default for State {
             library_filter: String::new(),
             footprint: String::new(),
             zone_pts: Vec::new(),
+            outline_pts: Vec::new(),
             zone_net: String::new(),
             text_words: "TEXT".into(),
             text_size: 1.0,
@@ -203,6 +213,7 @@ impl Default for State {
             hatch_thickness: 0.5,
             hatch_gap: 1.0,
             pad_nets: None,
+            pad_edit: None,
             rename_to: String::new(),
             class: ClassEdit { name: "Default".into(), ..ClassEdit::default() },
             freerouting: String::new(),
@@ -216,6 +227,8 @@ impl Default for State {
 struct Drag {
     /// The footprint being moved, or `None` while panning.
     footprint: Option<usize>,
+    /// The track or via being moved (with the other picked ones), when not a footprint.
+    item: Option<Sel>,
     /// Total movement in board mm.
     moved: Vec2,
 }
@@ -398,6 +411,7 @@ pub fn end_route(st: &mut State) {
     st.track_from = None;
     st.route_net = None;
     st.zone_pts.clear();
+    st.outline_pts.clear();
 }
 
 /// Board mm (Y down, like the screen) to screen points and back.
@@ -552,6 +566,11 @@ pub fn hit(board: &Board, p: Pt, tol: f64, shown: &dyn Fn(&str) -> bool) -> Opti
     if let Some((i, _)) = text {
         return Some(Sel::Text(i));
     }
+    if let Some(k) = board.pads.iter().position(|pad| {
+        board.copper_layers().iter().any(|l| shown(l) && board.on_layer(&pad.layers, l)) && pad_contains(pad, p, tol)
+    }) {
+        return Some(Sel::Pad(k));
+    }
     (0..board.footprints.len())
         .filter_map(|i| footprint_box(board, i).map(|b| (i, b)))
         .filter(|(_, b)| {
@@ -562,6 +581,71 @@ pub fn hit(board: &Board, p: Pt, tol: f64, shown: &dyn Fn(&str) -> bool) -> Opti
             area(&a.1).total_cmp(&area(&b.1))
         })
         .map(|(i, _)| Sel::Footprint(i))
+}
+
+/// Whether board point `p` is on the pad (or within `tol` mm of it).
+fn pad_contains(pad: &gusset_pcb::board::Pad, p: Pt, tol: f64) -> bool {
+    match geom::pad_contour(pad, 0.0) {
+        Some(Contour::Circle { center, radius }) => libm::hypot(center[0] - p[0], center[1] - p[1]) <= radius + tol,
+        Some(c) => {
+            let poly = c.polygon(0.05);
+            geom::inside(&poly, p)
+                || poly.iter().zip(poly.iter().cycle().skip(1)).any(|(a, b)| dist_seg(p, *a, *b) <= tol)
+        }
+        None => false,
+    }
+}
+
+/// The footprint a pad belongs to.
+pub fn pad_owner(board: &Board, pad: usize) -> Option<usize> {
+    board.footprints.iter().position(|f| f.pads.contains(&pad))
+}
+
+/// `(reference, number)` of a pad, when it has both.
+pub fn pad_name(board: &Board, pad: usize) -> Option<(String, String)> {
+    let number = board.pads.get(pad)?.number.clone();
+    let reference = board.footprints.get(pad_owner(board, pad)?)?.reference.clone();
+    (!number.is_empty() && !reference.is_empty()).then_some((reference, number))
+}
+
+/// How far a dragged track or via lands from where it is: its start (track) or centre
+/// (via) moved by `moved` and snapped to the grid.
+pub fn item_drop_delta(board: &Board, item: Sel, moved: Pt, grid: f64) -> Option<Pt> {
+    let from = match item {
+        Sel::Track(i) => board.tracks.get(i)?.start,
+        Sel::Via(i) => board.vias.get(i)?.at,
+        _ => return None,
+    };
+    let to = snap([from[0] + moved[0], from[1] + moved[1]], grid);
+    Some([to[0] - from[0], to[1] - from[1]])
+}
+
+/// `pcb.move` for a dragged track or via and every other picked track and via.
+pub fn move_items_command(st: &State, dragged: Sel, by: Pt) -> Option<(&'static str, Value)> {
+    let (tracks, vias) = dragged_items(st, dragged);
+    ((!tracks.is_empty() || !vias.is_empty()) && by.iter().any(|v| v.abs() > 1e-9))
+        .then(|| ("pcb.move", json!({ "tracks": tracks, "vias": vias, "by": by })))
+}
+
+/// The tracks and vias a drag of `dragged` moves: all picked ones when it is one of them.
+pub fn dragged_items(st: &State, dragged: Sel) -> (Vec<usize>, Vec<usize>) {
+    let mut all: Vec<Sel> = st.selected.into_iter().chain(st.multi.iter().copied()).collect();
+    if !all.contains(&dragged) {
+        all = vec![dragged];
+    }
+    let mut tracks: Vec<usize> =
+        all.iter().filter_map(|s| if let Sel::Track(i) = s { Some(*i) } else { None }).collect();
+    let mut vias: Vec<usize> = all.iter().filter_map(|s| if let Sel::Via(i) = s { Some(*i) } else { None }).collect();
+    tracks.sort_unstable();
+    tracks.dedup();
+    vias.sort_unstable();
+    vias.dedup();
+    (tracks, vias)
+}
+
+/// `pcb.set_outline` for the Outline tool's corners (at least 3).
+pub fn outline_command(st: &State) -> Option<(&'static str, Value)> {
+    (st.outline_pts.len() >= 3).then(|| ("pcb.set_outline", json!({ "points": st.outline_pts })))
 }
 
 /// The centre of a pad on `layer` under `p`, for routing from pad to pad.
@@ -601,7 +685,7 @@ pub fn delete_command(sel: Sel) -> Option<(&'static str, Value)> {
         Sel::Track(i) => Some(("pcb.delete", json!({ "tracks": [i] }))),
         Sel::Via(i) => Some(("pcb.delete", json!({ "vias": [i] }))),
         Sel::Text(i) => Some(("pcb.text", json!({ "index": i, "delete": true }))),
-        Sel::Footprint(_) => None,
+        Sel::Footprint(_) | Sel::Pad(_) => None,
     }
 }
 
@@ -735,6 +819,7 @@ pub fn net_of(board: &Board, sel: Sel) -> Option<String> {
     match sel {
         Sel::Track(i) => board.tracks.get(i).and_then(|t| board.net_name(&t.net)),
         Sel::Via(i) => board.vias.get(i).and_then(|v| board.net_name(&v.net)),
+        Sel::Pad(i) => board.pads.get(i).and_then(|p| board.net_name(&p.net)),
         Sel::Footprint(_) | Sel::Text(_) => None,
     }
 }
@@ -864,10 +949,12 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
             (Tool::Text, "pcb.text", "pcb.tip_text"),
             (Tool::Place, "pcb.place", "pcb.tip_place"),
             (Tool::Zone, "pcb.zone", "pcb.tip_zone"),
+            (Tool::Outline, "pcb.outline", "pcb.tip_outline"),
         ] {
             if ui.selectable_label(st.tool == t, tr(key)).on_hover_text(tr(tip)).clicked() {
                 st.tool = t;
                 st.track_from = None;
+                st.outline_pts.clear();
             }
         }
     });
@@ -1083,6 +1170,29 @@ fn nets_panel(ui: &mut Ui, open: &OpenBoard, st: &mut State, out: &mut Out) {
             });
         }
     }
+    if let Some(Sel::Pad(k)) = st.selected
+        && let Some((reference, number)) = pad_name(b, k)
+    {
+        let now = b.pads.get(k).and_then(|p| b.net_name(&p.net)).unwrap_or_default();
+        if st.pad_edit.as_ref().is_none_or(|(h, i, _)| *h != open.board_hash || *i != k) {
+            st.pad_edit = Some((open.board_hash.clone(), k, now.clone()));
+        }
+        if let Some((_, _, net)) = st.pad_edit.as_mut() {
+            ui.horizontal(|ui| {
+                ui.label(format!("{}: {reference}.{number}", tr("pcb.pad")));
+                let r = crate::theme::text_field(
+                    ui,
+                    egui::TextEdit::singleline(net).hint_text(tr("pcb.no_net")).desired_width(110.0),
+                );
+                let send = r.lost_focus() && net.trim() != now;
+                if (ui.add_enabled(net.trim() != now, egui::Button::new(tr("pcb.text_apply"))).clicked() || send)
+                    && net.trim() != now
+                {
+                    out.commands.push(pad_net_command(&reference, &number, net));
+                }
+            });
+        }
+    }
     if let Some(h) = st.highlight.clone() {
         ui.horizontal(|ui| {
             crate::theme::text_field(
@@ -1267,6 +1377,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
     }
     // A selection past the lists (after an undo) is dropped.
     st.selected = st.selected.filter(|s| match *s {
+        Sel::Pad(i) => i < b.pads.len(),
         Sel::Footprint(i) => i < b.footprints.len(),
         Sel::Track(i) => i < b.tracks.len(),
         Sel::Via(i) => i < b.vias.len(),
@@ -1314,22 +1425,31 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         }
     } else if resp.drag_started() && st.boxing.is_none() {
         let press = ui.input(|i| i.pointer.press_origin()).map(|p| map.from(p));
-        let fp = match (st.tool, middle, press) {
-            (Tool::Select, false, Some(p)) => match hit(b, p, tol, &shown) {
-                Some(Sel::Footprint(i)) => Some(i),
-                _ => None,
-            },
+        let under = match (st.tool, middle, press) {
+            (Tool::Select, false, Some(p)) => hit(b, p, tol, &shown),
             _ => None,
         };
+        // A pad drags its footprint.
+        let fp = match under {
+            Some(Sel::Footprint(i)) => Some(i),
+            Some(Sel::Pad(k)) => pad_owner(b, k),
+            _ => None,
+        };
+        let item = under.filter(|s| matches!(s, Sel::Track(_) | Sel::Via(_)));
         if let Some(i) = fp {
             st.selected = Some(Sel::Footprint(i));
+        } else if let Some(x) = item
+            && !is_picked(st, x)
+        {
+            st.multi.clear();
+            st.selected = Some(x);
         }
-        st.drag = Some(Drag { footprint: fp, moved: Vec2::ZERO });
+        st.drag = Some(Drag { footprint: fp, item, moved: Vec2::ZERO });
     }
     if resp.dragged() && st.boxing.is_none() {
         let d = resp.drag_delta();
         match st.drag.as_mut() {
-            Some(Drag { footprint: Some(_), moved }) => *moved += d / st.zoom,
+            Some(Drag { footprint: Some(_), moved, .. } | Drag { item: Some(_), moved, .. }) => *moved += d / st.zoom,
             _ => {
                 st.offset += d;
                 st.auto_fit = None;
@@ -1337,7 +1457,13 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         }
     }
     if resp.drag_stopped() {
-        if let Some(Drag { footprint: Some(i), moved }) = st.drag.take()
+        if let Some(Drag { item: Some(x), moved, .. }) = st.drag.clone()
+            && moved.length() > 1e-3
+            && let Some(by) = item_drop_delta(b, x, [f64::from(moved.x), f64::from(moved.y)], st.grid)
+        {
+            out.commands.extend(move_items_command(st, x, by));
+        }
+        if let Some(Drag { footprint: Some(i), moved, .. }) = st.drag.take()
             && moved.length() > 1e-3
             && let Some(at) = drop_place(b, i, [f64::from(moved.x), f64::from(moved.y)], st.grid)
         {
@@ -1401,6 +1527,18 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                     st.zone_pts.push(q);
                 }
             }
+            Tool::Outline => {
+                let q = snap(p, st.grid);
+                // A click on the first corner closes the outline.
+                let closes = st.outline_pts.len() >= 3
+                    && st.outline_pts.first().is_some_and(|f| map.to(*f).distance(map.to(q)) < 6.0);
+                if closes {
+                    out.commands.extend(outline_command(st));
+                    st.outline_pts.clear();
+                } else if st.outline_pts.last() != Some(&q) {
+                    st.outline_pts.push(q);
+                }
+            }
             Tool::Route => match st.track_from {
                 None => {
                     let (q, _) = route_target(b, p, &st.active, st.grid, None);
@@ -1441,6 +1579,10 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
     if st.tool == Tool::Zone && (resp.double_clicked() || enter) {
         out.commands.extend(zone_command(st));
         st.zone_pts.clear();
+    }
+    if st.tool == Tool::Outline && (resp.double_clicked() || enter) {
+        out.commands.extend(outline_command(st));
+        st.outline_pts.clear();
     }
     if resp.secondary_clicked() || (resp.double_clicked() && st.tool == Tool::Route) {
         end_route(st);
@@ -1493,7 +1635,13 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
     }
 
     let dragged = st.drag.as_ref().and_then(|d| d.footprint.map(|i| (i, d.moved)));
-    paint(&painter, &map, open, st, dragged);
+    let moving = st.drag.as_ref().and_then(|d| {
+        let x = d.item?;
+        let by = item_drop_delta(b, x, [f64::from(d.moved.x), f64::from(d.moved.y)], st.grid)?;
+        let (t, v) = dragged_items(st, x);
+        Some((t, v, by))
+    });
+    paint(&painter, &map, open, st, dragged, moving.as_ref());
 
     // Route preview: the way around, or a thin red line when there is none.
     if let (Tool::Route, Some(a), Some(p)) = (st.tool, st.track_from, pointer) {
@@ -1527,6 +1675,17 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         }
         painter.add(Shape::line(pts, Stroke::new(1.5, c)));
         for q in &st.zone_pts {
+            painter.circle_filled(map.to(*q), 3.0, c);
+        }
+    }
+    if st.tool == Tool::Outline && !st.outline_pts.is_empty() {
+        let c = layer_color("Edge.Cuts");
+        let mut pts: Vec<Pos2> = st.outline_pts.iter().map(|x| map.to(*x)).collect();
+        if let Some(p) = pointer {
+            pts.push(map.to(snap(p, st.grid)));
+        }
+        painter.add(Shape::line(pts, Stroke::new(1.5, c)));
+        for q in &st.outline_pts {
             painter.circle_filled(map.to(*q), 3.0, c);
         }
     }
@@ -1591,8 +1750,30 @@ fn paint_shape(painter: &egui::Painter, map: &Map, s: &BShape, width: f64, fille
     }
 }
 
-fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &mut State, dragged: Option<(usize, Vec2)>) {
+/// Tracks, vias and the offset (board mm) of a drag in progress.
+type Moving = (Vec<usize>, Vec<usize>, Pt);
+
+fn paint(
+    painter: &egui::Painter,
+    map: &Map,
+    open: &OpenBoard,
+    st: &mut State,
+    dragged: Option<(usize, Vec2)>,
+    moving: Option<&Moving>,
+) {
     let b = &open.board;
+    // Tracks and vias being dragged are drawn where they would land; track ends on a
+    // dragged via follow it.
+    let shifted = |p: Pt, d: Pt| [p[0] + d[0], p[1] + d[1]];
+    let end_of = |i: usize, p: Pt| -> Pt {
+        let Some((tracks, vias, by)) = moving else { return p };
+        if tracks.contains(&i) {
+            return shifted(p, *by);
+        }
+        let on_via =
+            vias.iter().filter_map(|&v| b.vias.get(v)).any(|v| libm::hypot(p[0] - v.at[0], p[1] - v.at[1]) <= 1e-4);
+        if on_via { shifted(p, *by) } else { p }
+    };
     let view = painter.clip_rect();
     // Items of the dragged footprint are drawn where they would land.
     let off_of = |fp: Option<usize>| match (fp, dragged) {
@@ -1674,16 +1855,18 @@ fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &mut State, d
         for (i, t) in b.tracks.iter().enumerate().filter(|(_, t)| t.layer == layer) {
             let w = (t.width as f32 * map.zoom).max(1.0);
             let col = if is_picked(st, Sel::Track(i)) { Color32::WHITE } else { lit(&t.net, c) };
+            let (ts, te) = (end_of(i, t.start), end_of(i, t.end));
             match t.mid {
                 Some(m) => {
-                    let pts: Vec<Pos2> = geom::arc_points(t.start, m, t.end, f64::from(0.5 / map.zoom).max(1e-3))
+                    let m = if moving.is_some_and(|x| x.0.contains(&i)) { end_of(i, m) } else { m };
+                    let pts: Vec<Pos2> = geom::arc_points(ts, m, te, f64::from(0.5 / map.zoom).max(1e-3))
                         .into_iter()
                         .map(|p| map.to(p))
                         .collect();
                     painter.add(Shape::line(pts, Stroke::new(w, col)));
                 }
                 None => {
-                    let (a, e) = (map.to(t.start), map.to(t.end));
+                    let (a, e) = (map.to(ts), map.to(te));
                     if view.expand(w).intersects(Rect::from_two_pos(a, e)) {
                         stroke_line(painter, a, e, w, col);
                     }
@@ -1692,7 +1875,8 @@ fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &mut State, d
         }
         for (k, pad) in b.pads.iter().enumerate().filter(|(_, p)| b.on_layer(&p.layers, &layer)) {
             let off = off_of(pad_fp.get(k).copied().flatten());
-            let selected = pad_fp.get(k).copied().flatten().is_some_and(|i| is_picked(st, Sel::Footprint(i)));
+            let selected = is_picked(st, Sel::Pad(k))
+                || pad_fp.get(k).copied().flatten().is_some_and(|i| is_picked(st, Sel::Footprint(i)));
             let col = if selected { Color32::WHITE.gamma_multiply(0.9) } else { lit(&pad.net, c) };
             match geom::pad_contour(pad, 0.0) {
                 Some(Contour::Circle { center, radius }) => {
@@ -1717,8 +1901,12 @@ fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &mut State, d
     let via_c = Color32::from_rgb(236, 236, 236);
     for (i, v) in b.vias.iter().enumerate() {
         let col = if is_picked(st, Sel::Via(i)) { Color32::WHITE } else { via_c.gamma_multiply(0.8) };
-        painter.circle_filled(map.to(v.at), v.size as f32 / 2.0 * map.zoom, col);
-        painter.circle_filled(map.to(v.at), (v.drill as f32 / 2.0 * map.zoom).max(0.5), Color32::from_rgb(0, 16, 35));
+        let at = match moving {
+            Some((_, vias, by)) if vias.contains(&i) => shifted(v.at, *by),
+            _ => v.at,
+        };
+        painter.circle_filled(map.to(at), v.size as f32 / 2.0 * map.zoom, col);
+        painter.circle_filled(map.to(at), (v.drill as f32 / 2.0 * map.zoom).max(0.5), Color32::from_rgb(0, 16, 35));
     }
     for (k, pad) in b.pads.iter().enumerate() {
         let Some(d) = pad.drill else { continue };

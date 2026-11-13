@@ -2640,6 +2640,9 @@ impl App {
             (Some(crate::pcb_view::Sel::Footprint(i)), Some(b)) => {
                 b.board.footprints.get(i).map(|f| f.reference.clone())
             }
+            (Some(crate::pcb_view::Sel::Pad(k)), Some(b)) => crate::pcb_view::pad_owner(&b.board, k)
+                .and_then(|i| b.board.footprints.get(i))
+                .map(|f| f.reference.clone()),
             _ => None,
         };
         let from_sch = self.sch_state.probe.clone();

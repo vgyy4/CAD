@@ -310,6 +310,112 @@ fn zones_pad_nets_classes_and_the_autorouter_from_the_panel() {
 }
 
 #[test]
+fn a_pad_is_picked_on_its_own_and_its_net_set_through_the_registry() {
+    let b = board();
+    let all = |_: &str| true;
+    // On the pad: the pad; beside it in the part's box: the footprint.
+    assert_eq!(pcb_view::hit(&b, [9.2, 10.2], 0.05, &all), Some(Sel::Pad(0)));
+    assert_eq!(pcb_view::hit(&b, [11.0, 10.0], 0.05, &all), Some(Sel::Pad(1)));
+    assert_eq!(pcb_view::hit(&b, [10.0, 10.8], 0.05, &all), Some(Sel::Footprint(0)));
+    // Its F.Cu layer hidden, a pad is not picked.
+    assert_eq!(pcb_view::hit(&b, [9.2, 10.2], 0.05, &|l: &str| l != "F.Cu"), Some(Sel::Footprint(0)));
+    assert_eq!(pcb_view::pad_name(&b, 1), Some(("R1".into(), "2".into())));
+    assert_eq!(pcb_view::pad_owner(&b, 1), Some(0));
+    assert_eq!(pcb_view::net_of(&b, Sel::Pad(1)).as_deref(), Some("B"));
+    let c = pcb_view::pad_net_command("R1", "2", " GND ");
+    assert_eq!((c.0, c.1["pads"].clone(), c.1["net"].clone()), ("pcb.set_net", json!(["R1.2"]), json!("GND")));
+    // A pad dragged moves its footprint; a pad has no delete command of its own.
+    assert!(pcb_view::delete_command(Sel::Pad(0)).is_none());
+    // The command it sends is the registry's `pcb.set_net` (run and undone in gusset-commands).
+    assert!(gusset_commands::find("pcb.set_net").is_some());
+}
+
+#[test]
+fn tracks_and_vias_are_dragged_through_pcb_move() {
+    let b = board();
+    let mut st = pcb_view::State::default();
+    st.selected = Some(Sel::Via(0));
+    // The drop snaps the via's centre to the grid: (25, 15) + (1.1, -0.9) → (26, 14).
+    let by = pcb_view::item_drop_delta(&b, Sel::Via(0), [1.1, -0.9], 0.5).unwrap();
+    assert_eq!(by, [1.0, -1.0]);
+    let c = pcb_view::move_items_command(&st, Sel::Via(0), by).unwrap();
+    assert_eq!((c.0, c.1["vias"].clone(), c.1["tracks"].clone()), ("pcb.move", json!([0]), json!([])));
+    assert_eq!(c.1["by"], json!([1.0, -1.0]));
+    // A track is snapped by its start; a drag that lands where it was sends nothing.
+    assert_eq!(pcb_view::item_drop_delta(&b, Sel::Track(0), [0.1, 0.1], 0.5), Some([0.0, 0.0]));
+    assert!(pcb_view::move_items_command(&st, Sel::Via(0), [0.0, 0.0]).is_none());
+    // Dragging a picked item moves all picked tracks and vias; an unpicked one moves alone.
+    st.multi = vec![Sel::Track(0)];
+    let (t, v) = pcb_view::dragged_items(&st, Sel::Track(0));
+    assert_eq!((t, v), (vec![0], vec![0]));
+    assert_eq!(pcb_view::dragged_items(&st, Sel::Track(1)), (vec![1], vec![]));
+    // Through the app: the via and the track end on it move in one undo step.
+    let mut h = harness(app());
+    h.run();
+    h.state_mut().ribbon_action(crate::ribbon::Action::PcbTab);
+    h.run();
+    h.state_mut().run("pcb.new", json!({"width": "40 mm", "height": "30 mm"})).unwrap();
+    h.state_mut().wait_idle();
+    h.state_mut().run("pcb.add_track", json!({"start": [10, 10], "end": [20, 10]})).unwrap();
+    h.state_mut().run("pcb.add_via", json!({"at": [20, 10]})).unwrap();
+    h.state_mut().wait_idle();
+    let mut st = pcb_view::State::default();
+    st.selected = Some(Sel::Via(0));
+    let by = {
+        let o = h.state().snapshot.pcb.as_ref().unwrap();
+        pcb_view::item_drop_delta(&o.board, Sel::Via(0), [2.2, 3.1], 0.5).unwrap()
+    };
+    let out = pcb_view::Out {
+        commands: pcb_view::move_items_command(&st, Sel::Via(0), by).into_iter().collect(),
+        blocked: None,
+    };
+    h.state_mut().pcb_commands(out);
+    h.state_mut().wait_idle();
+    {
+        let b = &h.state().snapshot.pcb.as_ref().unwrap().board;
+        assert_eq!((b.vias[0].at, b.tracks[0].end, b.tracks[0].start), ([22.0, 13.0], [22.0, 13.0], [10.0, 10.0]));
+    }
+    h.state_mut().run("history.undo", json!({})).unwrap();
+    h.state_mut().wait_idle();
+    let b = &h.state().snapshot.pcb.as_ref().unwrap().board;
+    assert_eq!((b.vias[0].at, b.tracks[0].end), ([20.0, 10.0], [20.0, 10.0]));
+}
+
+#[test]
+fn the_outline_tool_sends_set_outline() {
+    let mut st = pcb_view::State::default();
+    st.tool = Tool::Outline;
+    // Fewer than three corners send nothing.
+    st.outline_pts = vec![[0.0, 0.0], [10.0, 0.0]];
+    assert!(pcb_view::outline_command(&st).is_none());
+    st.outline_pts = vec![[0.0, 0.0], [30.0, 0.0], [30.0, 20.0], [0.0, 20.0]];
+    let c = pcb_view::outline_command(&st).unwrap();
+    assert_eq!((c.0, c.1["points"].clone()), ("pcb.set_outline", json!(st.outline_pts)));
+    // Through the app: the board's outline becomes the polygon, in one undo step; Esc-like
+    // ending clears the corners.
+    let mut h = harness(app());
+    h.run();
+    h.state_mut().ribbon_action(crate::ribbon::Action::PcbTab);
+    h.run();
+    h.state_mut().run("pcb.new", json!({"width": "40 mm", "height": "30 mm"})).unwrap();
+    h.state_mut().wait_idle();
+    let out = pcb_view::Out { commands: vec![c], blocked: None };
+    h.state_mut().pcb_commands(out);
+    h.state_mut().wait_idle();
+    let area = |b: &Board| {
+        let (loops, _) = gusset_pcb::geom::outline_loops(b, 1e-3);
+        gusset_pcb::geom::area(&loops[0].polygon(0.01)).abs()
+    };
+    assert!((area(&h.state().snapshot.pcb.as_ref().unwrap().board) - 600.0).abs() < 1e-6);
+    h.state_mut().run("history.undo", json!({})).unwrap();
+    h.state_mut().wait_idle();
+    assert!((area(&h.state().snapshot.pcb.as_ref().unwrap().board) - 1200.0).abs() < 1e-6);
+    pcb_view::end_route(&mut st);
+    assert!(st.outline_pts.is_empty());
+    h.run();
+}
+
+#[test]
 fn texts_are_picked_and_added_through_the_registry() {
     let mut b = board();
     let l = Limits::default();

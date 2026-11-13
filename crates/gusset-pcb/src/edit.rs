@@ -417,11 +417,8 @@ impl Board {
         let items = self.tree.items_mut().ok_or_else(|| bad("not a board"))?;
         for (node, which, is_via) in plan {
             let n = items.get_mut(node).ok_or_else(|| bad("not a board"))?;
-            let heads: &[(&str, bool)] = if is_via {
-                &[("at", true)]
-            } else {
-                &[("start", which[0]), ("mid", which[1]), ("end", which[2])]
-            };
+            let heads: &[(&str, bool)] =
+                if is_via { &[("at", true)] } else { &[("start", which[0]), ("mid", which[1]), ("end", which[2])] };
             for &(h, go) in heads {
                 if !go {
                     continue;

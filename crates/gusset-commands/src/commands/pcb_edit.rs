@@ -379,7 +379,8 @@ pub struct PcbMove {
 impl Command for PcbMove {
     const ID: &'static str = "pcb.move";
     const TITLE: &'static str = "Move tracks and vias";
-    const DESCRIPTION: &'static str = "Move tracks and vias of the open board by an offset; ends on a moved via follow.";
+    const DESCRIPTION: &'static str =
+        "Move tracks and vias of the open board by an offset; ends on a moved via follow.";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

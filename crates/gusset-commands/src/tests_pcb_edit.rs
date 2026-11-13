@@ -198,6 +198,7 @@ fn board_texts_are_added_edited_deleted_and_undone_one_step_each() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)] // coordinates are written and read back exactly
 fn tracks_and_vias_move_with_attached_ends_in_one_undo_step() {
     let mut s = session();
     run(&mut s, &u(1), "pcb.open", json!({"path": "board.kicad_pcb"}));
