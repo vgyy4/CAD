@@ -1279,6 +1279,48 @@ fn shared_points<'a>(d: &'a SketchF) -> HashMap<&'a str, &'a str> {
     out
 }
 
+/// Most point-circle pairs [`on_circles`] compares in one sketch.
+const MAX_ON_CIRCLE_PAIRS: usize = 4_000_000;
+
+/// The points of a sketch that lie on one of its circles or arcs (within 1e-6) without being
+/// one of its ends: a line ending on a circle (the corners of a hexagon inside its circumcircle,
+/// a chord). They keep the circle's digits (see `coord`): rounded to 6 decimals they lie up to
+/// 5e-7 off the circle, the circle is cut there and once more where the line really crosses
+/// it, and the arc between the two ends no longer lies on one circle to the kernel's tolerance
+/// ("could not build an arc of the profile").
+fn on_circles(d: &SketchF) -> Vec<&str> {
+    let at: HashMap<&str, [f64; 2]> = d.points.iter().map(|p| (p.id.as_str(), [p.x, p.y])).collect();
+    let get = |k: &Option<String>| k.as_deref().and_then(|k| at.get(k).copied());
+    // (centre id, centre, radius)
+    let circles: Vec<(&str, [f64; 2], f64)> = d
+        .curves
+        .iter()
+        .filter_map(|c| {
+            let m = get(&c.center)?;
+            let r = match c.kind.as_str() {
+                "circle" => c.radius?,
+                "arc" => get(&c.start).map(|s| libm::hypot(s[0] - m[0], s[1] - m[1]))?,
+                _ => return None,
+            };
+            Some((c.center.as_deref()?, m, r))
+        })
+        .filter(|(_, m, r)| r.is_finite() && *r > 0.0 && m.iter().all(|v| v.is_finite()))
+        .collect();
+    if circles.is_empty() || circles.len().saturating_mul(d.points.len()) > MAX_ON_CIRCLE_PAIRS {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for p in &d.points {
+        for (c, m, r) in &circles {
+            if (libm::hypot(p.x - m[0], p.y - m[1]) - r).abs() <= 1e-6 {
+                // The centre too: rounded alone, it would move the circle off the point.
+                out.extend([p.id.as_str(), *c]);
+            }
+        }
+    }
+    out
+}
+
 fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
     let count = d.points.len() + d.curves.len() + d.constraints.len();
     if count > MAX_ENTITIES {
@@ -1321,6 +1363,7 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
         .collect();
     // So do the poles of B-splines (they define an exact curve).
     on_arc.extend(d.curves.iter().filter_map(|c| c.poles.as_ref()).flatten().map(String::as_str));
+    on_arc.extend(on_circles(d));
     let same_as = shared_points(d);
     // A point an arc runs through keeps its digits for every curve that shares it.
     let roots: Vec<&str> = same_as.iter().filter(|(k, _)| on_arc.contains(*k)).map(|(_, v)| *v).collect();

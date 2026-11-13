@@ -425,3 +425,34 @@ fn curve_ends_on_one_spot_of_a_sketch_without_constraints_are_one_point() {
     let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert_eq!(text.matches("= point(").count(), 5, "{text}");
 }
+
+/// A line ending on a circle (the corners of a hexagon in its circumcircle) keeps the circle's
+/// digits, and so does the circle's centre: at 6 decimals the corners lie up to 5e-7 off the
+/// circle and the region's arcs no longer end on one circle for the kernel.
+#[test]
+fn points_on_a_circle_keep_the_circles_digits() {
+    let mut s = session();
+    let r = 2.886751346;
+    let h = r / 2.0;
+    let k = 2.5;
+    let c = [0.123456789, 0.0];
+    let corners = [(r, 0.0), (h, -k), (-h, -k), (-r, 0.0), (-h, k), (h, k)];
+    let mut points = vec![json!({"id": "c", "x": c[0], "y": c[1]})];
+    let mut curves = vec![json!({"id": "o", "type": "circle", "center": "c", "radius": r})];
+    for (i, (x, y)) in corners.iter().enumerate() {
+        points.push(json!({"id": format!("p{i}"), "x": x + c[0], "y": y + c[1]}));
+        curves.push(json!({"id": format!("l{i}"), "type": "line", "start": format!("p{i}"), "end": format!("p{}", (i + 1) % 6)}));
+    }
+    // A point on no circle keeps 6 decimals.
+    points.push(json!({"id": "q", "x": 9.123456789, "y": 9.0}));
+    let t = tree(
+        json!([]),
+        json!([{"type": "sketch", "name": "S", "plane": xy(), "points": points, "curves": curves, "constraints": []}]),
+        json!([]),
+    );
+    import(&mut s, "hex.gtree.json", &t).unwrap();
+    let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains("point(0.12345679, 0)"), "{text}");
+    assert!(text.contains("point(3.01020814, 0)"), "{text}");
+    assert!(text.contains("point(9.123457, 9)"), "{text}");
+}
