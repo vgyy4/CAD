@@ -48,6 +48,75 @@ fn picking_snapping_and_drops() {
 }
 
 #[test]
+fn box_select_takes_what_is_inside_or_touched() {
+    let s = sheet();
+    // Left to right: only what lies fully inside.
+    let all = sch_view::box_select(&s, [95.0, 35.0], [115.0, 55.0]);
+    assert_eq!(all, [Item::Symbol(0), Item::Wire(0), Item::Wire(1), Item::Label(0)]);
+    assert!(sch_view::box_select(&s, [99.0, 41.0], [101.0, 45.0]).is_empty());
+    // Right to left: what it touches, a wire crossing the box without an end in it too.
+    assert_eq!(sch_view::box_select(&s, [101.0, 45.0], [99.0, 41.0]), [Item::Wire(0)]);
+    assert_eq!(sch_view::box_select(&s, [101.0, 51.0], [99.0, 49.0]), [Item::Symbol(0)]);
+    assert!(sch_view::box_select(&s, [150.0, 150.0], [140.0, 140.0]).is_empty());
+    // Clicks: plain replaces, Shift adds or removes; a box adds with Shift.
+    let a = [Item::Symbol(0)];
+    assert_eq!(sch_view::click_picks(&a, Some(Item::Wire(0)), false), [Item::Wire(0)]);
+    assert_eq!(sch_view::click_picks(&a, Some(Item::Wire(0)), true), [Item::Symbol(0), Item::Wire(0)]);
+    assert!(sch_view::click_picks(&a, Some(Item::Symbol(0)), true).is_empty());
+    assert_eq!(sch_view::click_picks(&a, None, true), a);
+    assert!(sch_view::click_picks(&a, None, false).is_empty());
+    assert_eq!(sch_view::box_picks(&a, vec![Item::Symbol(0), Item::Label(0)], true), [Item::Symbol(0), Item::Label(0)]);
+    assert_eq!(sch_view::box_picks(&a, vec![Item::Label(0)], false), [Item::Label(0)]);
+    // Moving the picks is one registry command naming them all; deleting too.
+    let mut st = State::default();
+    st.set_picked(&all);
+    assert_eq!(st.picked(), all);
+    let d = sch_view::drag_delta(&s, Item::Symbol(0), [2.6, -1.2], 1.27);
+    assert_eq!(d, [2.87, -1.74]);
+    let (id, args) = sch_view::group_move_command(&st, Item::Symbol(0), &all, d).unwrap();
+    assert_eq!(id, "sch.move");
+    assert_eq!(args["by"], json!([2.87, -1.74]));
+    assert_eq!(args["with"], json!(["wire#0", "wire#1", "label#0"]));
+    assert!(sch_view::group_move_command(&st, Item::Symbol(0), &all, [0.0, 0.0]).is_none());
+    let (id, args) = sch_view::delete_picks_command(&st, &all);
+    assert_eq!((id, args["items"].as_array().unwrap().len()), ("sch.delete", 4));
+    // Run through the registry on a real session: one undo step restores the sheet.
+    let mut h = harness(app());
+    h.run();
+    h.state_mut().run("sch.new", json!({})).unwrap();
+    h.state_mut().wait_idle();
+    let lib = std::env::temp_dir().join(format!("gusset-sch-box-{}.kicad_sym", std::process::id()));
+    std::fs::write(&lib, LIB).unwrap();
+    h.state_mut().sch_state.library = lib.to_string_lossy().into_owned();
+    h.state_mut().sch_state.symbol = "R".into();
+    let st = &h.state().sch_state;
+    let out = crate::pcb_view::Out {
+        commands: vec![
+            sch_view::place_command(st, [100.0, 50.0]).unwrap(),
+            sch_view::wire_command(st, &[[100.0, 46.19], [100.0, 40.0]]).unwrap(),
+        ],
+        blocked: None,
+    };
+    h.state_mut().pcb_commands(out);
+    h.state_mut().wait_idle();
+    let o = h.state().snapshot.sch.clone().unwrap();
+    let picks = sch_view::box_select(&o.design.sheets[0].1, [95.0, 35.0], [115.0, 55.0]);
+    assert_eq!(picks, [Item::Symbol(0), Item::Wire(0)]);
+    h.state_mut().sch_state.set_picked(&picks);
+    let st = &h.state().sch_state;
+    let c = sch_view::group_move_command(st, picks[0], &picks, [2.54, 0.0]).unwrap();
+    h.state_mut().pcb_commands(crate::pcb_view::Out { commands: vec![c], blocked: None });
+    h.state_mut().wait_idle();
+    let o = h.state().snapshot.sch.clone().unwrap();
+    assert_eq!(o.design.sheets[0].1.symbols[0].at, [102.54, 50.0]);
+    assert_eq!(o.design.sheets[0].1.wires[0].a, [102.54, 46.19]);
+    h.state_mut().run("history.undo", json!({})).unwrap();
+    h.state_mut().wait_idle();
+    let o = h.state().snapshot.sch.clone().unwrap();
+    assert_eq!(o.design.sheets[0].1.symbols[0].at, [100.0, 50.0]);
+}
+
+#[test]
 fn editor_actions_are_registry_commands() {
     let s = sheet();
     let mut st = State::default();

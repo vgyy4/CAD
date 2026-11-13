@@ -1,10 +1,12 @@
 //! The Schematic tab's editor (ADR 0047 phase 2a): a sheet of the open schematic drawn
 //! in KiCad-like colours on a light canvas, panned and zoomed like the board editor
-//! (wheel zooms about the pointer, middle drag or a drag on empty paper pans, double-click
-//! fits).
+//! (wheel zooms about the pointer, middle drag pans, double-click fits).
 //!
-//! Tools: Select (click picks a symbol, wire, label, junction or no-connect flag; drag
-//! moves a symbol or label on the grid; R turns, X and Y mirror, Delete removes), Wire
+//! Tools: Select (click picks a symbol, wire, label, junction or no-connect flag; Shift or
+//! Ctrl adds to or removes from the picks; a drag on empty paper draws a selection box,
+//! left to right picking what lies fully inside and right to left what it touches;
+//! dragging a picked item moves all picks as one step; R turns, X and Y mirror one item,
+//! Delete removes every pick as one step), Wire
 //! (clicks add corners, a double click, right click or Esc ends the wire), Label (click
 //! places the label text from the panel) and Place (click places the panel's symbol from
 //! its library file). ERC markers show where `sch.erc` found problems on this sheet.
@@ -60,6 +62,10 @@ pub struct State {
     pub tool: Tool,
     pub grid: f64,
     pub selected: Option<Item>,
+    /// Picks beyond `selected` (Shift-click, box select); dropped when `selected` is
+    /// changed from outside (`extra_owner` differs).
+    pub extra: Vec<Item>,
+    extra_owner: Option<Item>,
     drag: Option<Drag>,
     /// Corners of the wire being drawn.
     pub wire: Vec<Pt>,
@@ -89,6 +95,8 @@ impl Default for State {
             tool: Tool::Select,
             grid: 1.27,
             selected: None,
+            extra: Vec::new(),
+            extra_owner: None,
             drag: None,
             wire: Vec::new(),
             label_text: "NET".into(),
@@ -105,9 +113,140 @@ impl Default for State {
 
 #[derive(Debug, Clone)]
 struct Drag {
-    /// The symbol or label being moved, or `None` while panning.
+    /// The pick being moved (with the other picks), or `None` while panning or boxing.
     item: Option<Item>,
     moved: Vec2,
+    /// A selection box from its start to the pointer, in sheet mm.
+    boxed: Option<[Pt; 2]>,
+}
+
+impl State {
+    /// Every picked item: `selected` first, then the others.
+    pub fn picked(&self) -> Vec<Item> {
+        let mut v: Vec<Item> = self.selected.into_iter().collect();
+        for i in &self.extra {
+            if !v.contains(i) {
+                v.push(*i);
+            }
+        }
+        v
+    }
+
+    /// Picks exactly these items.
+    pub fn set_picked(&mut self, items: &[Item]) {
+        self.selected = items.first().copied();
+        self.extra = items.iter().skip(1).copied().collect();
+        self.extra_owner = self.selected;
+    }
+}
+
+/// What a selection box takes: dragged left to right (`b` right of `a`), the items that lie
+/// fully inside; right to left, every item it touches. Symbols count by their body box,
+/// wires by their segment, labels, junctions and no-connects by their anchor.
+pub fn box_select(sch: &Schematic, a: Pt, b: Pt) -> Vec<Item> {
+    let window = b[0] >= a[0];
+    let (lo, hi) = ([a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])]);
+    let inside = |p: Pt| p[0] >= lo[0] && p[0] <= hi[0] && p[1] >= lo[1] && p[1] <= hi[1];
+    let rects = |r: [Pt; 2]| r[0][0] <= hi[0] && r[1][0] >= lo[0] && r[0][1] <= hi[1] && r[1][1] >= lo[1];
+    let seg = |p: Pt, q: Pt| {
+        if window {
+            return inside(p) && inside(q);
+        }
+        if inside(p) || inside(q) {
+            return true;
+        }
+        // Crosses the box without an end inside: against its four sides.
+        let corners = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
+        (0..4).any(|k| {
+            let (c, d) = (corners[k], corners[(k + 1) % 4]);
+            segments_cross(p, q, c, d)
+        })
+    };
+    let mut out = Vec::new();
+    for (i, s) in sch.symbols.iter().enumerate() {
+        let r = symbol_box(sch, s);
+        let hit = if window { inside(r[0]) && inside(r[1]) } else { rects(r) };
+        if hit {
+            out.push(Item::Symbol(i));
+        }
+    }
+    out.extend(sch.wires.iter().enumerate().filter(|(_, w)| seg(w.a, w.b)).map(|(i, _)| Item::Wire(i)));
+    out.extend(sch.buses.iter().enumerate().filter(|(_, w)| seg(w.a, w.b)).map(|(i, _)| Item::Bus(i)));
+    out.extend(sch.labels.iter().enumerate().filter(|(_, l)| inside(l.at)).map(|(i, _)| Item::Label(i)));
+    out.extend(sch.junctions.iter().enumerate().filter(|(_, j)| inside(j.at)).map(|(i, _)| Item::Junction(i)));
+    out.extend(sch.no_connects.iter().enumerate().filter(|(_, j)| inside(j.at)).map(|(i, _)| Item::NoConnect(i)));
+    out
+}
+
+/// Whether segments `p`-`q` and `c`-`d` cross (touching counts).
+fn segments_cross(p: Pt, q: Pt, c: Pt, d: Pt) -> bool {
+    let cross = |o: Pt, a: Pt, b: Pt| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    let (d1, d2, d3, d4) = (cross(c, d, p), cross(c, d, q), cross(p, q, c), cross(p, q, d));
+    d1 * d2 <= 0.0 && d3 * d4 <= 0.0
+}
+
+/// The picks after a click on `hit`: with `add` (Shift or Ctrl) it joins them or, when
+/// already picked, leaves them; without, it is the only pick.
+pub fn click_picks(picked: &[Item], hit: Option<Item>, add: bool) -> Vec<Item> {
+    match (hit, add) {
+        (None, true) => picked.to_vec(),
+        (None, false) => Vec::new(),
+        (Some(h), false) => vec![h],
+        (Some(h), true) => {
+            let mut v = picked.to_vec();
+            match v.iter().position(|x| *x == h) {
+                Some(k) => {
+                    v.remove(k);
+                }
+                None => v.push(h),
+            }
+            v
+        }
+    }
+}
+
+/// The picks after a box: replaced by the box's items, or (`add`) joined by them.
+pub fn box_picks(picked: &[Item], boxed: Vec<Item>, add: bool) -> Vec<Item> {
+    if !add {
+        return boxed;
+    }
+    let mut v = picked.to_vec();
+    for i in boxed {
+        if !v.contains(&i) {
+            v.push(i);
+        }
+    }
+    v
+}
+
+/// The shift (mm) a dragged pick makes: its drop place on the grid when it is a symbol or
+/// label, else the raw drag snapped to the grid.
+pub fn drag_delta(sch: &Schematic, item: Item, moved: Pt, grid: f64) -> Pt {
+    let at = match item {
+        Item::Symbol(i) => sch.symbols.get(i).map(|s| s.at),
+        Item::Label(i) => sch.labels.get(i).map(|l| l.at),
+        _ => None,
+    };
+    match (at, drop_place(sch, item, moved, grid)) {
+        (Some(a), Some(b)) => [((b[0] - a[0]) * 1e6).round() / 1e6, ((b[1] - a[1]) * 1e6).round() / 1e6],
+        _ => snap(moved, grid),
+    }
+}
+
+/// One `sch.move` shifting every pick by `delta` (the dragged one named first), or
+/// `None` for no shift.
+pub fn group_move_command(st: &State, primary: Item, picks: &[Item], delta: Pt) -> Option<(&'static str, Value)> {
+    if delta[0].abs() < 1e-9 && delta[1].abs() < 1e-9 {
+        return None;
+    }
+    let with: Vec<String> = picks.iter().filter(|i| **i != primary).map(|i| i.name()).collect();
+    Some(("sch.move", with_sheet(st, json!({ "item": primary.name(), "by": delta, "with": with }))))
+}
+
+/// One `sch.delete` for every pick.
+pub fn delete_picks_command(st: &State, picks: &[Item]) -> (&'static str, Value) {
+    let items: Vec<String> = picks.iter().map(|i| i.name()).collect();
+    ("sch.delete", with_sheet(st, json!({ "items": items })))
 }
 
 /// What the user asked for: registry commands with their arguments, in order.
@@ -612,8 +751,14 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
         st.selected = None;
         st.wire.clear();
     }
-    // A selection past the lists (after an undo) is dropped.
+    // A selection past the lists (after an undo) is dropped; picks set from outside
+    // (the tree, the board) replace the extra ones.
     st.selected = st.selected.filter(|s| Item::parse(sch, &s.name()).is_some());
+    if st.extra_owner != st.selected {
+        st.extra.clear();
+        st.extra_owner = st.selected;
+    }
+    st.extra.retain(|s| Item::parse(sch, &s.name()).is_some());
     if resp.double_clicked() && st.tool == Tool::Select || st.auto_fit.is_some_and(|s| s != rect.size()) {
         st.fit(rect, sch);
     }
@@ -633,25 +778,39 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
     let tol = f64::from(5.0 / st.zoom);
     let pointer = resp.hover_pos().map(|p| map.from(p));
 
-    // Drags: a symbol or label under the pointer moves (Select tool), anything else pans.
+    // Drags (Select tool): a pick, or a symbol or label under the pointer, moves with the
+    // other picks; empty paper draws a selection box; other tools and the middle button pan.
     let middle = ui.input(|i| i.pointer.middle_down());
+    let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
     if resp.drag_started() {
         let press = ui.input(|i| i.pointer.press_origin()).map(|p| map.from(p));
-        let item = match (st.tool, middle, press) {
-            (Tool::Select, false, Some(p)) => {
-                hit(sch, p, tol).filter(|i| matches!(i, Item::Symbol(_) | Item::Label(_)))
-            }
+        let picked = st.picked();
+        let under = match (st.tool, middle, press) {
+            (Tool::Select, false, Some(p)) => hit(sch, p, tol),
             _ => None,
         };
-        if let Some(i) = item {
-            st.selected = Some(i);
+        let item = under.filter(|i| matches!(i, Item::Symbol(_) | Item::Label(_)) || picked.contains(i));
+        let boxed = match (st.tool, middle, press, item) {
+            (Tool::Select, false, Some(p), None) => Some([p, p]),
+            _ => None,
+        };
+        if let Some(i) = item
+            && !picked.contains(&i)
+        {
+            st.set_picked(&[i]);
         }
-        st.drag = Some(Drag { item, moved: Vec2::ZERO });
+        st.drag = Some(Drag { item, moved: Vec2::ZERO, boxed });
     }
     if resp.dragged() {
         let d = resp.drag_delta();
+        let here = pointer;
         match st.drag.as_mut() {
-            Some(Drag { item: Some(_), moved }) => *moved += d / st.zoom,
+            Some(Drag { item: Some(_), moved, .. }) => *moved += d / st.zoom,
+            Some(Drag { boxed: Some(b), .. }) => {
+                if let Some(p) = here {
+                    b[1] = p;
+                }
+            }
             _ => {
                 st.offset += d;
                 st.auto_fit = None;
@@ -659,11 +818,22 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
         }
     }
     if resp.drag_stopped() {
-        if let Some(Drag { item: Some(i), moved }) = st.drag.take()
-            && moved.length() > 1e-3
-            && let Some(at) = drop_place(sch, i, [f64::from(moved.x), f64::from(moved.y)], st.grid)
-        {
-            out.commands.push(move_command(st, i, at));
+        match st.drag.take() {
+            Some(Drag { item: Some(i), moved, .. }) if moved.length() > 1e-3 => {
+                let delta = drag_delta(sch, i, [f64::from(moved.x), f64::from(moved.y)], st.grid);
+                let picks = st.picked();
+                if picks.len() > 1 {
+                    out.commands.extend(group_move_command(st, i, &picks, delta));
+                } else if let Some(at) = drop_place(sch, i, [f64::from(moved.x), f64::from(moved.y)], st.grid) {
+                    out.commands.push(move_command(st, i, at));
+                }
+            }
+            Some(Drag { boxed: Some([a, b]), .. }) if dist(a, b) * f64::from(st.zoom) > 3.0 => {
+                let picks = box_picks(&st.picked(), box_select(sch, a, b), add);
+                st.set_picked(&picks);
+                st.highlight = None;
+            }
+            _ => {}
         }
     } else if !resp.dragged() {
         st.drag = None;
@@ -680,7 +850,8 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
     {
         match st.tool {
             Tool::Select => {
-                st.selected = hit(sch, p, tol);
+                let picks = click_picks(&st.picked(), hit(sch, p, tol), add);
+                st.set_picked(&picks);
                 st.probe = match st.selected {
                     Some(Item::Symbol(i)) => sch.symbols.get(i).map(|s| s.reference().to_string()),
                     _ => None,
@@ -721,13 +892,13 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
                 out.commands.push(c);
             }
             st.wire.clear();
-            st.selected = None;
+            st.set_picked(&[]);
         }
-        if let Some(item) = st.selected {
-            if del {
-                out.commands.push(delete_command(st, item));
-                st.selected = None;
-            }
+        let picks = st.picked();
+        if del && !picks.is_empty() {
+            out.commands.push(delete_picks_command(st, &picks));
+            st.set_picked(&[]);
+        } else if let [item] = picks[..] {
             if r && let Some(c) = rotate_command(st, sch, item) {
                 out.commands.push(c);
             }
@@ -739,8 +910,29 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut S
         }
     }
 
-    let dragged = st.drag.as_ref().and_then(|d| d.item.map(|i| (i, d.moved)));
+    let dragged = st.drag.as_ref().and_then(|d| {
+        d.item.map(|i| {
+            let delta = drag_delta(sch, i, [f64::from(d.moved.x), f64::from(d.moved.y)], st.grid);
+            (st.picked(), Vec2::new(delta[0] as f32 * map.zoom, delta[1] as f32 * map.zoom))
+        })
+    });
     paint(&painter, &map, sch, st, dragged);
+    if let Some(Drag { boxed: Some([a, b]), .. }) = &st.drag {
+        // Blue and solid takes what lies inside; green and dashed what it touches.
+        let r = Rect::from_two_pos(map.to(*a), map.to(*b));
+        let (fill, line) = if b[0] >= a[0] {
+            (Color32::from_rgba_unmultiplied(40, 90, 220, 30), Color32::from_rgb(40, 90, 220))
+        } else {
+            (Color32::from_rgba_unmultiplied(40, 170, 70, 30), Color32::from_rgb(40, 170, 70))
+        };
+        painter.rect_filled(r, 0.0, fill);
+        if b[0] >= a[0] {
+            painter.rect_stroke(r, 0.0, Stroke::new(1.0, line), egui::StrokeKind::Middle);
+        } else {
+            let corners = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+            painter.extend(Shape::dashed_line(&corners, Stroke::new(1.0, line), 5.0, 3.0));
+        }
+    }
     if let (Some(h), Some(o)) = (&st.highlight, open)
         && let Some(u) = o.netlist.uses.iter().position(|x| x.sheet == sheet_index)
         && let Some(n) = o.netlist.nets.iter().position(|n| n.name == *h)
@@ -954,22 +1146,14 @@ fn attach_dirs(sch: &Schematic, at: Pt) -> Vec<[f32; 2]> {
     out
 }
 
-fn paint(painter: &egui::Painter, map: &Map, sch: &Schematic, st: &State, dragged: Option<(Item, Vec2)>) {
-    let off_of = |item: Item| match dragged {
-        Some((i, moved)) if i == item => {
-            let at = match item {
-                Item::Symbol(k) => sch.symbols.get(k).map(|s| s.at),
-                Item::Label(k) => sch.labels.get(k).map(|l| l.at),
-                _ => None,
-            };
-            match (at, drop_place(sch, item, [f64::from(moved.x), f64::from(moved.y)], st.grid)) {
-                (Some(a), Some(b)) => Vec2::new(((b[0] - a[0]) as f32) * map.zoom, ((b[1] - a[1]) as f32) * map.zoom),
-                _ => Vec2::ZERO,
-            }
-        }
+/// `dragged`: the picks being dragged and how far (screen units, snapped).
+fn paint(painter: &egui::Painter, map: &Map, sch: &Schematic, st: &State, dragged: Option<(Vec<Item>, Vec2)>) {
+    let off_of = |item: Item| match &dragged {
+        Some((items, by)) if items.contains(&item) => *by,
         _ => Vec2::ZERO,
     };
-    let sel = |item: Item| st.selected == Some(item);
+    let picked = st.picked();
+    let sel = |item: Item| picked.contains(&item);
     let lw = (0.152 * map.zoom).max(1.2);
     for s in &sch.sheets {
         let r = Rect::from_two_pos(map.to(s.at), map.to([s.at[0] + s.size[0], s.at[1] + s.size[1]]));
@@ -990,14 +1174,16 @@ fn paint(painter: &egui::Painter, map: &Map, sch: &Schematic, st: &State, dragge
     }
     for (i, w) in sch.buses.iter().enumerate() {
         let c = if sel(Item::Bus(i)) { SELECT } else { BUS };
-        painter.line_segment([map.to(w.a), map.to(w.b)], Stroke::new((0.3 * map.zoom).max(2.5), c));
+        let o = off_of(Item::Bus(i));
+        painter.line_segment([map.to(w.a) + o, map.to(w.b) + o], Stroke::new((0.3 * map.zoom).max(2.5), c));
     }
     for (a, size) in &sch.bus_entries {
         painter.line_segment([map.to(*a), map.to([a[0] + size[0], a[1] + size[1]])], Stroke::new(lw, WIRE));
     }
     for (i, w) in sch.wires.iter().enumerate() {
         let c = if sel(Item::Wire(i)) { SELECT } else { WIRE };
-        painter.line_segment([map.to(w.a), map.to(w.b)], Stroke::new(lw, c));
+        let o = off_of(Item::Wire(i));
+        painter.line_segment([map.to(w.a) + o, map.to(w.b) + o], Stroke::new(lw, c));
     }
     for (i, s) in sch.symbols.iter().enumerate() {
         let item = Item::Symbol(i);
@@ -1023,11 +1209,11 @@ fn paint(painter: &egui::Painter, map: &Map, sch: &Schematic, st: &State, dragge
     }
     for (i, j) in sch.junctions.iter().enumerate() {
         let c = if sel(Item::Junction(i)) { SELECT } else { WIRE };
-        painter.circle_filled(map.to(j.at), (0.5 * map.zoom).max(2.5), c);
+        painter.circle_filled(map.to(j.at) + off_of(Item::Junction(i)), (0.5 * map.zoom).max(2.5), c);
     }
     for (i, n) in sch.no_connects.iter().enumerate() {
         let c = if sel(Item::NoConnect(i)) { SELECT } else { BUS };
-        let p = map.to(n.at);
+        let p = map.to(n.at) + off_of(Item::NoConnect(i));
         let d = (0.635 * map.zoom).max(3.0);
         painter.line_segment([p + Vec2::new(-d, -d), p + Vec2::new(d, d)], Stroke::new(lw, c));
         painter.line_segment([p + Vec2::new(-d, d), p + Vec2::new(d, -d)], Stroke::new(lw, c));
