@@ -1318,6 +1318,12 @@ fn sab_tokens(names: &[&str], toks: &[Tok]) -> Vec<u8> {
 /// A blob with one straight edge from (1, 0, 0) to (3, 0, 0) between two named faces; `t1` is
 /// the edge's stored end parameter (2 is right).
 fn named_edge_blob(t1: f64) -> Vec<u8> {
+    named_edge_blob_in(t1, false)
+}
+
+/// [`named_edge_blob`], its two faces in a body (body, lump, shell after the attributes) where
+/// `body` is set.
+fn named_edge_blob_in(t1: f64, body: bool) -> Vec<u8> {
     use Tok::{D, I, P, Pos, S, Vec as V};
     let tag = |face: i32, entries: &[(&'static str, &[i32])]| {
         let mut t = vec![P(-1), I(-1), P(-1), P(-1), P(face), S("generic_tag_attrib_def"), I(3), I(3), I(-1)];
@@ -1348,6 +1354,11 @@ fn named_edge_blob(t1: f64) -> Vec<u8> {
     b.extend(sab_tokens(&["straight", "curve"], &[Pos([1.0, 0.0, 0.0]), V([1.0, 0.0, 0.0])]));
     b.extend(tag(1, &[("15", &[313])]));
     b.extend(tag(2, &[("3", &[313, 320]), ("4", &[313])]));
+    if body {
+        b.extend(sab_tokens(&["body"], &[P(16)]));
+        b.extend(sab_tokens(&["lump"], &[P(17)]));
+        b.extend(sab_tokens(&["shell"], &[P(1), P(2)]));
+    }
     b
 }
 
@@ -1360,8 +1371,19 @@ fn a_stored_edge_is_known_by_the_names_of_its_two_faces() {
     assert_eq!(e.faces[1], vec![("3".to_string(), vec![313, 320]), ("4".to_string(), vec![313])]);
     assert_eq!((e.a, e.b, e.mid), ([1.0, 0.0, 0.0], [3.0, 0.0, 0.0], [2.0, 0.0, 0.0]));
     assert!(e.around.is_empty());
+    // Faces in no body: no operations of a body.
+    assert!(e.body_ops.is_empty());
     // Parameters that do not give the edge's end vertex: the middle is unknown, the edge is left out.
     assert!(acis::named_edges(&named_edge_blob(5.0)).unwrap().is_empty());
+}
+
+#[test]
+fn a_stored_edge_knows_the_operations_its_body_has_been_through() {
+    // Every operation in the names of the body's faces, once each, sorted: a blend whose own
+    // operation is among them has already been applied to that body.
+    let edges = acis::named_edges(&named_edge_blob_in(2.0, true)).unwrap();
+    let [e] = edges.as_slice() else { panic!("one edge, got {}", edges.len()) };
+    assert_eq!(e.body_ops, vec![313, 320]);
 }
 
 #[test]

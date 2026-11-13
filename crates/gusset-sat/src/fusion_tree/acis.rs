@@ -4,6 +4,7 @@
 
 use super::geom::V3;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 /// Most records one blob may hold.
 const MAX_RECORDS: usize = 4_000_000;
@@ -325,6 +326,8 @@ pub(super) struct NamedEdge {
     pub mid: V3,
     /// Points along the edge from `a` to `b` (both included).
     pub path: Vec<V3>,
+    /// The operation ids in the names of the faces of the edge's body, sorted.
+    pub body_ops: Vec<i32>,
 }
 
 /// A named face of a stored body that lies on a plane: the plane's point and normal (cm).
@@ -434,6 +437,22 @@ pub(super) fn named_edges(b: &[u8]) -> Option<Vec<NamedEdge>> {
         }
     }
     let is_edge = |p: usize| kind(p, "edge") && !kind(p, "coedge");
+    // The operations named on each body's faces, by face.
+    let mut face_ops: HashMap<usize, Rc<Vec<i32>>> = HashMap::new();
+    for (k, r) in recs.iter().enumerate() {
+        if !is_body(&r.ty) {
+            continue;
+        }
+        let faces: Vec<usize> = closure(&recs, k).into_iter().filter(|p| name.contains_key(p)).collect();
+        let mut ops: Vec<i32> =
+            faces.iter().filter_map(|f| name.get(f)).flatten().flat_map(|(_, o)| o.iter().copied()).collect();
+        ops.sort_unstable();
+        ops.dedup();
+        let ops = Rc::new(ops);
+        for f in faces {
+            face_ops.insert(f, Rc::clone(&ops));
+        }
+    }
     let mut edge_faces: HashMap<usize, Vec<usize>> = HashMap::new();
     for r in recs.iter().filter(|r| r.ty.ends_with("coedge")) {
         let e = r.ptrs.iter().filter_map(at).find(|p| is_edge(*p));
@@ -495,7 +514,8 @@ pub(super) fn named_edges(b: &[u8]) -> Option<Vec<NamedEdge>> {
                 }
             }
         }
-        out.push(NamedEdge { faces: [n0.clone(), n1.clone()], around, a, b, mid, path });
+        let body_ops = face_ops.get(f0).map_or_else(Vec::new, |o| o.as_ref().clone());
+        out.push(NamedEdge { faces: [n0.clone(), n1.clone()], around, a, b, mid, path, body_ops });
     }
     Some(out)
 }

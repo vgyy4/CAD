@@ -741,12 +741,20 @@ impl Ctx<'_> {
     /// The edge a recipe names, as a stored body holds it: an edge between two faces carrying
     /// exactly the names of the recipe's first two faces. Several such edges (the two faces
     /// meet more than once, or several stored states hold the edge) must agree on the middle,
-    /// or exactly one of them must have the recipe's other faces at its ends.
+    /// or exactly one of them must have the recipe's other faces at its ends. A body that holds
+    /// faces of the blend being read is a state after it, and its edges are left out (3722's
+    /// end body: Fusion's chamfer of the coil's start leaves a sliver of the start cap, whose
+    /// slanted edge meets the base's cylinder face there; before the chamfer the cap meets the
+    /// cylinder along the base of its triangle).
     fn stored_edge(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
         let (f0, f1) = (faces.first()?, faces.get(1)?);
         let ends: Vec<&FaceName> = faces.iter().skip(2).collect();
         let mut mids: Vec<(EdgeAt, bool)> = Vec::new();
+        let blend = std::mem::take(&mut self.blend_ops);
         for e in self.named_edges() {
+            if e.body_ops.iter().any(|o| blend.contains(o)) {
+                continue;
+            }
             let [a, b] = &e.faces;
             if !((a == f0 && b == f1) || (a == f1 && b == f0)) {
                 continue;
@@ -761,6 +769,7 @@ impl Ctx<'_> {
                 None => mids.push(((e.mid, arc, if arc { e.path.clone() } else { Vec::new() }), bounded)),
             }
         }
+        self.blend_ops = blend;
         if let [one] = mids.as_slice() {
             return Some(one.0.clone());
         }
@@ -1412,9 +1421,9 @@ impl Ctx<'_> {
     /// face of a coil joined to the outside of a revolve's cylinder, ended by the coil's helical
     /// faces; no stored state holds the joined body before the chamfer, and the stored end face
     /// is what the chamfer left of it). Of the two lines where the plane cuts the cylinder, the
-    /// one on the side of the plane face's stored points; where along it the edge ends is not
-    /// known, so the edge is given by a short piece about the stored points' middle, which the
-    /// model's edge must hold whole.
+    /// one on the side of the plane face's stored points. The edge is the piece of it a stored
+    /// state of the plane face ends on (below); where none tells, a short piece about the stored
+    /// points' middle, which the model's edge must hold whole.
     fn line_on_cylinder(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
         let (f0, f1) = (faces.first()?, faces.get(1)?);
         for (pf, cf) in [(f0, f1), (f1, f0)] {
@@ -1449,7 +1458,42 @@ impl Ctx<'_> {
             let w = sub(mean, origin);
             let side = if dot(u, w) >= 0.0 { 1.0 } else { -1.0 };
             let along = dot(axis, w);
-            let mid = add(origin, add(mul(n, off), add(mul(u, side * half.sqrt()), mul(axis, along))));
+            let foot = add(origin, add(mul(n, off), mul(u, side * half.sqrt())));
+            // Where the edge ends: a stored face of the plane's name, or of the name it had on
+            // a combine's tool before the combine trimmed it, with two vertices on the line,
+            // whose piece of the line holds the stored points' middle (3722: the coil's start
+            // cap `1 [312]` alone, a triangle with its base on the line, before `Combine` 314
+            // joined it; the joined cap only survives in the end body, cut down by the chamfer).
+            let mut names = vec![pops.clone()];
+            if let Some((last, first)) = pops.split_last()
+                && !first.is_empty()
+                && self.op_feature(*last).is_some_and(|q| self.d.is(q, "2A94257F"))
+            {
+                names.push(first.to_vec());
+            }
+            let mut pieces: Vec<(f64, f64)> = Vec::new();
+            for f in self.named_faces() {
+                let Some((g, ops)) = f.name.first() else { continue };
+                if g != pg || !names.contains(ops) {
+                    continue;
+                }
+                let on: Vec<f64> = f
+                    .verts
+                    .iter()
+                    .filter(|q| norm(sub(sub(**q, foot), mul(axis, dot(axis, sub(**q, foot))))) < 1e-7)
+                    .map(|q| dot(axis, sub(*q, foot)))
+                    .collect();
+                let lo = on.iter().copied().fold(f64::INFINITY, f64::min);
+                let hi = on.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                if on.len() >= 2 && hi - lo > 1e-7 && lo <= along && along <= hi && !pieces.contains(&(lo, hi)) {
+                    pieces.push((lo, hi));
+                }
+            }
+            if let [(lo, hi)] = pieces.as_slice() {
+                let (a, b) = (add(foot, mul(axis, *lo)), add(foot, mul(axis, *hi)));
+                return Some((mul(add(a, b), 0.5), false, vec![a, b]));
+            }
+            let mid = add(foot, mul(axis, along));
             let step = mul(axis, 0.01);
             return Some((mid, false, vec![sub(mid, step), add(mid, step)]));
         }

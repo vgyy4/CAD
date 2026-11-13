@@ -567,6 +567,8 @@ impl Ctx<'_> {
     pub(super) fn blend_sets(&mut self, fid: u64, names: &[&str]) -> Vec<(Option<f64>, Vec<(V3, Vec<V3>)>, usize)> {
         let d = self.d;
         let groups = self.blend_groups(fid, names);
+        self.blend_ops =
+            self.opmap.iter().filter(|(_, f)| **f == fid).filter_map(|(k, _)| i32::try_from(*k).ok()).collect();
         let mut out = Vec::new();
         for (v, recs) in groups {
             let mut es: Vec<(V3, Vec<V3>)> = Vec::new();
@@ -608,6 +610,7 @@ impl Ctx<'_> {
             }
             out.push((v, es, bad));
         }
+        self.blend_ops.clear();
         out
     }
 }

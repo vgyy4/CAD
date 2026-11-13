@@ -70,6 +70,9 @@ struct Ctx<'a> {
     named_edges: Option<Vec<acis::NamedEdge>>,
     named_planes: Option<Vec<acis::NamedPlane>>,
     named_faces: Option<Vec<acis::NamedFace>>,
+    /// The operation ids of the blend whose edges are being read: a stored body that holds a
+    /// face of one is a state after the blend, whose edges are not the ones it takes.
+    blend_ops: Vec<i32>,
     /// The end caps of each thin extrude read so far (section 33).
     thin_caps: HashMap<u64, thin::Caps>,
 }
@@ -90,6 +93,7 @@ impl<'a> Ctx<'a> {
             named_edges: None,
             named_planes: None,
             named_faces: None,
+            blend_ops: Vec::new(),
             thin_caps: HashMap::new(),
         }
     }
