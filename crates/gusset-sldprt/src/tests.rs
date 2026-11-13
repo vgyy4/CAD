@@ -1528,6 +1528,39 @@ fn entity_headers_of_older_modellers_and_version_3_without_a_gap() {
 }
 
 #[test]
+fn a_depth_an_equation_drives_is_read_from_the_configuration_stream() {
+    // ThreadedRod: Boss-Extrude1 keeps no D1; Config-0 writes the equation, then the dimension.
+    let mut d1 = class_decl("moLengthParameter_c");
+    d1.extend(node_name("D1"));
+    d1.extend([0, 0, 0, 0, 0, 0, 0, 0x40, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0]);
+    d1.extend(0.005f64.to_le_bytes());
+    let rf = replaced(&feature_stream(&[]), &d1, &[]);
+    let cstring = |t: &str| {
+        let mut v = vec![0xff, 0xfe, 0xff, t.encode_utf16().count() as u8];
+        v.extend(t.encode_utf16().flat_map(u16::to_le_bytes));
+        v
+    };
+    let mut c0 = config0();
+    c0.extend([0x7f, 0x80]);
+    c0.extend(cstring("\"D1@Boss-Extrude1\"= \"rod_length\""));
+    c0.extend(class_decl("moLengthParameter_c"));
+    c0.extend([0x44, 0x80]);
+    c0.extend(cstring("D1"));
+    c0.extend([0, 0, 0, 0, 0, 0, 0, 0x40, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0]);
+    c0.extend(0.36952f64.to_le_bytes());
+    let f = ole(&[("Config-0", &c0), ("Config-0-ResolvedFeatures", &rf), ("Preview", b"png")]);
+    let t = features::feature_tree(&f, "dir/part.SLDPRT", &Limits::default()).unwrap().unwrap();
+    assert_eq!(t["features"][1]["distance"].as_f64(), Some(369.52), "{t}");
+    // A mention of the dimension that assigns nothing is no equation.
+    let mut c1 = config0();
+    c1.extend(cstring("\"D1@Boss-Extrude1\""));
+    c1.extend(c0.get(config0().len() + 2 + cstring("\"D1@Boss-Extrude1\"= \"rod_length\"").len()..).unwrap());
+    let f = ole(&[("Config-0", &c1), ("Config-0-ResolvedFeatures", &rf), ("Preview", b"png")]);
+    let why = features::feature_tree(&f, "dir/part.SLDPRT", &Limits::default()).unwrap_err();
+    assert!(why.contains("Boss-Extrude1") && why.contains("blind"), "{why}");
+}
+
+#[test]
 fn a_component_base_further_on_still_gives_the_plane() {
     let want = history(&feature_stream(&[])).unwrap().unwrap();
     let base = comp_plane(2, 0.0);

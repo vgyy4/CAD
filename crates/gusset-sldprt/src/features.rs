@@ -608,6 +608,48 @@ fn param_slots(d: &[u8], a: usize, b: usize, nt: [u8; 2]) -> Result<Vec<(String,
     Ok(out)
 }
 
+/// The value (m) of the dimension `dim` of `feature` that an equation drives: the configuration
+/// stream writes the equation (a CString `"D1@Boss-Extrude1"= "rod_length_xaxis"`) and then,
+/// within a few hundred bytes, the dimension's own parameter object, named `dim` and laid out
+/// as in the feature stream (ThreadedRod's Boss-Extrude1: 369.52 mm; the feature node keeps no
+/// `D1`).
+fn equation_dimension(c: &[u8], feature: &str, dim: &str) -> Option<f64> {
+    let key: Vec<u8> = format!("\"{dim}@{feature}\"").encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let want: Vec<u8> = dim.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut from = 0;
+    while let Some(i) = find(c, &key, from, c.len()) {
+        from = i + 1;
+        // The equation is the CString that starts with the key and assigns it.
+        let Some(s) = i.checked_sub(4).filter(|&s| c.get(s..s + 3) == Some(&UTF16_MARK[..])) else { continue };
+        let n = usize::from(*c.get(s + 3)?);
+        let text = utf16(c.get(s + 4..s + 4 + 2 * n)?);
+        if !text.contains('=') {
+            continue;
+        }
+        let mut at = s + 4 + 2 * n;
+        let end = (at + 1000).min(c.len());
+        while let Some(j) = find(c, &UTF16_MARK, at, end) {
+            at = j + 1;
+            let len = usize::from(*c.get(j + 3)?);
+            if 2 * len != want.len() || c.get(j + 4..j + 4 + 2 * len) != Some(&want[..]) {
+                continue;
+            }
+            let q = j + 4 + 2 * len;
+            let head = c.get(q..q + 16)?;
+            let head_ok = head.get(..4) == Some(&[0, 0, 0, 0][..])
+                && head.get(5..7) == Some(&[0, 0][..])
+                && matches!(head.get(7), Some(0x40 | 0xc0))
+                && head.get(8..16) == Some(&[0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0][..]);
+            let vend = if c.get(q + 16..q + 20) == Some(&PARAM_CSTRING[..]) { q + 22 } else { q + 18 };
+            if !head_ok || c.get(vend - 2..vend) != Some(&[0, 0][..]) {
+                continue;
+            }
+            return f64_at(c, vend).filter(|v| v.is_finite() && *v != 0.0 && v.abs() < 1e3);
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Copy)]
 struct EndSpec {
     cls: Option<u16>,
@@ -2960,9 +3002,16 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let cands: Vec<EndSpec> =
                 dec.into_iter().chain(endspec_candidates(rf, a, b)?.into_iter().filter(in_es)).collect();
             let es = cands.first().copied();
-            let ps = params(rf, a, b, nt)?;
+            let mut ps = params(rf, a, b, nt)?;
             let op = op_for("moCut_c", solid);
             let typ = es.map(|e| e.kind);
+            // A depth an equation drives is kept with the equation in the configuration stream.
+            if ps.is_empty()
+                && matches!(typ, Some(0 | 6))
+                && let Some(v) = equation_dimension(c0, &n.name, "D1")
+            {
+                ps.push(v);
+            }
             let end = match typ {
                 Some(0) => "blind".to_string(),
                 Some(1 | 2) => "through_all?".to_string(),
