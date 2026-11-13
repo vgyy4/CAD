@@ -1868,7 +1868,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             j.insert("creates_bodies".into(), made.into());
             // An extrude of sketch text (section 51).
             match super::text::extrude_texts(d, fid) {
-                None => feats.push(Value::Object(j)),
+                None => feats.extend(super::thin::with_other_walls(j)),
                 Some(read) => match read.and_then(|ts| super::text::text_extrude(cx, fid, &j, &ts, &sketch_names)) {
                     Ok(made) => feats.extend(made),
                     Err(why) => {

@@ -286,6 +286,45 @@ fn pieces_of(sk: &Value, ids: &[String]) -> Option<Vec<Piece>> {
     Some(out)
 }
 
+/// The key under which a thin extrude about the middle of several chains lists the extrudes of
+/// its other walls (name, sketch and profile; the rest as the extrude itself).
+pub(super) const THIN_MORE: &str = "_thin_more";
+
+/// The extrude `j` and, after it, the extrudes of a thin extrude's other walls ([`THIN_MORE`]).
+pub(super) fn with_other_walls(mut j: Map<String, Value>) -> Vec<Value> {
+    let more = j.remove(THIN_MORE);
+    let mut out = vec![Value::Object(j.clone())];
+    for m in more.as_ref().and_then(Value::as_array).into_iter().flatten() {
+        let mut k = j.clone();
+        for key in ["name", "sketch", "profiles"] {
+            if let Some(v) = m.get(key) {
+                k.insert(key.into(), v.clone());
+            }
+        }
+        out.push(Value::Object(k));
+    }
+    out
+}
+
+/// The curves split into the open chains they make where their ends meet.
+fn chains(curves: &[Piece]) -> Option<Vec<Vec<Piece>>> {
+    let close = |p: P2, q: P2| libm::hypot(p[0] - q[0], p[1] - q[1]) < CLOSE;
+    let touch = |p: &Piece, q: &Piece| {
+        let ((a, b), (c, d)) = (p.ends(), q.ends());
+        close(a, c) || close(a, d) || close(b, c) || close(b, d)
+    };
+    let mut groups: Vec<Vec<Piece>> = Vec::new();
+    for p in curves {
+        let (with, mut rest): (Vec<Vec<Piece>>, Vec<Vec<Piece>>) =
+            groups.into_iter().partition(|g| g.iter().any(|q| touch(p, q)));
+        let mut g: Vec<Piece> = with.into_iter().flatten().collect();
+        g.push(*p);
+        rest.push(g);
+        groups = rest;
+    }
+    groups.iter().map(|g| chain(g)).collect()
+}
+
 /// The wall's side and thickness: the `u8 1, u32 location` just before the reference to the
 /// `Side1WallThickness` holder in the extrude's record.
 fn wall(cx: &Ctx, fid: u64) -> Option<(u32, f64)> {
@@ -333,16 +372,12 @@ pub(super) fn thin_extrude(
     }
     let Some((loc, t)) = wall(cx, fid) else { return fail(j, "the wall's side is not read") };
     let w = mm(t);
-    if loc != 2 {
-        // Location 1 (6126, 6299) would be the other side; no rebuild confirms it yet.
-        return fail(
-            j,
-            &if loc == 1 {
-                "wall location 1 (the right of its chain?) is not confirmed by a rebuild yet".to_string()
-            } else {
-                format!("wall location {loc} is not established")
-            },
-        );
+    // Location 2 is one side of the chain (below); location 1 the middle: 6126's Extrude5 (2)
+    // cuts a "+" and a "-" of three separate lines with a 1 mm wall, and the stored faces of
+    // its slots lie 0.5 mm either side of each line (x 3.5..4.5 mm about x = 4, y -3.9..-2.9
+    // mm about y = -3.4).
+    if loc != 1 && loc != 2 {
+        return fail(j, &format!("wall location {loc} is not established"));
     }
     // The curves, as a sweep path names them.
     let mut sk: Option<u64> = None;
@@ -377,8 +412,15 @@ pub(super) fn thin_extrude(
     else {
         return fail(j, "its sketch is not in the tree");
     };
-    let Some(ch) = pieces_of(&sketch_feat, &ids).and_then(|p| chain(&p)) else {
-        return fail(j, "its curves are not one open chain (corners only between lines)");
+    let Some(all) = pieces_of(&sketch_feat, &ids).and_then(|p| chains(&p)) else {
+        return fail(j, "its curves are not open chains (corners only between lines)");
+    };
+    // A wall about the middle may follow several chains (one wall each, cut or joined alike);
+    // a wall to one side follows one.
+    let (ch, more) = match (loc, all.split_first()) {
+        (1, Some((first, more))) => (first.clone(), more.to_vec()),
+        (_, Some((first, []))) => (first.clone(), Vec::new()),
+        _ => return fail(j, "its curves are not one open chain (corners only between lines)"),
     };
     // The wall's offsets to the left of the chain (mm). Location 2 lies outside the chain's
     // arcs: 5981's (0.6 mm outside its arc, its stored edges) and 6299's Extrude7 (2) (its
@@ -388,12 +430,18 @@ pub(super) fn thin_extrude(
     // sample tells); one whose arcs turn both ways is refused.
     let turns: Vec<bool> =
         ch.iter().filter_map(|p| if let Piece::Arc { ccw, .. } = p { Some(*ccw) } else { None }).collect();
-    let (lo, hi) = match (turns.iter().all(|c| *c), turns.iter().any(|c| *c)) {
-        (true, true) => (-w, 0.0),
-        (_, false) => (0.0, w),
-        (false, true) => return fail(j, "its chain turns both ways round its arcs"),
+    let (lo, hi) = match (loc, turns.iter().all(|c| *c), turns.iter().any(|c| *c)) {
+        (1, ..) => (-w / 2.0, w / 2.0),
+        (_, true, true) => (-w, 0.0),
+        (_, _, false) => (0.0, w),
+        (_, false, true) => return fail(j, "its chain turns both ways round its arcs"),
     };
     let Some((points, curves, mid)) = outline(&ch, lo, hi) else { return fail(j, "the wall does not fit its arcs") };
+    let mut others = Vec::new();
+    for c in &more {
+        let Some(o) = outline(c, lo, hi) else { return fail(j, "the wall does not fit its arcs") };
+        others.push(o);
+    }
     // The direction: the sketch's normal, or against it.
     let plane = cx.sketch(sid).plane;
     if let (Some(pl), Some(v)) = (plane, e.vec) {
@@ -407,7 +455,8 @@ pub(super) fn thin_extrude(
             j.insert("distance".into(), (-dist).into());
         }
     }
-    if let (Some(pl), Some(first), Some(last)) = (plane, ch.first(), ch.last()) {
+    // The caps and sides are named for a wall along one chain.
+    if let (Some(pl), Some(first), Some(last), true) = (plane, ch.first(), ch.last(), more.is_empty()) {
         let cap = |p: P2, u: P2| -> (V3, V3) {
             let at = world(&pl, [p[0] / 10.0, p[1] / 10.0], 0.0);
             let o = world(&pl, [0.0, 0.0], 0.0);
@@ -448,19 +497,34 @@ pub(super) fn thin_extrude(
         cx.thin_caps.insert(fid, Caps { n: ids.len(), start: cap(s0, u0), end: cap(e1, u1), sides, off });
     }
     let copy = format!("{nm} wall");
-    let mut s = Map::new();
-    for (k, v) in sketch_feat.as_object().into_iter().flatten() {
-        if matches!(
-            k.as_str(),
-            "type" | "plane" | "plane_note" | "source_id" | "_component" | "component" | "in_timeline"
-        ) {
-            s.insert(k.clone(), v.clone());
+    let wall_sketch = |name: &str, points: Vec<Value>, curves: Vec<Value>| {
+        let mut s = Map::new();
+        for (k, v) in sketch_feat.as_object().into_iter().flatten() {
+            if matches!(
+                k.as_str(),
+                "type" | "plane" | "plane_note" | "source_id" | "_component" | "component" | "in_timeline"
+            ) {
+                s.insert(k.clone(), v.clone());
+            }
         }
+        s.insert("name".into(), name.into());
+        s.insert("points".into(), points.into());
+        s.insert("curves".into(), curves.into());
+        Value::Object(s)
+    };
+    feats.push(wall_sketch(&copy, points, curves));
+    // The other chains' walls: their sketches now, their extrudes (copies of this one) right
+    // after it (`THIN_MORE`).
+    let mut extra = Vec::new();
+    for (k, (points, curves, mid)) in others.into_iter().enumerate() {
+        let name = format!("{nm} wall {}", k + 2);
+        feats.push(wall_sketch(&name, points, curves));
+        extra.push(json!({"name": format!("{nm} part {}", k + 2), "sketch": name,
+            "profiles": [{"point": [round6(mid[0]), round6(mid[1])]}]}));
     }
-    s.insert("name".into(), copy.clone().into());
-    s.insert("points".into(), points.into());
-    s.insert("curves".into(), curves.into());
-    feats.push(Value::Object(s));
+    if !extra.is_empty() {
+        j.insert(THIN_MORE.into(), extra.into());
+    }
     j.insert("sketch".into(), copy.into());
     j.insert("sketch_source_id".into(), sid.into());
     j.insert("profiles".into(), json!([{"point": [round6(mid[0]), round6(mid[1])]}]));
@@ -497,6 +561,36 @@ mod tests {
         assert_eq!(pts.len(), 2 * 4 + 1);
         // A wall centred on the chain has its inside point on the chain.
         assert!(libm::hypot(mid[0] - ch[0].middle()[0], mid[1] - ch[0].middle()[1]) < 1e-12);
+    }
+
+    #[test]
+    fn separate_lines_are_chains_of_their_own_with_walls_about_them() {
+        // 6126's "+" and "-": three lines, two of them crossing (not meeting at their ends).
+        let curves = [
+            Piece::Line { a: [-4.0, -1.5], b: [-4.0, -5.3] },
+            Piece::Line { a: [-4.0, 5.3], b: [-4.0, 1.5] },
+            Piece::Line { a: [-2.1, 3.4], b: [-5.9, 3.4] },
+        ];
+        let all = chains(&curves).unwrap();
+        assert_eq!(all.len(), 3);
+        // A wall about the middle of a line: a 1 mm wide rectangle centred on it.
+        let (pts, cs, mid) = outline(&all[0], -0.5, 0.5).unwrap();
+        assert_eq!((pts.len(), cs.len()), (4, 4));
+        let xs: Vec<f64> = pts.iter().map(|p| p["x"].as_f64().unwrap()).collect();
+        assert!(xs.iter().all(|x| (x + 4.5).abs() < 1e-9 || (x + 3.5).abs() < 1e-9));
+        assert!(libm::hypot(mid[0] + 4.0, mid[1] + 3.4) < 1e-12);
+        // Lines that meet at their ends stay one chain.
+        let bent = [Piece::Line { a: [0.0, 0.0], b: [1.0, 0.0] }, Piece::Line { a: [1.0, 1.0], b: [1.0, 0.0] }];
+        assert_eq!(chains(&bent).unwrap().len(), 1);
+        // The other walls' extrudes follow the first, as copies of it.
+        let mut j = Map::new();
+        j.insert("name".into(), "E5".into());
+        j.insert("distance".into(), (-0.6).into());
+        j.insert(THIN_MORE.into(), json!([{"name": "E5 part 2", "sketch": "E5 wall 2", "profiles": []}]));
+        let out = with_other_walls(j);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].get(THIN_MORE).is_none());
+        assert_eq!((&out[1]["name"], &out[1]["distance"]), (&json!("E5 part 2"), &json!(-0.6)));
     }
 
     #[test]
