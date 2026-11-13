@@ -1014,7 +1014,40 @@ impl Ctx<'_> {
         };
         let a = side(self, faces.first()?)?;
         let b = side(self, faces.get(1)?)?;
+        // The faces' sides as read can be wrong for the edge (4632's Fillet6 rounds the corners
+        // of a notch a cut made, the cut's side facing into the notch; a concave edge rounds
+        // about an axis in the void): where the round as read is not on a stored round of the
+        // fillet with its radius, the one way of turning the sides that is.
+        let flip = |s: (V3, V3)| (s.0, mul(s.1, -1.0));
+        let read = FaceG::Fillet { r, a, b };
+        if !self.on_stored_round(fid, &read) {
+            let others = [(flip(a), b), (a, flip(b)), (flip(a), flip(b))].map(|(a, b)| FaceG::Fillet { r, a, b });
+            let fits: Vec<&FaceG> = others.iter().filter(|f| self.on_stored_round(fid, f)).collect();
+            if let [one] = fits.as_slice() {
+                return Some((*one).clone());
+            }
+        }
         Some(FaceG::Fillet { r, a, b })
+    }
+
+    /// Whether the round `f` lies on a stored round of the fillet `fid`: a cylinder of its
+    /// radius (1e-7 cm) about its axis (1e-6 cm).
+    fn on_stored_round(&mut self, fid: u64, f: &FaceG) -> bool {
+        let FaceG::Fillet { r, a, b } = f else { return false };
+        let Some(dir) = unit(cross(a.1, b.1)) else { return false };
+        let Some(c) = fillet_centre(*r, *a, *b, (dir, [0.0; 3])) else { return false };
+        let ops: Vec<i32> =
+            self.opmap.iter().filter(|(_, q)| **q == fid).filter_map(|(o, _)| i32::try_from(*o).ok()).collect();
+        self.named_faces().iter().filter(|nf| nf.name.first().is_some_and(|(_, o)| ops.iter().any(|k| o == &[*k]))).any(
+            |nf| {
+                let Some(Surface::Cylinder { origin, axis, radius }) = Surface::of(nf) else { return false };
+                let Some(ax) = unit(axis) else { return false };
+                let w = sub(c, origin);
+                (radius - r).abs() < 1e-7
+                    && (dot(ax, dir).abs() - 1.0).abs() < 1e-9
+                    && norm(sub(w, mul(ax, dot(w, ax)))) < 1e-6
+            },
+        )
     }
 
     /// A planar face of an extrude (or its shelled wall) as the draft reads it: a point of the
