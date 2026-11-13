@@ -27,10 +27,50 @@ fn hole_prim(h: &Hole) -> Prim {
     Prim::Capsule { a: h.at, b: h.slot_end.unwrap_or(h.at), r: h.diameter / 2.0 }
 }
 
-/// The drilled-hole rules: `hole_to_hole`.
+/// The drilled-hole rules: `drill_size`, `via_diameter` and `hole_to_hole`.
 pub fn holes(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violation>) {
     let list = drilled(board);
+    drill_sizes(board, &list, rules, max, out);
     hole_to_hole(board, &list, rules, max, out);
+}
+
+/// Pad holes narrower than the through-hole minimum (slots by their narrow side), via
+/// drills under the via minimum, and via copper under the via diameter minimum.
+fn drill_sizes(board: &Board, list: &[(ItemRef, Hole)], rules: &Rules, max: usize, out: &mut Vec<Violation>) {
+    for (r, h) in list {
+        let (min, what) = match r {
+            ItemRef::Via(_) => (rules.min_via_drill, "via drill"),
+            _ => (rules.min_through_hole, "hole"),
+        };
+        if h.diameter < min - 1e-9 && out.len() < max {
+            out.push(Violation {
+                code: "drill_size",
+                message: format!("{}: {what} {}, at least {} needed", describe(board, *r), mm(h.diameter), mm(min)),
+                at: h.at,
+                layer: None,
+                items: vec![*r],
+            });
+        }
+    }
+    if rules.min_via_diameter <= 0.0 {
+        return;
+    }
+    for (i, v) in board.vias.iter().enumerate() {
+        if v.size < rules.min_via_diameter - 1e-9 && out.len() < max {
+            out.push(Violation {
+                code: "via_diameter",
+                message: format!(
+                    "{}: diameter {}, at least {} needed",
+                    describe(board, ItemRef::Via(i)),
+                    mm(v.size),
+                    mm(rules.min_via_diameter)
+                ),
+                at: v.at,
+                layer: None,
+                items: vec![ItemRef::Via(i)],
+            });
+        }
+    }
 }
 
 /// Edge to edge of two holes closer than the rule (a sweep over X).

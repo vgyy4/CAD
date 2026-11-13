@@ -82,3 +82,42 @@ fn hole_to_hole_covers_pads_and_slots() {
     assert_eq!(v.len(), 1, "{v:?}");
     assert_eq!(v[0].items, [ItemRef::Pad(0), ItemRef::Via(0)]);
 }
+
+#[test]
+fn drill_sizes_are_checked_for_pads_and_vias() {
+    let rules = Rules::default();
+    // Pad holes: 0.25 mm is under the 0.3 mm minimum, a 0.8 × 0.25 slot too (narrow side).
+    let body = format!(
+        "{} {} {} {}",
+        thru("J1", 5.0, 10.0, "0.25", ""),
+        thru("J2", 15.0, 10.0, "0.3", ""),
+        thru("J3", 25.0, 10.0, "oval 0.8 0.25", ""),
+        thru("J4", 35.0, 10.0, "oval 0.8 0.4", "")
+    );
+    let v = only(&board("", &body), &rules, "drill_size");
+    let items: Vec<ItemRef> = v.iter().flat_map(|x| x.items.clone()).collect();
+    assert_eq!(items, [ItemRef::Pad(0), ItemRef::Pad(2)], "{v:?}");
+    assert!(v[0].message.contains("0.250 mm") && v[0].message.contains("0.300 mm"), "{v:?}");
+    // Vias: a 0.15 mm drill is under the default 0.2 mm; 0.2 passes.
+    let body = format!("{} {}", via(5.0, 5.0, 0.6, 0.15), via(10.0, 5.0, 0.6, 0.2));
+    let v = only(&board("", &body), &rules, "drill_size");
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert_eq!(v[0].items, [ItemRef::Via(0)]);
+}
+
+#[test]
+fn via_minimums_come_from_the_board_setup() {
+    let body = format!("{} {}", via(5.0, 5.0, 0.5, 0.25), via(10.0, 5.0, 0.8, 0.4));
+    // Without the setup keys: no diameter limit, drills over 0.2 pass.
+    let b = board("", &body);
+    let rules = Rules::for_board(&b);
+    assert!(only(&b, &rules, "drill_size").is_empty() && only(&b, &rules, "via_diameter").is_empty());
+    // KiCad 5 style minimums.
+    let b = board("(via_min_size 0.6) (via_min_drill 0.3)", &body);
+    let rules = Rules::for_board(&b);
+    assert_eq!((rules.min_via_diameter, rules.min_via_drill), (0.6, 0.3));
+    let d = only(&b, &rules, "drill_size");
+    let s = only(&b, &rules, "via_diameter");
+    assert_eq!((d.len(), s.len()), (1, 1), "{d:?} {s:?}");
+    assert_eq!((d[0].items.clone(), s[0].items.clone()), (vec![ItemRef::Via(0)], vec![ItemRef::Via(0)]));
+}
