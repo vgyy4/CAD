@@ -3181,6 +3181,16 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     edges.push(json!({"midpoint": m, "path": path}));
                     continue;
                 }
+                // A record that starts with a face of this very fillet names its edge as
+                // `[own face, vertex face, face, vertex face, face]` (Power Supply Unit's Fillet1:
+                // the corner between two sides, between the caps): read as the usual four.
+                let own = match reps.as_slice() {
+                    [r0, r1, r2, r3, r4] if r0.fid == n.id && r1.fid != n.id && r3.fid != n.id => {
+                        Some(vec![*r2, *r4, *r1, *r3])
+                    }
+                    _ => None,
+                };
+                let reps = own.as_deref().unwrap_or(reps);
                 let m = midpoint(reps, &swept, &rounds, &sketches, &cap_tags, &mut work)?;
                 mids.push(m);
                 made.push(ps.first().filter(|_| fillet).and_then(|r| round_of(reps, &swept, &sketches, &cap_tags, *r)));

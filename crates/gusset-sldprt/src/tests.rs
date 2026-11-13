@@ -950,6 +950,24 @@ fn a_fillet_edge_between_two_side_faces_is_picked_by_its_midpoint() {
         assert_eq!(f["edges"], serde_json::json!([{"midpoint": [10.0, 0.0, 2.5]}]), "{f}");
         assert!(f.get("edges_unresolved").is_none());
     }
+    // A record that starts with a face of the fillet itself (Power Supply Unit's Fillet1):
+    // `[own face, cap, side, cap, side]` names the same corner. Fillet1 at the corner p2 teaches
+    // the cap class.
+    let mut v = feature_node("Fillet_c", "Fillet1", 30);
+    let refs = [face_ref(0x50, 7, 2), face_ref(0x50, 7, 3), face_ref(0x51, 7, 0), face_ref(0x51, 7, 1)];
+    v.extend(edge_record(&refs, 0));
+    v.extend([0u8; 4]);
+    v.extend(parameter("D1", 0.001));
+    v.extend(feature_node("Fillet_c", "Fillet2", 31));
+    let refs =
+        [face_ref(0x52, 31, 1), face_ref(0x51, 7, 1), face_ref(0x50, 7, 1), face_ref(0x51, 7, 0), face_ref(0x50, 7, 2)];
+    v.extend(edge_record(&refs, 0));
+    v.extend([0u8; 4]);
+    v.extend(parameter("D1", 0.001));
+    let t = history(&feature_stream(&v)).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap().last().unwrap();
+    assert_eq!(f["name"], "Fillet2", "{t}");
+    assert_eq!(f["edges"], serde_json::json!([{"midpoint": [10.0, 0.0, 2.5]}]), "{f}");
     // A reference to a face of no known feature is unresolved, naming the fillet.
     let mut fillet = feature_node("Fillet_c", "Fillet1", 30);
     let refs = [face_ref(0x50, 99, 1), face_ref(0x50, 99, 2), face_ref(0x51, 99, 0), face_ref(0x51, 99, 1)];
