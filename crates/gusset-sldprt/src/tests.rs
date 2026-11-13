@@ -1306,6 +1306,62 @@ fn a_sketch_kept_in_the_configuration_stream_is_read() {
     assert_eq!(t["features"][1]["distance"].as_f64(), Some(5.0));
 }
 
+/// A revolve's first centerline that is a projected model edge (an entity with a reference
+/// object: M5_bolt's Sketch3 carries the bolt's bottom silhouette) is not its axis; the drawn
+/// centerline is.
+#[test]
+fn a_projected_centerline_is_not_a_revolve_axis() {
+    let mut rf = vec![3, 0];
+    rf.extend(feature_node("moProfileFeature_c", "Sketch1", 5));
+    rf.extend(comp_plane(2, 0.0));
+    rf.extend([0u8; 16]);
+    let pts =
+        [(0.0, 0.0), (0.0, 0.01), (0.005, 0.0), (0.01, 0.0), (0.01, 0.01), (0.005, 0.01), (-0.01, 0.0), (0.02, 0.0)];
+    rf.extend((pts.len() as u32).to_le_bytes());
+    for (i, (x, y)) in pts.iter().enumerate() {
+        rf.extend(sketch_item(100 + i as u32, 10 + i as u32, 0));
+        rf.extend(0x1eu16.to_le_bytes());
+        rf.extend(f64::to_le_bytes(*x));
+        rf.extend(f64::to_le_bytes(*y));
+        rf.extend([0u8; 12]);
+    }
+    // A segment from `s` to `e`: a profile line, or a centerline (kind 0, flags 0x8004),
+    // projected (a reference object) or drawn.
+    let seg = |key: u32, s: u16, e: u16, centre: bool, projected: bool| {
+        let mut v = sketch_item(key, 20 + key, u16::from(!centre));
+        if centre {
+            v[48] = 0x80;
+        }
+        if projected {
+            v[45] = 1;
+        }
+        v.extend(s.to_le_bytes());
+        v.extend(e.to_le_bytes());
+        v.extend([u8::from(!centre), 0, 0, 0]);
+        v.extend((-1.0f64).to_le_bytes());
+        v.extend([0u8; 24]);
+        v
+    };
+    let segs = [
+        seg(1, 6, 7, true, true),
+        seg(2, 0, 1, true, false),
+        seg(3, 2, 3, false, false),
+        seg(4, 3, 4, false, false),
+        seg(5, 4, 5, false, false),
+        seg(6, 5, 2, false, false),
+    ];
+    rf.extend((segs.len() as u32).to_le_bytes());
+    for v in &segs {
+        rf.extend(v);
+    }
+    rf.extend([0u8; 16]);
+    rf.extend(feature_node("moRevolution_c", "Revolve1", 7));
+    rf.extend([0u8; 16]);
+    let t = history(&rf).unwrap().unwrap();
+    let rv = t["features"].as_array().unwrap().iter().find(|f| f["type"] == "revolve").unwrap_or_else(|| panic!("{t}"));
+    assert_eq!(rv["axis"], serde_json::json!({"line": "c1"}), "{t}");
+}
+
 /// Byte 12 of the end condition reverses the default direction: a boss runs against its sketch
 /// normal and a cut along it (200mm Topmost Platform's cuts, no direction vector written).
 #[test]

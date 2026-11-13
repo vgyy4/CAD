@@ -694,6 +694,8 @@ struct Seg {
     dir: i32,
     construction: bool,
     centerline: bool,
+    /// References outside geometry (a projected model edge).
+    external: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -814,6 +816,7 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
                     dir,
                     construction,
                     centerline: false,
+                    external: ext,
                 });
             } else if d.get(p + 22..p + 38).is_some_and(|w| w.chunks(4).all(|c| c == [0xfe, 0xff, 0xff, 0xff])) {
                 let dir = i32_at(d, p + 16)?;
@@ -828,6 +831,7 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
                     dir,
                     construction,
                     centerline: false,
+                    external: ext,
                 });
             } else {
                 g.segs.push(Seg {
@@ -840,6 +844,7 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
                     dir: 0,
                     construction: construction || centerline,
                     centerline,
+                    external: ext,
                 });
             }
         }
@@ -2986,10 +2991,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 && let Some(g) = sketches.get(i)
             {
                 let line = |s: &Seg| s.kind == SegKind::Line;
+                // A centerline that is a projected model edge (M5_bolt's Sketch3: the bolt's bottom
+                // silhouette, flags 0x80d1) is not the axis the sketch drew.
                 let first = g
                     .segs
                     .iter()
-                    .position(|s| line(s) && s.centerline && s.id != 0xffff_ffff)
+                    .position(|s| line(s) && s.centerline && !s.external && s.id != 0xffff_ffff)
                     .or_else(|| g.segs.iter().position(|s| line(s) && s.construction));
                 // A revolve axis has the whole profile on one side. When the first centerline
                 // cuts the profile (a sketch with several centerlines), take the first line that
@@ -3401,6 +3408,7 @@ mod end_face_tests {
             dir: 0,
             construction: false,
             centerline: false,
+            external: false,
         };
         let g = Geometry {
             pts: vec![pt(0.0, 0.0), pt(0.02, 0.0), pt(0.02, 0.01), pt(0.0, 0.01)],
