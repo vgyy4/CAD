@@ -5075,6 +5075,204 @@ static int offset_plane_by_prism(const GsShape* s, const std::vector<TopoDS_Face
   return GS_OK;
 }
 
+// The point the three planes n_k . x = h_k share; false where two are parallel.
+static bool three_planes(const gp_Dir n[3], const double h[3], gp_Pnt& p) {
+  const gp_XYZ a = n[0].XYZ(), b = n[1].XYZ(), c = n[2].XYZ();
+  const double det = a.Dot(b.Crossed(c));
+  if (std::fabs(det) < 1e-9) return false;
+  p = gp_Pnt((b.Crossed(c) * h[0] + c.Crossed(a) * h[1] + a.Crossed(b) * h[2]) / det);
+  return true;
+}
+
+// The solid a planar face sweeps when it moves by `d` along its outward normal while each
+// neighbour keeps its plane: the ruled loft from the face's outline to the outline where the
+// moved plane meets the neighbours' planes (each corner where it meets the planes of the two
+// edges' neighbours; between two edges of one line, square to the line). Every side is on a
+// neighbour's plane. Only a face without holes, all of whose edges are lines between it and
+// planes, has one.
+static bool swept_by_planes(const TopoDS_Shape& s, const TopoDS_Face& f, double d, TopoDS_Shape& tool,
+                            TopoDS_Shape& far_cap) {
+  BRepAdaptor_Surface sf(f, false);
+  if (sf.GetType() != GeomAbs_Plane) return false;
+  int wires = 0;
+  for (TopExp_Explorer ex(f, TopAbs_WIRE); ex.More(); ex.Next()) ++wires;
+  if (wires != 1) return false;
+  gp_Dir nf = sf.Plane().Axis().Direction();
+  if (f.Orientation() == TopAbs_REVERSED) nf.Reverse();
+  AncMap anc;
+  TopExp::MapShapesAndAncestors(s, TopAbs_EDGE, TopAbs_FACE, anc);
+  std::vector<gp_Pnt> corners;
+  std::vector<gp_Dir> normals, along;
+  std::vector<double> levels;
+  for (BRepTools_WireExplorer ex(BRepTools::OuterWire(f), f); ex.More(); ex.Next()) {
+    const TopoDS_Edge& e = ex.Current();
+    BRepAdaptor_Curve c(e);
+    if (c.GetType() != GeomAbs_Line || !anc.Contains(e)) return false;
+    TopoDS_Face other;
+    int n = 0;
+    for (ShapeList::Iterator it(anc.FindFromKey(e)); it.More(); it.Next()) {
+      ++n;
+      if (!it.Value().IsSame(f)) other = TopoDS::Face(it.Value());
+    }
+    if (n != 2 || other.IsNull()) return false;
+    BRepAdaptor_Surface so(other, false);
+    if (so.GetType() != GeomAbs_Plane) return false;
+    gp_Dir no = so.Plane().Axis().Direction();
+    if (other.Orientation() == TopAbs_REVERSED) no.Reverse();
+    if (no.IsParallel(nf, 1e-9)) return false;
+    corners.push_back(BRep_Tool::Pnt(ex.CurrentVertex()));
+    normals.push_back(no);
+    levels.push_back(no.XYZ().Dot(so.Plane().Location().XYZ()));
+    along.push_back(c.Line().Direction());
+  }
+  const size_t k = corners.size();
+  if (k < 3) return false;
+  const double hf = nf.XYZ().Dot(sf.Plane().Location().XYZ()) + d;
+  BRepBuilderAPI_MakePolygon from, to;
+  for (size_t i = 0; i < k; ++i) {
+    // The explorer's vertex starts edge i: the corner between edges i - 1 and i.
+    const size_t j = (i + k - 1) % k;
+    gp_Dir n3[3] = {nf, normals[j], normals[i]};
+    double h3[3] = {hf, levels[j], levels[i]};
+    if (normals[j].IsParallel(normals[i], 1e-9)) {
+      if (!along[j].IsParallel(along[i], 1e-9)) return false;
+      n3[2] = along[i];
+      h3[2] = along[i].XYZ().Dot(corners[i].XYZ());
+    }
+    gp_Pnt q;
+    if (!three_planes(n3, h3, q)) return false;
+    from.Add(corners[i]);
+    to.Add(q);
+  }
+  from.Close();
+  to.Close();
+  if (!from.IsDone() || !to.IsDone()) return false;
+  BRepOffsetAPI_ThruSections ts(true, true);
+  ts.AddWire(from.Wire());
+  ts.AddWire(to.Wire());
+  ts.Build();
+  if (!ts.IsDone()) return false;
+  tool = ts.Shape();
+  if (signed_volume(tool) < 0) tool.Reverse();
+  far_cap = ts.LastShape();
+  return !far_cap.IsNull();
+}
+
+// Planar faces whose edges are lines between planes, moved one after the other: each face's swept
+// solid (`swept_by_planes`) is cut from the body (inward) or joined to it (outward), so the face
+// lands on its moved plane and its neighbours keep their planes, growing or shrinking. A face
+// moved later sees the faces moved before it (two faces of a groove both moved meet on their
+// moved planes). Each step must change the volume by exactly its swept solid's (1e-7), which
+// holds only where that solid lies wholly inside (cut) or outside (joined) the body. BRepOffset
+// gives back a stray shell of two faces for 5998's OffsetFaces1 (14 faces of a lid's clips and
+// beads by -0.15 mm; a loft elsewhere on the body).
+static int offset_planes_by_sweeps(const GsShape* s, const std::vector<TopoDS_Face>& fs,
+                                   const std::vector<uint32_t>& idx, double d, GsShape** out, GsBuf* origins) {
+  if (fs.empty() || fs.size() != idx.size()) return fail("no faces");
+  TopoDS_Shape cur = s->s;
+  // Each face of `cur` and the input face it comes from.
+  std::vector<std::pair<TopoDS_Shape, uint32_t>> from;
+  {
+    ShapeMap in_faces;
+    TopExp::MapShapes(cur, TopAbs_FACE, in_faces);
+    for (int i = 1; i <= in_faces.Extent(); ++i) from.push_back({in_faces(i), uint32_t(i - 1)});
+  }
+  std::vector<TopoDS_Shape> todo(fs.begin(), fs.end());
+  for (size_t step = 0; step < todo.size(); ++step) {
+    const TopoDS_Face f = TopoDS::Face(todo[step]);
+    TopoDS_Shape tool, cap;
+    if (!swept_by_planes(cur, f, d, tool, cap)) return fail("a face is not a plane between planes");
+    // The neighbours of the face, for the pieces of the tool's sides the unification leaves.
+    std::vector<TopoDS_Shape> beside;
+    {
+      AncMap anc;
+      TopExp::MapShapesAndAncestors(cur, TopAbs_EDGE, TopAbs_FACE, anc);
+      for (TopExp_Explorer ex(f, TopAbs_EDGE); ex.More(); ex.Next())
+        for (ShapeList::Iterator it(anc.FindFromKey(ex.Current())); it.More(); it.Next())
+          if (!it.Value().IsSame(f)) beside.push_back(it.Value());
+    }
+    ShapeList args, tools;
+    args.Append(cur);
+    tools.Append(tool);
+    auto b = run_boolean_checked(d > 0 ? GS_BOOL_UNION : GS_BOOL_CUT, args, tools);
+    const TopoDS_Shape next = b->Shape();
+    if (next.IsNull()) return fail("no result");
+    const double before = std::fabs(signed_volume(cur)), after = std::fabs(signed_volume(next));
+    if (std::fabs(std::fabs(after - before) - std::fabs(signed_volume(tool))) > 1e-7 * std::max(1.0, before))
+      return fail("a face's swept solid is not wholly inside or outside the body");
+    auto images = [&](const TopoDS_Shape& g) {
+      std::vector<TopoDS_Shape> r;
+      const ShapeList& m = b->Modified(g);
+      for (ShapeList::Iterator it(m); it.More(); it.Next()) r.push_back(it.Value());
+      if (m.IsEmpty() && !b->IsDeleted(g)) r.push_back(g);
+      return r;
+    };
+    ShapeMap next_faces;
+    TopExp::MapShapes(next, TopAbs_FACE, next_faces);
+    std::vector<int64_t> origin(size_t(next_faces.Extent()), -1);
+    uint32_t moved = 0;
+    for (const auto& [g, o] : from) {
+      if (g.IsSame(f)) {
+        moved = o;
+        // The face itself is gone: its moved plane is the tool's cap.
+        for (const auto& x : images(g))
+          if (next_faces.Contains(x)) return fail("a piece of a moved face stays where it was");
+        continue;
+      }
+      for (const auto& x : images(g)) {
+        const int k = next_faces.FindIndex(x);
+        if (k > 0) origin[size_t(k - 1)] = o;
+      }
+    }
+    bool landed = false;
+    for (const auto& x : images(cap)) {
+      const int k = next_faces.FindIndex(x);
+      if (k <= 0) continue;
+      origin[size_t(k - 1)] = moved;
+      landed = true;
+    }
+    if (!landed) return fail("a moved face is missing");
+    // A piece of the tool's side that stays apart from the neighbour whose plane it is on.
+    for (int k = 1; k <= next_faces.Extent(); ++k) {
+      if (origin[size_t(k - 1)] >= 0) continue;
+      BRepAdaptor_Surface q(TopoDS::Face(next_faces(k)), false);
+      if (q.GetType() != GeomAbs_Plane) continue;
+      for (const auto& nb : beside) {
+        BRepAdaptor_Surface w(TopoDS::Face(nb), false);
+        if (w.GetType() != GeomAbs_Plane || !q.Plane().Axis().IsParallel(w.Plane().Axis(), 1e-9) ||
+            w.Plane().Distance(q.Plane().Location()) > 1e-7)
+          continue;
+        for (const auto& [g, o] : from)
+          if (g.IsSame(nb)) origin[size_t(k - 1)] = o;
+        break;
+      }
+    }
+    // The faces still to move, in the new body: each must stay one face.
+    for (size_t later = step + 1; later < todo.size(); ++later) {
+      std::vector<TopoDS_Shape> now;
+      for (const auto& x : images(todo[later]))
+        if (next_faces.Contains(x)) now.push_back(x);
+      if (now.size() != 1) return fail("a face to move was split or removed by an earlier one");
+      todo[later] = now[0];
+    }
+    from.clear();
+    for (int k = 1; k <= next_faces.Extent(); ++k)
+      if (origin[size_t(k - 1)] >= 0) from.push_back({next_faces(k), uint32_t(origin[size_t(k - 1)])});
+    cur = next;
+  }
+  ShapeMap out_faces;
+  TopExp::MapShapes(cur, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  for (const auto& [g, i] : from) {
+    const int k = out_faces.FindIndex(g);
+    if (k > 0) push_origin(o, k - 1, GS_ORIGIN_INPUT, 0, int64_t(i));
+  }
+  check_valid(cur, "offset");
+  to_buf(o, origins);
+  *out = new GsShape{cur};
+  return GS_OK;
+}
+
 int gs_offset_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, double distance, GsShape** out,
                     GsBuf* origins) {
   GS_GUARD_BEGIN
@@ -5127,11 +5325,17 @@ int gs_offset_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, doub
     std::vector<int64_t> o;
     for (int i = 1; i <= in_faces.Extent(); ++i) {
       const TopoDS_Shape& g = in_faces(i);
-      if (!image.HasImage(g)) continue;
-      for (ShapeList::Iterator it(image.Image(g)); it.More(); it.Next()) {
-        int k = out_faces.FindIndex(it.Value());
-        if (k > 0) push_origin(o, k - 1, GS_ORIGIN_INPUT, 0, i - 1);
+      // Every face moves or stays: a face without an image means BRepOffset gave back part of
+      // the body (5998: a shell of a loft's two faces, valid on its own).
+      bool kept = false;
+      if (image.HasImage(g)) {
+        for (ShapeList::Iterator it(image.Image(g)); it.More(); it.Next()) {
+          int k = out_faces.FindIndex(it.Value());
+          if (k > 0) push_origin(o, k - 1, GS_ORIGIN_INPUT, 0, i - 1);
+          kept = kept || k > 0;
+        }
       }
+      if (!kept) throw Standard_Failure("the offset lost faces of the body");
     }
     check_valid(result, "offset");
     to_buf(o, origins);
@@ -5142,6 +5346,10 @@ int gs_offset_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, doub
   }
   try {
     if (offset_cylinders(s, fs, idx, distance, out, origins) == GS_OK) return GS_OK;
+  } catch (const Standard_Failure&) {
+  }
+  try {
+    if (offset_planes_by_sweeps(s, fs, idx, distance, out, origins) == GS_OK) return GS_OK;
   } catch (const Standard_Failure&) {
   }
   try {

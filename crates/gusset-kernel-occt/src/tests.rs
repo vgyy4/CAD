@@ -529,6 +529,48 @@ fn a_shafts_end_between_flats_is_pushed_out_by_its_prism() {
     assert_eq!(r.face_origins.len(), rt.faces.len());
 }
 
+#[test]
+fn a_clips_slanted_side_moves_between_its_neighbours_planes() {
+    // 5998's lid clip, in short: a plate with a clip under it, reaching out past the plate's
+    // edge, whose side runs at 45 degrees between two sides along y. Moving that side 0.15 in
+    // takes off the parallelogram between it and its moved plane, ended by the neighbours'
+    // planes: 1.6 long in x, 0.15 * sqrt 2 in y, 2 deep. BRepOffset gives back the plate
+    // without the clip here (a valid solid, but not the body).
+    let plate = plain_box(20.0, 16.0, 2.0);
+    let p = |x: f64, y: f64| [x, y];
+    let line = |a: [f64; 2], b: [f64; 2], tag| ProfileEdge { seg: Seg2::Line { a, b }, tag };
+    let corners = [p(1.0, 11.774), p(2.6, 13.374), p(2.6, 14.374), p(3.687, 15.461), p(2.556, 16.593), p(1.0, 15.037)];
+    let edges = (0..corners.len())
+        .map(|i| line(corners[i], corners[(i + 1) % corners.len()], i as u64 + 1))
+        .collect::<Vec<_>>();
+    let clip = Profile {
+        frame: Frame { origin: [0.0, 0.0, -2.0], ..Frame::XY },
+        regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }],
+    };
+    let clip = k().extrude(&clip, &ExtrudeSpec { distance: 2.0, symmetric: false }).unwrap();
+    let b = k().boolean(BoolOp::Union, &plate.shape, &clip.shape).unwrap().shape;
+    let t = k().topology(&b).unwrap();
+    let s2 = 0.5f64.sqrt();
+    let side = t
+        .faces
+        .iter()
+        .position(|f| (f.normal[0] - s2).abs() < 1e-9 && (f.normal[1] + s2).abs() < 1e-9 && f.centroid[0] < 2.0)
+        .unwrap() as u32;
+    let before = k().mass_properties(&b).unwrap().volume;
+    let r = k().offset_faces(&b, &[side], -0.15).unwrap();
+    let after = k().mass_properties(&r.shape).unwrap().volume;
+    assert!(close(after, before - 1.6 * 0.15 * 2f64.sqrt() * 2.0, 1e-9), "{before} -> {after}");
+    let rt = k().topology(&r.shape).unwrap();
+    assert_eq!(rt.faces.len(), t.faces.len());
+    let moved = rt
+        .faces
+        .iter()
+        .position(|f| (f.normal[0] - s2).abs() < 1e-9 && (f.normal[1] + s2).abs() < 1e-9 && f.centroid[0] < 2.0)
+        .unwrap();
+    assert_eq!(r.face_origins.get(moved).unwrap().as_slice(), [FaceOrigin::Input { input: 0, face: side }]);
+    assert!(r.face_origins.iter().all(|o| matches!(o.as_slice(), [FaceOrigin::Input { input: 0, .. }])));
+}
+
 fn disc(r: f64, h: f64, z0: f64) -> OpResult {
     let frame = Frame { origin: [0.0, 0.0, z0], ..Frame::XY };
     let outer = Loop2 { edges: vec![ProfileEdge { seg: Seg2::Circle { center: [0.0, 0.0], radius: r }, tag: 1 }] };
