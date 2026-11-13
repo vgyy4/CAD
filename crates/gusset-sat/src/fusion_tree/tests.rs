@@ -996,6 +996,19 @@ fn a_line_ends_where_a_fillet_leaves_its_plane() {
     assert!(fillet_end(1.0, a, b, other, [0.0, 3.0, 5.0], [1.0, 0.0, 0.0]).is_none());
 }
 
+#[test]
+fn a_line_crosses_a_fillets_round_only_between_its_tangent_lines() {
+    use super::naming::fillet_crossings;
+    // The corner of sides x = 0 and y = 0 rounded with r = 1 (axis at x = y = 1, along z).
+    let (a, b) = (([0.0; 3], [1.0, 0.0, 0.0]), ([0.0; 3], [0.0, 1.0, 0.0]));
+    // The line y = 0.5 meets the circle at x = 1 -+ sqrt(0.75); only the first is on the round.
+    let ts = fillet_crossings(1.0, a, b, [0.0, 0.5, 2.0], [1.0, 0.0, 0.0]);
+    assert_eq!(ts.len(), 1, "{ts:?}");
+    assert!((ts[0] - (1.0 - 0.75f64.sqrt())).abs() < 1e-12, "{ts:?}");
+    // A line past the round misses it.
+    assert!(fillet_crossings(1.0, a, b, [0.0, 2.5, 2.0], [1.0, 0.0, 0.0]).is_empty());
+}
+
 /// A MetaStream with the given classes (GUID texts) and objects (id, bulk offset, class index).
 fn meta_classes(classes: &[&str], objs: &[(u64, u64, usize)]) -> Vec<u8> {
     let mut m = s("Design");

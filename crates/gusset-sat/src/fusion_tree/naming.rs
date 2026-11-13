@@ -470,6 +470,30 @@ pub(super) fn fillet_end(r: f64, a: (V3, V3), b: (V3, V3), on: [(V3, V3); 2], pp
     (dot(on_, u).abs() > 1e-9).then(|| (r - dot(on_, sub(pp, op))) / dot(on_, u))
 }
 
+/// Where the line `pp + t u` crosses the round of a fillet (its cylinder, within the quarter
+/// between its two sides' tangent lines, 1e-7 cm): the parameters `t`.
+pub(super) fn fillet_crossings(r: f64, a: (V3, V3), b: (V3, V3), pp: V3, u: V3) -> Vec<f64> {
+    let (Some(na), Some(nb)) = (unit(a.1), unit(b.1)) else { return Vec::new() };
+    let Some(axis) = unit(cross(na, nb)) else { return Vec::new() };
+    let Some(c) = fillet_centre(r, a, b, (axis, [0.0; 3])) else { return Vec::new() };
+    let across = |v: V3| sub(v, mul(axis, dot(v, axis)));
+    let (w, v) = (across(sub(pp, c)), across(u));
+    let (qa, qb, qc) = (dot(v, v), 2.0 * dot(w, v), dot(w, w) - r * r);
+    let disc = qb * qb - 4.0 * qa * qc;
+    if qa < 1e-18 || disc < 0.0 {
+        return Vec::new();
+    }
+    let sq = disc.sqrt();
+    [(-qb - sq) / (2.0 * qa), (-qb + sq) / (2.0 * qa)]
+        .into_iter()
+        .filter(|t| {
+            // On the round: away from the axis against both sides' normals (which point at it).
+            let q = add(w, mul(v, *t));
+            dot(q, na) <= 1e-7 && dot(q, nb) <= 1e-7
+        })
+        .collect()
+}
+
 /// The midpoint of an edge that touches fillet faces. Either the arc where a fillet meets a
 /// plane (the middle of the arc, at the point of the circle nearest the corner), or the straight
 /// line where two planes meet between two fillets (the middle of the two tangent points).
@@ -836,8 +860,19 @@ impl Ctx<'_> {
         if let Some(f) = self.face_modelled(g, ops, depth) {
             return Some(f);
         }
-        let (p, n) = self.stored_plane(g, ops)?;
-        Some(FaceG::Plane { n, p, cap: true, mid: p })
+        if let Some((p, n)) = self.stored_plane(g, ops) {
+            return Some(FaceG::Plane { n, p, cap: true, mid: p });
+        }
+        // Every stored face that carries exactly this name on one plane (the plane faces that
+        // carry it among other entries disagree: 6299's thin cut `Extrude7 (2)`, whose side
+        // `11` ends `Fillet4 (2)`'s corner edge).
+        match self.stored_face(g, ops)?.surface {
+            Surface::Plane { origin, normal } => {
+                let n = unit(normal)?;
+                Some(FaceG::Plane { n, p: origin, cap: true, mid: origin })
+            }
+            _ => None,
+        }
     }
 
     fn face_modelled(&mut self, g: &str, ops: &[i32], depth: usize) -> Option<FaceG> {
@@ -850,6 +885,9 @@ impl Ctx<'_> {
         let (first, rest) = ops.split_first()?;
         if rest.is_empty() {
             return self.face_of_extrude(g, ops);
+        }
+        if let Some(f) = self.mirrored_face(g, ops, depth) {
+            return Some(f);
         }
         // Other later operations leave the face where the extrude put it (as before).
         let mut wall = 0.0;
@@ -882,6 +920,31 @@ impl Ctx<'_> {
         }
         let q = add(p, mul(n, wall * side.signum()));
         Some(FaceG::Plane { n, p: q, cap, mid: add(mid, mul(n, wall * side.signum())) })
+    }
+
+    /// A face of a copy a mirror of features made, named (g, [op, mirror, copy]) (`D1728651`, then
+    /// its copy `AD719C1A`): the face (g, [op]) reflected in the mirror plane. 6124's `Mirror2`
+    /// copies the tab `Extrude9` across y = 0; `Fillet3` rounds the copy's corners and `Fillet4`
+    /// runs along the copy's sides (`6 [374, 376, 377]`, where the tab's own is `6 [374]`).
+    fn mirrored_face(&mut self, g: &str, ops: &[i32], depth: usize) -> Option<FaceG> {
+        let [first, m, i] = ops else { return None };
+        let mfid = self.op_feature(*m).filter(|q| self.d.is(*q, "D1728651"))?;
+        if !self.op_feature(*i).is_some_and(|q| self.d.is(q, "AD719C1A")) {
+            return None;
+        }
+        let f = self.face_modelled(g, std::slice::from_ref(first), depth)?;
+        let (o, n) = super::json::mirror_plane(self, mfid)?;
+        let n = unit(n)?;
+        let pt = |p: V3| sub(p, mul(n, 2.0 * dot(n, sub(p, o))));
+        let dir = |v: V3| sub(v, mul(n, 2.0 * dot(n, v)));
+        match f {
+            FaceG::Plane { n: fnormal, p, cap, mid } => {
+                Some(FaceG::Plane { n: dir(fnormal), p: pt(p), cap, mid: pt(mid) })
+            }
+            FaceG::Fillet { r, a, b } => Some(FaceG::Fillet { r, a: (pt(a.0), dir(a.1)), b: (pt(b.0), dir(b.1)) }),
+            // An arc side is held by its sketch and placement, which a reflection does not keep.
+            FaceG::Cyl { .. } => None,
+        }
     }
 
     /// The feature an operation id belongs to.
@@ -962,6 +1025,16 @@ impl Ctx<'_> {
     }
 
     fn face_pick_at(&mut self, g: &str, ops: &[i32], depth: usize) -> Option<(V3, V3)> {
+        // A mirrored copy's face: the original's pick, reflected.
+        if let [first, m, i] = ops
+            && let Some(mfid) = self.op_feature(*m).filter(|q| self.d.is(*q, "D1728651"))
+            && self.op_feature(*i).is_some_and(|q| self.d.is(q, "AD719C1A"))
+        {
+            let (p, out) = self.face_pick_at(g, std::slice::from_ref(first), depth)?;
+            let (o, n) = super::json::mirror_plane(self, mfid)?;
+            let n = unit(n)?;
+            return Some((sub(p, mul(n, 2.0 * dot(n, sub(p, o)))), sub(out, mul(n, 2.0 * dot(n, out)))));
+        }
         let FaceG::Plane { n, mid, cap, .. } = self.face_modelled(g, ops, depth)? else { return None };
         let efid = *self.opmap.get(&u64::try_from(*ops.first()?).ok()?)?;
         let eg = self.ext_geom(efid)?;
@@ -1652,6 +1725,7 @@ impl Ctx<'_> {
         if let (FaceG::Plane { n: n0, p: p0, .. }, FaceG::Plane { n: n1, p: p1, .. }) = (&a, &b) {
             let (pp, u) = plane_plane(*n0, *p0, *n1, *p1)?;
             let mut ts = Vec::new();
+            let mut crossings: Vec<Vec<f64>> = Vec::new();
             for f in fs.iter().skip(2).flatten() {
                 if let FaceG::Plane { n, p, .. } = f
                     && dot(*n, u).abs() > 1e-9
@@ -1669,10 +1743,25 @@ impl Ctx<'_> {
                 // plane: the line ends where the fillet leaves that plane, `r` from the other
                 // (770: the bottom rim of a box between its side, rounded at the corners, and a
                 // later join that interrupts it).
-                if let FaceG::Fillet { r, a, b } = f
-                    && let Some(t) = fillet_end(*r, *a, *b, [(*n0, *p0), (*n1, *p1)], pp, u)
-                {
-                    ts.push(t);
+                if let FaceG::Fillet { r, a, b } = f {
+                    if let Some(t) = fillet_end(*r, *a, *b, [(*n0, *p0), (*n1, *p1)], pp, u) {
+                        ts.push(t);
+                    } else {
+                        crossings.push(fillet_crossings(*r, *a, *b, pp, u));
+                    }
+                }
+            }
+            // A fillet of two other planes the line runs into (6124's `Fillet4`: a tab's side
+            // meets the box's corner round `Fillet1` made): where it enters the round, the
+            // crossing nearest the edge's other ends.
+            if !ts.is_empty() {
+                let k = ts.len() as f64;
+                let centre = ts.iter().sum::<f64>() / k;
+                for c in &crossings {
+                    if let Some(t) = c.iter().copied().min_by(|x, y| (x - centre).abs().total_cmp(&(y - centre).abs()))
+                    {
+                        ts.push(t);
+                    }
                 }
             }
             if ts.len() >= 2 {
