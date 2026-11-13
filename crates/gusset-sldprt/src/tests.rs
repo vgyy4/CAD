@@ -1193,6 +1193,51 @@ fn an_ellipse_arc_is_read_with_its_axes() {
     assert_eq!((cp["x"].as_f64(), cp["y"].as_f64()), (Some(0.0), Some(0.0)));
 }
 
+/// A construction arc whose ends are not on one circle about its centre (Hobby Motor 3v: the
+/// centre is an end point) is left out; it shapes nothing and Gusset refuses it.
+#[test]
+fn a_construction_arc_off_its_circle_is_left_out() {
+    let mut rf = vec![3, 0];
+    rf.extend(feature_node("moProfileFeature_c", "Sketch1", 5));
+    rf.extend(comp_plane(2, 0.0));
+    rf.extend([0u8; 16]);
+    let corners = [(0.0, 0.0), (0.01, 0.0), (0.01, 0.01), (0.0, 0.01)];
+    rf.extend(4u32.to_le_bytes());
+    for (i, (x, y)) in corners.iter().enumerate() {
+        rf.extend(sketch_item(100 + i as u32, 10 + i as u32, 0));
+        rf.extend(0x1eu16.to_le_bytes());
+        rf.extend(f64::to_le_bytes(*x));
+        rf.extend(f64::to_le_bytes(*y));
+        rf.extend([0u8; 12]);
+    }
+    rf.extend(5u32.to_le_bytes());
+    for i in 0..4u16 {
+        rf.extend(sketch_item(1 + u32::from(i), 20 + u32::from(i), 1));
+        rf.extend(i.to_le_bytes());
+        rf.extend(((i + 1) % 4).to_le_bytes());
+        rf.extend([1, 0, 0, 0]);
+        rf.extend((-1.0f64).to_le_bytes());
+        rf.extend([0u8; 24]);
+    }
+    // A construction arc (flags 0x0c) about p0 from p0 to p1.
+    let mut arc = sketch_item(9, 29, 1);
+    arc[47] = 0x0c;
+    rf.extend(arc);
+    rf.extend([0, 0, 1, 0, 1, 0, 0, 0]);
+    rf.extend((-1.0f64).to_le_bytes());
+    rf.extend(1i32.to_le_bytes());
+    rf.extend([0, 0]);
+    rf.extend([0xfe, 0xff, 0xff, 0xff].repeat(4));
+    rf.extend([0u8; 16]);
+    let base = feature_stream(&[]);
+    let ex = base.windows(13).position(|w| w == b"moExtrusion_c").unwrap() - 6;
+    rf.extend(&base[ex..]);
+    let t = history(&rf).unwrap().unwrap();
+    let curves = t["features"][0]["curves"].as_array().unwrap();
+    assert_eq!(curves.len(), 4, "{curves:?}");
+    assert!(curves.iter().all(|c| c["type"] == "line"));
+}
+
 /// Byte 12 of the end condition reverses the default direction: a boss runs against its sketch
 /// normal and a cut along it (200mm Topmost Platform's cuts, no direction vector written).
 #[test]

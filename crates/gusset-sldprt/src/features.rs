@@ -1036,6 +1036,14 @@ fn sketch_json(name: &str, g: &Geometry, plane: Option<&Plane>, jp: &JsonPlane) 
                 o.insert("radius".into(), json!(mm(libm::hypot(ps.x - pc.x, ps.y - pc.y))));
             }
             SegKind::Arc | SegKind::Ellipse => {
+                // A construction arc whose ends are not both on its circle (or on its centre) is
+                // not an arc as read (Hobby Motor 3v's sketch: centres on end points); it shapes
+                // nothing, and Gusset refuses it.
+                let pe = pt(s.e).unwrap_or(ps);
+                let (r0, r1) = (libm::hypot(ps.x - pc.x, ps.y - pc.y), libm::hypot(pe.x - pc.x, pe.y - pc.y));
+                if s.construction && (r0 < 1e-9 || r1 < 1e-9 || (r0 - r1).abs() > 1e-6 * r0.max(r1)) {
+                    continue;
+                }
                 // Counter-clockwise from start to end.
                 let (a, b) = if s.dir > 0 { (s.s, s.e) } else { (s.e, s.s) };
                 o.insert("type".into(), json!("arc"));
