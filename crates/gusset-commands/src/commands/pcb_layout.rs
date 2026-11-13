@@ -5,7 +5,7 @@ use super::pcb::{PcbImport, board_source, no_board, write_outputs};
 use super::pcb_edit::commit_board;
 use super::*;
 use crate::pcb_session;
-use gusset_pcb::{Limits, route, specctra, zones};
+use gusset_pcb::{Limits, route, shove, specctra, zones};
 use std::sync::atomic::AtomicBool;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
@@ -87,13 +87,16 @@ pub struct PcbRoute {
     /// Round corners into arcs of this radius (mm).
     #[serde(default)]
     pub arc_radius: Option<f64>,
+    /// false: never move another net's track aside.
+    #[serde(default)]
+    pub shove: Option<bool>,
 }
 
 impl Command for PcbRoute {
     const ID: &'static str = "pcb.route";
     const TITLE: &'static str = "Route track";
     const DESCRIPTION: &'static str =
-        "Lay a track through points in 45° segments, walking around other nets with the clearance rules.";
+        "Lay a track through points in 45° segments, walking around other nets (or shoving one track aside).";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -118,25 +121,39 @@ impl Command for PcbRoute {
         if !(width.is_finite() && width > 0.0 && width <= 100.0) {
             return Err(CommandError::args("the width is above 0 and at most 100 mm"));
         }
-        let obs = route::Obstacles::new(b, &open.rules, &layer, net.as_deref(), width);
         let grid = (open.rules.clearance_of(net.as_deref()).min(width) / 2.0).clamp(0.05, 0.25);
+        let around = self.around.unwrap_or(true);
+        // The board as other nets' tracks are shoved; obstacles rebuilt after a shove.
+        let mut nb = b.clone();
+        let mut obs = route::Obstacles::new(&nb, &open.rules, &layer, net.as_deref(), width);
+        let mut shoved = 0usize;
         let mut pts: Vec<[f64; 2]> = vec![first];
         for (i, w) in self.points.windows(2).enumerate() {
             let &[a, c] = w else { continue };
-            let leg = if self.around.unwrap_or(true) {
-                route::walkaround(&obs, a, c, grid, true).ok_or_else(|| {
-                    CommandError::not_found(format!("no clear way from point {i} to point {}", i + 1))
-                        .hint("move the points, route on another layer, or pass around: false")
-                })?
-            } else {
+            let leg = if !around {
                 vec![a, c]
+            } else if let Some(leg) = route::walkaround(&obs, a, c, grid, true) {
+                leg
+            } else {
+                let sh = if self.shove.unwrap_or(true) {
+                    shove::shove(&nb, &open.rules, &layer, net.as_deref(), width, a, c, grid, &pts)
+                } else {
+                    None
+                };
+                let Some(sh) = sh else {
+                    return Err(CommandError::not_found(format!("no clear way from point {i} to point {}", i + 1))
+                        .hint("move the points, route on another layer, or pass around: false"));
+                };
+                nb.apply_shove(&sh, &layer, &Limits::default()).map_err(pcb_err)?;
+                obs = route::Obstacles::new(&nb, &open.rules, &layer, net.as_deref(), width);
+                shoved += 1;
+                sh.path
             };
             pts.extend(leg.into_iter().skip(1));
         }
         let pts = route::simplify(&pts);
         let segs = route::with_arcs(&obs, &pts, self.arc_radius.unwrap_or(0.0));
         let length = route::length(&segs);
-        let mut nb = b.clone();
         let index = nb.add_route(&segs, width, &layer, net.as_deref(), &Limits::default()).map_err(pcb_err)?;
         let extra = json!({
             "tracks": nb.tracks.len() - index,
@@ -144,6 +161,7 @@ impl Command for PcbRoute {
             "length_mm": (length * 1000.0).round() / 1000.0,
             "width": width,
             "net_user_text": net,
+            "shoved_tracks": shoved,
         });
         commit_board(s, ctx, "Route track", open.file.clone(), &nb, None, extra)
     }

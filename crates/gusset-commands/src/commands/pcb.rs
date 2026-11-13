@@ -11,6 +11,8 @@ pub(super) fn specs() -> Vec<CommandSpec> {
     let mut v = vec![spec::<PcbInfo>(), spec::<PcbImport>(), spec::<PcbExportGerbers>(), spec::<PcbExportDrill>()];
     v.extend(super::pcb_edit::specs());
     v.extend(super::pcb_layout::specs());
+    v.extend(super::pcb_nets::specs());
+    v.extend(super::pcb_autoroute::specs());
     v
 }
 

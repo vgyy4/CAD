@@ -147,3 +147,18 @@ pub fn apply_project(rules: &mut Rules, pro: &Value) {
         rules.edge_clearance = v;
     }
 }
+
+/// A Freerouting install the user named in Settings (ADR 0047 phase 3). Gusset never
+/// downloads or bundles it (GPL; ADR 0001): `pcb.autoroute` runs it as a separate process
+/// on a DSN export and reads its SES back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Freerouting {
+    /// `freerouting.jar` (run with `java -jar`) or an executable.
+    pub path: std::path::PathBuf,
+    /// The Java runtime for a jar (default: `java` on the PATH).
+    pub java: Option<std::path::PathBuf>,
+    /// Longest run before it is stopped (seconds).
+    pub timeout_s: u64,
+    /// Extra arguments the user added (e.g. a headless switch for their version).
+    pub args: Vec<String>,
+}

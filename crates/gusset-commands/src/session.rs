@@ -138,6 +138,11 @@ pub struct Session {
     pub(crate) pcb_cache: crate::pcb_session::Cache,
     /// The open schematic, parsed, by its stored hashes (ADR 0047 phase 2a).
     pub(crate) sch_cache: crate::sch_session::Cache,
+    /// The user's Freerouting setup (Settings; never set by agents). `None`: not set up.
+    pub freerouting: Option<crate::pcb_session::Freerouting>,
+    /// Set to stop a running `pcb.autoroute` (the GUI's Cancel button); cleared when one
+    /// starts.
+    pub autoroute_cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for Session {
@@ -194,6 +199,8 @@ impl Session {
             cam_cache: None,
             pcb_cache: crate::pcb_session::Cache::default(),
             sch_cache: crate::sch_session::Cache::default(),
+            freerouting: None,
+            autoroute_cancel: Arc::default(),
         }
     }
 

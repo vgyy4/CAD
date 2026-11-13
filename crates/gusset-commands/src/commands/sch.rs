@@ -27,6 +27,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<SchDelete>(),
         spec::<SchErc>(),
         spec::<SchNetlist>(),
+        spec::<SchAnnotate>(),
         spec::<PcbUpdateFromSchematic>(),
     ]
 }
@@ -268,6 +269,78 @@ fn mirror_of(m: Option<&str>, current: Mirror) -> Result<Mirror, CommandError> {
         Some("x") => Ok(Mirror::X),
         Some("y") => Ok(Mirror::Y),
         Some(_) => Err(CommandError::args("mirror is none, x or y")),
+    }
+}
+
+/// The prefix and number of a reference (`R12` → `("R", Some(12))`, `R?` → `("R", None)`).
+fn split_reference(r: &str) -> (String, Option<u64>) {
+    let p: String = r.chars().take_while(|c| !c.is_ascii_digit() && *c != '?').collect();
+    let rest = r.get(p.len()..).unwrap_or("");
+    (p, rest.parse().ok())
+}
+
+/// Numbers the design's symbols.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SchAnnotate {
+    /// Renumber every symbol, not only R? ones.
+    #[serde(default)]
+    pub all: bool,
+}
+
+impl Command for SchAnnotate {
+    const ID: &'static str = "sch.annotate";
+    const TITLE: &'static str = "Annotate";
+    const DESCRIPTION: &'static str =
+        "Number unannotated symbols (R? to R3) across the open schematic's sheets, by sheet then place.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let open = sch_session::open_schematic(s, &ctx.actor)?.ok_or_else(no_schematic)?;
+        // Numbers kept, by prefix.
+        let mut used: std::collections::HashMap<String, std::collections::HashSet<u64>> = Default::default();
+        let mut todo: Vec<(usize, usize, [f64; 2])> = Vec::new();
+        for (si, (_, sch)) in open.design.sheets.iter().enumerate() {
+            for (k, sym) in sch.symbols.iter().enumerate() {
+                let (prefix, n) = split_reference(sym.reference());
+                match n {
+                    Some(n) if !self.all => {
+                        used.entry(prefix).or_default().insert(n);
+                    }
+                    _ => todo.push((si, k, sym.at)),
+                }
+            }
+        }
+        // Sheet by sheet; left to right, then top to bottom (KiCad's default order).
+        todo.sort_by(|a, b| a.0.cmp(&b.0).then(a.2[0].total_cmp(&b.2[0])).then(a.2[1].total_cmp(&b.2[1])));
+        let mut sheets: Vec<Option<Schematic>> = vec![None; open.design.sheets.len()];
+        let mut renamed = Vec::new();
+        for (si, k, _) in todo {
+            let Some((_, orig)) = open.design.sheets.get(si) else { continue };
+            let Some(sym) = orig.symbols.get(k) else { continue };
+            let old = sym.reference().to_string();
+            let (prefix, _) = split_reference(&old);
+            let prefix = if prefix.is_empty() { "U".to_string() } else { prefix };
+            let taken = used.entry(prefix.clone()).or_default();
+            let n = (1..).find(|n| !taken.contains(n)).unwrap_or(1);
+            taken.insert(n);
+            let new = format!("{prefix}{n}");
+            if new == old {
+                continue;
+            }
+            let Some(slot) = sheets.get_mut(si) else { continue };
+            let sch = slot.get_or_insert_with(|| orig.clone());
+            sch.set_field(k, "Reference", &new, &limits()).map_err(sch_err)?;
+            renamed.push(json!([old, new]));
+        }
+        let edited: Vec<(usize, &Schematic)> =
+            sheets.iter().enumerate().filter_map(|(i, x)| x.as_ref().map(|x| (i, x))).collect();
+        if edited.is_empty() {
+            return Ok(json!({ "renamed_user_text": [], "changed": false }));
+        }
+        let shown: Vec<&Value> = renamed.iter().take(MAX_LIST).collect();
+        let extra = json!({ "renamed_user_text": shown, "changed": true, "count": renamed.len() });
+        commit_sheets(s, ctx, "Annotate", open.doc.clone(), &edited, extra)
     }
 }
 

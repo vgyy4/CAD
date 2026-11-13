@@ -36,8 +36,10 @@ mod lettering;
 mod measure;
 mod ops;
 pub(crate) mod pcb;
+mod pcb_autoroute;
 mod pcb_edit;
 mod pcb_layout;
+mod pcb_nets;
 mod sch;
 #[cfg(test)]
 pub(crate) use sch::footprint_candidates as sch_footprint_candidates;
@@ -70,14 +72,16 @@ pub use lettering::Text;
 pub use measure::QueryMeasure;
 pub use ops::{DeleteFace, Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Shell};
 pub use pcb::{PcbExportDrill, PcbExportGerbers, PcbImport, PcbInfo};
+pub use pcb_autoroute::PcbAutoroute;
 pub use pcb_edit::{
     PcbAddTrack, PcbAddVia, PcbDelete, PcbDrc, PcbExportBom, PcbExportPos, PcbMoveFootprint, PcbNew, PcbOpen, PcbSave,
     PcbSetOutline,
 };
 pub use pcb_layout::{PcbAddFootprint, PcbExportDsn, PcbExportStep, PcbFillZones, PcbImportSes, PcbRoute};
+pub use pcb_nets::{PcbAddZone, PcbNetClass, PcbRenameNet, PcbSetNet, ZoneHatch};
 pub use sch::{
-    PcbUpdateFromSchematic, SchAddLabel, SchAddSymbol, SchAddWire, SchDelete, SchErc, SchMove, SchNetlist, SchNew,
-    SchOpen, SchSave, SchSetField,
+    PcbUpdateFromSchematic, SchAddLabel, SchAddSymbol, SchAddWire, SchAnnotate, SchDelete, SchErc, SchMove, SchNetlist,
+    SchNew, SchOpen, SchSave, SchSetField,
 };
 pub use sheet::{Bend, ContourFlange, EdgeFlange, ExportFlat, FlatPatternQuery, Tab};
 pub use sim::{FaceLoad, ModalQuery, OptimizeQuery, StaticQuery};

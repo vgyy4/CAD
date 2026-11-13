@@ -6,6 +6,7 @@
 use super::pcb::{board_source, length_mm, no_board, read_board_text, write_outputs};
 use super::*;
 use crate::pcb_session::{self, OpenBoard};
+use gusset_eval::BlobSource;
 use gusset_pcb::{Board, Limits, drc, fab};
 use std::sync::atomic::AtomicBool;
 
@@ -189,7 +190,14 @@ impl Command for PcbSave {
         }
         let (folder, name) = path.rsplit_once(['/', '\\']).unwrap_or(("", &path));
         let files = [(name.to_string(), open.board.write())];
-        let written = write_outputs(s, ctx, folder, self.overwrite, "kicad_pcb", &files)?;
+        let mut written = write_outputs(s, ctx, folder, self.overwrite, "kicad_pcb", &files)?;
+        // The project file (net classes, rules) beside it, when the board has one.
+        if let Some(pro) = open.project_hash.as_ref().and_then(|h| s.blobs().blob(h)) {
+            let stem = name.get(..name.len() - ".kicad_pcb".len()).unwrap_or(name);
+            let text = String::from_utf8_lossy(&pro).into_owned();
+            let files = [(format!("{stem}.kicad_pro"), text)];
+            written.extend(write_outputs(s, ctx, folder, self.overwrite, "kicad_pro", &files)?);
+        }
         Ok(json!({ "written": written }))
     }
 }
@@ -320,24 +328,32 @@ pub struct PcbDelete {
     pub tracks: Vec<usize>,
     #[serde(default)]
     pub vias: Vec<usize>,
+    #[serde(default)]
+    pub zones: Vec<usize>,
 }
 
 impl Command for PcbDelete {
     const ID: &'static str = "pcb.delete";
     const TITLE: &'static str = "Delete tracks";
-    const DESCRIPTION: &'static str = "Delete tracks and vias of the open board by index.";
+    const DESCRIPTION: &'static str = "Delete tracks, vias and zones of the open board by index.";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        if self.tracks.is_empty() && self.vias.is_empty() {
-            return Err(CommandError::args("name the tracks or vias to delete"));
+        if self.tracks.is_empty() && self.vias.is_empty() && self.zones.is_empty() {
+            return Err(CommandError::args("name the tracks, vias or zones to delete"));
         }
-        if self.tracks.len() + self.vias.len() > 100_000 {
+        if self.tracks.len() + self.vias.len() + self.zones.len() > 100_000 {
             return Err(CommandError::args("at most 100000 items at once"));
         }
         board_edit(s, ctx, "Delete tracks", |b, _| {
-            let n = b.delete_items(&self.tracks, &self.vias, &limits()).map_err(pcb_err)?;
-            Ok(json!({ "deleted": n }))
+            // Zones first: their indices are checked before anything moves.
+            let z = if self.zones.is_empty() { 0 } else { b.delete_zones(&self.zones, &limits()).map_err(pcb_err)? };
+            let n = if self.tracks.is_empty() && self.vias.is_empty() {
+                0
+            } else {
+                b.delete_items(&self.tracks, &self.vias, &limits()).map_err(pcb_err)?
+            };
+            Ok(json!({ "deleted": n + z }))
         })
     }
 }
