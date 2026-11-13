@@ -333,22 +333,135 @@ designs and generated files.
 * MCP: core tool list unchanged (31 tools, 17901 of 18000 bytes); the command tools average 568
   bytes (160 tools; was 570); the largest new one is `pcb_route` at 798 bytes.
 
+## Phase 3 (2026-11-13): the workflow complete from nothing
+Goal: a user who starts from an empty session can draw a schematic, bring it to a board, give
+it nets and rules, route, pour, check and write every fabrication file without KiCad.
+* **Nets (`gusset-pcb` `nets`; `pcb.set_net`, `pcb.rename_net`)**: pads take a net by
+  `REF.PAD` (every pad of that number on the footprint; a new name declares the net, none
+  takes the pad off); a net is renamed on pads, tracks, vias, zones (`net_name`) and KiCad 5
+  `add_net`, in numbered (KiCad 6 to 9) and named (KiCad 10) files; renaming onto an
+  existing name merges the two (numbered files: the old declaration goes, references take
+  the other number). The project's class assignments follow a rename.
+* **Net classes (`pcb.net_class`)**: clearance, track width, via size and drill, nets
+  (KiCad 8+ `netclass_assignments`) and name patterns, or delete (not `Default`). Kept where
+  KiCad keeps them, in the `.kicad_pro` beside the board: a board without one gets a minimal
+  project (`meta`, `net_settings`), stored in the history like the board; `pcb.save` writes
+  it beside the `.kicad_pcb`. The rules the router, fills and DRC use are read back from it
+  as for an opened project.
+* **Zones (`pcb.add_zone`, `pcb.delete` zones)**: a polygon on one or more copper layers,
+  net, clearance, pad connection (thermal, solid, none), priority, solid or **hatched**
+  (bar width, hole size, angle), written as KiCad writes zones and filled at once.
+  **Hatched fills**: after the solid fill and its spokes (steps 1 to 5 above), square holes
+  of the hole size on a grid of hole + bar, turned by the angle, are cut where they lie
+  inside the fill shrunk by the bar width (the border) and away from the zone's own pads and
+  vias (grown by the thermal gap and the wider of spoke and bar), so every connection the
+  solid fill made stays; holes cut to less than `hatch_min_hole_area` of a whole one stay
+  copper; islands are removed after hatching. At most 200 000 holes per fill (else solid,
+  noted). KiCad's own smoothing and border options are written with defaults, not applied.
+* **Texts plotted (`font`)**: KiCad's stroke font was not used (its licence was not settled
+  here, and its source is GPL). Gusset has **its own stroke font**, drawn for this work:
+  printable ASCII as polylines on a 7 × 13 grid (cap height 9, x-height 6, descenders 3),
+  advance = glyph width + 3, unknown characters as a box. Board and footprint texts are
+  plotted into Gerbers with a round pen of the text's thickness (else an eighth of its
+  height) at their height and width, angle (counter-clockwise on screen), justification
+  (left/centre/right, top/centre/bottom; KiCad's default centre) and mirroring, lines split at
+  `\n`; `${REFERENCE}`/`${VALUE}` (and KiCad 5 `%R`/`%V`) take the footprint's. Copper texts
+  are obstacles for fills and routes. The editor still draws texts in the UI font.
+* **Push-and-shove, kept simple (`shove`)**: when the walkaround finds no way, the route is
+  searched as if other nets' tracks on the layer were not there; the tracks it would cross
+  must all belong to one **chain** of one net (segments joined end to end, straight, one
+  width, two free ends at pads, vias or branches). That chain is taken up, the new track
+  laid (searched again without the chain), and the chain laid again between its two ends
+  around the new track (and the legs of the new track laid before); the result is kept only
+  when the DRC reports no more problems than before, else nothing changes. Several blocking
+  nets, branches or arcs are refused. `pcb.route` shoves by default (`shove: false` turns
+  it off); the track and the moved one are one undoable edit; the result says how many
+  tracks were shoved. Moving a track's segments a little aside while keeping its shape
+  (true shove), and shoving vias, are later work.
+* **Freerouting as a separate process (`pcb.autoroute`)**: the user names their own
+  install (a `freerouting.jar`, run with `java -jar`, Java optional; or an executable) and a
+  time limit in the PCB panel's Autorouter section (saved in the window preferences, never
+  settable by agents; the app hands it to the session). The command writes the board's DSN
+  into a private temporary folder (0700), runs `<freerouting> -de board.dsn -do board.ses
+  -mp <passes>` with no stdin and its output to files there, polls it, kills it at the time
+  limit or when the session's cancel flag is set (the status bar's Cancel), reads the SES
+  back (64 MiB cap, the fuzzed reader) and lays it, replacing the routes, in one undoable
+  edit; the folder is removed. Not set up: `not_available`, nothing run. Agents need the
+  user's approval (it starts a program). Gusset never downloads, bundles or finds
+  Freerouting by itself (GPL; ADR 0001). Tested with fake routers (shell scripts in a temp
+  folder): success, failure with its stderr, timeout, cancel, a missing program.
+* **Schematic: `sch.annotate`**: symbols whose reference has no number (`R?`, `#PWR?`), or
+  every symbol with `all`, get the next free number of their prefix across the design,
+  sheet by sheet, left to right then top to bottom.
+* **Editor**: a Zone tool (click corners; double click, Enter or the first corner closes;
+  the panel's net, hatch, bar and hole); a Nets section: the picked footprint's pad nets as
+  editable fields (`pcb.set_net` on leaving a field), renaming the highlighted net, net
+  classes (pick or name one, sizes, add the highlighted net, delete), and the Autorouter
+  (path, Java, time limit, Autoroute; Cancel in the status bar while it runs). A Route
+  click where the preview finds no way asks `pcb.route` to shove (the route ends there). The ribbon's
+  PCB tab lists the new commands; the Schematic tab Annotate.
+* **End to end (`gusset-commands` `tests_pcb_flow`)**: from an empty session: a symbol
+  library (resistor, connector, `+5V`, `GND`, `PWR_FLAG`), `sch.new`, symbols placed as
+  `R?`, wired and labelled, ERC (unannotated) → `sch.annotate` → ERC clean, netlist; `pcb.new`,
+  `pcb.update_from_schematic` (footprints from a `.pretty` folder, nets), placement, a test
+  point placed by hand and put on a net with `pcb.set_net`, a `Power` class (0.5 mm) for
+  `+5V`/`GND`, routes (the class width taken), a stub and via into a hatched `GND` zone on
+  B.Cu (filled at once; the through-hole connector joins it), 0 unrouted, DRC clean;
+  Gerbers (silkscreen references plotted, the zone a region), drill (3 plated holes), BOM,
+  placement; STEP refused cleanly by the mock kernel (the real kernel's board STEP is
+  `gusset-cli/tests/pcb_import.rs`); `pcb.save` (board and `.kicad_pro`) and `sch.save`,
+  opened again: the same tree, the class read back, nothing unrouted, the board in step with
+  the schematic; then rename, merge, undo, class delete, zone delete. Gaps found and fixed
+  on the way: no command set a pad's net, made a zone, edited classes or annotated; the
+  board's project file (classes) was not saved.
+
+## Results of phase 3 (2026-11-13)
+* Local check, not in the repository (CC-BY-SA data), release build (`tests_local`, run with
+  `GUSSET_KICAD_SAMPLES`): on the 7 demo boards every net renamed and renamed back gives the
+  identical tree; Gerbers with every shown text plotted take 1 to 66 ms (video: 541 texts).
+  Routing pad pairs of up to 30 nets on F.Cu with every other track in place, as in phase
+  2b: walkaround as before (ecc83-pp 9/9, pic_programmer 30/30, interf_u 27/30, StickHub
+  14/24, complex_hierarchy 28/30, coldfire 7/30, video 8/30); the shove adds 2 on
+  complex_hierarchy and 1 on coldfire, each with the DRC no worse; on video and the others
+  the blocked pairs are blocked by several nets or by pads, which this shove does not move.
+  Slowest board 3.6 s for its 30 pairs (video).
+* The stroke font drawn and checked by eye (every glyph rasterised): legible capitals,
+  lowercase, digits and punctuation.
+* Tests: `gusset-pcb` 64 (new `tests_phase3` 4 — a shove in a closed channel with the DRC
+  clean after and both nets joined, two blocking nets; pad nets, rename, merge, KiCad 10
+  named nets; zones added, solid and hatched fills (area against the hole grid), hatch read
+  back, delete; texts in Gerbers, placement, turning, field variables, copper text as a fill
+  obstacle; `font` glyph grid check; `tests_local` skipped without samples);
+  `gusset-commands` `tests_pcb_flow` 3 (the end-to-end flow above; a shove through
+  `pcb.route` undone in one step; Freerouting faked); `gusset-app` `tests_pcb` 1 more (zone
+  tool, pad-net, class and autorouter commands from the panel, the setting reaching the
+  session) and the preferences round trip with the Freerouting setting. Fuzz target
+  `pcb_nets` (renames, pad nets, fills with hatching, the stroke font on any board).
+* MCP: core tool list unchanged (31 tools, 17971 of 18000 bytes); the command tools average
+  577 bytes (168 tools; was 568); the largest new one is `pcb_add_zone` at 1005 bytes.
+
 ## Next (out of scope of this ADR's work; each needs its own ADR before work)
-* **Routing**: push-and-shove, dragging tracks, differential pairs and length tuning, blind and
-  buried vias, routing across layers in one search; detecting Freerouting on the PATH and
-  running it with the user's approval (export DSN, run, import SES).
-* **Zones**: hatched fills, copper text as an obstacle, zones over several outlines, KiCad's
-  exact thermal spoke rules (minimum spoke count), filling on edit.
+* **Routing**: a true shove (segments moved aside keeping their shape, several tracks and
+  vias pushed in a chain), dragging tracks, differential pairs and length tuning, blind and
+  buried vias, routing across layers in one search; a larger walkaround window for dense
+  boards (video: 8 of 30 pad pairs). Freerouting runs from the user's setting (phase 3);
+  finding it on the PATH is not done on purpose (the user names the install).
+* **Zones**: zones over several outlines, KiCad's exact thermal spoke rules (minimum spoke
+  count), hatch smoothing and border options, filling on edit, a zone outline editor
+  (moving corners).
 * **Schematic, after phase 2b**: wires dragged orthogonally with symbols; bus aliases and
   KiCad's naming of bus member nets in every case (25 of 2046 video pads differ in the name
-  chosen); multi-select and box select; annotation of a whole design; a symbol library
+  chosen); multi-select and box select; annotation options (by Y first, per sheet
+  ranges, multi-unit parts sharing a number); a symbol library
   browser; sheet creation and editing; KiCad 5 `.sch` files; back-annotation from the board;
   `kicad-cli sch erc` for the authoritative check.
 * **KiCad library content pack** (footprints, symbols, 3D models; CC-BY-SA-4.0 with exception) as
   an optional download with notices; placing footprints from it.
 * DRC: hole-to-hole, courtyard overlap, silk on pads, drill sizes, per-class rules beyond
   clearance; KiCad's custom rules (`.kicad_dru`).
-* Editor: texts plotted in Gerbers (`gusset-text` outlines) and mirrored on flip, arc tracks
+* Editor: texts drawn in our stroke font in the editor too (the UI font today) and mirrored
+  on flip, adding and editing board texts, a pad picked on its own (pad nets are edited
+  per footprint in the panel), arc tracks
   drawn freehand, board outline drawing with the mouse (today: the `pcb.set_outline` form),
   moving tracks and vias.
 * From phase 1a: Gerber object attributes (`.N`, `.P`, `.C`); re-reading our Gerbers with a

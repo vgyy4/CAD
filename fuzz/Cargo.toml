@@ -215,3 +215,10 @@ path = "fuzz_targets/ses_read.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "pcb_nets"
+path = "fuzz_targets/pcb_nets.rs"
+test = false
+doc = false
+bench = false

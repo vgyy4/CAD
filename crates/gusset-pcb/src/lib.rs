@@ -60,6 +60,8 @@ mod tests_dsn;
 #[cfg(test)]
 mod tests_edit;
 #[cfg(test)]
+mod tests_local;
+#[cfg(test)]
 mod tests_phase3;
 #[cfg(test)]
 mod tests_route;

@@ -36,8 +36,18 @@ Phase 3 has started (see Next).
   hierarchical sheets, netlist, ERC, field edits, sync to the board. Boards and schematics
   live in the document history (undoable); `pcb.*` / `sch.*` registry commands sit
   outside the core MCP list; egui PCB and Schematic tabs with net highlighting shared
-  between them. Fuzz targets `pcb_read`, `sch_read`, `ses_read`. Next (ADR 0047): push-and-
-  shove routing, launching Freerouting from the PATH, hatched zones, text in Gerbers.
+  between them. Fuzz targets `pcb_read`, `sch_read`, `ses_read`, `pcb_nets`.
+  Phase 3 (2026-11-13): the workflow is complete from an empty session (one end-to-end test:
+  schematic from a symbol library, `sch.annotate`, ERC, board update, placement, pad nets,
+  net classes, routing, a hatched zone, DRC, Gerbers/drill/BOM/placement, save and reopen):
+  `pcb.set_net`, `pcb.rename_net` (merges), `pcb.net_class` (in the `.kicad_pro`, saved
+  with the board), `pcb.add_zone` (solid or hatched), a simple shove in `pcb.route` (one
+  blocking track of one net laid again round the new one, kept only when the DRC is no
+  worse), `pcb.autoroute` running the user's own Freerouting (set in the PCB panel; never
+  downloaded) with timeout and Cancel, texts plotted into Gerbers in Gusset's own stroke
+  font (copper texts are obstacles); editor Zone tool, pad-net, net-class and autorouter
+  panels. Next (ADR 0047): a true shove (several tracks, vias), texts in the editor's
+  stroke font, a STEP of the flow's board under OCCT (covered by `pcb_import.rs` today).
 - Body patterns that keep their copies apart (2026-11-11): `merge: false` on
   `pattern_linear` / `pattern_circular` makes copy `i` a body `<pattern>_copy<i>` that later
   features target; tree import `"merge": false` with copies `<name>[i]` (ADRs 0004, 0042).
