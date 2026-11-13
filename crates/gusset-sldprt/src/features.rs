@@ -2493,6 +2493,13 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             {
                 plane = find_plane(rf, j.saturating_sub(6), b, uc)?;
             }
+            if plane.is_none()
+                // A sketch on a fixed reference plane (zsCAD): its plane data, written just
+                // before the node, is a plane-data block (origin, normal, rotation, t, 1.0).
+                && let Some(j) = rfind(rf, b"moFixedRefPlnData_c", a.saturating_sub(400), a)
+            {
+                plane = find_plane(rf, j, b, uc)?;
+            }
             let jp = json_plane(plane.as_ref());
             let sk = sketch_json(&n.name, &geo, plane.as_ref(), &jp);
             if let Some(h) = hole.as_mut() {
