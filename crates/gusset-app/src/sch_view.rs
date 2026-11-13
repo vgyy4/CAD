@@ -75,6 +75,10 @@ pub struct State {
     /// The symbol library file and symbol name the Place tool puts down.
     pub library: String,
     pub symbol: String,
+    /// The unit the Place tool puts down (1 unless the browser chose another).
+    pub unit: u32,
+    /// The symbol library browser (ADR 0057).
+    pub browser: crate::symbol_browser::Browser,
     pub show_markers: bool,
     /// The user named a `kicad-cli` (ADR 0056): the KiCad ERC button is offered.
     pub kicad_ready: bool,
@@ -107,6 +111,8 @@ impl Default for State {
             label_kind: LabelKind::Local,
             library: String::new(),
             symbol: String::new(),
+            unit: 1,
+            browser: crate::symbol_browser::Browser::default(),
             show_markers: true,
             kicad_ready: false,
             kicad_issues: Vec::new(),
@@ -259,7 +265,7 @@ pub struct Out {
     pub commands: Vec<(&'static str, Value)>,
 }
 
-const PAPER: Color32 = Color32::from_rgb(245, 244, 239);
+pub(crate) const PAPER: Color32 = Color32::from_rgb(245, 244, 239);
 const BODY: Color32 = Color32::from_rgb(132, 0, 0);
 const BODY_FILL: Color32 = Color32::from_rgb(255, 255, 194);
 const PIN: Color32 = Color32::from_rgb(132, 0, 0);
@@ -453,10 +459,43 @@ pub fn place_command(st: &State, at: Pt) -> Option<(&'static str, Value)> {
     if st.library.trim().is_empty() || st.symbol.trim().is_empty() {
         return None;
     }
-    Some((
-        "sch.add_symbol",
-        with_sheet(st, json!({ "library": st.library.trim(), "symbol": st.symbol.trim(), "at": at })),
-    ))
+    let mut args = json!({ "library": st.library.trim(), "symbol": st.symbol.trim(), "at": at });
+    if st.unit > 1
+        && let Value::Object(m) = &mut args
+    {
+        m.insert("unit".into(), json!(st.unit));
+    }
+    Some(("sch.add_symbol", with_sheet(st, args)))
+}
+
+/// Arms the Place tool with a symbol picked in the browser (its library file, name and
+/// unit); the next click on the sheet sends `sch.add_symbol` (see [`place_command`]).
+pub fn arm_place(st: &mut State, p: &crate::symbol_browser::Placement) {
+    st.library.clone_from(&p.library);
+    st.symbol.clone_from(&p.symbol);
+    st.unit = p.unit;
+    st.tool = Tool::Place;
+    st.wire.clear();
+}
+
+/// Draws a library symbol, unit `unit`, fitted into a box of `size` on the paper colour.
+pub fn paint_preview(ui: &mut Ui, lib: &LibSymbol, unit: u32, size: Vec2) {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, PAPER);
+    let sym = lib.preview(unit);
+    let Some([a, b]) = lib.bounds(sym.unit, sym.style) else {
+        painter.text(rect.center(), egui::Align2::CENTER_CENTER, "-", FontId::proportional(14.0), FIELD);
+        return;
+    };
+    // The box in sheet coordinates (Y flipped).
+    let (a, b) = (sym.place(a), sym.place(b));
+    let (lo, hi) = ([a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])]);
+    let (w, h) = ((hi[0] - lo[0]).max(1.0) as f32, (hi[1] - lo[1]).max(1.0) as f32);
+    let zoom = ((rect.width() - 40.0) / w).min((rect.height() - 40.0) / h).clamp(1.0, 40.0);
+    let mid = Pos2::new(((lo[0] + hi[0]) / 2.0) as f32, ((lo[1] + hi[1]) / 2.0) as f32);
+    let origin = rect.center() - Vec2::new(mid.x, mid.y) * zoom;
+    paint_symbol(&painter, &Map { origin, zoom }, &sym, lib, Vec2::ZERO, false);
 }
 
 /// ERC markers on the shown sheet: issues of the first use of that sheet file.
@@ -666,15 +705,29 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &m
         }
     });
     ui.separator();
-    ui.label(tr("sch.library"));
-    crate::theme::text_field(
+    egui::CollapsingHeader::new(tr("sch.browser")).id_salt("sch_browser").default_open(true).show(ui, |ui| {
+        if let Some(p) = crate::symbol_panel::panel(ui, &mut st.browser) {
+            arm_place(st, &p);
+        }
+    });
+    egui::CollapsingHeader::new(tr("sch.browser_manual")).id_salt("sch_lib_manual").default_open(false).show(
         ui,
-        egui::TextEdit::singleline(&mut st.library).hint_text(tr("sch.library_hint")).desired_width(f32::INFINITY),
-    );
-    ui.label(tr("sch.symbol"));
-    crate::theme::text_field(
-        ui,
-        egui::TextEdit::singleline(&mut st.symbol).hint_text(tr("sch.symbol_hint")).desired_width(f32::INFINITY),
+        |ui| {
+            ui.label(tr("sch.library"));
+            crate::theme::text_field(
+                ui,
+                egui::TextEdit::singleline(&mut st.library)
+                    .hint_text(tr("sch.library_hint"))
+                    .desired_width(f32::INFINITY),
+            );
+            ui.label(tr("sch.symbol"));
+            crate::theme::text_field(
+                ui,
+                egui::TextEdit::singleline(&mut st.symbol)
+                    .hint_text(tr("sch.symbol_hint"))
+                    .desired_width(f32::INFINITY),
+            );
+        },
     );
     ui.separator();
     ui.checkbox(&mut st.show_markers, tr("sch.markers"));
@@ -1056,7 +1109,7 @@ fn text(painter: &egui::Painter, map: &Map, at: Pos2, s: &str, size: f64, angle:
     }
 }
 
-fn paint_symbol(painter: &egui::Painter, map: &Map, s: &Symbol, lib: &LibSymbol, off: Vec2, sel: bool) {
+pub(crate) fn paint_symbol(painter: &egui::Painter, map: &Map, s: &Symbol, lib: &LibSymbol, off: Vec2, sel: bool) {
     let to = |p: Pt| map.to(s.place(p)) + off;
     let w = |width: f64| ((width.max(0.152)) as f32 * map.zoom).max(1.0);
     let body = if sel { SELECT } else { BODY };

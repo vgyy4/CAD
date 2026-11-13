@@ -56,6 +56,7 @@ pub mod sch_edit;
 pub mod sexpr;
 pub mod shove;
 pub mod specctra;
+pub mod symlib;
 pub mod sync;
 pub mod text_edit;
 pub mod tune;
@@ -91,6 +92,8 @@ mod tests_route;
 mod tests_sch;
 #[cfg(test)]
 mod tests_sch_edit;
+#[cfg(test)]
+mod tests_symlib;
 #[cfg(test)]
 mod tests_text;
 #[cfg(test)]

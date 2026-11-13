@@ -628,6 +628,7 @@ fn saved_preferences_come_back_in_a_new_window() {
         kicad_cli: "/opt/kicad/bin/kicad-cli".into(),
         kicad_cli_timeout: 77,
         pcb_fill_on_edit: true,
+        symbol_library: "/home/u/symbols".into(),
     };
     crate::prefs::save(&crate::prefs::path(dirs.data_dir()), &want).unwrap();
     let a = App::new(std::sync::Arc::new(gusset_kernel::mock::MockKernel), Some(dirs));
@@ -638,6 +639,7 @@ fn saved_preferences_come_back_in_a_new_window() {
     assert!(a.browser_collapsed && !a.timeline_collapsed && a.docks_swapped);
     assert_eq!((a.pcb_state.freerouting.as_str(), a.pcb_state.freerouting_timeout), ("/opt/fr/freerouting.jar", 120));
     assert_eq!((a.pcb_state.kicad_cli.as_str(), a.pcb_state.kicad_cli_timeout), ("/opt/kicad/bin/kicad-cli", 77));
+    assert_eq!(a.sch_state.browser.folder, "/home/u/symbols");
     drop(a);
     let _ = std::fs::remove_dir_all(&dir);
 }

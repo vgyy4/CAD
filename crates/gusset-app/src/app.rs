@@ -310,6 +310,8 @@ pub struct App {
     kicad_sent: Option<Option<gusset_commands::pcb_session::KicadCli>>,
     /// The fill-on-edit option the session last got; `None` after a new session.
     fill_on_edit_sent: Option<bool>,
+    /// The symbol library folder last written to the preferences.
+    symbol_library_saved: String,
     /// The Schematic tab is chosen (ADR 0047 phase 2a): the schematic editor replaces the
     /// viewport.
     pub sch_tab: bool,
@@ -482,6 +484,7 @@ impl App {
             freerouting_sent: None,
             kicad_sent: None,
             fill_on_edit_sent: None,
+            symbol_library_saved: String::new(),
             sch_tab: false,
             sch_state: crate::sch_view::State::default(),
             probed: None,
@@ -562,6 +565,8 @@ impl App {
         self.pcb_state.kicad_cli = prefs.kicad_cli;
         self.pcb_state.kicad_cli_timeout = prefs.kicad_cli_timeout;
         self.pcb_state.fill_on_edit = prefs.pcb_fill_on_edit;
+        self.sch_state.browser.folder.clone_from(&prefs.symbol_library);
+        self.symbol_library_saved = prefs.symbol_library;
     }
 
     /// The model thread this window talks to (shared with the MCP server).
@@ -1483,6 +1488,7 @@ impl App {
             kicad_cli: self.pcb_state.kicad_cli.clone(),
             kicad_cli_timeout: self.pcb_state.kicad_cli_timeout,
             pcb_fill_on_edit: self.pcb_state.fill_on_edit,
+            symbol_library: self.sch_state.browser.folder.trim().to_string(),
         }
     }
 
@@ -2750,6 +2756,12 @@ impl App {
         if self.fill_on_edit_sent != Some(on) {
             self.fill_on_edit_sent = Some(on);
             let _ = self.host.exec_detached(move |s, _| s.pcb_fill_on_edit = on, |_| {});
+            self.save_prefs();
+        }
+        // The symbol browser's folder is a preference.
+        let folder = self.sch_state.browser.folder.trim().to_string();
+        if folder != self.symbol_library_saved && (folder.is_empty() || std::path::Path::new(&folder).exists()) {
+            self.symbol_library_saved = folder;
             self.save_prefs();
         }
         // The schematic panel's KiCad buttons follow the same setting.

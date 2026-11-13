@@ -26,6 +26,8 @@ pub mod sketch_constrain;
 pub mod sketch_place;
 pub mod sketch_regions;
 pub mod spacemouse;
+pub mod symbol_browser;
+pub mod symbol_panel;
 pub mod theme;
 pub mod timeline;
 pub mod value_entry;
@@ -49,3 +51,5 @@ mod tests_pcb;
 mod tests_ribbon;
 #[cfg(test)]
 mod tests_sch;
+#[cfg(test)]
+mod tests_sch_lib;

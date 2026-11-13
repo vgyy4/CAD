@@ -41,6 +41,9 @@ pub struct Prefs {
     pub kicad_cli_timeout: u64,
     /// Pour zones on edit (ADR 0053).
     pub pcb_fill_on_edit: bool,
+    /// The folder of `.kicad_sym` files the schematic's symbol browser lists (ADR 0057;
+    /// empty: none). Never downloaded by Gusset.
+    pub symbol_library: String,
 }
 
 pub const MIN_SCALE: f32 = 0.75;
@@ -70,6 +73,7 @@ impl Default for Prefs {
             freerouting_timeout: 600,
             kicad_cli: String::new(),
             kicad_cli_timeout: 300,
+            symbol_library: String::new(),
             pcb_fill_on_edit: false,
         }
     }
@@ -145,6 +149,7 @@ pub fn load(path: &Path) -> Prefs {
             .filter(|t| (5..=3_600).contains(t))
             .unwrap_or(d.kicad_cli_timeout),
         pcb_fill_on_edit: v.get("pcb_fill_on_edit").and_then(Value::as_bool).unwrap_or(false),
+        symbol_library: path_pref(&v, "symbol_library"),
     }
 }
 
@@ -199,6 +204,7 @@ pub fn save(path: &Path, p: &Prefs) -> Result<(), String> {
         "kicad_cli": p.kicad_cli,
         "kicad_cli_timeout": p.kicad_cli_timeout,
         "pcb_fill_on_edit": p.pcb_fill_on_edit,
+        "symbol_library": p.symbol_library,
     });
     let bytes = serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())?;
     let check = |b: &[u8]| serde_json::from_slice::<Value>(b).map(|_| ()).map_err(|e| e.to_string());
@@ -229,6 +235,7 @@ mod tests {
             freerouting_timeout: 90,
             kicad_cli: "/opt/kicad/bin/kicad-cli".into(),
             kicad_cli_timeout: 45,
+            symbol_library: "/home/u/symbols".into(),
             ..Prefs::default()
         };
         remember(&mut want.recent, "/a.gus");
