@@ -1164,6 +1164,9 @@ impl Ctx<'_> {
         };
         let (start, end) = (cap("1"), cap("2"));
         let all: Vec<V3> = faces.iter().flat_map(points).collect();
+        if start.is_none() && end.is_none() {
+            return half_turn_across(&faces, &all, axis, angle, &radial);
+        }
         let fits = |a: V3| -> Option<bool> {
             let s = match (start, end) {
                 (Some(s), _) => s,
@@ -2060,6 +2063,75 @@ impl Ctx<'_> {
             let path = poly.iter().map(|q| world(pl, *q, tcap)).collect();
             return Some((world(pl, m2, tcap), true, path));
         }
+        None
+    }
+}
+
+/// A half turn of a face the axis crosses (both caps on both sides of it: 2354's `Revolve2`):
+/// each side of the face sweeps the half the other side leaves. Where the two sides reach the
+/// same radii (the face is the same on both sides of the axis) either way makes the same solid
+/// and the axis is taken as it is; otherwise the stored points beyond the shorter side's reach
+/// lie on the side the longer one swept, which tells the way. `None` for other angles, for caps
+/// off the axis's plane, or where the points do not agree.
+pub(super) fn half_turn_across(
+    faces: &[acis::NamedFace],
+    all: &[V3],
+    axis: V3,
+    angle: f64,
+    radial: &dyn Fn(V3) -> V3,
+) -> Option<V3> {
+    if (angle - std::f64::consts::PI).abs() > 1e-9 {
+        return None;
+    }
+    let gen_of = |f: &acis::NamedFace| f.name.first().map_or("", |(g, _)| g.as_str()).to_string();
+    // The start cap, or (where the join used it up) the end cap: a half turn puts it on the
+    // start's line through the axis.
+    let cap_of = |g: &str| -> Vec<V3> {
+        faces
+            .iter()
+            .filter(|f| gen_of(f) == g)
+            .flat_map(|f| f.verts.iter().chain(&f.edge_pts).copied().collect::<Vec<V3>>())
+            .map(radial)
+            .collect()
+    };
+    let cap = Some(cap_of("1")).filter(|c| !c.is_empty()).unwrap_or_else(|| cap_of("2"));
+    let s = cap.iter().find(|r| norm(**r) > 1e-6).and_then(|r| unit(*r))?;
+    if cap.iter().any(|r| norm(cross(*r, s)) > 1e-7) {
+        return None;
+    }
+    let mut sides: [Vec<f64>; 2] = [Vec::new(), Vec::new()];
+    for r in &cap {
+        let d = dot(*r, s);
+        if let Some(v) = sides.get_mut(usize::from(d < 0.0)).filter(|_| d.abs() > 1e-7) {
+            v.push(d.abs());
+        }
+    }
+    for v in &mut sides {
+        v.sort_by(f64::total_cmp);
+        v.dedup_by(|a, b| (*a - *b).abs() < 1e-7);
+    }
+    let [a, b] = &sides;
+    if a.is_empty() || b.is_empty() {
+        return None;
+    }
+    if a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-7) {
+        return Some(axis);
+    }
+    let (amax, bmax) = (a.last().copied()?, b.last().copied()?);
+    if (amax - bmax).abs() < 1e-7 {
+        return None;
+    }
+    let (big, reach) = if amax > bmax { (s, bmax) } else { (mul(s, -1.0), amax) };
+    let beyond: Vec<f64> =
+        all.iter().map(|q| radial(*q)).filter(|r| norm(*r) > reach + 1e-6).map(|r| dot(axis, cross(big, r))).collect();
+    if beyond.is_empty() {
+        return None;
+    }
+    if beyond.iter().all(|x| *x >= -1e-7) {
+        Some(axis)
+    } else if beyond.iter().all(|x| *x <= 1e-7) {
+        Some(mul(axis, -1.0))
+    } else {
         None
     }
 }

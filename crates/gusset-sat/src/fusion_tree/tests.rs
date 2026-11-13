@@ -2564,3 +2564,35 @@ fn a_root_sketch_a_component_feature_used_moves_with_the_component_after_it() {
     json::sketches_where_they_were_drawn_against(&mut feats, &by_comp, &then);
     assert_eq!(feats.len(), 2);
 }
+
+#[test]
+fn a_half_turn_of_a_face_the_axis_crosses_turns_where_its_sides_differ() {
+    // 2354's Revolve2: a face across the axis (y, through the origin) turned 180 degrees; the join
+    // used up the start cap, the end cap lies on both sides of the axis.
+    let face = |g: &str, verts: Vec<[f64; 3]>| acis::NamedFace {
+        name: vec![(g.to_string(), vec![374])],
+        kind: "plane".into(),
+        vecs: Vec::new(),
+        nums: Vec::new(),
+        verts,
+        edge_pts: Vec::new(),
+        flags: Vec::new(),
+    };
+    let radial = |q: [f64; 3]| [q[0], 0.0, q[2]];
+    let axis = [0.0, 1.0, 0.0];
+    let pi = std::f64::consts::PI;
+    // The same reach on both sides: either way makes the same cylinder.
+    let even = vec![face("2", vec![[0.0, 0.0, 0.4], [0.0, 0.0, -0.4], [0.0, 1.0, 0.4], [0.0, 1.0, -0.4]])];
+    let all: Vec<[f64; 3]> = even.iter().flat_map(|f| f.verts.clone()).collect();
+    assert_eq!(naming::half_turn_across(&even, &all, axis, pi, &radial), Some(axis));
+    assert_eq!(naming::half_turn_across(&even, &all, axis, pi / 2.0, &radial), None);
+    // Reaching 2 on +z and 1 on -z: the points beyond 1 lie where +z turned to.
+    let cap = face("2", vec![[0.0, 0.0, 2.0], [0.0, 0.0, -1.0], [0.0, 1.0, 2.0], [0.0, 1.0, -1.0]]);
+    // A right-handed half turn about +y takes +z through +x.
+    let side = |x: f64| face("12", vec![[x, 0.0, 1.0], [x * 1.5, 1.0, 0.5]]);
+    for (x, want) in [(1.5, axis), (-1.5, [0.0, -1.0, 0.0])] {
+        let faces = vec![cap.clone(), side(x)];
+        let all: Vec<[f64; 3]> = faces.iter().flat_map(|f| f.verts.clone()).collect();
+        assert_eq!(naming::half_turn_across(&faces, &all, axis, pi, &radial), Some(want));
+    }
+}
