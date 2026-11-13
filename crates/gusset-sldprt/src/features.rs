@@ -1887,10 +1887,16 @@ fn face_pick(
             .iter()
             .filter(|s| !s.construction)
             .filter_map(&side)
-            .fold(None::<Side>, |b, x| if b.is_none_or(|b| x.2 > b.2) { Some(x) } else { b })?;
-        let (mid, out, len) = longest;
-        let e = 1e-6 + 0.01 * len;
-        let (u, v) = (mid.0 - out.0 * e, mid.1 - out.1 * e);
+            .fold(None::<Side>, |b, x| if b.is_none_or(|b| x.2 > b.2) { Some(x) } else { b });
+        let (u, v) = match longest {
+            Some((mid, out, len)) => {
+                let e = 1e-6 + 0.01 * len;
+                (mid.0 - out.0 * e, mid.1 - out.1 * e)
+            }
+            // A profile of arcs only (RobotCap's disc): a point just inside the middle of its
+            // largest arc.
+            None => arc_inside(g)?,
+        };
         if !inside(g, u, v) {
             return None;
         }
@@ -1912,6 +1918,26 @@ fn face_pick(
         unit(nrm),
         Region::Wall(*f, (pa.x, pa.y), (pb.x, pb.y)),
     ))
+}
+
+/// A point of a profile's inside next to the middle of its largest arc (m), when the profile
+/// has one; either side of the arc may be the inside.
+fn arc_inside(g: &Geometry) -> Option<(f64, f64)> {
+    type Uv = (f64, f64);
+    // Radius, the arc's middle sample, its outward direction.
+    let mut best: Option<(f64, Uv, Uv)> = None;
+    for s in g.segs.iter().filter(|s| !s.construction && s.kind == SegKind::Arc) {
+        let (Some(c), Some(p)) = (point(&g.pts, s.c), point(&g.pts, s.s)) else { continue };
+        let r = libm::hypot(p.x - c.x, p.y - c.y);
+        let Some(pts) = seg_uv(g, s) else { continue };
+        let Some(&m) = pts.get(pts.len() / 2) else { continue };
+        if r > 1e-9 && best.is_none_or(|b| r > b.0) {
+            best = Some((r, m, ((m.0 - c.x) / r, (m.1 - c.y) / r)));
+        }
+    }
+    let (r, m, out) = best?;
+    let e = 1e-6 + 0.01 * r;
+    [-1.0, 1.0].into_iter().map(|k| (m.0 + k * out.0 * e, m.1 + k * out.1 * e)).find(|&(u, v)| inside(g, u, v))
 }
 
 fn lift(f: &Swept, x: f64, y: f64, h: f64) -> V3 {
@@ -3899,6 +3925,31 @@ mod end_face_tests {
         let d = node(3);
         assert_eq!(end_face_ref(&d, 0, d.len()).map(|r| r.idx), Some(1));
         assert!(end_face_ref(&d, 0, 40).is_none());
+    }
+
+    #[test]
+    fn a_cap_of_a_profile_of_arcs_is_picked_inside_its_largest_arc() {
+        // A disc of r 10 mm (a full circle, key 2) extruded 5 mm: its far cap, picked just
+        // inside the circle opposite its start.
+        let circle = Seg {
+            kind: SegKind::Arc,
+            id: 2,
+            a: 2,
+            s: 1,
+            e: 1,
+            c: 0,
+            dir: 1,
+            construction: false,
+            centerline: false,
+            external: false,
+        };
+        let g = Geometry { pts: vec![pt(0.0, 0.0), pt(0.01, 0.0)], segs: vec![circle], ellipse_axes: Vec::new() };
+        let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let swept = HashMap::from([(40, Swept { sketch: 0, plane, distance: 5.0, symmetric: false, through: false })]);
+        let r = Rep { tag: 9, fid: 40, idx: 1, ext: false, ext2: false, via: None };
+        let (p, n, _) = face_pick(&r, &swept, &[g], &HashSet::from([9u16])).unwrap();
+        assert_eq!(n, [0.0, 0.0, 1.0]);
+        assert!((p[0] + 9.899).abs() < 1e-6 && p[1].abs() < 1e-6 && (p[2] - 5.0).abs() < 1e-9, "{p:?}");
     }
 
     #[test]
