@@ -3512,3 +3512,81 @@ for a part turn, `axis.direction`.
   Neither revolve nor the loft is rebuilt against the stored bodies yet (the readers stop first).
 * No loss on the sample of 40 designs (every 6th of adafruit-more, every 10th of adafruit-next): 35 come in as history,
   as in round 29; the other five are 1400 and 2226 (no history), 3221 and 3502 (state check), 6299.
+
+## 57. Round 30 B: a spindle torus's point on the axis, a chamfer that uses up its sides, rounds a hair off square (2026-11-13)
+Converter: `gusset-sat` `step.rs` (`Writer::apex_seam`, `write_seam`), `fixtures.rs` (`spindle_dome_sat`); kernel:
+`gusset_occt.cpp` (`chamfer_by_taper`, `corner_of`).
+
+### 3722: the stored solid of 46358.0566 mm3 is `Revolve2`'s dome, read wrong
+* Every stored body converted to STEP and read on its own (`STEPControl_Reader`): the solid of 46358.0566 mm3 is the
+  cylinder r 33.5 mm, 19 mm tall, and one face on the spindle torus of section 52 (major 0.6583 mm, minor 54 mm about
+  z 61.865 mm) bounded by the cylinder's top circle and a vertex loop at the dome's top (0, 0, 115.861) mm: `Revolve2`
+  as the file stores it. OCCT's STEP reader drops a vertex loop on a toroidal surface (`StepToTopoDS_TranslateFace`
+  goes on to the next bound), and ShapeFix then closes the face at the other point where the tube crosses the axis
+  (z 7.869 mm): the bowl under the dome, and 46358.06 is the cylinder less that bowl. The file's end body of the base
+  came in the same way (1909.57 mm3).
+* So not `Shell3`. With the face read right the stored end body of the base and the rebuild's have the same dome
+  faces (outer r 54 mm 33218.588 mm2, inner r 52 mm 30823.295 mm2), rounds (r 2 mm 381.499, r 4 mm 723.646) and inner
+  wall (r 31.5 mm 3567.30, in three pieces in the rebuild).
+* Fix: a torus face whose minor radius exceeds its major one, with one loop of edges and one loop that is a point on
+  the axis, is written as OCCT writes such faces: a seam from the edge loop's start to the point and back in the edge
+  loop, on the arc of the tube's circle through that start that does not pass the other crossing (counterclockwise
+  from x towards the axis unless the other crossing lies on the way); OCCT's reader adds the degenerate edge at the
+  point. The decision is made from the records before anything is written, so every other face is written as before:
+  every `.smb`/`.smbh` blob of the three sets converts byte for byte as before except 3722's two (the dome and the
+  base's end body).
+* Golden test `a_sat_dome_on_a_spindle_torus_imports_with_its_volume` (`gusset-kernel-occt`, 3722's section from
+  `fixtures::spindle_dome_sat`): 725030.0311 mm3, Pappus in closed form, to 1e-9 (the bowl without the fix); unit test
+  `a_spindle_torus_face_ends_at_the_axis_by_a_seam` (`gusset-sat`).
+* 3722 now: every stored solid is a state of the model or a cut tool (`Revolve2` stored 725030.0527, rebuilt
+  725030.0492); the check stops at "how many copies Chamfer1 (2) makes cannot be derived from the tree, and it follows
+  the last stored state". The end bodies that could confirm the last features are not read: the base's history blob
+  (`c11e060a....smbh`) holds an empty body (no faces), and `fusion_end_bodies` gives up on any body but a sheet. Read,
+  they would not agree yet: the blobs also hold the combines' tool bodies (the coil, 743.66 mm3, and the cap's
+  `Extrude1` state, 10551.04 mm3), and the base's end is 73895.0589 mm3 (Gauss-Kronrod 73895.0597) against the
+  rebuild's 73888.9897.
+* The 6.07 mm3 is `Chamfer1`. The stored end's coil flanks are 755.55 mm2 each (rebuild 750.99 and 748.69), its two
+  ends planes of 3.3475 mm2 (normals (+-0.697, -0.718, 0); at the start z 2.803 to 5.115 mm, below the coil's 2.845:
+  the flanks run on past the old end), the base's cylinder 2634.48 mm2 round the coil (rebuild 2641.33). Fusion
+  chamfers the concave edge between each coil end and the base's cylinder (a wedge added at both ends). The rebuild
+  does so at the end (`line_on_cylinder`) but at the start chamfers the convex edge between the end face and the
+  upper flank, (33.5, 0, 5.155) to (35.5, 0, 4) mm (r28's dump): the reader's `stored_edge` finds, in the stored
+  bodies, an edge between faces named `5 [307]` and `1 [312, 314]` with its middle at (34.5, 0, 4.577) mm. The recipe
+  `5 [307] | 1 [312, 314] | 4 [312, 314] | 3 [312, 314]` names the edge between `Revolve2`'s face 5 and the coil's
+  start cap, ended by the flanks 4 and 3: the base of the start's triangle, middle (33.5, 0, 4.0) mm. Next for 3722
+  (reader: which stored edge carries those names).
+
+### 5998 Chamfer3: a chamfer that uses up a slot's sides
+* The dumped shape: `Extrude6`'s slot is 3 mm wide (sides x = 8 and 11 mm from y = -4 to 4, round ends r 1.5 mm),
+  pocketed from the floor's top z 1.6 down to 1.0 mm; `Chamfer3` takes its four rim edges by 0.6 mm. ChFi3d fails
+  ("chamfer failed") at once and in every earlier fallback; the chamfer's faces would end on the slot's bottom edges.
+* New last fallback of `blend_edges` (`chamfer_by_taper`): a chamfer of one size along one whole loop of a planar
+  face's edges, all convex, lines or arcs, whose other faces stand square to the face (planes across it, cylinders
+  along its normal). The tool is the ruled loft (`BRepOffsetAPI_ThruSections`) from the loop moved the chamfer's size
+  down the sides to its offset by twice the size (`BRepOffsetAPI_MakeOffset`, intersection joins: a hole's loop grows,
+  the outer loop shrinks) the size above the face; the shape less the tool. The volume removed must be exactly the
+  ring between the loop and its offset by t over the depth, d/6 (A0 + 4 A(d/2) + A(d)) - A0 d (exact: the offset's
+  area is quadratic in t), to 1e-7 of the body; every face of the result must have an origin; each loft side the
+  boolean leaves is its edge's chamfer face (planes, cones on the arcs). 5998: 4.802654704 mm3 removed, as expected.
+* Golden test `a_chamfer_that_uses_up_a_pockets_sides_is_its_rim_tapered` (`gusset-kernel-occt`, 5998's slot in a
+  plate): P d^2/2 + pi d^3/3 to 1e-9, one plane or cone per rim edge; it fails without the fallback.
+
+### 5998 Fillet5: rounds of a slot's end a hair off square
+* Then `Fillet5` failed ("fillet produced an invalid solid"): r 0.2 mm on both inner corners at the end of two slots
+  0.4 mm wide, turned 20 degrees (a full round). OCCT at once gives an invalid solid (713.96 mm3 for 848.56), in passes
+  the second round of an end fails; `blend_by_corners` refused: the end and the sides are 9.96e-8 rad off square
+  (Fusion's angles to 7 digits), and `corner_of` wanted 1e-9. Now 1e-6 rad; the corners made square are off by some
+  1e-7 of a blend size, far below its volume check (1e-7 of the body). Golden test
+  `rounds_of_a_slots_end_a_hair_off_square_fill_its_corners` (fails at 1e-9).
+* 5998 then stops at `OffsetFaces2` (component Top): "no planar or cylindrical face of the model holds the point
+  [-10.756497, 6.917761, 9.0]" (a face pick of the reader; not looked into).
+
+### Result
+* 3722 passes the stored-solid check (next: `Chamfer1`'s start edge, above); 5998 builds `Chamfer3` and `Fillet5` and
+  stops at `OffsetFaces2`. No design gained history yet.
+* Converter: every `.smb`/`.smbh` blob of the three sets converts to the same STEP as before but 3722's two (25 files
+  Python's zipfile cannot open were not compared).
+* No loss: round 29's 31 designs (helical, spline and blend designs) and 52 more that came in as history (every 5th of
+  the three sets' history designs, and 1867) come in as before; 1867 still stops at `Fillet1` ("too large for edge").
+* Tests: `gusset-kernel-occt` (73), `gusset-sat`, `modeling_gear`, `modeling_thread`, `modeling_tree_import`,
+  `modeling_sim_shell`, `modeling_chamfer`, `modeling_full_round` pass.
