@@ -6,6 +6,7 @@
 
 use crate::board::{Board, PadKind, PadShape, Pt, ZoneConnect};
 use crate::copper::{self, Copper, ItemRef, Prim};
+use crate::dru::{Kind, Subject};
 use crate::geom;
 use crate::rules::Rules;
 
@@ -21,6 +22,8 @@ pub struct Violation {
     pub layer: Option<String>,
     /// The items involved.
     pub items: Vec<ItemRef>,
+    /// The custom rule (`.kicad_dru`, ADR 0054) that set the limit, when one did.
+    pub rule: Option<String>,
 }
 
 /// What a gap may fall short by and still pass (mm): rounding in the file and in arc
@@ -61,13 +64,67 @@ pub fn describe(board: &Board, it: ItemRef) -> String {
     }
 }
 
+/// How custom rules see an item: its type, net, class and the copper layers (ADR 0054).
+pub(crate) fn subject(rules: &Rules, what: ItemRef, net: Option<&str>, layers: Vec<String>) -> Subject {
+    let kind = match what {
+        ItemRef::Track(_) => "track",
+        ItemRef::Via(_) => "via",
+        ItemRef::Pad(_) => "pad",
+        ItemRef::Zone(_) => "zone",
+        _ => "",
+    };
+    Subject {
+        net_class: net.and_then(|n| rules.class_of(n)).map_or_else(|| "Default".to_string(), |c| c.name.clone()),
+        net_name: net.unwrap_or_default().to_string(),
+        kind,
+        layers,
+    }
+}
+
+/// The custom rule governing the clearance between two copper items on a layer: its
+/// minimum and the rule's name.
+pub(crate) fn custom_clearance(
+    rules: &Rules,
+    a: (ItemRef, Option<&str>),
+    b: (ItemRef, Option<&str>),
+    layer: Option<&str>,
+    layers_of: impl Fn(ItemRef) -> Vec<String>,
+) -> Option<(f64, String)> {
+    if !rules.custom.has(Kind::Clearance) {
+        return None;
+    }
+    let ls = |w: ItemRef| layer.map_or_else(|| layers_of(w), |l| vec![l.to_string()]);
+    let (sa, sb) = (subject(rules, a.0, a.1, ls(a.0)), subject(rules, b.0, b.1, ls(b.0)));
+    let (r, c) = rules.custom.find(Kind::Clearance, &sa, Some(&sb))?;
+    Some((c.min?, r.name.clone()))
+}
+
+/// Appends the custom rule's name to a message.
+pub(crate) fn named(message: String, rule: &Option<String>) -> String {
+    match rule {
+        Some(r) => format!("{message} (rule \"{r}\")"),
+        None => message,
+    }
+}
+
 /// Checks `board` against `rules`; at most `max` violations.
 pub fn check(board: &Board, rules: &Rules, max: usize) -> Vec<Violation> {
     let mut out = Vec::new();
     let copper = Copper::of(board);
     let items = &copper.items;
-    let widest =
-        rules.classes.iter().filter_map(|c| c.clearance).fold(rules.clearance, f64::max).max(rules.edge_clearance);
+    let widest = rules
+        .classes
+        .iter()
+        .filter_map(|c| c.clearance)
+        .fold(rules.clearance, f64::max)
+        .max(rules.edge_clearance)
+        .max(rules.custom.largest_min(Kind::Clearance));
+    let layer_names = |w: ItemRef| -> Vec<String> {
+        items
+            .iter()
+            .find(|i| i.what == w)
+            .map_or_else(Vec::new, |i| i.layers.iter().filter_map(|l| copper.layers.get(*l).cloned()).collect())
+    };
     // Copper of different nets.
     for (i, j) in copper::near_pairs(items, widest) {
         if out.len() >= max {
@@ -77,33 +134,34 @@ pub fn check(board: &Board, rules: &Rules, max: usize) -> Vec<Violation> {
         if a.net.is_some() && a.net == b.net {
             continue;
         }
-        let need = rules.clearance_of(a.net.as_deref()).max(rules.clearance_of(b.net.as_deref()));
+        let mut need = rules.clearance_of(a.net.as_deref()).max(rules.clearance_of(b.net.as_deref()));
+        let layer = a.layers.iter().find(|l| b.layers.contains(l)).and_then(|l| copper.layers.get(*l)).cloned();
+        let mut rule = None;
+        if let Some((v, name)) = custom_clearance(
+            rules,
+            (a.what, a.net.as_deref()),
+            (b.what, b.net.as_deref()),
+            layer.as_deref(),
+            layer_names,
+        ) {
+            (need, rule) = (v, Some(name));
+        }
         if !copper::boxes_near(&a.bbox, &b.bbox, need) {
             continue;
         }
         let (g, at) = copper::item_gap(a, b);
         if g < need - SLACK {
-            let layer = a.layers.iter().find(|l| b.layers.contains(l)).and_then(|l| copper.layers.get(*l)).cloned();
             let (da, db) = (describe(board, a.what), describe(board, b.what));
             let (code, message) = if g <= 0.0 {
                 ("short", format!("{da} and {db} of different nets touch"))
             } else {
                 ("clearance", format!("{da} and {db}: {} apart, {} needed", mm(g), mm(need)))
             };
-            out.push(Violation { code, message, at, layer, items: vec![a.what, b.what] });
+            let message = named(message, &rule);
+            out.push(Violation { code, message, at, layer, items: vec![a.what, b.what], rule });
         }
     }
-    for (i, t) in board.tracks.iter().enumerate() {
-        if t.width < rules.min_track_width - 1e-9 && out.len() < max {
-            out.push(Violation {
-                code: "track_width",
-                message: format!("track {i} is {} wide, at least {} needed", mm(t.width), mm(rules.min_track_width)),
-                at: [(t.start[0] + t.end[0]) / 2.0, (t.start[1] + t.end[1]) / 2.0],
-                layer: Some(t.layer.clone()),
-                items: vec![ItemRef::Track(i)],
-            });
-        }
-    }
+    track_widths(board, rules, max, &mut out);
     zones(board, rules, &copper, max, &mut out);
     starved_thermals(board, rules, &copper, max, &mut out);
     annular_rings(board, rules, max, &mut out);
@@ -112,6 +170,42 @@ pub fn check(board: &Board, rules: &Rules, max: usize) -> Vec<Violation> {
     crate::drc_more::drawings(board, rules, max, &mut out);
     out.truncate(max);
     out
+}
+
+/// Track widths against the board's minimum, the net class's and the custom rules'.
+fn track_widths(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violation>) {
+    for (i, t) in board.tracks.iter().enumerate() {
+        if out.len() >= max {
+            return;
+        }
+        let net = board.net_name(&t.net);
+        let (mut min, mut upper, mut rule) = (rules.min_track_width_of(net.as_deref()), None, None);
+        if rules.custom.has(Kind::TrackWidth) {
+            let s = subject(rules, ItemRef::Track(i), net.as_deref(), vec![t.layer.clone()]);
+            if let Some((r, c)) = rules.custom.find(Kind::TrackWidth, &s, None) {
+                // The custom rule replaces the board's and the class's minimum.
+                min = c.min.unwrap_or(0.0);
+                upper = c.max;
+                rule = Some(r.name.clone());
+            }
+        }
+        let at = [(t.start[0] + t.end[0]) / 2.0, (t.start[1] + t.end[1]) / 2.0];
+        let message = if t.width < min - 1e-9 {
+            format!("track {i} is {} wide, at least {} needed", mm(t.width), mm(min))
+        } else if let Some(u) = upper.filter(|u| t.width > u + 1e-9) {
+            format!("track {i} is {} wide, at most {} allowed", mm(t.width), mm(u))
+        } else {
+            continue;
+        };
+        out.push(Violation {
+            code: "track_width",
+            message: named(message, &rule),
+            at,
+            layer: Some(t.layer.clone()),
+            items: vec![ItemRef::Track(i)],
+            rule,
+        });
+    }
 }
 
 /// Pads of a zone's net in a thermal relief that fewer than `rules.min_spokes` spokes
@@ -151,6 +245,7 @@ fn starved_thermals(board: &Board, rules: &Rules, copper: &Copper, max: usize, o
                         at: pad.at,
                         layer: Some(layer.clone()),
                         items: vec![ItemRef::Zone(zi), it.what],
+                        rule: None,
                     });
                 }
             }
@@ -169,7 +264,12 @@ fn zones(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Ve
             fills.push((zi, net.clone(), l, copper::EdgeGrid::new(poly), need));
         }
     }
-    let widest = rules.classes.iter().filter_map(|c| c.clearance).fold(rules.clearance, f64::max);
+    let widest = rules
+        .classes
+        .iter()
+        .filter_map(|c| c.clearance)
+        .fold(rules.clearance, f64::max)
+        .max(rules.custom.largest_min(Kind::Clearance));
     let mut seen = std::collections::BTreeSet::new();
     for (zi, net, l, grid, zone_need) in &fills {
         for it in copper.items.iter().filter(|it| it.layers.contains(l)) {
@@ -179,7 +279,18 @@ fn zones(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Ve
             if net.is_some() && it.net == *net {
                 continue;
             }
-            let need = rules.clearance_of(it.net.as_deref()).max(*zone_need).max(rules.clearance);
+            let mut need = rules.clearance_of(it.net.as_deref()).max(*zone_need).max(rules.clearance);
+            let mut rule = None;
+            let lname = copper.layers.get(*l).map(String::as_str);
+            if let Some((v, name)) = custom_clearance(
+                rules,
+                (ItemRef::Zone(*zi), net.as_deref()),
+                (it.what, it.net.as_deref()),
+                lname,
+                |_| Vec::new(),
+            ) {
+                (need, rule) = (v, Some(name));
+            }
             if !copper::boxes_near(&it.bbox, &grid.bbox, need.max(widest)) || seen.contains(&(*zi, it.what)) {
                 continue;
             }
@@ -197,8 +308,9 @@ fn zones(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Ve
                 } else {
                     ("clearance", format!("{da} and {db}: {} apart, {} needed", mm(g), mm(need)))
                 };
+                let message = named(message, &rule);
                 let layer = copper.layers.get(*l).cloned();
-                out.push(Violation { code, message, at, layer, items: vec![ItemRef::Zone(*zi), it.what] });
+                out.push(Violation { code, message, at, layer, items: vec![ItemRef::Zone(*zi), it.what], rule });
             }
         }
     }
@@ -226,6 +338,7 @@ fn zones(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Ve
                     at,
                     layer: copper.layers.get(*la).cloned(),
                     items: vec![ItemRef::Zone(*za), ItemRef::Zone(*zb)],
+                    rule: None,
                 });
             }
         }
@@ -242,6 +355,7 @@ fn annular_rings(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violati
                 at: v.at,
                 layer: None,
                 items: vec![ItemRef::Via(i)],
+                rule: None,
             });
         }
     }
@@ -261,6 +375,7 @@ fn annular_rings(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violati
                 at: p.at,
                 layer: None,
                 items: vec![ItemRef::Pad(i)],
+                rule: None,
             });
         }
     }
@@ -307,13 +422,14 @@ fn edges(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Ve
                 at,
                 layer: None,
                 items: Vec::new(),
+                rule: None,
             });
         }
     }
     let (lo, hi) = segs.iter().fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), (a, b)| {
         ([lo[0].min(a[0]).min(b[0]), lo[1].min(a[1]).min(b[1])], [hi[0].max(a[0]).max(b[0]), hi[1].max(a[1]).max(b[1])])
     });
-    let m = rules.edge_clearance;
+    let widest_edge = rules.edge_clearance.max(rules.custom.largest_min(Kind::EdgeClearance));
     for it in &copper.items {
         if out.len() >= max {
             return;
@@ -322,11 +438,19 @@ fn edges(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Ve
         // reach past the outline's box, can be too close to the edge.
         let near = segs.iter().any(|(a, b)| {
             let sb = [[a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])]];
-            copper::boxes_near(&it.bbox, &sb, m)
+            copper::boxes_near(&it.bbox, &sb, widest_edge)
         });
         let outside = it.bbox[0][0] < lo[0] || it.bbox[0][1] < lo[1] || it.bbox[1][0] > hi[0] || it.bbox[1][1] > hi[1];
         if !near && !outside {
             continue;
+        }
+        let (mut m, mut rule) = (rules.edge_clearance, None);
+        if rules.custom.has(Kind::EdgeClearance) {
+            let layers = it.layers.iter().filter_map(|l| copper.layers.get(*l).cloned()).collect();
+            let s = subject(rules, it.what, it.net.as_deref(), layers);
+            if let Some((r, c)) = rules.custom.find(Kind::EdgeClearance, &s, None) {
+                (m, rule) = (c.min.unwrap_or(m), Some(r.name.clone()));
+            }
         }
         let (g, at) =
             it.prims.iter().map(near_edge).fold((f64::INFINITY, [0.0, 0.0]), |b, x| if x.0 < b.0 { x } else { b });
@@ -334,10 +458,11 @@ fn edges(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Ve
             let who = describe(board, it.what);
             out.push(Violation {
                 code: "copper_to_edge",
-                message: format!("{who} is {} from the board edge, {} needed", mm(g.max(0.0)), mm(m)),
+                message: named(format!("{who} is {} from the board edge, {} needed", mm(g.max(0.0)), mm(m)), &rule),
                 at,
                 layer: it.layers.first().and_then(|l| copper.layers.get(*l)).cloned(),
                 items: vec![it.what],
+                rule,
             });
         }
     }

@@ -33,6 +33,7 @@ pub mod copper;
 pub mod drc;
 mod drc_more;
 pub mod drill;
+pub mod dru;
 pub mod edit;
 pub mod erc;
 pub mod fab;
@@ -65,6 +66,8 @@ mod tests;
 mod tests_annotate;
 #[cfg(test)]
 mod tests_drc_more;
+#[cfg(test)]
+mod tests_dru;
 #[cfg(test)]
 mod tests_dsn;
 #[cfg(test)]

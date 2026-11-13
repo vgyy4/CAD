@@ -9,7 +9,7 @@ use crate::board::Board;
 use crate::sexpr::Node;
 
 /// A net class: the width new tracks get and the clearance its nets keep.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct NetClass {
     pub name: String,
     /// mm.
@@ -17,6 +17,15 @@ pub struct NetClass {
     pub track_width: Option<f64>,
     pub via_diameter: Option<f64>,
     pub via_drill: Option<f64>,
+    /// Narrowest track, smallest via copper and via drill the class's nets may have (ADR 0054).
+    /// KiCad's `track_width`/`via_*` of a class are defaults for new items, not limits, so these
+    /// are separate (Gusset keys in the project file; none when not set).
+    pub min_track_width: Option<f64>,
+    pub min_via_diameter: Option<f64>,
+    pub min_via_drill: Option<f64>,
+    /// Differential pair width and gap, kept for later routing (not used yet).
+    pub diff_pair_width: Option<f64>,
+    pub diff_pair_gap: Option<f64>,
     /// Nets named in the class itself (KiCad 5 `add_net`, KiCad 6 `nets`).
     pub nets: Vec<String>,
 }
@@ -31,6 +40,11 @@ impl NetClass {
             track_width: v("trace_width"),
             via_diameter: v("via_dia"),
             via_drill: v("via_drill"),
+            min_track_width: None,
+            min_via_diameter: None,
+            min_via_drill: None,
+            diff_pair_width: None,
+            diff_pair_gap: None,
             nets: n.children("add_net").filter_map(|a| a.arg(0)).take(100_000).map(str::to_string).collect(),
         }
     }
@@ -71,6 +85,8 @@ pub struct Rules {
     pub assignments: Vec<(String, String)>,
     /// (pattern with `*` and `?`, class), first match wins.
     pub patterns: Vec<(String, String)>,
+    /// The custom rules (`.kicad_dru`, ADR 0054), checked after the board's own.
+    pub custom: crate::dru::CustomRules,
 }
 
 impl Default for Rules {
@@ -94,6 +110,7 @@ impl Default for Rules {
             classes: Vec::new(),
             assignments: Vec::new(),
             patterns: Vec::new(),
+            custom: crate::dru::CustomRules::default(),
         }
     }
 }
@@ -147,6 +164,24 @@ impl Rules {
     /// The clearance a net keeps (its class's, else the board's).
     pub fn clearance_of(&self, net: Option<&str>) -> f64 {
         net.and_then(|n| self.class_of(n)).and_then(|c| c.clearance).unwrap_or(self.clearance)
+    }
+
+    /// The narrowest track of this net: the board's minimum, raised by its class's.
+    pub fn min_track_width_of(&self, net: Option<&str>) -> f64 {
+        let c = net.and_then(|n| self.class_of(n)).and_then(|c| c.min_track_width);
+        c.map_or(self.min_track_width, |v| v.max(self.min_track_width))
+    }
+
+    /// The smallest via copper diameter of this net (0: no limit).
+    pub fn min_via_diameter_of(&self, net: Option<&str>) -> f64 {
+        let c = net.and_then(|n| self.class_of(n)).and_then(|c| c.min_via_diameter);
+        c.map_or(self.min_via_diameter, |v| v.max(self.min_via_diameter))
+    }
+
+    /// The smallest via drill of this net.
+    pub fn min_via_drill_of(&self, net: Option<&str>) -> f64 {
+        let c = net.and_then(|n| self.class_of(n)).and_then(|c| c.min_via_drill);
+        c.map_or(self.min_via_drill, |v| v.max(self.min_via_drill))
     }
 
     /// The width a new track of this net gets.

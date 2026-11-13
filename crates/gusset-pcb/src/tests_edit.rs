@@ -191,6 +191,7 @@ fn net_classes_set_clearance_and_widths() {
         via_diameter: Some(1.0),
         via_drill: Some(0.5),
         nets: vec!["A".into()],
+        ..NetClass::default()
     });
     assert_eq!(rules.track_width_of(Some("A")), 0.8);
     assert_eq!(rules.track_width_of(Some("B")), 0.25);

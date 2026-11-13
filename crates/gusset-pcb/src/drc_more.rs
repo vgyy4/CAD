@@ -3,8 +3,9 @@
 
 use crate::board::{Board, Pt, Shape};
 use crate::copper::{self, ItemRef, Prim};
-use crate::drc::{SLACK, Violation, describe, mm};
+use crate::drc::{SLACK, Violation, describe, mm, named, subject};
 use crate::drill::{self, Hole};
+use crate::dru::Kind;
 use crate::rules::Rules;
 use crate::{font, geom, poly};
 
@@ -186,6 +187,7 @@ fn silk_over_pads(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violat
                         at,
                         layer: Some(layer.clone()),
                         items: vec![*what, ItemRef::Pad(*pi)],
+                        rule: None,
                     });
                 }
             }
@@ -285,6 +287,7 @@ fn courtyards(board: &Board, max: usize, out: &mut Vec<Violation>) {
                     at,
                     layer: Some(layer.to_string()),
                     items: vec![ItemRef::Footprint(lo), ItemRef::Footprint(hi)],
+                    rule: None,
                 });
             }
         }
@@ -295,44 +298,94 @@ fn courtyards(board: &Board, max: usize, out: &mut Vec<Violation>) {
 /// drills under the via minimum, and via copper under the via diameter minimum.
 fn drill_sizes(board: &Board, list: &[(ItemRef, Hole)], rules: &Rules, max: usize, out: &mut Vec<Violation>) {
     for (r, h) in list {
-        let (min, what) = match r {
-            ItemRef::Via(_) => (rules.min_via_drill, "via drill"),
+        let net = net_of(board, *r);
+        let (mut min, what) = match r {
+            ItemRef::Via(_) => (rules.min_via_drill_of(net.as_deref()), "via drill"),
             _ => (rules.min_through_hole, "hole"),
         };
-        if h.diameter < min - 1e-9 && out.len() < max {
+        let (mut upper, mut rule) = (None, None);
+        if rules.custom.has(Kind::HoleSize) {
+            let s = subject(rules, *r, net.as_deref(), layers_of(board, *r));
+            if let Some((cr, c)) = rules.custom.find(Kind::HoleSize, &s, None) {
+                (min, upper, rule) = (c.min.unwrap_or(0.0), c.max, Some(cr.name.clone()));
+            }
+        }
+        let message = if h.diameter < min - 1e-9 {
+            format!("{}: {what} {}, at least {} needed", describe(board, *r), mm(h.diameter), mm(min))
+        } else if let Some(u) = upper.filter(|u| h.diameter > u + 1e-9) {
+            format!("{}: {what} {}, at most {} allowed", describe(board, *r), mm(h.diameter), mm(u))
+        } else {
+            continue;
+        };
+        if out.len() < max {
             out.push(Violation {
                 code: "drill_size",
-                message: format!("{}: {what} {}, at least {} needed", describe(board, *r), mm(h.diameter), mm(min)),
+                message: named(message, &rule),
                 at: h.at,
                 layer: None,
                 items: vec![*r],
+                rule,
             });
         }
     }
-    if rules.min_via_diameter <= 0.0 {
-        return;
-    }
+    let custom_via = rules.custom.has(Kind::ViaDiameter);
     for (i, v) in board.vias.iter().enumerate() {
-        if v.size < rules.min_via_diameter - 1e-9 && out.len() < max {
+        let net = board.net_name(&v.net);
+        let (mut min, mut upper, mut rule) = (rules.min_via_diameter_of(net.as_deref()), None, None);
+        if custom_via {
+            let s = subject(rules, ItemRef::Via(i), net.as_deref(), v.layers.to_vec());
+            if let Some((cr, c)) = rules.custom.find(Kind::ViaDiameter, &s, None) {
+                (min, upper, rule) = (c.min.unwrap_or(0.0), c.max, Some(cr.name.clone()));
+            }
+        }
+        let who = describe(board, ItemRef::Via(i));
+        let message = if min > 0.0 && v.size < min - 1e-9 {
+            format!("{who}: diameter {}, at least {} needed", mm(v.size), mm(min))
+        } else if let Some(u) = upper.filter(|u| v.size > u + 1e-9) {
+            format!("{who}: diameter {}, at most {} allowed", mm(v.size), mm(u))
+        } else {
+            continue;
+        };
+        if out.len() < max {
             out.push(Violation {
                 code: "via_diameter",
-                message: format!(
-                    "{}: diameter {}, at least {} needed",
-                    describe(board, ItemRef::Via(i)),
-                    mm(v.size),
-                    mm(rules.min_via_diameter)
-                ),
+                message: named(message, &rule),
                 at: v.at,
                 layer: None,
                 items: vec![ItemRef::Via(i)],
+                rule,
             });
         }
     }
 }
 
+/// The net name of a drilled item.
+fn net_of(board: &Board, r: ItemRef) -> Option<String> {
+    match r {
+        ItemRef::Pad(i) => board.pads.get(i).and_then(|p| board.net_name(&p.net)),
+        ItemRef::Via(i) => board.vias.get(i).and_then(|v| board.net_name(&v.net)),
+        _ => None,
+    }
+}
+
+/// The copper layers a drilled item is on, for conditions.
+fn layers_of(board: &Board, r: ItemRef) -> Vec<String> {
+    match r {
+        ItemRef::Pad(i) => board
+            .pads
+            .get(i)
+            .map(|p| board.copper_layers().into_iter().filter(|l| board.on_layer(&p.layers, l)).collect())
+            .unwrap_or_default(),
+        ItemRef::Via(i) => board.vias.get(i).map(|v| v.layers.to_vec()).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 /// Edge to edge of two holes closer than the rule (a sweep over X).
 fn hole_to_hole(board: &Board, list: &[(ItemRef, Hole)], rules: &Rules, max: usize, out: &mut Vec<Violation>) {
-    let need = rules.hole_to_hole;
+    let base = rules.hole_to_hole;
+    let custom = rules.custom.has(Kind::HoleToHole);
+    let need = base.max(rules.custom.largest_min(Kind::HoleToHole));
     if need <= 0.0 {
         return;
     }
@@ -359,21 +412,34 @@ fn hole_to_hole(board: &Board, list: &[(ItemRef, Hole)], rules: &Rules, max: usi
                 continue;
             }
             let (Some((ra, ha)), Some((rb, hb))) = (list.get(i), list.get(j)) else { continue };
+            let (mut need, mut rule) = (base, None);
+            if custom {
+                let (na, nb) = (net_of(board, *ra), net_of(board, *rb));
+                let sa = subject(rules, *ra, na.as_deref(), layers_of(board, *ra));
+                let sb = subject(rules, *rb, nb.as_deref(), layers_of(board, *rb));
+                if let Some((r, c)) = rules.custom.find(Kind::HoleToHole, &sa, Some(&sb)) {
+                    (need, rule) = (c.min.unwrap_or(need), Some(r.name.clone()));
+                }
+            }
             let (g, at) = copper::gap(&hole_prim(ha), &hole_prim(hb));
             if g < need - SLACK {
                 let (lo, hi) = if ra <= rb { (*ra, *rb) } else { (*rb, *ra) };
                 out.push(Violation {
                     code: "hole_to_hole",
-                    message: format!(
-                        "holes of {} and {}: {} apart, {} needed",
-                        describe(board, lo),
-                        describe(board, hi),
-                        mm(g.max(0.0)),
-                        mm(need)
+                    message: named(
+                        format!(
+                            "holes of {} and {}: {} apart, {} needed",
+                            describe(board, lo),
+                            describe(board, hi),
+                            mm(g.max(0.0)),
+                            mm(need)
+                        ),
+                        &rule,
                     ),
                     at,
                     layer: None,
                     items: vec![lo, hi],
+                    rule,
                 });
             }
         }
