@@ -2596,3 +2596,46 @@ fn a_half_turn_of_a_face_the_axis_crosses_turns_where_its_sides_differ() {
         assert_eq!(naming::half_turn_across(&faces, &all, axis, pi, &radial), Some(want));
     }
 }
+
+/// A RemoveInstance (`D3DC9613`) of an occurrence holder, the holder's occurrence and its
+/// component; `extra` more holders of the same component.
+fn removal(extra: usize) -> (Vec<u8>, Vec<u8>) {
+    const CLASSES: [&str; 4] = [
+        "D3DC9613-0000-0000-0000-000000000000",
+        "2D6E13A1-0000-0000-0000-000000000000",
+        "CE2913AA-0000-0000-0000-000000000000",
+        "E03784ED-0000-0000-0000-000000000000",
+    ];
+    let mut recs: Vec<(u64, usize, Vec<u8>)> = vec![(10, 0, r#ref(11)), (40, 3, Vec::new())];
+    for k in 0..=extra as u64 {
+        recs.push((11 + 2 * k, 1, r#ref(12 + 2 * k)));
+        recs.push((12 + 2 * k, 2, r#ref(40)));
+    }
+    let mut bulk = Vec::new();
+    let mut objs = Vec::new();
+    for (id, class, body) in recs {
+        objs.push((id, bulk.len() as u64, class));
+        bulk.extend(record(256 + class as u32, id, &body));
+    }
+    (meta_classes(&CLASSES, &objs), bulk)
+}
+
+#[test]
+fn a_removed_instance_names_its_component_where_it_stands_once() {
+    use super::mirrorcomp::{component_bodies_so_far, removed_component};
+    let (m, bulk) = removal(0);
+    let d = Design::new(&m, &bulk).unwrap();
+    assert_eq!(removed_component(&d, 10), Ok(40));
+    let (m, bulk) = removal(1);
+    let d = Design::new(&m, &bulk).unwrap();
+    assert!(removed_component(&d, 10).unwrap_err().contains("2 places"));
+    // The component's bodies after its features: a body removed before is not listed again.
+    let feats = [
+        json!({"type": "extrude", "name": "E", "_component": 40, "operation": "new", "creates_bodies": 1}),
+        json!({"type": "extrude", "name": "F", "_component": 40, "operation": "new", "creates_bodies": 1}),
+        json!({"type": "extrude", "name": "C", "_component": 40, "operation": "cut", "creates_bodies": 0}),
+        json!({"type": "remove_body", "name": "R", "_component": 40, "target": "F"}),
+        json!({"type": "extrude", "name": "G", "_component": 41, "operation": "new", "creates_bodies": 1}),
+    ];
+    assert_eq!(component_bodies_so_far(&feats, 40), Ok(vec!["E".to_string()]));
+}

@@ -2419,6 +2419,36 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 _ => ed.remove_json(fid, &nm, &fusion_type, class),
             };
             feats.push(j);
+        } else if c8 == mirrorcomp::REMOVE_INSTANCE {
+            // The removal of an occurrence: the bodies its component still has go. A body a
+            // combine took as its tool is gone already (the document's combine used it up).
+            let used: std::collections::HashSet<&str> = feats
+                .iter()
+                .filter(|f| f.get("type").and_then(Value::as_str) == Some("combine"))
+                .filter_map(|f| f.get("tools").and_then(Value::as_array))
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            let left = mirrorcomp::removed_component(d, fid).and_then(|c| {
+                mirrorcomp::component_bodies_so_far(&feats, c)
+                    .map(|b| b.into_iter().filter(|b| !used.contains(b.as_str())).collect::<Vec<_>>())
+                    .map_err(|e| format!("the removed occurrence's bodies are not followed: {e}"))
+            });
+            match left {
+                Ok(left) if left.is_empty() => {
+                    skipped.push(json!({"name": name, "fusion_type": fusion_type, "source_id": fid,
+                        "reason": "removes an occurrence whose component has no body left (a combine used it up)"}));
+                    continue;
+                }
+                Ok(left) => {
+                    for (k, b) in left.into_iter().enumerate() {
+                        let bn = if k == 0 { nm.clone() } else { format!("{nm} body {}", k + 1) };
+                        feats.push(json!({"type": "remove_body", "name": bn, "source_id": fid, "target": b}));
+                    }
+                }
+                Err(why) => feats.push(json!({"type": "unsupported", "fusion_type": fusion_type, "name": nm,
+                    "class_guid": class, "source_id": fid, "error": why})),
+            }
         } else if c8 == "2A94257F" {
             let ed = super::bodyops::Edit { d, g: &g, names: &names, feats: &feats };
             match ed.combine(fid, &nm) {

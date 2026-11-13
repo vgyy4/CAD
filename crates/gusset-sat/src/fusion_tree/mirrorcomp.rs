@@ -168,6 +168,28 @@ pub(super) fn plane_json((o, n): (V3, V3)) -> Value {
     json!({"origin": [round6(o[0]), round6(o[1]), round6(o[2])], "normal": [round9(n[0]), round9(n[1]), round9(n[2])]})
 }
 
+/// The class of a RemoveInstance feature (the removal of one occurrence).
+pub(super) const REMOVE_INSTANCE: &str = "D3DC9613";
+
+/// The component whose occurrence a RemoveInstance removes: its first reference is the
+/// occurrence's holder (`2D6E13A1`), whose occurrence (`CE2913AA`) names the component (6126's
+/// `RemoveInstance1`, the logo's occurrence after `Combine1` cut the logo out of the case).
+/// Refused where the component stands in other places too (a removal of one of its copies).
+pub(super) fn removed_component(d: &Design, fid: u64) -> Result<u64, String> {
+    let component_of = |holder: u64| first_of(d, holder, OCCURRENCE).and_then(|o| first_of(d, o, COMPONENT));
+    let holder = ref_ids(d, d.rec(fid))
+        .into_iter()
+        .next()
+        .filter(|q| d.is(*q, OCCURRENCE_HOLDER))
+        .ok_or("the removal names no occurrence")?;
+    let comp = component_of(holder).ok_or("the removed occurrence names no component")?;
+    let places = d.ids.iter().filter(|q| d.is(**q, OCCURRENCE_HOLDER) && component_of(**q) == Some(comp)).count();
+    if places != 1 {
+        return Err(format!("the removed occurrence's component stands in {places} places"));
+    }
+    Ok(comp)
+}
+
 /// The bodies a component has after the features read so far, by the tree's names (a
 /// feature's name stands for its body, a body pattern's copies are `<name>[i]`).
 pub(super) fn component_bodies_so_far(feats: &[Value], comp: u64) -> Result<Vec<String>, String> {
