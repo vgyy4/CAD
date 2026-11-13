@@ -268,8 +268,15 @@ pub(super) fn draft_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, 
                 match cx.face_pick(g, ops) {
                     // A cap's modelled point is its plane's (the sketch origin's projection): two
                     // caps on one plane would be one pick. The stored cap's points tell them apart.
+                    // Where several stored caps carry the name (the caps of regions apart: 5998's
+                    // `Extrude5`, Draft1 and Draft2 each name a rail's cap as `2`), the faces the
+                    // recipe names round it tell which (Draft1's sides 3, 6, 4, Draft2's 7, 10, 9).
                     Some((p, n)) if (g == "1" || g == "2") && own => {
-                        let pick = cx.stored_face(g, ops).map_or_else(|| json!({"point": v3(p)}), |sp| sp.json());
+                        let beside = names.as_ref().and_then(|n| n.get(1..)).unwrap_or_default();
+                        let pick = cx
+                            .stored_face_beside(g, ops, beside)
+                            .or_else(|| cx.stored_face(g, ops))
+                            .map_or_else(|| json!({"point": v3(p)}), |sp| sp.json());
                         picks.push((pick, Some((n, true)), Some((p, n))));
                     }
                     Some((p, n)) => {

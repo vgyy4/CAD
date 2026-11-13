@@ -1072,6 +1072,48 @@ impl Ctx<'_> {
         Some(StoredPick { surface, points })
     }
 
+    /// [`Ctx::stored_face`] of a face whose name several stored faces carry (an extrude's cap
+    /// over two regions apart: 5998's `Extrude5`, two rails), narrowed by the faces round it
+    /// that a bounded-face recipe names after it (`beside`): of the stored faces of that name,
+    /// those that share an edge point with a stored face of every name beside it. `None` where
+    /// that leaves none or does not narrow the faces down.
+    pub(super) fn stored_face_beside(&mut self, g: &str, ops: &[i32], beside: &[FaceName]) -> Option<StoredPick> {
+        let want = (g.to_string(), ops.to_vec());
+        let all = self.named_faces();
+        let hits: Vec<&acis::NamedFace> = all.iter().filter(|f| f.name.first() == Some(&want)).collect();
+        let around: Vec<Vec<&acis::NamedFace>> = beside
+            .iter()
+            .filter_map(|n| n.first())
+            .map(|w| all.iter().filter(|f| f.name.first() == Some(w)).collect())
+            .collect();
+        if around.is_empty() || around.iter().any(Vec::is_empty) {
+            return None;
+        }
+        let pts = |f: &acis::NamedFace| f.verts.iter().chain(&f.edge_pts).copied().collect::<Vec<V3>>();
+        let touches = |a: &acis::NamedFace, b: &acis::NamedFace| {
+            let pb = pts(b);
+            pts(a).iter().any(|p| pb.iter().any(|q| norm(sub(*p, *q)) < 1e-7))
+        };
+        let kept: Vec<&acis::NamedFace> =
+            hits.iter().copied().filter(|f| around.iter().all(|fs| fs.iter().any(|b| touches(f, b)))).collect();
+        if kept.is_empty() || kept.len() == hits.len() {
+            return None;
+        }
+        let surface = Surface::of(kept.first()?)?;
+        if kept.iter().any(|f| Surface::of(f).is_none_or(|s| !s.same(&surface))) {
+            return None;
+        }
+        let mut points: Vec<V3> = Vec::new();
+        for f in &kept {
+            for p in pts(f) {
+                if !points.iter().any(|q| norm(sub(p, *q)) < 1e-7) {
+                    points.push(p);
+                }
+            }
+        }
+        (!points.is_empty()).then(|| StoredPick { surface, points: thin(points) })
+    }
+
     /// Where the line `p + t u` touches the cylinder an extrude sweeps from the arc piece `seg`
     /// (`None` when it crosses it, misses it or runs along its axis).
     fn tangent_at(&mut self, feature: u64, seg: &Seg, pl: &Plane, p: V3, u: V3) -> Option<f64> {
