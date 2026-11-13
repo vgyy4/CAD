@@ -432,10 +432,16 @@ impl Command for SchAddSymbol {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SchMove {
-    /// Reference (R1), symbol#i or label#i.
+    /// Reference (R1), symbol#i, label#i (wire#i, ... with by).
     pub item: String,
     #[serde(default)]
     pub at: Option<[f64; 2]>,
+    /// Shift in mm (any item).
+    #[serde(default)]
+    pub by: Option<[f64; 2]>,
+    /// More items shifted the same; wires on their pins follow.
+    #[serde(default)]
+    pub with: Vec<String>,
     #[serde(default)]
     pub angle: Option<f64>,
     /// none/x/y (symbols).
@@ -448,19 +454,54 @@ pub struct SchMove {
 impl Command for SchMove {
     const ID: &'static str = "sch.move";
     const TITLE: &'static str = "Move symbol";
-    const DESCRIPTION: &'static str = "Move, rotate or mirror a symbol or label of the open schematic.";
+    const DESCRIPTION: &'static str = "Move, rotate or mirror a symbol or label of the open schematic; with/by shifts several items in one undo step.";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        if self.at.is_none() && self.angle.is_none() && self.mirror.is_none() {
-            return Err(CommandError::args("give at, angle or mirror"));
+        if self.at.is_none() && self.by.is_none() && self.angle.is_none() && self.mirror.is_none() {
+            return Err(CommandError::args("give at, by, angle or mirror"));
         }
-        let label = format!("Move {}", crate::paths::display_name(&self.item));
+        if self.with.len() > 100_000 {
+            return Err(CommandError::args("at most 100000 items move together"));
+        }
+        let group = self.by.is_some() || !self.with.is_empty();
+        if group && (self.angle.is_some() || self.mirror.is_some()) {
+            return Err(CommandError::args("angle and mirror turn one symbol or label; not with by or with"));
+        }
+        let label = if self.with.is_empty() {
+            format!("Move {}", crate::paths::display_name(&self.item))
+        } else {
+            "Move selection".to_string()
+        };
         sheet_edit(s, ctx, &label, self.sheet.as_deref(), |sch, _| {
-            let item = Item::parse(sch, &self.item).ok_or_else(|| {
-                CommandError::not_found(format!("no item '{}'", crate::paths::display_name(&self.item)))
-                    .hint("name a symbol by reference (R1) or symbol#i / label#i")
-            })?;
+            let parse = |name: &str| {
+                Item::parse(sch, name).ok_or_else(|| {
+                    CommandError::not_found(format!("no item '{}'", crate::paths::display_name(name)))
+                        .hint("name a symbol by reference (R1) or symbol#i / label#i")
+                })
+            };
+            let item = parse(&self.item)?;
+            if group {
+                let delta = match (self.by, self.at) {
+                    (Some(d), None) => d,
+                    (None, Some(at)) => {
+                        let from = match item {
+                            Item::Symbol(i) => sch.symbols.get(i).map(|x| x.at),
+                            Item::Label(i) => sch.labels.get(i).map(|x| x.at),
+                            _ => None,
+                        }
+                        .ok_or_else(|| CommandError::args("at names a place for a symbol or label; use by"))?;
+                        [at[0] - from[0], at[1] - from[1]]
+                    }
+                    _ => return Err(CommandError::args("give by or at, not both")),
+                };
+                let mut items = vec![item];
+                for name in &self.with {
+                    items.push(parse(name)?);
+                }
+                let n = sch.move_items(&items, delta, &limits()).map_err(sch_err)?;
+                return Ok(json!({ "moved": n, "by": delta }));
+            }
             match item {
                 Item::Symbol(i) => {
                     let x = sch.symbols.get(i).ok_or_else(no_schematic)?;
