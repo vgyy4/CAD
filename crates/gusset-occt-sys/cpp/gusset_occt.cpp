@@ -404,7 +404,13 @@ TopoDS_Edge make_seg_edge(const GsProfile* p, const GsSeg& s, const Frame& f) {
     if (!me.IsDone()) throw Standard_Failure("could not build a spline edge of the profile");
     e = me.Edge();
   } else if (s.kind == GS_SEG_ARC) {
-    double r = std::hypot(s.a[0] - s.c[0], s.a[1] - s.c[1]);
+    // The ends lie on the arc's circle to the sketch's tolerance, not always to OCCT's 1e-7: a
+    // line's end the file stored rounded (6299's chord across a 2.5 mm circle, 1.1e-7 mm inside
+    // it) ends the arc that the other end, an exact crossing, starts on. The circle of the
+    // ends' mean radius holds both within half their difference.
+    double ra = std::hypot(s.a[0] - s.c[0], s.a[1] - s.c[1]);
+    double rb = std::hypot(s.b[0] - s.c[0], s.b[1] - s.c[1]);
+    double r = 0.5 * (ra + rb);
     if (!(r > 0)) throw Standard_Failure("arc with zero radius in profile");
     gp_Dir axis = s.ccw ? f.n : f.n.Reversed();
     gp_Circ c(gp_Ax2(f.at(s.c[0], s.c[1]), axis, f.x), r);

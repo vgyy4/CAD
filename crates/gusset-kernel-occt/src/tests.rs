@@ -115,6 +115,31 @@ fn extrude_with_hole_and_arcs() {
     assert!(close(m.volume, expected, 1e-6), "{} vs {expected}", m.volume);
 }
 
+/// An arc whose ends lie on its circle to 1.1e-7 mm only (6299's chord across a 2.5 mm circle,
+/// its end rounded where the file stored it, the other end of the arc an exact crossing): the
+/// profile builds, the cap above the chord of its area.
+#[test]
+fn an_arc_whose_ends_are_a_hair_off_its_circle_builds() {
+    let (r, d) = (2.5f64, 1.8f64);
+    let exact = (r * r - d * d).sqrt();
+    let rounded = (exact * 1e6).round() / 1e6;
+    assert!(((rounded * rounded + d * d).sqrt() - r).abs() > 1e-7);
+    let cap = Loop2 {
+        edges: vec![
+            ProfileEdge {
+                seg: Seg2::Arc { center: [0.0, 0.0], start: [exact, d], end: [-rounded, d], ccw: true },
+                tag: 1,
+            },
+            ProfileEdge { seg: Seg2::Line { a: [-rounded, d], b: [exact, d] }, tag: 2 },
+        ],
+    };
+    let p = Profile { frame: Frame::XY, regions: vec![Region2 { outer: cap, holes: vec![] }] };
+    let made = k().extrude(&p, &ExtrudeSpec { distance: 1.0, symmetric: false }).unwrap();
+    let m = k().mass_properties(&made.shape).unwrap();
+    let area = r * r * (d / r).acos() - d * exact;
+    assert!(close(m.volume, area, 1e-5), "{} vs {area}", m.volume);
+}
+
 #[test]
 fn revolve_cylinder() {
     let p = Profile { frame: Frame::XZ, regions: vec![Region2 { outer: rect(5.0, 10.0, 1), holes: vec![] }] };
