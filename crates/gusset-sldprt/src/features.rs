@@ -300,8 +300,8 @@ fn unit_component_index(c0: &[u8]) -> Option<usize> {
 }
 
 /// The class tag of `moUnitComponent_c` learned from the bytes of a chunk-container stream
-/// (`py/uc.py`): the most frequent `XX YY 02 00 <10 x 00>` with the tag bit 0x80 set in `YY`,
-/// the first seen winning ties. The numbering of these files does not follow `Config-0`; in
+/// (`py/uc.py`): the most frequent `XX YY 02 00 <10 x 00>` with the tag bit 0x80 set in `YY` and
+/// a reference-plane frame after it ([`comp_frame`]), the first seen winning ties. The numbering of these files does not follow `Config-0`; in
 /// files with more than 255 classes before it the index takes the high byte too (`24 81`).
 pub(crate) fn unit_component_tag(rf: &[u8]) -> Option<usize> {
     let mut counts: Vec<(u16, usize)> = Vec::new();
@@ -310,6 +310,9 @@ pub(crate) fn unit_component_tag(rf: &[u8]) -> Option<usize> {
         if w.get(1).is_some_and(|&h| h & 0x80 != 0 && h != 0xff)
             && w.get(2..4) == Some(&[2, 0][..])
             && w.get(4..).is_some_and(|z| z.iter().all(|&c| c == 0))
+            // Only tags whose object carries a component frame vote: a stray `XX YY 02 00` run
+            // of zeros (V-Slot Spacer Block's `ad 94`) outnumbered the real tag otherwise.
+            && comp_frame(rf, i + 2).is_some()
         {
             let key = u16::from_le_bytes([w.first().copied().unwrap_or(0), w.get(1).copied().unwrap_or(0x80)]) & 0x7fff;
             match counts.iter_mut().find(|(k, _)| *k == key) {
@@ -877,6 +880,39 @@ fn frame(r: &[f64; 9], t: &[f64; 3], feature_id: Option<u32>) -> Plane {
     Plane { feature_id, origin: [o(0), o(1), o(2)], x, y }
 }
 
+/// The frame of a reference-plane component whose unit-component tag ends at `i0 - 2` (`i0` is
+/// two bytes into the tag). The component base is 31 bytes after the unit component in older
+/// files, 55 in chunk-container ones and 67 or 69 in later versions (more zero bytes, or a word,
+/// after the run of 16 FF bytes; sw-more): the id (`u32 id, u32 stamp, u16 0`) is tried at each
+/// place up to 112 bytes on, the first that holds a whole frame.
+fn comp_frame(d: &[u8], i0: usize) -> Option<Plane> {
+    for off in 43usize..=112 {
+        let p = i0 + off;
+        let (Some(cid), Some(_)) = (u32_at(d, p), u32_at(d, p + 4)) else { continue };
+        let p = p + 8;
+        if !(1..0x400).contains(&cid) || d.get(p..p + 2) != Some(&[0, 0][..]) {
+            continue;
+        }
+        let (Some(k), Some(&hr)) = (u32_at(d, p + 2), d.get(p + 6)) else { continue };
+        if hr > 1 || k >= 16 {
+            continue;
+        }
+        let mut q = p + 7;
+        let r = if hr == 1 {
+            let Some(r) = f64s_at::<9>(d, q) else { continue };
+            q += 72;
+            r
+        } else {
+            IDENT
+        };
+        let (Some(t), Some(sc)) = (f64s_at::<3>(d, q), f64_at(d, q + 24)) else { continue };
+        if is(sc, 1.0) && orthonormal(&r) && t.iter().all(|x| x.abs() < 10.0) {
+            return Some(frame(&r, &t, Some(cid)));
+        }
+    }
+    None
+}
+
 /// The sketch plane inside a sketch's span (`sketch.find_plane`): a reference-plane
 /// component, or a plane-data block, whichever comes first.
 fn find_plane(d: &[u8], a: usize, b: usize, uc: Option<usize>) -> Result<Option<Plane>, String> {
@@ -912,35 +948,8 @@ fn find_plane(d: &[u8], a: usize, b: usize, uc: Option<usize>) -> Result<Option<
         }
     };
     for i0 in hits {
-        let i = i0 - 2;
-        // The component base is 31 bytes after the unit component in older files, 55 in
-        // chunk-container ones and 67 or 69 in later versions (more zero bytes, or a word, after
-        // the run of 16 FF bytes; sw-more): try the id (`u32 id, u32 stamp, u16 0`) at each
-        // place up to 112 bytes on, the first that holds a whole frame.
-        for off in 43usize..=112 {
-            let p = i0 + off;
-            let (Some(cid), Some(_)) = (u32_at(d, p), u32_at(d, p + 4)) else { continue };
-            let p = p + 8;
-            if !(1..0x400).contains(&cid) || d.get(p..p + 2) != Some(&[0, 0][..]) {
-                continue;
-            }
-            let (Some(k), Some(&hr)) = (u32_at(d, p + 2), d.get(p + 6)) else { continue };
-            if hr > 1 || k >= 16 {
-                continue;
-            }
-            let mut q = p + 7;
-            let r = if hr == 1 {
-                let Some(r) = f64s_at::<9>(d, q) else { continue };
-                q += 72;
-                r
-            } else {
-                IDENT
-            };
-            let (Some(t), Some(sc)) = (f64s_at::<3>(d, q), f64_at(d, q + 24)) else { continue };
-            if is(sc, 1.0) && orthonormal(&r) && t.iter().all(|x| x.abs() < 10.0) {
-                offer(i, frame(&r, &t, Some(cid)), None);
-                break;
-            }
+        if let Some(p) = comp_frame(d, i0) {
+            offer(i0 - 2, p, None);
         }
     }
     // Plane-data blocks: origin, normal, hasRot, [R], t, 1.0.
@@ -1462,6 +1471,16 @@ fn line_ref(d: &[u8], a: usize, b: usize) -> Option<(V3, V3)> {
         }
     }
     None
+}
+
+/// The point a feature names by a point reference (`moEndPointRef_w`, an end of an edge):
+/// `c7 cf ff ff c7 cf ff ff 00 00 00 00 f8 2a 00 00`, eight zero bytes, then the point in model
+/// coordinates (m). Returns it in mm.
+fn point_ref(d: &[u8], a: usize, b: usize) -> Option<V3> {
+    const MARK: [u8; 16] = [0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0, 0xf8, 0x2a, 0, 0];
+    let i = find(d, &MARK, a, b)?;
+    let p = f64s_at::<3>(d, i + 24)?;
+    p.iter().all(|c| c.is_finite() && c.abs() < 100.0).then(|| p.map(mm))
 }
 
 /// A full revolve an edge can name: the sketch (and its plane) and two points of the axis in
@@ -2767,6 +2786,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 Some(9) => "through_all_both".to_string(),
                 Some(4) => "up_to_surface".to_string(),
                 Some(5) => "offset_from_surface".to_string(),
+                Some(3) => "up_to_vertex".to_string(),
                 Some(t) => format!("unknown({t})"),
                 None => "unknown(None)".to_string(),
             };
@@ -2802,6 +2822,15 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             // Up to a surface (4) or offset from a surface (5): the face the end names. A face ahead
             // of the sweep is the end condition itself (`to_face`); a face behind the sketch (an
             // offset from the part's bottom face, say) only gives a distance.
+            // Up to a vertex (3): the end is the plane through the vertex parallel to the
+            // sketch; the vertex is written in model coordinates (V-Slot Rail_PIVOT Boss-Extrude2).
+            if let (Some(3), Some(sk)) = (typ, last_sketch.as_ref()) {
+                distance = None;
+                if let (Some(&(_, plane)), Some(p)) = (sketch_by_name.get(sk), point_ref(rf, a, b)) {
+                    let h = dot(sub(p, plane.origin), cross(plane.x, plane.y));
+                    distance = (h.abs() > 1e-6).then_some(round_to(h, 6) + 0.0);
+                }
+            }
             let mut up_to: Option<(V3, V3, f64, bool)> = None;
             let mut end_s: Option<f64> = None;
             if let (Some(t @ (4 | 5)), Some(sk)) = (typ, last_sketch.as_ref()) {
@@ -3459,6 +3488,20 @@ mod end_face_tests {
             assert_eq!(dir, [0.0, 0.0, -1.0]);
         }
         assert_eq!(line_ref(&[0u8; 100], 0, 100), None);
+    }
+
+    /// A point reference (V-Slot Rail_PIVOT's up-to-vertex end): the point after the marker and
+    /// eight zero bytes, in mm.
+    #[test]
+    fn a_point_reference_gives_the_vertex() {
+        let mut d = vec![7u8; 5];
+        d.extend([0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0, 0xf8, 0x2a, 0, 0]);
+        d.extend([0u8; 8]);
+        for v in [-0.0475, 0.02, 0.0] {
+            d.extend(f64::to_le_bytes(v));
+        }
+        assert_eq!(point_ref(&d, 0, d.len()), Some([-47.5, 20.0, 0.0]));
+        assert_eq!(point_ref(&d[..30], 0, 30), None);
     }
 
     /// Node names inside the header of the node before them: a reused sketch's `Sketch3<3>` and

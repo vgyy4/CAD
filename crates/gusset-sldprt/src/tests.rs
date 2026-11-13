@@ -1093,27 +1093,41 @@ fn feature_streams_of_any_configuration_number() {
 
 #[test]
 fn the_unit_component_tag_is_learned_from_the_bytes() {
+    // A reference-plane component under the tag `lo hi`.
+    let comp = |lo: u8, hi: u8| {
+        let mut v = comp_plane(2, 0.0);
+        v[0] = lo;
+        v[1] = hi;
+        v
+    };
     let mut rf = vec![9u8; 20];
     for tag in [0x2b, 0x2b, 0x31] {
-        rf.extend([tag, 0x80, 2, 0]);
-        rf.extend([0u8; 10]);
+        rf.extend(comp(tag, 0x80));
         rf.extend([7u8; 5]);
     }
     assert_eq!(features::unit_component_tag(&rf), Some(0x2b));
     assert_eq!(features::unit_component_tag(&[1, 2, 3]), None);
-}
-
-/// A part with more than 255 classes before the unit component writes its tag with the high
-/// byte too (`24 81 02 00`: Spacer_long_base_square's reference-plane components, class 0x124).
-#[test]
-fn a_unit_component_tag_above_255_is_learned() {
+    // More than 255 classes before the unit component: the tag takes the high byte too (`24 81
+    // 02 00`: Spacer_long_base_square, class 0x124).
     let mut rf = vec![9u8; 20];
-    for (lo, hi) in [(0x24, 0x81), (0x24, 0x81), (0x2b, 0x80), (0x10, 0xff)] {
-        rf.extend([lo, hi, 2, 0]);
-        rf.extend([0u8; 10]);
+    for (lo, hi) in [(0x24, 0x81), (0x24, 0x81), (0x2b, 0x80)] {
+        rf.extend(comp(lo, hi));
         rf.extend([7u8; 5]);
     }
     assert_eq!(features::unit_component_tag(&rf), Some(0x124));
+    // Runs that look like a tag but carry no component frame do not vote (V-Slot Spacer Block:
+    // three stray `ad 94 02 00` runs against two real `73 80`).
+    let mut rf = vec![9u8; 20];
+    for _ in 0..3 {
+        rf.extend([0xad, 0x94, 2, 0]);
+        rf.extend([0u8; 10]);
+        rf.extend([7u8; 130]);
+    }
+    for _ in 0..2 {
+        rf.extend(comp(0x73, 0x80));
+        rf.extend([7u8; 5]);
+    }
+    assert_eq!(features::unit_component_tag(&rf), Some(0x73));
 }
 
 /// A cut named like a boss: only the flags word of its node says what it is.
