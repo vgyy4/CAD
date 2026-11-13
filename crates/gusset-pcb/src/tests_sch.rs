@@ -340,10 +340,12 @@ fn wires_follow_a_moved_symbol_and_fields_change() {
     let lim = Limits::default();
     let mut s = divider();
     let r2 = s.symbol_index("R2").unwrap();
-    // R2 down by 10: the wire from R1 pin 1 now ends on R2 pin 1's new place.
+    // R2 down by 10: the wire from R1 pin 1 keeps its row and a vertical segment
+    // reaches R2 pin 1's new place (no diagonal).
     s.move_symbol(r2, [110.0, 60.0], 0.0, Mirror::None, &lim).unwrap();
     let w = &s.wires[0];
-    assert_eq!((w.a, w.b), ([100.0, 46.19], [110.0, 56.19]));
+    assert_eq!((w.a, w.b), ([100.0, 46.19], [110.0, 46.19]));
+    assert!(s.wires.iter().any(|w| (w.a, w.b) == ([110.0, 46.19], [110.0, 56.19])));
     // Still one net: R1 pin 1 and R2 pin 1.
     let d = Design::single("d.kicad_sch".into(), s.clone());
     let nl = netlist(&d);

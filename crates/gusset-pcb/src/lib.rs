@@ -76,6 +76,8 @@ mod tests_route;
 #[cfg(test)]
 mod tests_sch;
 #[cfg(test)]
+mod tests_sch_edit;
+#[cfg(test)]
 mod tests_text;
 #[cfg(test)]
 mod tests_zone;

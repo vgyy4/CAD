@@ -311,7 +311,9 @@ impl Schematic {
     }
 
     /// Moves, turns or mirrors a symbol; its fields move with it, and wire ends on its
-    /// pins follow the pins (straight to their new places).
+    /// pins follow the pins: a wire that ran straight keeps running horizontally or
+    /// vertically (a dogleg is added where the pin moved off its line), junctions stay and
+    /// are added where wires now meet.
     ///
     /// # Errors
     /// No such symbol, a bad place or angle, or a failed re-read.
@@ -328,27 +330,26 @@ impl Schematic {
         let old = self.symbols.get(index).cloned().ok_or_else(|| bad("no such symbol"))?;
         let mut new = old.clone();
         (new.at, new.angle, new.mirror) = (at, angle, mirror);
-        // Pin places before and after, by pin number.
-        let before = self.pins(&old);
-        let after = self.pins(&new);
-        let moves: Vec<(Pt, Pt)> = before
+        let moves = self.pin_moves(&old, &new);
+        self.edit_symbol_tree(&old, &new)?;
+        let (fresh, spots) = self.reroute(&moves, &[])?;
+        self.finish_reroute(fresh, spots, limits)
+    }
+
+    /// (before, after) places of the pins of a symbol that move.
+    fn pin_moves(&self, old: &crate::sch::Symbol, new: &crate::sch::Symbol) -> Vec<(Pt, Pt)> {
+        let before = self.pins(old);
+        let after = self.pins(new);
+        before
             .iter()
             .filter_map(|b| after.iter().find(|a| a.number == b.number).map(|a| (b.at, a.at)))
             .filter(|(b, a)| libm::hypot(a[0] - b[0], a[1] - b[1]) > 1e-9)
-            .collect();
-        let wires: Vec<usize> = self.wires.iter().map(|w| w.node).collect();
-        for node in wires {
-            let Ok(items) = self.top_item_mut(node) else { continue };
-            let Some(pts) = items.iter_mut().find(|n| n.head() == Some("pts")).and_then(Node::items_mut) else {
-                continue;
-            };
-            for xy in pts.iter_mut().skip(1).filter(|n| n.head() == Some("xy")) {
-                let (Some(x), Some(y)) = (xy.num_arg(0), xy.num_arg(1)) else { continue };
-                if let Some((_, to)) = moves.iter().find(|(from, _)| libm::hypot(from[0] - x, from[1] - y) < 1e-6) {
-                    *xy = list(vec![Node::sym("xy"), Node::num(to[0]), Node::num(to[1])]);
-                }
-            }
-        }
+            .collect()
+    }
+
+    /// Writes a symbol's new place, angle, mirror and field places into the tree.
+    fn edit_symbol_tree(&mut self, old: &crate::sch::Symbol, new: &crate::sch::Symbol) -> Result<(), Error> {
+        let (at, angle, mirror) = (new.at, new.angle, new.mirror);
         let items = self.top_item_mut(old.node)?;
         items.retain(|n| n.head() != Some("mirror"));
         let at_pos = items.iter().position(|n| n.head() == Some("at")).ok_or_else(|| bad("the symbol has no place"))?;
@@ -375,7 +376,187 @@ impl Schematic {
                 }
             }
         }
-        self.reread(limits)
+        Ok(())
+    }
+
+    /// Follows connection points that moved (`moves`: before, after) with the ends of the
+    /// wires not in `skip` (file positions of wires moved as a whole). A wire running
+    /// horizontally or vertically keeps its direction: the end slides along it to the new
+    /// column or row, and a segment to the new place is added (a dogleg); other wires, and
+    /// wires with both ends moved, are stretched straight. Returns the wires to add (a, b)
+    /// and the points to check for junctions. Edits the tree only; call
+    /// [`Schematic::finish_reroute`] after.
+    fn reroute(&mut self, moves: &[(Pt, Pt)], skip: &[usize]) -> Result<(Vec<(Pt, Pt)>, Vec<Pt>), Error> {
+        let eps = 1e-6;
+        let near = |a: Pt, b: Pt| libm::hypot(a[0] - b[0], a[1] - b[1]) < eps;
+        let target = |p: Pt| moves.iter().find(|(from, _)| near(*from, p)).map(|(_, to)| *to);
+        let mut fresh: Vec<(Pt, Pt)> = Vec::new();
+        let mut spots: Vec<Pt> = moves.iter().flat_map(|(a, b)| [*a, *b]).collect();
+        let mut current: Vec<(Pt, Pt)> = self.wires.iter().map(|w| (w.a, w.b)).collect();
+        let wires: Vec<(usize, usize, Pt, Pt)> = self
+            .wires
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| !skip.contains(&w.node))
+            .map(|(i, w)| (i, w.node, w.a, w.b))
+            .collect();
+        for (idx, node, a, b) in wires {
+            let (na, nb) = match (target(a), target(b)) {
+                (None, None) => continue,
+                (Some(qa), Some(qb)) => (qa, qb),
+                (Some(q), None) => {
+                    let (end, seg) = dogleg(b, a, q);
+                    fresh.extend(seg);
+                    (end, b)
+                }
+                (None, Some(q)) => {
+                    let (end, seg) = dogleg(a, b, q);
+                    fresh.extend(seg);
+                    (a, end)
+                }
+            };
+            self.set_wire_ends(node, na, nb)?;
+            if let Some(c) = current.get_mut(idx) {
+                *c = (na, nb);
+            }
+        }
+        // No duplicates, and nothing a wire already covers.
+        let eps_on = crate::netlist::EPS;
+        let mut kept: Vec<(Pt, Pt)> = Vec::new();
+        for (p, q) in fresh {
+            let same = |x: &(Pt, Pt)| (near(x.0, p) && near(x.1, q)) || (near(x.0, q) && near(x.1, p));
+            let covered = current.iter().any(|&(a, b)| {
+                crate::netlist::point_segment(p, a, b) <= eps_on && crate::netlist::point_segment(q, a, b) <= eps_on
+            });
+            if !kept.iter().any(same) && !covered {
+                kept.push((p, q));
+            }
+        }
+        spots.extend(kept.iter().flat_map(|(a, b)| [*a, *b]));
+        Ok((kept, spots))
+    }
+
+    fn set_wire_ends(&mut self, node: usize, a: Pt, b: Pt) -> Result<(), Error> {
+        let items = self.top_item_mut(node)?;
+        let Some(pts) = items.iter_mut().find(|n| n.head() == Some("pts")).and_then(Node::items_mut) else {
+            return Ok(());
+        };
+        let mut ends = [a, b].into_iter();
+        for xy in pts.iter_mut().skip(1).filter(|n| n.head() == Some("xy")) {
+            let Some(p) = ends.next() else { break };
+            *xy = list(vec![Node::sym("xy"), Node::num(p[0]), Node::num(p[1])]);
+        }
+        Ok(())
+    }
+
+    /// Whether a junction dot is needed at `p`: a wire end in a wire's middle, or three
+    /// or more wire ends meeting, and none there yet.
+    fn needs_junction(&self, p: Pt) -> bool {
+        let eps = crate::netlist::EPS;
+        let ends = self
+            .wires
+            .iter()
+            .flat_map(|w| [w.a, w.b])
+            .filter(|q| libm::hypot(q[0] - p[0], q[1] - p[1]) <= eps)
+            .count();
+        (ends >= 3 || (ends >= 1 && self.on_wire_middle(p)))
+            && !self.junctions.iter().any(|j| libm::hypot(j.at[0] - p[0], j.at[1] - p[1]) <= eps)
+    }
+
+    /// Adds the doglegs from [`Schematic::reroute`], re-reads, and adds junction dots
+    /// where wires now meet in `spots`.
+    fn finish_reroute(&mut self, fresh: Vec<(Pt, Pt)>, spots: Vec<Pt>, limits: &Limits) -> Result<(), Error> {
+        for (a, b) in fresh {
+            let mut items = vec![
+                Node::sym("wire"),
+                list(vec![
+                    Node::sym("pts"),
+                    list(vec![Node::sym("xy"), Node::num(a[0]), Node::num(a[1])]),
+                    list(vec![Node::sym("xy"), Node::num(b[0]), Node::num(b[1])]),
+                ]),
+                list(vec![Node::sym("stroke"), kv("width", Node::num(0.0)), kv("type", Node::sym("default"))]),
+            ];
+            items.push(self.new_uuid(&items));
+            self.insert(list(items))?;
+        }
+        self.reread(limits)?;
+        let mut dots: Vec<Pt> = Vec::new();
+        for p in spots {
+            if self.needs_junction(p) && !dots.iter().any(|d| libm::hypot(d[0] - p[0], d[1] - p[1]) < 1e-6) {
+                dots.push(p);
+            }
+        }
+        if !dots.is_empty() {
+            for p in dots {
+                self.push_junction(p)?;
+            }
+            self.reread(limits)?;
+        }
+        Ok(())
+    }
+
+    /// Moves items by `delta` (mm) as one edit: symbols, labels, wires, buses, junctions
+    /// and no-connects translate; wires outside the selection that end on a pin, a wire
+    /// end, a label, a junction or a no-connect that moved follow it with an orthogonal
+    /// dogleg (see [`Schematic::move_symbol`]). Returns the number of items moved.
+    ///
+    /// # Errors
+    /// An item past its list, a bad delta, or a failed re-read.
+    pub fn move_items(&mut self, items: &[Item], delta: Pt, limits: &Limits) -> Result<usize, Error> {
+        check_pt(delta)?;
+        let mut sel: Vec<Item> = items.to_vec();
+        sel.sort_unstable();
+        sel.dedup();
+        let shift = |p: Pt| [p[0] + delta[0], p[1] + delta[1]];
+        let missing = |it: &Item| bad(format!("there is no {}", it.name()));
+        let mut moves: Vec<(Pt, Pt)> = Vec::new();
+        let mut whole: Vec<usize> = Vec::new();
+        let mut symbols: Vec<(crate::sch::Symbol, crate::sch::Symbol)> = Vec::new();
+        let mut shifts: Vec<usize> = Vec::new();
+        for it in &sel {
+            match *it {
+                Item::Symbol(i) => {
+                    let old = self.symbols.get(i).cloned().ok_or_else(|| missing(it))?;
+                    let mut new = old.clone();
+                    new.at = shift(old.at);
+                    check_pt(new.at)?;
+                    moves.extend(self.pin_moves(&old, &new));
+                    symbols.push((old, new));
+                }
+                Item::Wire(i) => {
+                    let w = self.wires.get(i).ok_or_else(|| missing(it))?;
+                    moves.extend([(w.a, shift(w.a)), (w.b, shift(w.b))]);
+                    whole.push(w.node);
+                    shifts.push(w.node);
+                }
+                Item::Bus(i) => shifts.push(self.buses.get(i).ok_or_else(|| missing(it))?.node),
+                Item::Label(i) => {
+                    let l = self.labels.get(i).ok_or_else(|| missing(it))?;
+                    moves.push((l.at, shift(l.at)));
+                    shifts.push(l.node);
+                }
+                Item::Junction(i) => {
+                    let m = self.junctions.get(i).ok_or_else(|| missing(it))?;
+                    moves.push((m.at, shift(m.at)));
+                    shifts.push(m.node);
+                }
+                Item::NoConnect(i) => {
+                    let m = self.no_connects.get(i).ok_or_else(|| missing(it))?;
+                    moves.push((m.at, shift(m.at)));
+                    shifts.push(m.node);
+                }
+            }
+        }
+        for (old, new) in &symbols {
+            self.edit_symbol_tree(old, new)?;
+        }
+        for node in shifts {
+            shift_node(self.top_item_mut(node)?, delta);
+        }
+        // Wires outside the selection follow the points that moved.
+        let (fresh, spots) = self.reroute(&moves, &whole)?;
+        self.finish_reroute(fresh, spots, limits)?;
+        Ok(sel.len())
     }
 
     /// Sets a field (property) of a symbol: `Value`, `Footprint` or any other; a field the
@@ -641,6 +822,59 @@ impl Schematic {
         }
         self.reread(limits)?;
         Ok(nodes.len())
+    }
+}
+
+/// Shifts a node's `at` or its `pts` by `d`.
+fn shift_node(items: &mut [Node], d: Pt) {
+    let shift = |n: &mut Node| {
+        let (Some(x), Some(y)) = (n.num_arg(0), n.num_arg(1)) else { return };
+        if let Some(v) = n.items_mut() {
+            if let Some(s) = v.get_mut(1) {
+                *s = Node::num(x + d[0]);
+            }
+            if let Some(s) = v.get_mut(2) {
+                *s = Node::num(y + d[1]);
+            }
+        }
+    };
+    for n in items.iter_mut() {
+        match n.head() {
+            Some("at") => shift(n),
+            Some("pts") => {
+                if let Some(v) = n.items_mut() {
+                    v.iter_mut().skip(1).filter(|c| c.head() == Some("xy")).for_each(shift);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A wire's end `e` (the other end `o`) whose connection point moves to `q`: the end's
+/// new place and a segment to add. A horizontal wire keeps its row up to `q`'s column
+/// and a vertical segment goes to `q` (and the other way for a vertical wire); a wire
+/// that is neither, or whose end moves along it, just stretches.
+fn dogleg(o: Pt, e: Pt, q: Pt) -> (Pt, Option<(Pt, Pt)>) {
+    let eps = 1e-6;
+    let horizontal = (o[1] - e[1]).abs() < eps;
+    let vertical = (o[0] - e[0]).abs() < eps;
+    let mid = if horizontal && (q[1] - e[1]).abs() >= eps {
+        [q[0], e[1]]
+    } else if vertical && (q[0] - e[0]).abs() >= eps {
+        [e[0], q[1]]
+    } else {
+        return (q, None);
+    };
+    let d = |a: Pt, b: Pt| libm::hypot(a[0] - b[0], a[1] - b[1]);
+    if d(mid, e) < eps {
+        // The pin is straight off the wire's end: the wire stays, a segment is added.
+        (e, Some((e, q)))
+    } else if d(mid, o) < eps {
+        // The wire would shrink to nothing: it takes the other direction instead.
+        (q, None)
+    } else {
+        (mid, Some((mid, q)))
     }
 }
 
