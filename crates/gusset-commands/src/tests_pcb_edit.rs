@@ -235,6 +235,7 @@ fn tracks_and_vias_move_with_attached_ends_in_one_undo_step() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn moving_a_track_stretches_its_neighbours_in_one_undo_step() {
     let mut s = session();
     run(&mut s, &u(1), "pcb.open", json!({"path": "board.kicad_pcb"}));
@@ -251,6 +252,7 @@ fn moving_a_track_stretches_its_neighbours_in_one_undo_step() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn a_footprint_move_carries_track_ends_on_its_pads_in_one_undo_step() {
     let mut s = session();
     run(&mut s, &u(1), "pcb.open", json!({"path": "board.kicad_pcb"}));

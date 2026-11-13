@@ -504,7 +504,7 @@ impl Board {
         limits: &Limits,
     ) -> Result<usize, Error> {
         let Some(fp) = self.footprints.get(footprint) else { return Ok(0) };
-        let (s, c) = (turned.to_radians().sin(), turned.to_radians().cos());
+        let (s, c) = (libm::sin(turned.to_radians()), libm::cos(turned.to_radians()));
         // New place of an end: pad centre moved, the offset from it turned.
         let mut by_track: Vec<(usize, [Option<Pt>; 2])> = Vec::new();
         for (t, k, j) in self.pad_ends(old) {
@@ -517,12 +517,12 @@ impl Board {
             let (dx, dy) = (p[0] - o.at[0], p[1] - o.at[1]);
             let q = [n.at[0] + dx * c + dy * s, n.at[1] - dx * s + dy * c];
             match by_track.iter_mut().find(|(i, _)| *i == t) {
-                Some((_, one)) => one[k] = Some(q),
-                None => {
-                    let mut one = [None, None];
-                    one[k] = Some(q);
-                    by_track.push((t, one));
+                Some((_, one)) => {
+                    if let Some(slot) = one.get_mut(k) {
+                        *slot = Some(q);
+                    }
                 }
+                None => by_track.push((t, if k == 0 { [Some(q), None] } else { [None, Some(q)] })),
             }
         }
         let edits = by_track;

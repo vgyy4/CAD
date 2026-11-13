@@ -1769,7 +1769,7 @@ pub fn drag_preview(st: &State, b: &Board, item: Option<Sel>, footprint: Option<
     let mut ends: Vec<(usize, [bool; 2])> = Vec::new();
     for (t, k, _) in b.pad_ends(&b.footprint_pads(i)) {
         match ends.iter_mut().find(|(j, _)| *j == t) {
-            Some((_, e)) => e[k] = true,
+            Some((_, [a, z])) => *(if k == 0 { a } else { z }) = true,
             None => ends.push((t, [k == 0, k == 1])),
         }
     }
@@ -1790,7 +1790,7 @@ fn paint(
     let shifted = |p: Pt, d: Pt| [p[0] + d[0], p[1] + d[1]];
     let end_of = |i: usize, is_start: bool, p: Pt| -> Pt {
         let Some((tracks, _, by, ends)) = moving else { return p };
-        let follows = tracks.contains(&i) || ends.iter().any(|(j, e)| *j == i && e[usize::from(!is_start)]);
+        let follows = tracks.contains(&i) || ends.iter().any(|(j, [a, z])| *j == i && if is_start { *a } else { *z });
         if follows { shifted(p, *by) } else { p }
     };
     let view = painter.clip_rect();
