@@ -89,6 +89,9 @@ fn sldprt_parts_come_in_as_history_or_shapes() {
                     .flatten()
                     .filter_map(|w| w.as_str())
                     .find_map(|w| w.split_once("design history came in as exact bodies: ").map(|x| x.1.to_string()))
+                    // A part with many warnings keeps only the first ones; the result's
+                    // history entry still says why.
+                    .or_else(|| r["history"]["why_user_text"].as_str().map(str::to_string))
                     .unwrap_or_else(|| "no feature history".into());
                 eprintln!("{shown}: shapes: {why}");
                 *reasons.entry(kind_of(&why)).or_default() += 1;
