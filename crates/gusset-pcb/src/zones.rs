@@ -14,7 +14,8 @@
 //! 6. islands that touch no copper of the zone's net removed (or those under the minimum
 //!    area, as the zone says).
 //!
-//! Hatched fills are filled solid (noted). Copper text is not an obstacle yet.
+//! Hatched zones get square holes on their grid after step 5 (copper round the zone's own
+//! pads and vias stays solid). Copper texts (in [`crate::font`]) are obstacles.
 
 use crate::board::{Board, Error, Limits, PadKind, PadShape, Place, Pt, Shape, ZoneConnect};
 use crate::copper::{Copper, EdgeGrid, ItemRef, Prim};
@@ -174,17 +175,6 @@ pub fn fill(board: &Board, rules: &Rules, only: Option<&[usize]>) -> Filled {
         let Some(z) = board.zones.get(zi) else { continue };
         let net = board.net_name(&z.net);
         let st = z.settings;
-        if board
-            .tree
-            .items()
-            .get(z.node)
-            .and_then(|n| n.child("fill"))
-            .and_then(|f| f.child("mode"))
-            .and_then(|m| m.arg(0))
-            == Some("hatch")
-        {
-            out.notes.push(format!("zone {zi} is hatched in KiCad; it was filled solid"));
-        }
         let outline = poly::union(std::slice::from_ref(&z.outline));
         let zb = bbox(&z.outline);
         let reach = st.clearance.max(rules.clearance_of(net.as_deref())) + 1.0;
@@ -237,6 +227,9 @@ pub fn fill(board: &Board, rules: &Rules, only: Option<&[usize]>) -> Filled {
             for g in board.graphics.iter().filter(|g| g.layer == layer) {
                 obst.extend(graphic_polys(&g.shape, g.width, g.filled, clear_to(None)));
             }
+            for (a, b, r) in crate::font::layer_strokes(board, &layer) {
+                obst.push(poly::capsule(a, b, r + clear_to(None)));
+            }
             for k in board.zones.iter().filter(|k| k.keepout && k.settings.no_pour && k.outline.len() >= 3) {
                 if board.on_layer(&k.layers, &layer) {
                     obst.push(k.outline.clone());
@@ -272,12 +265,81 @@ pub fn fill(board: &Board, rules: &Rules, only: Option<&[usize]>) -> Filled {
                 fill = poly::difference(&fill, &obstacles);
                 fill = poly::intersect(&fill, &area);
             }
+            if let Some(h) = st.hatch {
+                // Copper round the zone's own pads and vias stays solid, so the
+                // connections the spokes make are kept.
+                let solid: Vec<Vec<Pt>> = copper
+                    .items
+                    .iter()
+                    .filter(|it| net.is_some() && it.net == net && it.layers.contains(&li))
+                    .filter(|it| matches!(it.what, ItemRef::Pad(_) | ItemRef::Via(_)))
+                    .flat_map(|it| {
+                        let d = st.thermal_gap + st.thermal_width.max(h.thickness);
+                        it.prims.iter().flat_map(move |p| prim_polys(p, d)).collect::<Vec<_>>()
+                    })
+                    .collect();
+                match hatch(&fill, &h, &poly::union(&solid)) {
+                    Some(f) => fill = f,
+                    None => out.notes.push(format!("zone {zi} on {layer}: the hatch is too fine; filled solid")),
+                }
+            }
             let kept = islands(&copper, li, net.as_deref(), &st, fill);
             done.push(Fill { zone: zi, layer: layer.clone(), areas: kept });
         }
     }
     out.fills = done.into_iter().filter(|f| only.is_none_or(|o| o.contains(&f.zone))).collect();
     out
+}
+
+/// Most hatch holes one fill may get.
+const MAX_HATCH_HOLES: usize = 200_000;
+
+/// A hatched fill: square holes of the gap's size on a grid of gap + thickness, turned by
+/// the hatch angle, cut where they lie inside the fill shrunk by the thickness (the
+/// border) and outside `solid`; holes cut to less than the minimum fraction of a whole
+/// one are left filled. `None` when the grid would be too fine.
+pub fn hatch(fill: &Areas, h: &crate::board::Hatch, solid: &Areas) -> Option<Areas> {
+    let pts: Vec<Pt> = fill.iter().flatten().flatten().copied().collect();
+    if pts.is_empty() || h.gap <= 0.0 {
+        return Some(fill.clone());
+    }
+    let [lo, hi] = bbox(&pts);
+    let c = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
+    let r = libm::hypot(hi[0] - lo[0], hi[1] - lo[1]) / 2.0 + h.gap + h.thickness;
+    let pitch = h.gap + h.thickness;
+    let n = (2.0 * r / pitch).ceil();
+    if !n.is_finite() || n * n > MAX_HATCH_HOLES as f64 {
+        return None;
+    }
+    let n = n as i64;
+    let a = h.angle.to_radians();
+    let (ca, sa) = (libm::cos(a), libm::sin(a));
+    let turn = |x: f64, y: f64| [c[0] + x * ca - y * sa, c[1] + x * sa + y * ca];
+    let mut squares = Vec::new();
+    for i in 0..n {
+        for j in 0..n {
+            let (x, y) = (-r + i as f64 * pitch + h.thickness / 2.0, -r + j as f64 * pitch + h.thickness / 2.0);
+            let q = [turn(x, y), turn(x + h.gap, y), turn(x + h.gap, y + h.gap), turn(x, y + h.gap)];
+            // Only squares near the fill's box.
+            if q.iter().any(|p| {
+                p[0] >= lo[0] - pitch && p[0] <= hi[0] + pitch && p[1] >= lo[1] - pitch && p[1] <= hi[1] + pitch
+            }) {
+                squares.push(q.to_vec());
+            }
+        }
+    }
+    let inner = poly::difference(&poly::offset(fill, -h.thickness), solid);
+    let whole = h.gap * h.gap;
+    // The squares are apart, so each piece of the clipped grid is one (cut) hole.
+    let holes: Vec<Vec<Pt>> = poly::intersect(&poly::union(&squares), &inner)
+        .into_iter()
+        .filter(|a| poly::area_of(a) >= h.min_hole_area * whole)
+        .flatten()
+        .collect();
+    if holes.is_empty() {
+        return Some(fill.clone());
+    }
+    Some(poly::difference(fill, &poly::union(&holes)))
 }
 
 /// The spokes of a thermal relief: bars from the pad's centre along its axes (45° turned

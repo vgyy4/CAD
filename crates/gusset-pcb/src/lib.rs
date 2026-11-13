@@ -34,9 +34,11 @@ pub mod drill;
 pub mod edit;
 pub mod erc;
 pub mod fab;
+pub mod font;
 pub mod geom;
 pub mod gerber;
 pub mod netlist;
+pub mod nets;
 pub mod poly;
 pub mod ratsnest;
 pub mod route;
@@ -44,6 +46,7 @@ pub mod rules;
 pub mod sch;
 pub mod sch_edit;
 pub mod sexpr;
+pub mod shove;
 pub mod specctra;
 pub mod sync;
 pub mod zones;
@@ -56,6 +59,8 @@ mod tests;
 mod tests_dsn;
 #[cfg(test)]
 mod tests_edit;
+#[cfg(test)]
+mod tests_phase3;
 #[cfg(test)]
 mod tests_route;
 #[cfg(test)]

@@ -92,6 +92,9 @@ impl Obstacles {
                 prims.push((Prim::Capsule { a, b, r: 0.0 }, need));
             }
         }
+        for (a, b, r) in crate::font::layer_strokes(board, layer) {
+            prims.push((Prim::Capsule { a, b, r }, mine + half));
+        }
         for p in board.pads.iter().filter(|p| p.kind == PadKind::Npth) {
             if let Some(d) = p.drill {
                 let h = crate::drill::pad_hole(p.at, p.angle, &d);

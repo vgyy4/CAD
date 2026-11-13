@@ -459,6 +459,24 @@ pub fn write_layer(board: &Board, layer: &str) -> Result<String, Error> {
     for g in board.graphics.iter().filter(|g| g.layer == layer) {
         w.graphic(g, gfunc)?;
     }
+    // Texts in our stroke font.
+    for t in board.texts.iter().filter(|t| t.layer == layer && !t.hidden) {
+        let fp = t.footprint.and_then(|i| board.footprints.get(i));
+        let text = crate::font::shown(&t.text, fp.map_or("", |f| &f.reference), fp.map_or("", |f| &f.value));
+        let pen = crate::font::thickness(t);
+        for line in crate::font::strokes(t, &text) {
+            let Some(first) = line.first() else { continue };
+            w.select(Key::Circle(nm(pen.max(0.001))), gfunc);
+            w.move_to(*first)?;
+            if line.len() == 1 {
+                // A dot: one flash of the pen.
+                w.flash(*first)?;
+            }
+            for p in line.iter().skip(1) {
+                w.line_to(*p)?;
+            }
+        }
+    }
     if copper {
         for t in board.tracks.iter().filter(|t| t.layer == layer && t.width > 0.0) {
             match t.mid {

@@ -77,7 +77,7 @@ pub(crate) fn uuid_for(seed_text: &str, salt: usize) -> String {
 
 impl Board {
     /// Whether the file writes `uuid`s (KiCad 6 and later).
-    fn writes_uuids(&self) -> bool {
+    pub(crate) fn writes_uuids(&self) -> bool {
         self.version.is_some_and(|v| v >= 20_210_000)
     }
 
@@ -139,7 +139,7 @@ impl Board {
     }
 
     /// Re-reads the typed view after the tree changed.
-    fn reread(&mut self, limits: &Limits) -> Result<(), Error> {
+    pub(crate) fn reread(&mut self, limits: &Limits) -> Result<(), Error> {
         let tree = std::mem::replace(&mut self.tree, Node::List(Vec::new()));
         *self = Board::from_tree(tree, limits)?;
         Ok(())
@@ -169,7 +169,7 @@ impl Board {
         Ok(Some(kv("net", Node::sym(id.to_string()))))
     }
 
-    fn push_item(&mut self, mut items: Vec<Node>, limits: &Limits) -> Result<(), Error> {
+    pub(crate) fn push_item(&mut self, mut items: Vec<Node>, limits: &Limits) -> Result<(), Error> {
         if self.writes_uuids() {
             let n = self.tree.items().len();
             let text = sexpr::write(&list(items.clone()));
@@ -179,7 +179,7 @@ impl Board {
         self.reread(limits)
     }
 
-    fn copper_layer(&self, layer: &str) -> Result<(), Error> {
+    pub(crate) fn copper_layer(&self, layer: &str) -> Result<(), Error> {
         if self.copper_layers().iter().any(|l| l == layer) {
             Ok(())
         } else {

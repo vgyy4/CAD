@@ -155,7 +155,7 @@ pub struct Graphic {
     pub footprint: Option<usize>,
 }
 
-/// A text item (drawn in the editor; not plotted yet).
+/// A text item (drawn in the editor, plotted in our stroke font: [`crate::font`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Text {
     pub text: String,
@@ -169,6 +169,12 @@ pub struct Text {
     pub hidden: bool,
     /// Mirrored (bottom-side text reads from below).
     pub mirrored: bool,
+    /// Character width and stroke thickness (mm; 0: a default from the size).
+    pub width: f64,
+    pub thickness: f64,
+    /// Justification: horizontal -1 left, 0 centre, 1 right; vertical -1 top, 0 centre,
+    /// 1 bottom (KiCad's default is centred both ways).
+    pub justify: [i8; 2],
 }
 
 /// A text's height, angle, hidden and mirrored flags from its node.
@@ -191,6 +197,29 @@ fn text_look(n: &Node) -> (f64, f64, bool, bool) {
     let mirrored =
         e.and_then(|e| e.child("justify")).is_some_and(|j| j.args().iter().any(|a| a.atom() == Some("mirror")));
     (size, angle, hidden, mirrored)
+}
+
+/// A text's character width, stroke thickness and justification from its node.
+fn text_shape(n: &Node) -> (f64, f64, [i8; 2]) {
+    let e = n.child("effects");
+    let font = e.and_then(|e| e.child("font"));
+    let ok = |v: &f64| v.is_finite() && *v > 0.0 && *v < 1000.0;
+    // `(size height width)`.
+    let width = font.and_then(|f| f.child("size")).and_then(|s| s.num_arg(1)).filter(ok).unwrap_or(0.0);
+    let thickness = font.and_then(|f| f.child("thickness")).and_then(|t| t.num_arg(0)).filter(ok).unwrap_or(0.0);
+    let mut justify = [0i8, 0i8];
+    if let Some(j) = e.and_then(|e| e.child("justify")) {
+        for a in j.args().iter().filter_map(Node::atom) {
+            match a {
+                "left" => justify[0] = -1,
+                "right" => justify[0] = 1,
+                "top" => justify[1] = -1,
+                "bottom" => justify[1] = 1,
+                _ => {}
+            }
+        }
+    }
+    (width, thickness, justify)
 }
 
 /// What a pad is.
@@ -374,6 +403,18 @@ pub struct ZoneSettings {
     pub island_min_area: f64,
     /// Keep-out areas: whether copper pours are kept out.
     pub no_pour: bool,
+    /// A hatched fill (`fill (mode hatch)`), else solid.
+    pub hatch: Option<Hatch>,
+}
+
+/// A hatched fill's grid (mm; angle in degrees; the smallest hole kept as a fraction of
+/// a whole hole's area).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hatch {
+    pub thickness: f64,
+    pub gap: f64,
+    pub angle: f64,
+    pub min_hole_area: f64,
 }
 
 impl Default for ZoneSettings {
@@ -388,6 +429,7 @@ impl Default for ZoneSettings {
             island_mode: 0,
             island_min_area: 10.0,
             no_pour: false,
+            hatch: None,
         }
     }
 }
@@ -748,6 +790,17 @@ fn zone_settings(n: &Node) -> ZoneSettings {
             .filter(|v| v.is_finite() && *v >= 0.0)
             .unwrap_or(d.island_min_area),
         no_pour: keep.and_then(|k| k.child("copperpour")).and_then(|c| c.arg(0)) == Some("not_allowed"),
+        hatch: (fill.and_then(|f| f.child("mode")).and_then(|m| m.arg(0)) == Some("hatch")).then(|| {
+            let f = |k: &str, def: f64, lo: f64, hi: f64| {
+                fill.and_then(|x| num(x, k)).filter(|v| v.is_finite() && (lo..=hi).contains(v)).unwrap_or(def)
+            };
+            Hatch {
+                thickness: f("hatch_thickness", 1.0, 0.01, 100.0),
+                gap: f("hatch_gap", 1.5, 0.01, 100.0),
+                angle: f("hatch_orientation", 0.0, -360.0, 360.0),
+                min_hole_area: f("hatch_min_hole_area", 0.3, 0.0, 1.0),
+            }
+        }),
     }
 }
 
@@ -976,6 +1029,7 @@ impl Reader<'_> {
                 let t = if head.starts_with("fp_") { n.arg(1) } else { n.arg(0) };
                 let at = pt(n.child("at")).map(p).unwrap_or([0.0, 0.0]);
                 let (size, angle, hidden, mirrored) = text_look(n);
+                let (width, thickness, justify) = text_shape(n);
                 self.board.texts.push(Text {
                     text: t.unwrap_or_default().to_string(),
                     at,
@@ -985,6 +1039,9 @@ impl Reader<'_> {
                     angle,
                     hidden,
                     mirrored,
+                    width,
+                    thickness,
+                    justify,
                 });
                 return Ok(());
             }
@@ -1039,6 +1096,7 @@ impl Reader<'_> {
                     if let (Some(layer), Some(at)) = (c.child("layer").and_then(|l| l.arg(0)), pt(c.child("at"))) {
                         self.check(self.board.graphics.len() + self.board.texts.len(), "drawings")?;
                         let (size, angle, hidden, mirrored) = text_look(c);
+                        let (width, thickness, justify) = text_shape(c);
                         self.board.texts.push(Text {
                             text: text_arg(c, 1),
                             at: place.apply(at),
@@ -1048,6 +1106,9 @@ impl Reader<'_> {
                             angle,
                             hidden,
                             mirrored,
+                            width,
+                            thickness,
+                            justify,
                         });
                     }
                 }
