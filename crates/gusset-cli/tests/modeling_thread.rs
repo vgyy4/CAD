@@ -202,13 +202,14 @@ sketch R (plane: YZ, next_id: 14) {
 revolve V (profile: R, axis: R.l13, angle: 360 deg, op: cut, body: E)
 ";
 
-/// `FOOT` with or without its thread (without it, the rod is turned to the thread's major
-/// diameter, as the thread does), and with the three 0.5 mm rounds of the groove's edges
+/// 916's thread on `FOOT`'s rod: from 4 mm up, its groove starting square at z -16.
+const FOOT_THREAD: &str = "thread T (face: E/side(S/c2), pitch: 1 mm, modeled: true, major: 15.884 mm, minor: 14.741 mm, length: 16 mm, offset: 4 mm, along: Z)";
+
+/// `FOOT` with or without the thread `line` (without it, the rod is turned to the thread's
+/// major diameter, as the thread does), and with the three 0.5 mm rounds of the groove's edges
 /// (r 7 and r 7.942 at z -16.5, r 7 at z -18.5) when `round`.
-fn foot(thread: bool, round: bool) -> f64 {
-    let line = "thread T (face: E/side(S/c2), pitch: 1 mm, modeled: true, major: 15.884 mm, minor: 14.741 mm, length: 16 mm, offset: 4 mm, along: Z)";
-    let text =
-        FOOT.replace("THREAD", if thread { line } else { "" }).replace("RADIUS", if thread { "9" } else { "7.942" });
+fn foot(line: Option<&str>, round: bool) -> f64 {
+    let text = FOOT.replace("THREAD", line.unwrap_or("")).replace("RADIUS", if line.is_some() { "9" } else { "7.942" });
     let (ev, r) = eval(&text);
     assert!(r.errors().is_empty(), "{:?}", r.errors());
     if !round {
@@ -238,9 +239,24 @@ fn rounds_at_a_threads_square_end_are_made_in_the_half_section() {
     // narrower than both) and meets the rod at z -16.0017, 1.7 um below the groove's square
     // end: OCCT's fillet fails on the threaded rod and is made on the revolved half section.
     // The rounds and the thread do not meet: each changes the volume as it does alone.
-    let (plain, rounded) = (foot(false, false), foot(false, true));
-    let threaded = foot(true, false);
-    let v = foot(true, true);
+    let (plain, rounded) = (foot(None, false), foot(None, true));
+    let threaded = foot(Some(FOOT_THREAD), false);
+    let v = foot(Some(FOOT_THREAD), true);
+    let want = threaded + (rounded - plain);
+    assert!((v - want).abs() < 1e-7 * want, "{v} vs {want}");
+}
+
+#[test]
+fn rounds_at_a_threads_square_end_are_made_whatever_the_threads_phase() {
+    // The thread run down from the rod's top, so that its groove ends square at z -16 0.8 of
+    // a turn on from where 916's starts. The half section must be taken where the rod's wall
+    // runs on past the square end (a tenth of a turn or so), whatever angles the circles'
+    // frame puts first: the same holds for 916's on a platform whose rounding tilts the
+    // circles' axis by 1e-17, which turns OCCT's default frame for it by a quarter turn.
+    let line = "thread T (face: E/side(S/c2), pitch: 1 mm, modeled: true, major: 15.884 mm, minor: 14.741 mm, length: 15.8 mm, offset: 0.2 mm, along: [0, 0, -1])";
+    let (plain, rounded) = (foot(None, false), foot(None, true));
+    let threaded = foot(Some(line), false);
+    let v = foot(Some(line), true);
     let want = threaded + (rounded - plain);
     assert!((v - want).abs() < 1e-7 * want, "{v} vs {want}");
 }

@@ -3086,12 +3086,22 @@ std::vector<TopoDS_Shape> images_after(Op& op, const TopoDS_Shape& f, bool gone)
 // change stays inside the window and the shape's volume changes by exactly those two volumes
 // (so the shape is the solid of revolution wherever the blend touched it); else the section is
 // tried at other angles. The blend faces are the blended solid's faces made from the circles.
+// The angles are tried in the order of how far the section's other corners lie from the
+// circles: where the shape is not axisymmetric (a thread), the section changes with the angle,
+// and OCCT's blend fails where a corner of it lies at the blend's tangent line (916's: wherever
+// the groove's square end, 1.7 um above the round's tangent line, is in the section, all but a
+// tenth of a turn or so where the rod's wall runs on past it). The angles are measured from
+// world X (Y on an axis near X) about the axis turned to a fixed side, not from the circles'
+// own frame, whose X direction jumps by a quarter turn with a 1e-17 tilt of the axis (rounding
+// that differs by platform).
 template <typename Mk>
 int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
                    GsShape** out, GsBuf* origins) {
   if (es.empty()) return fail("no edges");
   // The circles and their axis.
   gp_Ax1 axis;
+  // The circles' corners of the section, as (radius, height).
+  std::vector<std::pair<double, double>> corners;
   double rlo = 1e300, rhi = 0, zlo = 1e300, zhi = -1e300, size = 0;
   for (size_t i = 0; i < es.size(); ++i) {
     const BlendEdge& x = es[i];
@@ -3100,10 +3110,14 @@ int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std
     if (c.GetType() != GeomAbs_Circle || std::fabs(c.LastParameter() - c.FirstParameter() - 2 * M_PI) > 1e-9)
       return fail("not a whole circle");
     const gp_Circ ci = c.Circle();
-    if (i == 0) axis = ci.Axis();
+    if (i == 0) {
+      axis = ci.Axis();
+      if (gp_Vec(axis.Direction()).Dot(gp_Vec(0.31, 0.47, 0.83)) < 0) axis.Reverse();
+    }
     if (!ci.Axis().IsParallel(axis, 1e-9) || gp_Lin(axis).Distance(ci.Location()) > 1e-7)
       return fail("not about one axis");
     const double z = gp_Vec(axis.Location(), ci.Location()).Dot(gp_Vec(axis.Direction()));
+    corners.emplace_back(ci.Radius(), z);
     rlo = std::min(rlo, ci.Radius());
     rhi = std::max(rhi, ci.Radius());
     zlo = std::min(zlo, z);
@@ -3113,7 +3127,10 @@ int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std
   const double m = 3.1 * size;
   const double w_r0 = std::max(0.0, rlo - m), w_r1 = rhi + m, w_z0 = zlo - m, w_z1 = zhi + m;
   const gp_Dir zd = axis.Direction();
-  const gp_Dir x0 = gp_Ax2(axis.Location(), zd).XDirection();
+  gp_Vec xv(1, 0, 0);
+  if (std::fabs(xv.Dot(gp_Vec(zd))) > 0.9) xv = gp_Vec(0, 1, 0);
+  xv -= gp_Vec(zd) * xv.Dot(gp_Vec(zd));
+  const gp_Dir x0(xv);
   // A point at radius r and height z of the half plane at angle `th`.
   auto at = [&](double th, double r, double z) {
     gp_Vec x(x0);
@@ -3144,10 +3161,16 @@ int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std
     return l;
   };
   std::string why = "no section";
-  for (int k = 0; k < 6; ++k) {
-    const double th = 0.3 + k * (2 * M_PI / 6);
+  // The sections at 24 angles, each with the distances of its other corners from the circles'
+  // corners, nearest first.
+  struct Section {
+    TopoDS_Face face;
+    std::vector<double> dist;
+  };
+  std::vector<Section> secs;
+  for (int k = 0; k < 24; ++k) {
+    const double th = 0.3 + k * (2 * M_PI / 24);
     try {
-      // The section in the window, revolved.
       BRepBuilderAPI_MakePolygon poly(at(th, w_r0, w_z0), at(th, w_r1, w_z0), at(th, w_r1, w_z1), at(th, w_r0, w_z1),
                                       true);
       if (!poly.IsDone()) continue;
@@ -3157,17 +3180,50 @@ int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std
       sec.SetRunParallel(false);
       sec.Build();
       if (!sec.IsDone() || sec.HasErrors()) continue;
-      TopoDS_Compound faces;
-      BRep_Builder bb;
-      bb.MakeCompound(faces);
+      TopoDS_Face sf;
       int nf = 0;
-      for (TopExp_Explorer ex(sec.Shape(), TopAbs_FACE); ex.More(); ex.Next(), ++nf) bb.Add(faces, ex.Current());
+      for (TopExp_Explorer ex(sec.Shape(), TopAbs_FACE); ex.More(); ex.Next(), ++nf) sf = TopoDS::Face(ex.Current());
       if (nf != 1) {
         why = "the section is not one face";
         continue;
       }
-      TopoDS_Face sf;
-      for (TopExp_Explorer ex(faces, TopAbs_FACE); ex.More(); ex.Next()) sf = TopoDS::Face(ex.Current());
+      ShapeMap vs;
+      TopExp::MapShapes(sf, TopAbs_VERTEX, vs);
+      std::vector<double> dist;
+      for (int i = 1; i <= vs.Extent(); ++i) {
+        const gp_Vec v(axis.Location(), BRep_Tool::Pnt(TopoDS::Vertex(vs(i))));
+        const double z = v.Dot(gp_Vec(zd)), r = (v - gp_Vec(zd) * z).Magnitude();
+        double d = 1e300;
+        for (const auto& c : corners) d = std::min(d, std::hypot(r - c.first, z - c.second));
+        if (d > 1e-7) dist.push_back(d);
+      }
+      std::sort(dist.begin(), dist.end());
+      secs.push_back(Section{sf, dist});
+    } catch (const Standard_Failure&) {
+      why = "geometry kernel error";
+    }
+  }
+  // Is section a's nearest corner farther from the circles than b's (the first that differs
+  // by more than 1e-7; no corner left is farthest)?
+  auto farther = [](const Section& a, const Section& b) {
+    for (size_t i = 0; i < std::max(a.dist.size(), b.dist.size()); ++i) {
+      const double x = i < a.dist.size() ? a.dist[i] : 1e300, y = i < b.dist.size() ? b.dist[i] : 1e300;
+      if (x > y + 1e-7) return true;
+      if (y > x + 1e-7) return false;
+    }
+    return false;
+  };
+  std::vector<bool> tried(secs.size(), false);
+  for (int attempt = 0; attempt < 6; ++attempt) {
+    // The farthest section not yet tried (the first of equals).
+    size_t best = secs.size();
+    for (size_t j = 0; j < secs.size(); ++j)
+      if (!tried[j] && (best == secs.size() || farther(secs[j], secs[best]))) best = j;
+    if (best == secs.size()) break;
+    tried[best] = true;
+    const TopoDS_Face sf = secs[best].face;
+    try {
+      // The section revolved.
       BRepPrimAPI_MakeRevol rv(sf, axis, 2 * M_PI);
       rv.Build();
       if (!rv.IsDone()) continue;
