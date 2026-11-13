@@ -808,7 +808,8 @@ impl Ctx<'_> {
             let near = |p: P2, q: P2| geom::dist(p, q) < 1e-6;
             a.curve == b.curve && ((near(a0, b0) && near(a1, b1)) || (near(a0, b1) && near(a1, b0)))
         };
-        let mut cands: Vec<(usize, Option<V3>)> = Vec::new();
+        // Each candidate with the pieces its stored face lies on.
+        let mut cands: Vec<(usize, Option<V3>, Vec<usize>)> = Vec::new();
         for f in self.tagged() {
             if f.tag != gen_text || f.verts.len() < 2 {
                 continue;
@@ -839,13 +840,24 @@ impl Ctx<'_> {
                 _ => None,
             };
             // Two faces count once when they lead to the same piece, or to pieces of one line.
-            if let Some((i, mid)) = found
-                && !cands.iter().any(|(j, m)| same(i, *j) || (mid.is_some() && m.is_some()))
-            {
-                cands.push((i, mid));
+            // A stored face over several pieces of one line and one over a single piece of them
+            // are one face before and after a join covered the other pieces (5998's clip side
+            // `10` of `Extrude8 (2)`, along the lid's wall): the single piece is the face.
+            let Some((i, mid)) = found else { continue };
+            let overlaps = |hs: &[usize]| hs.iter().any(|a| hit.iter().any(|b| same(*a, *b)));
+            if let Some(k) = cands.iter().position(|(_, _, hs)| overlaps(hs)) {
+                if cands.get(k).is_some_and(|(_, _, hs)| hit.len() < hs.len())
+                    && let Some(c) = cands.get_mut(k)
+                {
+                    *c = (i, mid, hit);
+                }
+                continue;
+            }
+            if !cands.iter().any(|(j, m, _)| same(i, *j) || (mid.is_some() && m.is_some())) {
+                cands.push((i, mid, hit));
             }
         }
-        if let [one] = cands.as_slice() { Some(*one) } else { None }
+        if let [(i, mid, _)] = cands.as_slice() { Some((*i, *mid)) } else { None }
     }
 
     /// Geometry of a face named (generator, operation ids). A planar face of an extrude that a
