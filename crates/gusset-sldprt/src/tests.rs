@@ -1032,6 +1032,33 @@ fn a_fillet_edge_between_two_side_faces_is_picked_by_its_midpoint() {
 }
 
 #[test]
+fn a_shell_removes_the_first_face_of_its_last_record() {
+    // RobotCap's Shell1: records naming the shell's own faces, then the one whose first
+    // reference is the face it removes (here the bottom cap, face 0), and D1 the wall.
+    let mut shell = feature_node("moShell_c", "Shell1", 30);
+    let side = [face_ref(0x50, 7, 1), face_ref(0x50, 7, 2), face_ref(0x51, 7, 0), face_ref(0x51, 7, 1)];
+    shell.extend(edge_record(&side, 0));
+    shell.extend([0u8; 200]);
+    shell.extend(edge_record(&[face_ref(0x51, 7, 0), face_ref(0x50, 7, 1)], 0));
+    shell.extend([0u8; 4]);
+    shell.extend(parameter("D1", 0.001));
+    let t = history(&feature_stream(&shell)).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap().last().unwrap();
+    assert_eq!(f["type"], "shell", "{t}");
+    assert_eq!(f["thickness"].as_f64(), Some(1.0));
+    let face = &f["faces"][0];
+    assert_eq!(face["normal"], serde_json::json!([0.0, 0.0, -1.0]), "{f}");
+    assert_eq!(face["point"][2].as_f64(), Some(0.0));
+    // A face the reader cannot place leaves the shell unresolved, named.
+    let mut shell = feature_node("moShell_c", "Shell1", 30);
+    shell.extend(edge_record(&[face_ref(0x51, 99, 0), face_ref(0x50, 99, 1)], 0));
+    shell.extend([0u8; 4]);
+    shell.extend(parameter("D1", 0.001));
+    let why = history(&feature_stream(&shell)).unwrap_err();
+    assert!(why.contains("Shell1") && why.contains("not resolved"), "{why}");
+}
+
+#[test]
 fn a_distance_angle_chamfer_is_a_chamfer_with_angle_and_a_face() {
     // The corner edge of the fillet test above, with D2 an angle: 70 degrees is written as
     // `angle`, with a pick on side 1 (a point 0.3 of the line away from the edge); 45 degrees

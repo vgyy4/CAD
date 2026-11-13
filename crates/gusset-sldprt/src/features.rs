@@ -3606,6 +3606,25 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if first_solid.as_deref().is_none_or(str::is_empty) {
                 first_solid = Some(n.name.clone());
             }
+        } else if cls.as_deref() == Some("moShell_c") {
+            let ps = params(rf, a, b, nt)?;
+            let recs = edge_records(rf, a, b)?;
+            let pick =
+                recs.last().and_then(|(_, reps)| reps.first()).and_then(|r| face_pick(r, &swept, &sketches, &cap_tags));
+            let mut js = Map::new();
+            js.insert("type".into(), json!("shell"));
+            js.insert("name".into(), json!(n.name));
+            js.insert("thickness".into(), json!(ps.first().map(|v| mm(*v))));
+            match pick {
+                Some((pt, nrm, _)) => {
+                    js.insert("faces".into(), json!([{"point": json_v3(pt), "normal": json_v3(nrm)}]));
+                }
+                None => {
+                    js.insert("faces".into(), json!([]));
+                    js.insert("unresolved".into(), json!(true));
+                }
+            }
+            feats.push(Value::Object(js));
         } else if cls.is_none() || is_in(&cls, &SKIPPED) {
             continue;
         } else {
@@ -3816,7 +3835,7 @@ fn check(tree: &Value) -> Result<(), String> {
                 }
             }
             "stored_body" => solids += 1,
-            "hole" | "mirror" if f.get("unresolved").is_some() => {
+            "hole" | "mirror" | "shell" if f.get("unresolved").is_some() => {
                 return Err(format!("{name}: the {} was not resolved", s("type")));
             }
             "pattern_linear" | "pattern_circular" if f.get("unresolved").is_some() => {
