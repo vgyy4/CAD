@@ -723,3 +723,93 @@ regions 15, up-to-surface ends 13, reference surfaces 12, mirror plane not resol
   290 mm body with an absolute 0.01 mm deflection (`gusset-eval` `hole.rs`): `BRepMesh_Delaun` grows past 8 GB in a minute
   (in-process). Before this round the part stopped at its Markups folder. The finished body alone meshes fine for an STL
   export; the fit check's deflection is the problem (gusset-eval, not changed here).
+
+## L13. Round 7 (sw2: volume mismatches, sketch planes, end conditions)
+Measured against round sw1's final logs (slip-pad 23, arig-revisions 15, zenodo 1, sw-more 156). Each volume mismatch was
+classified with a scratch harness that rebuilds the history one feature at a time and measures, after each feature,
+the rebuilt solid outside the part's own Parasolid body and the body missing from it (two booleans per feature); the
+feature where either jumps is the one read wrong. Reader-only tallies (the feature tree and its own check, no rebuild)
+over all 1352 parts: 937 trees read whole before the round, 968 after. Decoded from the sample bytes:
+* **Unit-component tags above 255.** Files with more than 255 classes before `moUnitComponent_c` write its tag with
+  the high byte too (`24 81 02 00`, class 0x124: Spacer_long_base_square, Case_Electronics, the SG90 servos, the washers).
+  The tag learner only took `XX 80`. Accepting any high byte let stray `XX YY 02 00` runs of zeros outvote the real tag
+  (V-Slot Spacer Block: three `ad 94` against two `73 80`), so only a run followed by a whole reference-plane frame
+  (the component base the plane reader already checks, 43..112 bytes on) votes. Sketch-plane failures in the reader
+  tally: 43 -> 6 (with the nested names below).
+* **End condition byte 12 is "reverse direction".** The `u32` at byte 12 of the end-condition head turns a boss against
+  its sketch normal and a cut along it. On every extrude that also writes a direction vector (the `0005 0002 0002 0002`
+  marker, L10) the two agree (history parts: 9 bosses with the byte set run against the normal, 1 cut along it; none
+  disagrees); parts that write no vector need the byte: 200mm Topmost Platform's eight cuts ran away from the plate
+  (each left the volume unchanged), cap, back_shoulder_attach, the Cablechain brackets.
+* **Elliptical sketch arcs.** A sketch segment that writes four `u16` point indices where an arc writes four `-2` words
+  (`p + 22`) is an ellipse (arc): the points are the axis ends (major +, minor +, major -, minor -), `dir` 1 runs
+  counter-clockwise from start to end as for arcs, and the centre is halfway between the major ends (Y-Plate's notch
+  and the butterfly valve's outline are circle-shaped ones). They had been read as straight lines from start to end. The
+  tree writes `ellipse_arc` (ADR 0042) about a centre point of its own (`pe<k>`).
+* **Revolve axes by reference.** A revolve about a reference axis (`moRefAxis_c`) or an edge carries a line reference
+  (`moLineRef_w`): `c7 cf ff ff c7 cf ff ff 00 00 00 00 70 17 00 00`, 8 zero bytes (16 in newer parts), then `f64
+  length`, the start point and the unit direction in model coordinates (m). The V-wheels revolve about Axis1 (the z
+  axis); the reader had taken a construction line at the rim. The axis is the sketch line on that line, else the line
+  as origin and direction; full-revolve circle edges now keep the axis as two sketch points.
+* **A projected centerline is not an axis.** A sketch may carry a model edge projected into it with the centerline flags
+  (M5_bolt's and M6_bolt's Sketch3: the bolt's bottom silhouette, flags `0x80d1` and a reference object in the entity's
+  reference slot); taken as the first centerline, the cut-revolve turned about it and cut nothing. A revolve's first
+  centerline is now the first one without a reference object.
+* **Up to a vertex (end type 3).** The node's point reference (`moEndPointRef_w`) writes the vertex in model coordinates
+  after `c7 cf ff ff c7 cf ff ff 00 00 00 00 f8 2a 00 00` and 8 zero bytes; the extrude ends on the plane through it
+  parallel to the sketch (V-Slot Rail_PIVOT Boss-Extrude2, Raspberry Pi Case_BOTTOM). A vertex reached through a
+  reference chain (`moReferenceChain_c`, GPIO_cover) is not read.
+* **Names nested in a node's header.** A feature that reuses a sketch writes `Sketch3<3>` inside its own header, and
+  zsCAD sketches an attribute name (`Assoc1`); both find the same 46-byte block as the node around them, so they cut its
+  span short: the extrude lost its end condition (V-Slot Rail_PIVOT, Connecting Plate_BOTTOM_M3, PiCam Case_TOP, the
+  Turkish crankshaft parts), the sketch its entities and plane (all twelve zsCAD parts now read). Extrudes without an
+  end condition in the reader tally: 21 -> 7. Nested reused-sketch
+  and attribute names are dropped; a hole wizard's nested sketches stay (dropping every nested name broke them).
+* **Sketches kept in the configuration stream.** Sketches driven by equations or configurations keep their entities
+  in `Config-<n>` (the stream read for the class index), and the sketch node in the feature stream holds none
+  (NEMA23_mount, Support-Rod, tramPlate, Pan-Slot Screw M4, the bolts). `Config-<n>` holds one `sgSketch` object per such
+  sketch: the first after the class declaration, the others under its class tag (`tag, u32 point count, u16, u32 key,
+  u32 id`, then the first entity header); the empty sketch nodes take them in order when there are as many of each.
+  Their dimensions (fillet radii, extrude depths) can live there too and are not read (NEMA23_mount's Fillet1:
+  "no radius found").
+* **Degenerate arcs and circles.** A construction arc whose ends are not both on its circle (the centre is one of its
+  ends: Hobby Motor 3v) and a circle through its own centre (mid_elbow's Sketch9, about a projected point) are not
+  entities as read; Gusset refused the sketch, or (idler_differential_baseJoint_v1, whose residual 1.4e-4 L11 could not
+  locate) its solver moved the shared profile points to put the arc's ends on one circle. Both are left out.
+* **Fillet records that start with their own face.** `[own face, vertex face, face, vertex face, face]` (Power Supply
+  Unit, Ultrasonic Sensor, robotCasterWheel, sensor pannel) is read as `[face, face, vertex face, vertex face]`.
+* **Imported bodies of one name.** Imported features that share a name keep their bodies as `name`, `name_1`, ...
+  (Hobby Motor 3v's seven); each took the first. Now each body is taken once, the exact name first.
+* Fillets and chamfers with unresolved edges list them in `sw_unresolved` (feature name / face number, `c` for caps,
+  `stale:` for references to known features): the remaining fillet failures are mostly faces of earlier fillets that
+  are not a round of two straight sides (14 parts), sketches whose dimensions live in the configuration stream, mirror
+  instance faces (`Mirror2/33553`: a reference that nests the seed face) and pattern instances (`?`).
+
+**Findings, not fixed.**
+* **Mirrors of features** (the four bearings, Universal L Bracket): the truth has the grooves on both sides, i.e. the
+  cuts are mirrored, not the body. The mirror node lists face references to one face of each of Boss-Extrude1,
+  Cut-Extrude2 and Cut-Extrude1 (an edge-record face list) and a `u32 n` list of object indices that every mirror has,
+  body mirrors included (ARIG's `Symétrie1`: `03 67 66 65`); neither is a feature list as read, and mirroring all three
+  features (the boss's copy refills the grooves) does not give the truth either. The bearings' Chamfer1 also names its
+  edges on mirror instances: `<tag> 00 00 89 80 <fid of Mirror1> <stamp>` followed by the seed face's own reference
+  (Cut-Extrude2 face 3), which the edge reader takes as one reference with face number 0x808c.
+* **Shells** (22 parts): 13 are one family (`r3*`, Rozakiin) whose shell is followed by a variable fillet; decoding the
+  shell alone gains nothing there.
+* **Patterns**: 14 trees would read whole with patterns decoded. The pattern node holds an edge record for the axis
+  (Boss-Extrude1 face 2 / Cut-Extrude1 face 1 in pulley_small's CirPattern1) and the same `01 00 xx 00` object
+  references as the mirrors; the patterned features were not identified.
+* **Mirror planes on reference planes** (13 parts, mostly the Turkish engine set): the mirror names a user plane
+  (`Plane1`, `Düzlem1`), whose geometry the reader does not keep.
+
+**Coverage after the round** (rebuild check unchanged; whole corpora, the history test through the corpus driver):
+slip-pad 24 of 35 (was 23: idler_differential_baseJoint_v1, the construction arc above), arig-revisions 15 of 50 and
+zenodo 1 of 14 (unchanged), sw-more **195 of 1253** (was 156; 39 gained, none lost): cap, back_shoulder_attach, wheel
+dirctor, TX2_Case_Top_Plate, 126p-engine-susp-bushing, 200mm Ring Bearing, 200mm Topmost Platform, Bottom Motor Spacer,
+IMU Mount, IMU, Quick Release Rod, Ultrasonic mount, Parça1, the two plain washers, the two Threadedrod mounts, Y-Brace,
+Y-Plate, V-Slot 40x40, the four V-wheels, three Cablechain brackets, TempBoxBracket, both Support-Rods, valve, V-Slot
+Connector_3mm_LIMITSWITCH, 5bd, 5dd, M5_bolt, M6_bolt, tramPlate, waste_board, O2C Bottom Layer (the two bolts come from the
+projected-centerline fix, measured on the three parts whose trees it changes after the whole-corpus run). All corpora:
+195 -> 235 of 1352. Remaining sw-more reasons, by parts: imported bodies only 540, volume mismatch 83 (parts that now read whole land
+here first), fillet edges 39, `moShell_c` 22, no feature stream 21, circular/linear patterns 19 + 18, edge midpoint not on
+the model 18, up-to-surface ends 16, split body 16, loft 16, mirror plane not resolved 13, reference surfaces 12, closed
+regions 12, sketch planes 6. RJ45-LED and Link_2 are skipped by the corpus driver as in round sw1 (in-process crashes).

@@ -432,3 +432,48 @@ No part lost its history. Two sw-more parts kill the importing process and are s
 body at 0.01 mm and grows past 8 GB); both are kernel or evaluator issues, reported, not changed here. The largest
 remaining reasons in sw-more: STEP imports with no feature (540), volume mismatches (77; the bearings among them are
 mirrors of cut features read as whole-body mirrors), sketch planes (43), fillet edges (40), shells (22), patterns (33).
+
+## Amendment (2026-11-13): volume mismatches, sketch planes, end conditions (round sw2)
+
+Each sw-more volume mismatch was classified against the part's own Parasolid body: a scratch harness rebuilds the
+history one feature at a time and measures what lies outside the body and what is missing from it after each
+feature, so the feature that goes wrong shows. Decoded from the sample bytes (`docs/formats/solidworks-feature-tree.md`
+L13):
+
+- **Unit-component tags above 255** (`24 81 02 00`): the reference-plane components of files with many classes; a tag
+  votes only where a reference-plane frame follows it (stray runs had outvoted the real tag).
+- **End-condition byte 12** reverses the extrusion: a boss against its sketch normal, a cut along it. It agrees with
+  the direction vector wherever one is written, and decides where none is.
+- **Elliptical sketch arcs** (four axis end points where an arc writes four -2 words) are `ellipse_arc` curves; they
+  had been read as straight lines.
+- **Line and point references** (`moLineRef_w`, `moEndPointRef_w`) carry their geometry in model coordinates: a revolve
+  about a reference axis turns about that line; an extrude up to a vertex (end type 3) ends on the plane through it.
+  A centerline that is a projected model edge is not a revolve axis.
+- **Names nested in a node's header** (a reused sketch's `Sketch3<3>`, an attribute) no longer cut the node's span
+  short (extrudes lost their end conditions, zsCAD sketches their entities).
+- **Sketches kept in `Config-<n>`** (driven by equations or configurations) are read from its `sgSketch` objects, in
+  order, by the sketch nodes that hold none.
+- Construction arcs off their circle and circles through their own centre are left out (Gusset refused them, or its
+  solver moved shared profile points: idler_differential_baseJoint_v1's 1.4e-4 residual was this).
+- Fillet edge records that start with the fillet's own face are read; imported features that share a name take the
+  numbered `LocalBodies` records in order (`import.rs`).
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4 of the diagonal), and so are
+the stored-body rules (a history of stored bodies alone, or on a finished body, stays refused).
+
+**Coverage** (history / parts; the history test with `GUSSET_SLDPRT_SAMPLES`, whole corpora):
+
+| corpus | round sw1 | round sw2 |
+|---|---|---|
+| slip-pad | 23 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 156 / 1253 | **195** / 1253 |
+| all | 195 / 1352 | **235** / 1352 |
+
+No part lost its history. RJ45-LED and Link_2 are skipped by the corpus driver as before (in-process crashes, fixed on
+another branch). Gained: idler_differential_baseJoint_v1 (slip-pad) and 39 sw-more parts, listed in L13. The largest
+remaining sw-more reasons: STEP imports with no feature (540), volume mismatches (83; parts that now read whole land here),
+fillet edges (39), shells (22), patterns (37), edge midpoints not on the model (18). Not decoded: the feature lists of
+mirrors and patterns (the bearings' mirror of cuts is still read as a whole-body mirror), mirror planes on user reference
+planes, dimensions kept in the configuration stream.
