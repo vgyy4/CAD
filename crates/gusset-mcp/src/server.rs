@@ -573,17 +573,50 @@ fn summary(spec: &CommandSpec) -> String {
     format!("{}…", cut.get(..end).unwrap_or(cut).trim_end())
 }
 
-/// The `commands` result: the commands not in tools/list, or one command's definition.
+/// One-line hint for a command group (the id prefix before the first `.`), where the
+/// prefix alone does not say what the group is for.
+fn group_hint(prefix: &str) -> Option<&'static str> {
+    Some(match prefix {
+        "pcb" => "PCB layout: open/import/new boards, footprints, tracks, vias, DRC, Gerber/drill/STEP export",
+        "sch" => "Schematic: symbols, wires, labels, netlist, ERC, then pcb_update_from_schematic",
+        "sim" => "Simulation: static stress, modal frequencies, shape optimisation of a body",
+        "cam" => "CAM: toolpaths and G-code from a sketch",
+        _ => return None,
+    })
+}
+
+/// The `commands` result: the commands not in tools/list (with the groups they fall
+/// into, so an area such as PCB is found without scanning the list), or one command's
+/// definition.
 fn commands_result(args: &CommandsArgs) -> Result<Value, CommandError> {
     match &args.name {
-        None => Ok(json!({
-            "commands": registry()
-                .iter()
-                .filter(|s| !CORE_COMMANDS.contains(&s.id))
-                .map(|s| json!({ "name": s.tool_name(), "summary": summary(s) }))
-                .collect::<Vec<_>>(),
-            "hint": "call commands with a name for its arguments, then run it with run",
-        })),
+        None => {
+            let listed: Vec<&CommandSpec> = registry().iter().filter(|s| !CORE_COMMANDS.contains(&s.id)).collect();
+            let mut groups: Vec<(&str, usize)> = Vec::new();
+            for s in &listed {
+                let prefix = s.id.split('.').next().unwrap_or(s.id);
+                match groups.iter_mut().find(|(p, _)| *p == prefix) {
+                    Some((_, n)) => *n += 1,
+                    None => groups.push((prefix, 1)),
+                }
+            }
+            let groups: Vec<Value> = groups
+                .into_iter()
+                .map(|(p, n)| match group_hint(p) {
+                    Some(h) => json!({ "group": p, "commands": n, "about": h }),
+                    None => json!({ "group": p, "commands": n }),
+                })
+                .collect();
+            Ok(json!({
+                "groups": groups,
+                "commands": listed
+                    .iter()
+                    .map(|s| json!({ "name": s.tool_name(), "summary": summary(s) }))
+                    .collect::<Vec<_>>(),
+                "hint": "a group is the command-name prefix (pcb_, sch_, sim_, cam_...); call commands with a name \
+                         for its arguments, then run it with run",
+            }))
+        }
         Some(name) => {
             let spec = find_command(name).ok_or_else(|| {
                 CommandError::args(format!("unknown command '{}'", clean_short(name, 100)))

@@ -1187,3 +1187,146 @@ async fn a_line_that_is_not_json_gets_a_parse_error_and_the_session_goes_on() {
 async fn next_line<R: tokio::io::AsyncBufRead + Unpin>(l: &mut tokio::io::Lines<R>) -> String {
     tokio::time::timeout(std::time::Duration::from_secs(10), l.next_line()).await.unwrap().unwrap().unwrap()
 }
+
+// ------------------------------------------------- PCB, schematic, simulation, CAM
+
+const SYM_LIB: &str = r##"(kicad_symbol_lib (version 20241209) (generator "hand")
+  (symbol "R" (pin_names (offset 0)) (in_bom yes) (on_board yes)
+    (property "Reference" "R" (at 2.032 0 90) (effects (font (size 1.27 1.27))))
+    (property "Value" "10k" (at 0 0 90) (effects (font (size 1.27 1.27))))
+    (symbol "R_0_1" (rectangle (start -1.016 -2.54) (end 1.016 2.54) (stroke (width 0.254) (type default)) (fill (type none))))
+    (symbol "R_1_1"
+      (pin passive line (at 0 3.81 270) (length 1.27) (name "~" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27)))))
+      (pin passive line (at 0 -3.81 90) (length 1.27) (name "~" (effects (font (size 1.27 1.27)))) (number "2" (effects (font (size 1.27 1.27))))))))
+"##;
+
+const FOOTPRINT: &str = r#"(footprint "R_Small" (version 20240108) (generator "hand") (layer "F.Cu")
+  (property "Reference" "REF**" (at 0 -1.5) (layer "F.SilkS"))
+  (property "Value" "R_Small" (at 0 1.5) (layer "F.Fab"))
+  (pad "1" smd rect (at -0.8 0) (size 0.8 0.9) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "2" smd rect (at 0.8 0) (size 0.8 0.9) (layers "F.Cu" "F.Paste" "F.Mask")))"#;
+
+/// A host whose session has a project folder holding a symbol library and a footprint library.
+fn host_with_project(tag: &str) -> (HostHandle, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("gusset-mcp-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("libs/Test.pretty")).unwrap();
+    std::fs::create_dir_all(dir.join("fab")).unwrap();
+    std::fs::write(dir.join("hand.kicad_sym"), SYM_LIB).unwrap();
+    std::fs::write(dir.join("libs/Test.pretty/R_Small.kicad_mod"), FOOTPRINT).unwrap();
+    let doc = Document::from_text("gusset 1\nunits mm\n").unwrap();
+    let mut s = Session::new(&doc, Arc::new(MockKernel), &CmdCtx::user(0));
+    s.project_dir = Some(dir.clone());
+    (Host::spawn(s, None), dir)
+}
+
+async fn run_cmd(c: &RunningService<RoleClient, Client>, name: &str, args: Value) -> Value {
+    ok(&call(c, "run", json!({"name": name, "args": args})).await)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pcb_schematic_simulation_and_cam_are_reachable_through_commands_and_run() {
+    let (h, dir) = host_with_project("eda");
+    let server = McpServer::new(h);
+    let c = connect(&server, Client::new("bot", None), false).await;
+
+    // Discovery: groups with a one-line hint, and the commands themselves.
+    let list = ok(&call(&c, "commands", json!({})).await);
+    let groups = list["groups"].as_array().unwrap();
+    for (g, word) in [("pcb", "PCB"), ("sch", "Schematic"), ("sim", "Simulation"), ("cam", "CAM")] {
+        let e = groups.iter().find(|e| e["group"] == g).unwrap_or_else(|| panic!("no group {g}: {list}"));
+        assert!(e["about"].as_str().unwrap().starts_with(word), "{e}");
+        assert!(e["commands"].as_u64().unwrap() >= 1);
+    }
+    let names: Vec<&str> = list["commands"].as_array().unwrap().iter().filter_map(|e| e["name"].as_str()).collect();
+    for n in [
+        "pcb_new",
+        "pcb_add_footprint",
+        "pcb_drc",
+        "pcb_export_gerbers",
+        "sch_new",
+        "sch_erc",
+        "sch_netlist",
+        "sim_static",
+        "sim_modal",
+        "sim_optimize",
+        "cam_toolpath",
+        "cam_export_gcode",
+    ] {
+        assert!(names.contains(&n), "{n} missing from commands");
+    }
+    let d = ok(&call(&c, "commands", json!({"name": "pcb_add_footprint"})).await);
+    assert!(d["inputSchema"]["properties"]["footprint"].is_object(), "{d}");
+
+    // Schematic: two resistors, a wire, a label; netlist and ERC.
+    run_cmd(&c, "sch_new", json!({"name": "demo"})).await;
+    let r = run_cmd(&c, "sch_add_symbol", json!({"library": "hand.kicad_sym", "symbol": "R", "at": [100, 50]})).await;
+    assert_eq!(r["pins"], 2, "{r}");
+    run_cmd(&c, "sch_add_symbol", json!({"library": "hand.kicad_sym", "symbol": "R", "at": [110, 50]})).await;
+    run_cmd(&c, "sch_add_wire", json!({"points": [[100, 46.19], [110, 46.19]]})).await;
+    run_cmd(&c, "sch_add_label", json!({"text": "OUT", "at": [110, 53.81]})).await;
+    let n = run_cmd(&c, "sch_netlist", json!({})).await;
+    assert_eq!(n["parts"].as_array().unwrap().len(), 2, "{n}");
+    assert!(
+        n["nets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["pins_user_text"][0]["user_text"] == "R1.1" && n["pins_user_text"][1]["user_text"] == "R2.1"),
+        "{n}"
+    );
+    assert!(run_cmd(&c, "sch_erc", json!({})).await["issues"].is_array());
+
+    // Board: new, outline, a footprint from the library folder, a track and a via, DRC, Gerbers.
+    run_cmd(&c, "pcb_new", json!({"width": "40 mm", "height": "20 mm", "name": "demo"})).await;
+    run_cmd(&c, "pcb_set_outline", json!({"points": [[0, 0], [40, 0], [40, 20], [0, 20]]})).await;
+    let fp =
+        run_cmd(&c, "pcb_add_footprint", json!({"library": "libs", "footprint": "Test:R_Small", "at": [10, 10]})).await;
+    assert_eq!((fp["reference_user_text"]["user_text"].as_str(), fp["pads"].as_u64()), (Some("FP1"), Some(2)), "{fp}");
+    run_cmd(&c, "pcb_add_track", json!({"start": [9.2, 10], "end": [9.2, 15]})).await;
+    run_cmd(&c, "pcb_add_via", json!({"at": [9.2, 15]})).await;
+    let drc = run_cmd(&c, "pcb_drc", json!({})).await;
+    assert!(drc["rules_mm"].is_object(), "{drc}");
+    let g = run_cmd(&c, "pcb_export_gerbers", json!({"folder": "fab"})).await;
+    let written = g["written"].as_array().unwrap();
+    assert!(written.iter().any(|w| w.as_str().is_some_and(|w| w.ends_with("Edge_Cuts.gbr"))), "{g}");
+    assert!(dir.join("fab").is_dir());
+    // Overwriting an export needs confirmation, as for the other exports.
+    let r = call(&c, "run", json!({"name": "pcb_export_gerbers", "args": {"folder": "fab"}})).await;
+    assert_eq!(err_code(&r), "confirmation_required");
+    // Agent edits went to the agent's branch, not main.
+    let on_agent_branch =
+        server.host().with_session(|s| s.history().branches().iter().any(|b| b.name.starts_with("agent/"))).unwrap();
+    assert!(on_agent_branch);
+
+    // Simulation and CAM on a body built with the core tools.
+    ok(&call(&c, "sketch_create", json!({"plane": "XY"})).await);
+    ok(&call(&c, "sketch_add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 10, "height": 10}))
+        .await);
+    ok(&call(&c, "feature_extrude", json!({"sketch": "Sketch1", "distance": "100 mm"})).await);
+    let sim = run_cmd(
+        &c,
+        "sim_static",
+        json!({"fixed": ["Extrude1/cap(start)"], "loads": [{"face": "Extrude1/cap(end)", "force": [0, 0, 1000]}],
+               "poisson": 0.0, "voxel": 5.0}),
+    )
+    .await;
+    assert!((sim["max_von_mises_mpa"].as_f64().unwrap() - 10.0).abs() < 1e-3, "{sim}");
+    let cam = run_cmd(
+        &c,
+        "cam_toolpath",
+        json!({"sketch": "Sketch1", "operation": "pocket", "tool_diameter": 3.0, "depth": 2.0, "stepdown": 1.0}),
+    )
+    .await;
+    assert!(cam["minutes"].as_f64().unwrap() > 0.0, "{cam}");
+
+    // Read-only mode: edits are refused, the checks still run.
+    server.set_read_only(true).unwrap();
+    let r = call(&c, "run", json!({"name": "pcb_add_via", "args": {"at": [20, 10]}})).await;
+    assert_eq!(err_code(&r), "read_only");
+    let r = call(&c, "run", json!({"name": "sch_add_label", "args": {"text": "X", "at": [100, 40]}})).await;
+    assert_eq!(err_code(&r), "read_only");
+    run_cmd(&c, "pcb_drc", json!({})).await;
+    run_cmd(&c, "sch_erc", json!({})).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
