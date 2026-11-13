@@ -9,17 +9,15 @@
 //! Everything read is bounded: counts, offsets and walks are checked, and a record that does
 //! not have the shape expected reads as `None`/`Err`, never a panic.
 
+use crate::inventor::{B_HEADER, ZSTD_MAGIC, b_data, is_zlib, unpack};
 use crate::{Limits, open};
-use miniz_oxide::inflate::decompress_to_vec_zlib_with_limit;
 use std::collections::HashMap;
 
 /// Most records one segment may have.
 const MAX_RECORDS: usize = 1_000_000;
 /// Most classes one meta may list.
 const MAX_CLASSES: usize = 5000;
-/// Bytes of a `B` stream before its zlib data.
-const B_HEADER: usize = 18;
-/// Most zlib start candidates tried in a meta stream.
+/// Most packed-data start candidates tried in a meta stream.
 const MAX_META_CANDIDATES: usize = 256;
 /// Longest list read from a record.
 pub(crate) const MAX_LIST: usize = 4096;
@@ -151,11 +149,14 @@ pub(crate) struct Dc {
 
 fn inflate(z: &[u8], limits: &Limits) -> Option<Vec<u8>> {
     let cap = limits.max_stream_bytes.min(z.len().saturating_mul(limits.max_ratio));
-    decompress_to_vec_zlib_with_limit(z, cap).ok()
+    unpack(z, cap).ok()
 }
 
-fn is_zlib_head(b: &[u8]) -> bool {
-    matches!((b.first(), b.get(1)), (Some(0x78), Some(0x01 | 0x5e | 0x9c | 0xda)))
+/// Where a meta stream's packed body may start: a zlib header (`78 01/5e/9c/da`) or the
+/// Zstandard magic (newer files).
+fn is_packed_head(b: &[u8]) -> bool {
+    matches!((b.first(), b.get(1)), (Some(0x78), Some(0x01 | 0x5e | 0x9c | 0xda))) && is_zlib(b)
+        || b.starts_with(&ZSTD_MAGIC)
 }
 
 /// The meta stream's segment name and inflated body.
@@ -177,7 +178,7 @@ fn read_meta(raw: &[u8], limits: &Limits) -> Option<(String, Option<Vec<u8>>)> {
     let name = String::from_utf16(&units).ok()?;
     let mut tried = 0;
     for j in i + 2 * l..raw.len() {
-        if !is_zlib_head(raw.get(j..)?) {
+        if !is_packed_head(raw.get(j..)?) {
             continue;
         }
         tried += 1;
@@ -213,8 +214,10 @@ impl Dc {
                 .find(|&i| f.streams.get(i).is_some_and(|e| e.name == bname))
                 .ok_or("the feature segment has no data stream")?;
             let braw = f.read(bi, limits).map_err(|e| e.to_string())?;
-            let z = braw.get(B_HEADER..).filter(|z| is_zlib_head(z)).ok_or("the feature data is not deflated")?;
-            let b = inflate(z, limits).ok_or("the feature data does not inflate")?;
+            if braw.len() <= B_HEADER {
+                return Err("the feature data is cut short".into());
+            }
+            let b = b_data(&braw, limits).map_err(|e| e.to_string())?.ok_or("the feature data does not unpack")?;
             return Dc::new(&meta, b);
         }
         Err("the part has no feature segment (PmDCSegment)".into())

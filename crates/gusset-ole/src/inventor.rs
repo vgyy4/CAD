@@ -2,7 +2,8 @@
 //!
 //! Layout (from samples). The OLE2 file has a storage `RSeStorage` of paired streams: `M<id>`
 //! (a small meta stream, "RSe Meta Stream Version") and `B<id>` (the data). A `B` stream is a
-//! 16-byte constant, two bytes and one zlib stream (`78 xx`) that fills the rest. The inflated
+//! 16-byte constant, two bytes and one compressed stream that fills the rest: zlib (`78 xx`)
+//! after `04 01`, Zstandard (`28 b5 2f fd`) after `04 02` (the newer files). The unpacked
 //! data is a sequence of binary records of the document's database; two of the streams of a
 //! part hold a ShapeManager (ACIS) file, recognisable by its magic `ASM BinaryFile4` and
 //! read by `gusset-sat` like Fusion's `.smb`: the file is not length-prefixed but ends with its
@@ -29,15 +30,64 @@ pub struct Extracted {
 /// The record type of a part's result bodies, read little endian just before the count.
 const RESULT_TAG: [u8; 4] = [0x1d, 0x03, 0x00, 0x00];
 const MAGICS: [&[u8]; 2] = [b"ASM BinaryFile", b"ACIS BinaryFile"];
-/// Bytes of a `B` stream before its zlib data.
-const B_HEADER: usize = 18;
+/// Bytes of a `B` stream before its packed data.
+pub(crate) const B_HEADER: usize = 18;
 /// Bytes between a blob's record type and its magic (the 4-byte count).
 const BLOB_GAP: usize = 4;
+/// The Zstandard frame magic.
+pub(crate) const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 
-fn is_zlib(b: &[u8]) -> bool {
+pub(crate) fn is_zlib(b: &[u8]) -> bool {
     match (b.first(), b.get(1)) {
         (Some(&c), Some(&f)) => c & 0x0f == 8 && c >> 4 <= 7 && ((u16::from(c) << 8) | u16::from(f)) % 31 == 0,
         _ => false,
+    }
+}
+
+/// Why packed data did not unpack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unpack {
+    /// Not zlib or Zstandard, or damaged.
+    Bad,
+    /// It unpacks past `cap` bytes.
+    TooLarge,
+}
+
+/// Unpacks a zlib or Zstandard stream that starts at `z[0]` into at most `cap` bytes.
+pub(crate) fn unpack(z: &[u8], cap: usize) -> Result<Vec<u8>, Unpack> {
+    if is_zlib(z) {
+        return match decompress_to_vec_zlib_with_limit(z, cap) {
+            Ok(d) => Ok(d),
+            Err(e) if e.status == TINFLStatus::HasMoreOutput => Err(Unpack::TooLarge),
+            Err(_) => Err(Unpack::Bad),
+        };
+    }
+    if !z.starts_with(&ZSTD_MAGIC) {
+        return Err(Unpack::Bad);
+    }
+    use std::io::Read;
+    // One frame: what follows it is not part of the stream (as for zlib).
+    let mut d = zstd::stream::read::Decoder::with_buffer(z).map_err(|_| Unpack::Bad)?.single_frame();
+    // The window (and so the decoder's memory) stays under 2^27 bytes whatever the frame asks.
+    d.window_log_max(27).map_err(|_| Unpack::Bad)?;
+    let mut out = Vec::new();
+    d.take(u64::try_from(cap).unwrap_or(u64::MAX).saturating_add(1)).read_to_end(&mut out).map_err(|_| Unpack::Bad)?;
+    if out.len() > cap {
+        return Err(Unpack::TooLarge);
+    }
+    Ok(out)
+}
+
+/// The data of a `B` stream (zlib or Zstandard after the 18-byte header), unpacked under the
+/// stream and ratio limits; `Ok(None)` when it is not packed data after all.
+pub(crate) fn b_data(raw: &[u8], limits: &Limits) -> Result<Option<Vec<u8>>, OleError> {
+    let Some(z) = raw.get(B_HEADER..) else { return Ok(None) };
+    let cap = limits.max_stream_bytes.min(z.len().saturating_mul(limits.max_ratio));
+    match unpack(z, cap) {
+        Ok(d) => Ok(Some(d)),
+        Err(Unpack::TooLarge) => Err(OleError::TooLarge("a stream inflates past the size or ratio limit".into())),
+        // A stream that is not packed after all is not geometry.
+        Err(Unpack::Bad) => Ok(None),
     }
 }
 
@@ -78,16 +128,7 @@ pub fn extract_sab(bytes: &[u8], limits: &Limits) -> Result<Extracted, OleError>
     let mut extra = 0usize;
     for i in names {
         let raw = f.read(i, limits)?;
-        let Some(z) = raw.get(B_HEADER..).filter(|z| is_zlib(z)) else { continue };
-        let cap = limits.max_stream_bytes.min(z.len().saturating_mul(limits.max_ratio));
-        let data = match decompress_to_vec_zlib_with_limit(z, cap) {
-            Ok(d) => d,
-            Err(e) if e.status == TINFLStatus::HasMoreOutput => {
-                return Err(OleError::TooLarge("a stream inflates past the size or ratio limit".into()));
-            }
-            // A stream that is not zlib after all is not geometry.
-            Err(_) => continue,
-        };
+        let Some(data) = b_data(&raw, limits)? else { continue };
         spent = spent.saturating_add(data.len());
         if spent > limits.max_total_bytes {
             return Err(OleError::TooLarge("the file's streams exceed the size limit".into()));

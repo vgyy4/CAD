@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::cast_possible_truncation)]
 
 use super::*;
-use crate::fixtures::{b_stream, data_with_blob, ole};
+use crate::fixtures::{b_stream, b_stream_zstd, data_with_blob, ole};
 
 fn transmit(extra: usize) -> Vec<u8> {
     let mut v = b"**ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz****\n**PART1;\nAPPL=SolidEdge;\nFORMAT=binary;\n**PART2;\nSCH=SCH_3101255_31100;\n**PART3;\n**END_OF_HEADER*****\nPS\0\0\x003: TRANSMIT FILE".to_vec();
@@ -109,6 +109,26 @@ fn inventor_limits_and_noise() {
     assert!(matches!(inventor::extract_sab(&f, &Limits::default()), Err(OleError::NoGeometry(_))));
 }
 
+#[test]
+fn inventor_zstd_streams_unpack_under_the_limits() {
+    // Newer files pack the B streams as Zstandard after `04 02`.
+    let s = sab();
+    let f = ole(&[("Bresult00000000000", &b_stream_zstd(&data_with_blob([0x1d, 3, 0, 0], &s)))]);
+    let e = inventor::extract_sab(&f, &Limits::default()).unwrap();
+    assert!(e.sab.starts_with(&s));
+    // A zeros bomb is refused by the ratio and size caps, never unpacked in full.
+    let f = ole(&[("Bbomb000000000000", &b_stream_zstd(&vec![0u8; 3 << 20]))]);
+    let ratio = Limits { max_ratio: 4, ..Limits::default() };
+    assert!(matches!(inventor::extract_sab(&f, &ratio), Err(OleError::TooLarge(_))));
+    let size = Limits { max_stream_bytes: 1 << 20, ..Limits::default() };
+    assert!(matches!(inventor::extract_sab(&f, &size), Err(OleError::TooLarge(_))));
+    // A damaged frame is skipped like a stream that is not zlib.
+    let mut bad = b_stream_zstd(&data_with_blob([0x1d, 3, 0, 0], &s));
+    bad.truncate(bad.len() / 2);
+    let f = ole(&[("Bresult00000000000", &bad)]);
+    assert!(matches!(inventor::extract_sab(&f, &Limits::default()), Err(OleError::NoGeometry(_))));
+}
+
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> usize {
@@ -121,8 +141,10 @@ impl Lcg {
 fn truncation_and_mutation_never_panic() {
     let se = ole(&[("STREAM0.X_B", &transmit(6000)), ("SKETCH.P_B", &transmit(30))]);
     let inv = ole(&[("Bresult00000000000", &b_stream(&data_with_blob([0x1d, 3, 0, 0], &sab()))), ("M1", b"meta")]);
+    let invz =
+        ole(&[("Bresult00000000000", &b_stream_zstd(&data_with_blob([0x1d, 3, 0, 0], &sab()))), ("M1", b"meta")]);
     let mut rng = Lcg(11);
-    for base in [&se, &inv] {
+    for base in [&se, &inv, &invz] {
         assert!(
             solidedge::extract_xt(base, &Limits::default()).is_ok()
                 || inventor::extract_sab(base, &Limits::default()).is_ok()

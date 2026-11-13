@@ -12,6 +12,7 @@ gusset-sldprt.workspace = true
 miniz_oxide.workspace = true
 libm.workspace = true
 serde_json.workspace = true
+zstd.workspace = true
 
 [lints]
 workspace = true

@@ -107,6 +107,15 @@ pub fn b_stream(plain: &[u8]) -> Vec<u8> {
     v
 }
 
+/// An Inventor `B` stream of the newer files: the header with `04 02`, then a Zstandard frame
+/// of `plain`.
+pub fn b_stream_zstd(plain: &[u8]) -> Vec<u8> {
+    let mut v = GUID.to_vec();
+    v.extend([4, 2]);
+    v.extend(zstd::bulk::compress(plain, 3).unwrap_or_default());
+    v
+}
+
 /// Inflated `B` stream data: filler, a blob preceded by `tag` and a count, filler.
 pub fn data_with_blob(tag: [u8; 4], blob: &[u8]) -> Vec<u8> {
     let mut d = vec![0u8, 1, 0, 0, 0, 0, 0, 0, 0xce, 0, 0, 0, 0];
@@ -131,6 +140,11 @@ pub fn solid_edge_part(xt: &[u8]) -> Vec<u8> {
 /// The `M` (meta) and `B` streams of an Inventor `PmDCSegment` made of `recs`, each a class
 /// index into `classes` (the first 32 bits of each class GUID) and the record's bytes.
 pub fn dc_segment(classes: &[u32], recs: &[(usize, Vec<u8>)]) -> (Vec<u8>, Vec<u8>) {
+    dc_segment_packed(classes, recs, false)
+}
+
+/// [`dc_segment`] with both streams packed as Zstandard (`zstd`) or zlib.
+pub fn dc_segment_packed(classes: &[u32], recs: &[(usize, Vec<u8>)], zstd: bool) -> (Vec<u8>, Vec<u8>) {
     let mut b = Vec::new();
     b.extend((0x100 + recs.first().map_or(0, |r| r.0 as u32)).to_le_bytes());
     for (i, (_, c)) in recs.iter().enumerate() {
@@ -164,8 +178,13 @@ pub fn dc_segment(classes: &[u32], recs: &[(usize, Vec<u8>)]) -> (Vec<u8>, Vec<u
         raw.extend(u.to_le_bytes());
     }
     raw.extend([0u8; 75]);
-    raw.extend(compress_to_vec_zlib(&meta, 6));
-    (raw, b_stream(&b))
+    if zstd {
+        raw.extend(zstd::bulk::compress(&meta, 3).unwrap_or_default());
+        (raw, b_stream_zstd(&b))
+    } else {
+        raw.extend(compress_to_vec_zlib(&meta, 6));
+        (raw, b_stream(&b))
+    }
 }
 
 /// An Inventor part whose feature segment holds `recs` (see [`dc_segment`]), with `extra`
