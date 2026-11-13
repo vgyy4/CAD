@@ -201,6 +201,24 @@ fn curves_of_a_loop_bound_the_one_face_they_close_round_as_the_sketch_is_now() {
 }
 
 #[test]
+fn a_loop_curve_that_meets_no_other_is_left_out() {
+    // Two halves of a unit circle and an arc of radius 1.2 round one of them, ends apart.
+    let arc = |r: f64, a0: f64, a1: f64| -> Vec<[f64; 2]> {
+        (0..=16)
+            .map(|k| {
+                let t = a0 + (a1 - a0) * f64::from(k) / 16.0;
+                [r * libm::cos(t), r * libm::sin(t)]
+            })
+            .collect()
+    };
+    let pi = std::f64::consts::PI;
+    let polys = vec![arc(1.0, 0.0, pi), arc(1.0, pi, 2.0 * pi), arc(1.2, 0.0, pi)];
+    assert!(geom::chain(&polys).is_none());
+    assert_eq!(geom::touching(&polys), Some(vec![0, 1]));
+    assert!(geom::touching(&square()).is_none());
+}
+
+#[test]
 fn segments_chain_into_a_ring_whatever_their_direction() {
     let ring = geom::chain(&square()).unwrap();
     assert_eq!(ring.len(), 4);

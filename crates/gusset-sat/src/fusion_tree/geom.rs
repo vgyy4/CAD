@@ -416,6 +416,29 @@ fn covered_by(p: &[P2], q: &[P2], scale: f64) -> bool {
         })
 }
 
+/// The indices of the polylines of a loop that keep touching the others: a polyline neither of
+/// whose ends comes within a thousandth of the loop's size of another's end is left out (6299's
+/// `Loft2`: the loop of a whole circle, in two halves, also lists the slot end round it, which
+/// meets neither). `None` when none is left out or fewer than two are left.
+pub(super) fn touching(polys: &[Vec<P2>]) -> Option<Vec<usize>> {
+    let all: Vec<P2> = polys.iter().flatten().copied().collect();
+    let minx = all.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+    let miny = all.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+    let maxx = all.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+    let maxy = all.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+    let tol = 1e-3 * dist([minx, miny], [maxx, maxy]).max(1e-6);
+    let ends = |p: &Vec<P2>| -> Vec<P2> { p.first().into_iter().chain(p.last()).copied().collect() };
+    let keep: Vec<usize> = (0..polys.len())
+        .filter(|&i| {
+            let Some(me) = polys.get(i) else { return false };
+            ends(me)
+                .iter()
+                .any(|a| polys.iter().enumerate().any(|(k, o)| k != i && ends(o).iter().any(|b| dist(*a, *b) < tol)))
+        })
+        .collect();
+    (keep.len() < polys.len() && keep.len() >= 2).then_some(keep)
+}
+
 /// The polylines of a loop without those that lie wholly on another polyline of the loop: a
 /// profile loop lists every sketch curve on its boundary, so where two curves lie on each
 /// other (a rectangle drawn on a rectangle's side) an edge is listed twice. Of two polylines

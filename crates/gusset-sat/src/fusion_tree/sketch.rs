@@ -1052,6 +1052,19 @@ impl RegionCache {
                 ring = Some(outer);
                 islands = inner;
             }
+            if ring.is_none()
+                && segs.len() == segs_before + polys.len()
+                && let Some(keep) = geom::touching(&polys)
+            {
+                // A curve of the loop that meets none of the others bounds nothing with them.
+                let fewer: Vec<Vec<P2>> = keep.iter().filter_map(|&k| polys.get(k).cloned()).collect();
+                if let Some(r) = geom::chain(&fewer) {
+                    let mine: Vec<Rc<Seg>> = segs.split_off(segs_before);
+                    segs.extend(keep.iter().filter_map(|&k| mine.get(k).cloned()));
+                    ring = Some(r);
+                    polys = fewer;
+                }
+            }
             if ring.is_none() {
                 // The record can leave out a curve of the loop (a corner arc that a duplicate
                 // arc of the sketch shadows): a sketch curve that joins exactly the open ends
