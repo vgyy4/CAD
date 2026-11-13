@@ -181,3 +181,78 @@ fn courtyards_that_touch_or_sit_on_other_sides_are_fine() {
     let b = board("", &format!("{} {bare}", part("U1", 10.0, 10.0, "F", "rect")));
     assert!(only(&b, &rules, "courtyard_overlap").is_empty());
 }
+
+/// An SMD pad 1 x 1 mm at (10, 10) on the front, with `extra` items in the footprint.
+fn smd(extra: &str) -> String {
+    format!(
+        r#"(footprint "S:R" (layer "F.Cu") (at 10 10)
+    (property "Reference" "R1" (at 0 -6) (layer "F.SilkS"))
+    (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu" "F.Paste" "F.Mask") (net 0))
+    {extra}
+  )"#
+    )
+}
+
+fn silk_line(layer: &str, y: f64) -> String {
+    format!(r#"(fp_line (start -2 {y}) (end 2 {y}) (stroke (width 0.1) (type solid)) (layer "{layer}"))"#)
+}
+
+#[test]
+fn silkscreen_over_a_pad_is_reported_and_clear_silk_is_not() {
+    let rules = Rules::default();
+    // A line through the pad.
+    let b = board("", &smd(&silk_line("F.SilkS", 0.0)));
+    let v = only(&b, &rules, "silk_over_pad");
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert_eq!(v[0].items, [ItemRef::Graphic(0), ItemRef::Pad(0)]);
+    assert_eq!(v[0].layer.as_deref(), Some("F.SilkS"));
+    assert!(v[0].message.contains("covers pad R1.1"), "{v:?}");
+    assert!((v[0].at[1] - 10.0).abs() < 0.6, "{v:?}");
+    // 0.8 mm beside the pad centre: pad edge at 0.5, line edge at 0.75: 0.25 mm of room.
+    let b = board("", &smd(&silk_line("F.SilkS", 0.8)));
+    assert!(only(&b, &rules, "silk_over_pad").is_empty());
+    // A silk clearance rule turns that into a violation (0.25 < 0.4), reported with the gap.
+    let strict = Rules { silk_clearance: 0.4, ..Rules::default() };
+    let v = only(&b, &strict, "silk_over_pad");
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].message.contains("0.250 mm") && v[0].message.contains("0.400 mm"), "{v:?}");
+    // Silk on the back does not touch a front-only pad.
+    let b = board("", &smd(&silk_line("B.SilkS", 0.0)));
+    assert!(only(&b, &rules, "silk_over_pad").is_empty());
+}
+
+#[test]
+fn the_mask_opening_counts_as_exposed() {
+    let rules = Rules::default();
+    // Line edge 0.05 mm outside the copper (centre 0.6, half width 0.05 -> 0.55 from the middle).
+    let line = silk_line("F.SilkS", 0.6);
+    let b = board("", &smd(&line));
+    assert!(only(&b, &rules, "silk_over_pad").is_empty());
+    // With a 0.1 mm mask expansion the opening reaches 0.6: the line is in it.
+    let b = board("(pad_to_mask_clearance 0.1)", &smd(&line));
+    assert_eq!(only(&b, &rules, "silk_over_pad").len(), 1);
+}
+
+#[test]
+fn silk_text_over_pads_and_through_hole_pads_on_both_sides() {
+    let rules = Rules::default();
+    // The reference text sits on the pad (at 0 0 instead of above).
+    let text = r#"(property "Reference" "R1" (at 0 0) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))"#;
+    let src = smd("").replace(r#"(property "Reference" "R1" (at 0 -6) (layer "F.SilkS"))"#, text);
+    let v = only(&board("", &src), &rules, "silk_over_pad");
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert_eq!(v[0].items, [ItemRef::Text(0), ItemRef::Pad(0)]);
+    assert!(v[0].message.contains("text \"R1\""), "{v:?}");
+    // Hidden text is not drawn, so it is not checked.
+    let hidden = text.replace("(effects", "(effects hide").replace("(layer \"F.SilkS\")", "(layer \"F.SilkS\") hide");
+    let src = smd("").replace(r#"(property "Reference" "R1" (at 0 -6) (layer "F.SilkS"))"#, &hidden);
+    assert!(only(&board("", &src), &rules, "silk_over_pad").is_empty());
+    // A through-hole pad is exposed on both sides.
+    let line = |layer: &str| {
+        format!(r#"(fp_line (start -2 0) (end 2 0) (stroke (width 0.1) (type solid)) (layer "{layer}"))"#)
+    };
+    for layer in ["F.SilkS", "B.SilkS"] {
+        let b = board("", &thru("J1", 10.0, 10.0, "1", &line(layer)));
+        assert_eq!(only(&b, &rules, "silk_over_pad").len(), 1, "{layer}");
+    }
+}

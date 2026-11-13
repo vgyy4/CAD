@@ -48,11 +48,16 @@ fn channel() -> Board {
     Board::read(&text, &lim()).unwrap()
 }
 
+/// The check without the silkscreen rule: the fixture's reference texts sit on neighbouring pads.
+fn copper_drc(b: &Board, rules: &Rules) -> Vec<drc::Violation> {
+    drc::check(b, rules, 100).into_iter().filter(|v| v.code != "silk_over_pad").collect()
+}
+
 #[test]
 fn a_blocking_track_is_shoved_aside_and_the_board_stays_clean() {
     let b = channel();
     let rules = Rules::for_board(&b);
-    assert!(drc::check(&b, &rules, 100).is_empty(), "{:?}", drc::check(&b, &rules, 100));
+    assert!(copper_drc(&b, &rules).is_empty(), "{:?}", copper_drc(&b, &rules));
     let (a1, a2) = ([8.0, 6.0], [22.0, 6.0]);
     // No way round: B is in it.
     let obs = route::Obstacles::new(&b, &rules, "F.Cu", Some("A"), 0.25);
@@ -66,7 +71,7 @@ fn a_blocking_track_is_shoved_aside_and_the_board_stays_clean() {
     nb.apply_shove(&s, "F.Cu", &lim()).unwrap();
     let segs: Vec<route::Seg> = s.path.windows(2).map(|w| route::Seg { start: w[0], end: w[1], mid: None }).collect();
     nb.add_route(&segs, 0.25, "F.Cu", Some("A"), &lim()).unwrap();
-    assert!(drc::check(&nb, &rules, 100).is_empty(), "{:?}", drc::check(&nb, &rules, 100));
+    assert!(copper_drc(&nb, &rules).is_empty(), "{:?}", copper_drc(&nb, &rules));
     // A is joined and B still is.
     assert_eq!(ratsnest::ratsnest(&nb).unrouted(), ratsnest::ratsnest(&b).unrouted() - 1);
     // Two blocking nets: refused.

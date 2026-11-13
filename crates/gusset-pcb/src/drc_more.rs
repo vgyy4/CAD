@@ -6,7 +6,7 @@ use crate::copper::{self, ItemRef, Prim};
 use crate::drc::{SLACK, Violation, describe, mm};
 use crate::drill::{self, Hole};
 use crate::rules::Rules;
-use crate::{geom, poly};
+use crate::{font, geom, poly};
 
 /// Every drilled hole with the item it belongs to (pads' holes, vias' drills).
 fn drilled(board: &Board) -> Vec<(ItemRef, Hole)> {
@@ -36,8 +36,161 @@ pub(crate) fn holes(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Viol
 }
 
 /// All the rules on footprints' drawings: `courtyard_overlap`.
-pub(crate) fn drawings(board: &Board, _rules: &Rules, max: usize, out: &mut Vec<Violation>) {
+pub(crate) fn drawings(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violation>) {
     courtyards(board, max, out);
+    silk_over_pads(board, rules, max, out);
+}
+
+/// The exposed area of a pad on one side: its copper grown by the mask margin where the
+/// pad has a mask opening on that side, else the copper itself (`None`: not on that side).
+fn exposed(board: &Board, pad: &crate::board::Pad, side: &str) -> Option<Vec<Prim>> {
+    let (cu, mask) = (format!("{side}.Cu"), format!("{side}.Mask"));
+    let opening = board.on_layer(&pad.layers, &mask);
+    if !opening && !board.on_layer(&pad.layers, &cu) {
+        return None;
+    }
+    let grow = if opening { pad.mask_margin.unwrap_or(board.mask_margin) } else { 0.0 };
+    let mut prims: Vec<Prim> =
+        geom::pad_contour(pad, grow).map(|c| Prim::Poly { pts: c.polygon(0.005) }).into_iter().collect();
+    for sh in &pad.primitives {
+        match sh {
+            Shape::Poly { pts } if pts.len() >= 3 => prims.push(Prim::Poly { pts: pts.clone() }),
+            Shape::Circle { center, radius } => prims.push(Prim::Poly { pts: poly::circle(*center, *radius + grow) }),
+            _ => {}
+        }
+    }
+    (!prims.is_empty()).then_some(prims)
+}
+
+/// The ink of a silkscreen drawing: capsules along strokes, polygons for filled shapes.
+fn ink(g: &crate::board::Graphic) -> Vec<Prim> {
+    let r = g.width.max(0.01) / 2.0;
+    let chain = |pts: &[Pt], closed: bool| -> Vec<Prim> {
+        let mut v: Vec<Prim> = pts
+            .windows(2)
+            .filter_map(|w| match w {
+                [a, b] => Some(Prim::Capsule { a: *a, b: *b, r }),
+                _ => None,
+            })
+            .collect();
+        if let (true, Some(f), Some(l)) = (closed, pts.first(), pts.last()) {
+            v.push(Prim::Capsule { a: *l, b: *f, r });
+        }
+        v
+    };
+    match &g.shape {
+        Shape::Line { a, b } => vec![Prim::Capsule { a: *a, b: *b, r }],
+        Shape::Arc { start, mid, end } => chain(&geom::arc_points(*start, *mid, *end, 0.01), false),
+        Shape::Circle { center, radius } if g.filled => vec![Prim::Poly { pts: poly::circle(*center, *radius + r) }],
+        Shape::Circle { center, radius } => chain(&poly::circle(*center, *radius), true),
+        Shape::Poly { pts } if g.filled && pts.len() >= 3 => vec![Prim::Poly { pts: pts.clone() }],
+        Shape::Poly { pts } => chain(pts, true),
+    }
+}
+
+/// Smallest gap between any of `ink` and any of the pad's `exposed` pieces.
+fn closest(ink: &[Prim], exposed: &[Prim]) -> Option<(f64, Pt, bool)> {
+    let mut best: Option<(f64, Pt, bool)> = None;
+    for a in ink {
+        for b in exposed {
+            let (g, at) = copper::gap(a, b);
+            // Two polygons that meet have a gap of zero: that is an overlap.
+            let both_poly = matches!((a, b), (Prim::Poly { .. }, Prim::Poly { .. }));
+            let g = if both_poly && g <= 0.0 { -1.0 } else { g };
+            if best.is_none_or(|x| g < x.0) {
+                best = Some((g, at, both_poly));
+            }
+        }
+    }
+    best
+}
+
+/// Silkscreen strokes and text over the exposed pads of their side: `silk_over_pad`.
+fn silk_over_pads(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violation>) {
+    let need = rules.silk_clearance;
+    let bbox = |prims: &[Prim]| -> [Pt; 2] {
+        let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        for p in prims {
+            let (pts, r): (Vec<Pt>, f64) = match p {
+                Prim::Capsule { a, b, r } => (vec![*a, *b], *r),
+                Prim::Poly { pts } => (pts.clone(), 0.0),
+            };
+            for q in pts {
+                lo = [lo[0].min(q[0] - r), lo[1].min(q[1] - r)];
+                hi = [hi[0].max(q[0] + r), hi[1].max(q[1] + r)];
+            }
+        }
+        [lo, hi]
+    };
+    for side in ["F", "B"] {
+        let layer = format!("{side}.SilkS");
+        let pads: Vec<(usize, Vec<Prim>, [Pt; 2])> = board
+            .pads
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| exposed(board, p, side).map(|e| (i, e.clone(), bbox(&e))))
+            .collect();
+        if pads.is_empty() {
+            continue;
+        }
+        let mut marks: Vec<(ItemRef, Vec<Prim>)> = Vec::new();
+        for (i, g) in board.graphics.iter().enumerate().filter(|(_, g)| g.layer == layer) {
+            marks.push((ItemRef::Graphic(i), ink(g)));
+        }
+        for (i, t) in board.texts.iter().enumerate().filter(|(_, t)| t.layer == layer && !t.hidden) {
+            let fp = t.footprint.and_then(|k| board.footprints.get(k));
+            let text = font::shown(&t.text, fp.map_or("", |f| &f.reference), fp.map_or("", |f| &f.value));
+            let r = font::thickness(t) / 2.0;
+            let prims: Vec<Prim> = font::strokes(t, &text)
+                .iter()
+                .flat_map(|line| match line.as_slice() {
+                    [p] => vec![Prim::Capsule { a: *p, b: *p, r }],
+                    l => l
+                        .windows(2)
+                        .filter_map(|w| match w {
+                            [a, b] => Some(Prim::Capsule { a: *a, b: *b, r }),
+                            _ => None,
+                        })
+                        .collect(),
+                })
+                .collect();
+            marks.push((ItemRef::Text(i), prims));
+        }
+        for (what, prims) in &marks {
+            if prims.is_empty() {
+                continue;
+            }
+            let bb = bbox(prims);
+            for (pi, e, eb) in &pads {
+                if out.len() >= max {
+                    return;
+                }
+                if !copper::boxes_near(&bb, eb, need) {
+                    continue;
+                }
+                let Some((g, at, _)) = closest(prims, e) else { continue };
+                if g < need - SLACK {
+                    out.push(Violation {
+                        code: "silk_over_pad",
+                        message: if g <= 0.0 {
+                            format!("{} covers {}", describe(board, *what), describe(board, ItemRef::Pad(*pi)))
+                        } else {
+                            format!(
+                                "{} is {} from {}, {} needed",
+                                describe(board, *what),
+                                mm(g),
+                                describe(board, ItemRef::Pad(*pi)),
+                                mm(need)
+                            )
+                        },
+                        at,
+                        layer: Some(layer.clone()),
+                        items: vec![*what, ItemRef::Pad(*pi)],
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// Closed polygons from a footprint's courtyard drawings: rectangles, polygons and circles
