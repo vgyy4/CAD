@@ -651,3 +651,75 @@ Corpus (slip-pad 35 + arig-revisions 50): 34 -> 34 as history. One reader fix; t
   the flange face and its far vertex lies on the bore edge), but it would give 2 x 24.086 = 48.17 mm3 where the truth
   removes 48.05 (centroid radius 0.25 % lower), 7e-5 of the volume against the check's 2e-5. So the truth is not a plain
   1 x 1 chamfer and a correct construction would still fail the check; no kernel change made.
+
+## L12. Round 6 (sw1: the sw-more corpus; layouts of more versions, imported bodies)
+Corpora: slip-pad 35, arig-revisions 50, zenodo 14 SolidWorks parts, and **sw-more** (1253 parts from 30 public sources,
+326 OLE2 and the rest chunk container; whole corpus measured, not a sample). Baseline: slip-pad 23, arig 15, zenodo 0,
+sw-more 47 as history. Measured first with a reader-only tally (the feature tree and its own check, no rebuild) over
+sw-more: 162 of 1253 trees read whole; the rest stopped at layouts the reader did not know. Every fix below was decoded
+from those bytes and checked by the unchanged rebuild check.
+* **Version 3 entity headers without the gap.** The payload of a sketch entity whose header has version byte 3 starts
+  8 zero bytes after the `0.0 1.0` pair in the ARIG parts, but right after it in adpator (zenodo) and in many sw-more parts
+  (`1e 00 <x> <y>` for a point directly after `f0 3f`). Those sketches parsed as empty (adpator: four sketches, no curve;
+  the rebuild then said "no closed regions" or "no axis line"). A payload never starts with 8 zero bytes (a point starts
+  with its type 0x1e/0x1f, a segment with two different point indices), so the bytes decide.
+* **Schema word 0x07.** Older modellers (setScrew, Spring_0_5len) write the entity header as `FF FF 07 00 <1|3> FF x 8 00 00
+  80 BF` instead of `FF FF 1F 00 ...`; newer parts keep `07` for library sketches (hole-wizard sections, the origin
+  sketch). Both words are read. setScrew's sketches now parse (Sketch22: 10 points); the part still stops at its helix.
+* **Component base further on.** The plane-feature id of a reference-plane component (`u32 id, u32 stamp, 00 00, u32 k,
+  hasRot, [R], t, 1.0`) sits 55 bytes after the unit-component tag in the ARIG parts, 67 in the DroneDock parts (12 more
+  zero bytes after the run of 16 FF bytes) and 69 in the Ahm3d0x parts (a word `50 46 00 00` after those zeros). The id is
+  looked for at every offset from 43 to 112, the first that holds a whole frame (orthonormal rotation, scale 1.0). Plane
+  failures in the reader tally: 238 -> 45 (43 with the next item).
+* **A first sketch on a fixed reference plane** (zsCAD `4ad`): the node is preceded by `moFixedRefPlnData_c`, an ordinary
+  plane-data block (origin, normal, hasRot, t, 1.0), not a `moCompRefPlane_c`; it is looked for in the same 400 bytes.
+* **Geometry-free nodes** seen in sw-more: `moInkMarkupFolder_c` (Markups, in 215 parts), `moConfigCommentsFolder_c`,
+  `moAttribute_c` (FaceIDTag/Assoc), `moAlignGroup_c`, `moSensor_c`, `moCenterOfMass_c`, `moCutListFolder_c`,
+  `moDetailFolder_c`, `moMeshBodyFeatureFolder_c`, `moFeatGraphicsBodyFolder_c`, and reference points, axes and coordinate
+  systems (`moRefPoint_c`, `moRefAxis_c`, `moCoordSys_c`) are skipped like the reference planes; a feature that relies on
+  one fails the rebuild check instead.
+* **End condition byte 12.** An end spec may carry `01` at byte 12 of its 18-byte head (`<tag> 00 00 01 00 00 00 00 00 00
+  00 01 00 00 00 00 00`, Lock Collar Cut-Extrude2, V-Slot Rail Boss-Extrude3); it is accepted and not read (the written
+  direction vector says the direction). Unknown end conditions in the reader tally: 37 -> 21.
+* **Imported bodies (`moBaseBody_c`).** The body is kept as imported in `LocalBodies` (OLE2) or
+  `Config-<n>-FeatureBodies/LocalBodies` (chunk container): `u32 count`, then per body a record `FF FE FF <n> <name UTF-16>`,
+  a flag word, `00`, `u32 A`, `00` (newer parts: two more words before the flag) and a block `u32 B, 16-byte tag, u32
+  inflated, u32 deflated, zlib`. The record name is the node's name (`Imported1`, `0780-001-1-solid1`; surfaces carry
+  `_0`). A body over 1 MiB goes on in further chunks of the same block (`u32 inflated, u32 deflated, zlib`, ended by two
+  zero words; GT2_Spur's gear: 1 MiB + 582 kB), which the body import had cut after the first chunk. The reader emits a
+  `stored_body`, the importer hands over the named body; the history is refused when nothing editable follows ("the
+  history is the imported bodies only": 533 sw-more parts are STEP imports with no feature) or when the imported bodies
+  already are the finished part. GT2_Spur and GT2_Bobbin_Idler get past the import and stop at a boss of end type 1
+  ("through all" for a boss: up to the far side of the imported gear, whose faces the reader does not model).
+* **A 90-degree distance-angle chamfer** (adpator 倒角1: D1 0.3 mm, angle exactly pi/2). Ray casting the part's body against
+  the rebuild showed the top face ending at r 22.7 (0.3 mm short of the rim) and the bevel a cylinder: square on the face D1
+  runs along. A 0.3 mm equal chamfer removes 6.0 mm3, the truth 16.4 (the rebuild was 10.1 mm3 heavy). On the circle edge of a
+  full revolve between two profile lines this is a two-distance chamfer: D1 on the reference face and D1 / cos(corner angle)
+  on the other (here 0.826 mm, corner 68.7 degrees); the reference face is the plane or cylinder of the two, the other a
+  cone (one sample). adpator comes in as history.
+
+**Findings, not fixed.**
+* `RJ45-LED.sldprt` (AeroSeif raspberry-pi) kills the process: SIGSEGV in OCCT's `math_KronrodSingleIntegration::Perform`
+  under `BRepGProp_VinertGK` (mass properties of the imported body, `gs_mass`), called in-process from
+  `commit_prepared -> body_metrics`. A 256 MiB stack does not help. The corpus driver skips it; the import of an untrusted
+  file should not be able to do that (OCCT or kernel-worker issue, outside this crate).
+* **Mirror of cut features** (Mini Ball Bearing, the 608ZZ/688Z/625 bearings, about 1.04-1.06 too heavy): the mirror is
+  read as "the whole body mirrored and united", which fills the grooves the mirrored cuts should make. The mirror's list of
+  features was not decoded; the node holds face references `(<class> 00 00 89 80 <u32 fid> <u32 stamp> <u32 face>)` to
+  Boss-Extrude1 (30), Cut-Extrude2 (55) and Cut-Extrude1 (41) and a `u32 3` list of three object indices (0x67, 0x66, 0x65).
+* **Nodes inside a feature's span** (V-Slot Rail_PIVOT): `Sketch8<3>` is written inside Boss-Extrude3's data, before its
+  end spec, so the end spec falls into the sketch's span and the extrude reads none.
+* idler_differential_baseJoint_v1 (1.4e-4): ray casting finds no difference above the tessellation (all differing cells
+  are chords near the r 2.275 cylinder's silhouette); not located.
+
+**Coverage after the round** (rebuild check unchanged): slip-pad 23 of 35, arig-revisions 15 of 50 (both unchanged, no
+losses), zenodo 1 of 14 (adpator; was 0), sw-more **156 of 1253** (was 47; no part lost). sw-more parts whose bodies could not
+be read at all: 26 -> 14 (the LocalBodies chunks). Remaining sw-more reasons, by parts: imported bodies only 540, volume
+mismatch 77, sketch plane not found 43, fillet edges not resolved 40, `moShell_c` 22, extrude without end condition 21, no
+feature stream 21, edge midpoint not on the model 20, circular/linear patterns 18 + 15, split body 16, loft 16, closed
+regions 15, up-to-surface ends 13, reference surfaces 12, mirror plane not resolved 11; 2 parts kill the test process
+(RJ45-LED above; Link_2 below).
+* `Link_2.SLDPRT` (KUKA iiwa) now reaches its hole wizard on the imported body, and the hole's fit check tessellates the
+  290 mm body with an absolute 0.01 mm deflection (`gusset-eval` `hole.rs`): `BRepMesh_Delaun` grows past 8 GB in a minute
+  (in-process). Before this round the part stopped at its Markups folder. The finished body alone meshes fine for an STL
+  export; the fit check's deflection is the problem (gusset-eval, not changed here).

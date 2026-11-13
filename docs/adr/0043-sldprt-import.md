@@ -393,3 +393,42 @@ in as bodies (a cut read against the truth, hole wizards on faces that do not ho
 conversion drops the lug fillets' spindle-torus faces, so the history cannot match it); the 1 x 1 mm chamfer OCCT refuses
 (GT2_Bobbin_v2, Top_mainplate) has an exact construction (a cut by the revolved triangle) but the truth is 7e-5 away from a plain
 1 x 1 chamfer, over the 2e-5 check. See `docs/formats/solidworks-feature-tree.md` L11.
+
+## Amendment (2026-11-13): more SolidWorks versions, imported bodies (round sw1)
+
+Measured first on a new corpus, **sw-more** (1253 parts from 30 public sources, whole corpus), beside the old three. The
+reader stopped most sw-more parts before any rebuild: of 1253 feature trees only 162 read whole. Decoded from the sample
+bytes (`docs/formats/solidworks-feature-tree.md` L12):
+
+- **Sketch layouts.** Version 3 entity headers have the 8 zero bytes before the payload only in some files (the bytes
+  decide); older modellers write the header's schema word as 0x07 instead of 0x1f.
+- **Plane components** of newer versions put the plane-feature id 12 bytes (or 12 bytes and a word) further on; the id
+  is looked for at each offset from 43 to 112. A first sketch may sit on a `moFixedRefPlnData_c` block.
+- **Geometry-free nodes** (markups, comments, attributes, alignment groups, sensors, centre of mass, cut-list, detail and
+  graphics folders, reference points, axes and coordinate systems) are skipped; an end condition with a 1 in byte 12 is
+  read.
+- **Imported bodies** (`moBaseBody_c`) are `stored_body` features; the importer takes the body of the same name from
+  `LocalBodies`. A history is refused when nothing editable follows the imported bodies (540 sw-more parts) or when they
+  already are the finished part, since replaying cuts or joins on the finished part would pass the check trivially. A
+  `LocalBodies` body over 1 MiB continues in further zlib chunks, which the body import had cut off (sw-more parts whose
+  bodies could not be read at all: 26 -> 14).
+- **A 90-degree distance-angle chamfer** on a revolve's circle edge is a two-distance chamfer (D1 on the planar or
+  cylindrical face, D1 / cos(corner angle) on the cone), from adpator's bytes and its own body.
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4 of the diagonal).
+
+**Coverage** (history / parts; the history test with `GUSSET_SLDPRT_SAMPLES`):
+
+| corpus | before | after |
+|---|---|---|
+| slip-pad | 23 / 35 | 23 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 0 / 14 | 1 / 14 |
+| sw-more | 47 / 1253 | 156 / 1253 |
+| all | 85 / 1352 | 195 / 1352 |
+
+No part lost its history. Two sw-more parts kill the importing process and are skipped by the corpus driver: RJ45-LED
+(SIGSEGV in OCCT mass properties, in-process) and Link_2 (the hole fit check of `gusset-eval` meshes a 290 mm imported
+body at 0.01 mm and grows past 8 GB); both are kernel or evaluator issues, reported, not changed here. The largest
+remaining reasons in sw-more: STEP imports with no feature (540), volume mismatches (77; the bearings among them are
+mirrors of cut features read as whole-body mirrors), sketch planes (43), fillet edges (40), shells (22), patterns (33).
