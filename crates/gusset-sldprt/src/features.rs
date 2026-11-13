@@ -18,6 +18,8 @@ use crate::{Container, Limits, cfb, chunks, detect};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+mod patterns;
+
 /// Largest feature stream (and `Config-0` stream) read.
 pub const MAX_FEATURE_STREAM: usize = 64 << 20;
 /// Most feature nodes in one part.
@@ -569,6 +571,12 @@ fn params(d: &[u8], a: usize, b: usize, nt: [u8; 2]) -> Result<Vec<f64>, String>
 
 /// The same with each parameter's name (the hole wizard's are told apart by name).
 fn named_params(d: &[u8], a: usize, b: usize, nt: [u8; 2]) -> Result<Vec<(String, f64)>, String> {
+    param_slots(d, a, b, nt)?.into_iter().map(|(name, at)| Ok((name, need(f64_at(d, at), "a parameter")?))).collect()
+}
+
+/// Each parameter's name and the offset of its value: an `f64`, or a `u32` for the integer
+/// parameters (`moIntegerParameter_c`: a pattern's instance counts).
+fn param_slots(d: &[u8], a: usize, b: usize, nt: [u8; 2]) -> Result<Vec<(String, usize)>, String> {
     let pat = [nt[0], nt[1], UTF16_MARK[0], UTF16_MARK[1], UTF16_MARK[2]];
     let mut out = Vec::new();
     let mut at = a;
@@ -591,7 +599,8 @@ fn named_params(d: &[u8], a: usize, b: usize, nt: [u8; 2]) -> Result<Vec<(String
             continue;
         }
         let name = utf16(d.get(i + 6..q).unwrap_or_default());
-        out.push((name, need(f64_at(d, end), "a parameter")?));
+        need(f64_at(d, end), "a parameter")?;
+        out.push((name, end));
         if out.len() > MAX_MATCHES {
             return Err("too many parameters".into());
         }
@@ -2657,6 +2666,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         .count();
     let in_config = config_sketches(c0);
     let mut from_config = (empty_sketches > 0 && in_config.len() == empty_sketches).then(|| in_config.into_iter());
+    // The archive index of each node (patterns name their seeds by it), read when needed.
+    let mut node_index: Option<HashMap<u32, usize>> = None;
     for (ni, n) in nodes.iter().enumerate() {
         let mut cls = n.cls.clone();
         let (a, b) = span(n);
@@ -3145,10 +3156,27 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     }
                 }
             }
+            // A mirror of features (`moMirrorPattern_c`) names them in a seed list as patterns
+            // do (all 54 in the corpora have one); a mirror of the body (`moMirrorSolid_c`) has none.
+            let mut mirrored: Vec<String> = Vec::new();
+            if cls.as_deref() == Some("moMirrorPattern_c")
+                && let Some(seeds) = patterns::seed_list(rf, a, b)
+            {
+                let index = node_index.get_or_insert_with(|| node_indices(rf, &nodes, &span));
+                for p in &seeds.ptrs {
+                    let Some(m) = index.get(p).and_then(|&k| nodes.get(k)) else { continue };
+                    if emitted(&feats, &m.name) && !mirrored.contains(&m.name) {
+                        mirrored.push(m.name.clone());
+                    }
+                }
+                if mirrored.len() != seeds.ptrs.len() {
+                    mirrored.clear();
+                }
+            }
             let mut js = Map::new();
             js.insert("type".into(), json!("mirror"));
             js.insert("name".into(), json!(n.name));
-            js.insert("features".into(), json!([]));
+            js.insert("features".into(), json!(mirrored));
             js.insert("target".into(), json!(first_solid));
             js.insert("merge".into(), json!(true));
             match plane {
@@ -3264,6 +3292,23 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 js.insert("sw_unresolved".into(), json!(missed));
             }
             feats.push(Value::Object(js));
+        } else if matches!(cls.as_deref(), Some("moLPattern_c" | "moCirPattern_c")) {
+            let index = node_index.get_or_insert_with(|| node_indices(rf, &nodes, &span));
+            let circular = cls.as_deref() == Some("moCirPattern_c");
+            let slots = param_slots(rf, a, b, nt)?;
+            let slot = |k: &str| slots.iter().find(|(name, _)| name == k).map(|(_, at)| *at);
+            let int = |k: &str| slot(k).and_then(|at| u32_at(rf, at));
+            let real = |k: &str| slot(k).and_then(|at| f64_at(rf, at)).filter(|v| v.is_finite());
+            let made = feature_pattern(
+                &n.name,
+                circular,
+                patterns::seed_list(rf, a, b),
+                &patterns::pattern_lines(rf, a, b),
+                (int, real),
+                |p| index.get(&p).and_then(|&k| nodes.get(k)).map(|m| m.name.clone()),
+                &feats,
+            );
+            feats.extend(made);
         } else if cls.as_deref() == Some("moMirrorStock_c") {
             // A mirrored copy of an external part: the part keeps the source body in its
             // `StockBodies` stream (the importer hands it over as stored body 0); the
@@ -3301,6 +3346,101 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     }))
 }
 
+/// Whether a feature of that name was read (not a sketch, not unsupported).
+fn emitted(feats: &[Value], name: &str) -> bool {
+    feats.iter().any(|f| {
+        f.get("name").and_then(Value::as_str) == Some(name)
+            && !matches!(f.get("type").and_then(Value::as_str), Some("sketch" | "unsupported") | None)
+    })
+}
+
+/// The archive index of each node ([`patterns::object_indices`]).
+fn node_indices(d: &[u8], nodes: &[Node], span: &impl Fn(&Node) -> (usize, usize)) -> HashMap<u32, usize> {
+    let spans: Vec<(usize, usize, u32)> = nodes
+        .iter()
+        .map(|m| {
+            let (a, b) = span(m);
+            (a, b, m.id)
+        })
+        .collect();
+    patterns::object_indices(d, &spans)
+}
+
+/// A linear or circular feature pattern (`moLPattern_c`, `moCirPattern_c`) as tree features.
+/// Parameters: a linear pattern's instance counts are `D1` and `D2` (integers) and its spacings
+/// `D3` and `D4` (m), along the first and second written line; a circular pattern's count is
+/// `D1`, its step angle `D2` and its total angle `D3` (rad), about the written line; `D4` is
+/// the count of a second circular direction. The seeds are the features the seed list names.
+/// Anything not read gives one feature marked `unresolved`.
+fn feature_pattern(
+    name: &str,
+    circular: bool,
+    seeds: Option<patterns::Seeds>,
+    lines: &[(V3, V3)],
+    (int, real): (impl Fn(&str) -> Option<u32>, impl Fn(&str) -> Option<f64>),
+    node_name: impl Fn(u32) -> Option<String>,
+    feats: &[Value],
+) -> Vec<Value> {
+    let kind = if circular { "pattern_circular" } else { "pattern_linear" };
+    let fail = |why: &str| vec![json!({"type": kind, "name": name, "unresolved": true, "why": why})];
+    let Some(seeds) = seeds else { return fail("no seed list") };
+    if seeds.ptrs.is_empty() {
+        return fail(if seeds.bodies > 0 { "a pattern of bodies" } else { "no seed feature" });
+    }
+    let mut names: Vec<String> = Vec::new();
+    for &p in &seeds.ptrs {
+        let Some(s) = node_name(p) else { return fail("a seed feature was not found") };
+        if !emitted(feats, &s) {
+            return fail("a seed feature was not read");
+        }
+        if !names.contains(&s) {
+            names.push(s);
+        }
+    }
+    let mut out = Vec::new();
+    if circular {
+        let (Some(count), Some((origin, dir))) = (int("D1"), lines.first()) else {
+            return fail("no count or axis");
+        };
+        if int("D4").is_some_and(|c| c > 1) {
+            return fail("a second circular direction");
+        }
+        let angle = match (real("D2"), real("D3")) {
+            (Some(step), _) if (step * f64::from(count) - TAU).abs() < 1e-6 => 360.0,
+            (Some(step), _) => step * f64::from(count.saturating_sub(1)) * 360.0 / TAU,
+            (None, Some(total)) => total * 360.0 / TAU,
+            (None, None) => 360.0,
+        };
+        if count > 1 {
+            out.push(json!({"type": kind, "name": name, "features": names, "count": count,
+                "axis": {"origin": json_v3(*origin), "direction": json_v3(*dir)}, "angle": round_to(angle, 9)}));
+        }
+    } else {
+        let dirs = [(int("D1"), real("D3"), lines.first()), (int("D2"), real("D4"), lines.get(1))];
+        let mut first: Option<String> = None;
+        for (k, (count, spacing, line)) in dirs.into_iter().enumerate() {
+            let Some(count) = count else { return fail("no instance count") };
+            if count < 2 {
+                continue;
+            }
+            let (Some(spacing), Some((_, dir))) = (spacing, line) else { return fail("no spacing or direction") };
+            let mut fs = names.clone();
+            let nm = match &first {
+                // The second direction repeats the seeds and the first direction's copies.
+                Some(f) => {
+                    fs.push(f.clone());
+                    format!("{name}_{}", k + 1)
+                }
+                None => name.to_string(),
+            };
+            out.push(json!({"type": kind, "name": nm, "features": fs, "count": count,
+                "direction": json_v3(*dir), "spacing": mm(spacing)}));
+            first = Some(nm);
+        }
+    }
+    out
+}
+
 /// The first feature the tree cannot rebuild, as the prototype's rebuild script counts them
 /// (unsupported features, unresolved planes, end conditions and edges).
 fn check(tree: &Value) -> Result<(), String> {
@@ -3336,6 +3476,9 @@ fn check(tree: &Value) -> Result<(), String> {
             "stored_body" => solids += 1,
             "hole" | "mirror" if f.get("unresolved").is_some() => {
                 return Err(format!("{name}: the {} was not resolved", s("type")));
+            }
+            "pattern_linear" | "pattern_circular" if f.get("unresolved").is_some() => {
+                return Err(format!("{name}: the pattern was not resolved ({})", s("why")));
             }
             kind @ ("fillet" | "chamfer") => {
                 if f.get("edges_unresolved").is_some() {
@@ -3547,5 +3690,60 @@ mod end_face_tests {
         drop_nested(&mut nodes);
         let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, ["Boss-Extrude2", "Sketch4", "Hole1", "Sketch5"]);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod pattern_tests {
+    use super::*;
+
+    fn seeds(ptrs: &[u32]) -> Option<patterns::Seeds> {
+        Some(patterns::Seeds { ptrs: ptrs.to_vec(), bodies: 0 })
+    }
+
+    #[test]
+    fn a_two_way_linear_pattern_repeats_the_first_direction_too() {
+        let feats = [json!({"type": "extrude", "name": "Cut-Extrude1"})];
+        let ints = |k: &str| match k {
+            "D1" | "D2" => Some(2),
+            _ => None,
+        };
+        let reals = |k: &str| match k {
+            "D3" | "D4" => Some(0.02),
+            _ => None,
+        };
+        let lines = [([0.0, 36.5, 1.6], [0.0, -1.0, 0.0]), ([3.5, 0.0, 1.6], [1.0, 0.0, 0.0])];
+        let names = |p: u32| (p == 0x33d).then(|| "Cut-Extrude1".to_string());
+        let out = feature_pattern("LPattern1", false, seeds(&[0x33d]), &lines, (ints, reals), names, &feats);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[0]["features"], json!(["Cut-Extrude1"]));
+        assert_eq!(out[0]["direction"], json!([0.0, -1.0, 0.0]));
+        assert_eq!(out[1]["name"], "LPattern1_2");
+        assert_eq!(out[1]["features"], json!(["Cut-Extrude1", "LPattern1"]));
+        assert_eq!(out[1]["spacing"], json!(20.0));
+        // A seed the reader did not make is not patterned.
+        let none = |_: u32| None;
+        let out = feature_pattern("LPattern1", false, seeds(&[0x33d]), &lines, (ints, reals), none, &feats);
+        assert_eq!(out[0]["unresolved"], json!(true));
+    }
+
+    #[test]
+    fn a_circular_step_angle_becomes_the_total() {
+        let feats = [json!({"type": "extrude", "name": "Air Hole"})];
+        let names = |_: u32| Some("Air Hole".to_string());
+        let lines = [([0.0, 2.8, 0.0], [0.0, 1.0, 0.0])];
+        // Three at 120 degrees: a full turn; four at 30 degrees: 90 degrees from first to last.
+        for (count, step, want) in [(3, TAU / 3.0, 360.0), (4, TAU / 12.0, 90.0)] {
+            let ints = move |k: &str| (k == "D1").then_some(count);
+            let reals = move |k: &str| (k == "D2").then_some(step);
+            let out = feature_pattern("P", true, seeds(&[7]), &lines, (ints, reals), names, &feats);
+            assert!((out[0]["angle"].as_f64().unwrap() - want).abs() < 1e-6, "{out:?}");
+            assert_eq!(out[0]["axis"]["origin"], json!([0.0, 2.8, 0.0]));
+        }
+        // A pattern of bodies is not read.
+        let body = Some(patterns::Seeds { ptrs: vec![], bodies: 1 });
+        let out = feature_pattern("P", true, body, &lines, (|_: &str| Some(3), |_: &str| None), names, &feats);
+        assert_eq!(out[0]["why"], "a pattern of bodies");
     }
 }
