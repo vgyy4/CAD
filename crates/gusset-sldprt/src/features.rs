@@ -446,6 +446,47 @@ fn feature_nodes(d: &[u8], nt: [u8; 2]) -> Result<Vec<Node>, String> {
     Ok(out)
 }
 
+/// The sketch objects (`sgSketch`) a configuration stream keeps, as `(body, end)` for
+/// [`parse_sketch`]: some parts keep the entities of sketches driven by equations or
+/// configurations there, and the feature stream's sketch node holds none (NEMA23_mount,
+/// Pan-Slot Screw M4). The first object follows the class declaration, the others its class tag;
+/// each is `tag, u32 point count, u16, u32 key, u32 id` and then its first entity header.
+fn config_sketches(c: &[u8]) -> Vec<(usize, usize)> {
+    let Some(decl) = find(c, b"\xff\xff\x01\x00\x08\x00sgSketch", 0, c.len()) else { return Vec::new() };
+    let first = decl + 14;
+    let Some(hdrs) = find_headers(c, first, c.len()) else { return Vec::new() };
+    if hdrs.first() != Some(&(first + 14)) {
+        return Vec::new();
+    }
+    // The class tag: the most frequent high-bit word two bytes before a point count that is
+    // followed by a first entity header (key 0).
+    let starts = |h: usize| -> Option<u16> {
+        let t = u16_at(c, h.checked_sub(16)?)?;
+        let n = u32_at(c, h - 14)?;
+        (t & 0x8000 != 0
+            && t != 0xffff
+            && n < 100_000
+            && c.get(h - 10..h - 4).is_some_and(|w| w.iter().all(|&b| b == 0)))
+        .then_some(t)
+    };
+    let mut counts: Vec<(u16, usize)> = Vec::new();
+    for &h in hdrs.iter().skip(1) {
+        if let Some(t) = starts(h) {
+            match counts.iter_mut().find(|(k, _)| *k == t) {
+                Some((_, v)) => *v += 1,
+                None => counts.push((t, 1)),
+            }
+        }
+    }
+    let tag = counts.iter().max_by_key(|(_, v)| *v).map(|(k, _)| *k);
+    let mut bodies = vec![first];
+    if let Some(tag) = tag {
+        bodies.extend(hdrs.iter().skip(1).filter(|&&h| starts(h) == Some(tag)).map(|&h| h - 14));
+    }
+    let ends: Vec<usize> = bodies.iter().skip(1).map(|&b| b - 2).chain([c.len()]).collect();
+    bodies.into_iter().zip(ends).collect()
+}
+
 /// Drops node names written inside the header of the node before them (both find the same
 /// block): an attribute in a sketch's header (zsCAD's `Assoc1`), or the `Sketch3<3>` name a
 /// feature that reuses Sketch3 writes in its own header (Connecting Plate_BOTTOM_M3's
@@ -2574,6 +2615,19 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut rounds: HashMap<u32, Vec<Option<Round>>> = HashMap::new();
     let mut revolved: HashMap<u32, Revolved> = HashMap::new();
     let mut hole: Option<HoleState> = None;
+    // Sketch nodes without entities take the configuration stream's sketch objects in order,
+    // when there are as many of each.
+    let empty_sketches = nodes
+        .iter()
+        .filter(|n| {
+            let (a, b) = span(n);
+            n.cls.as_deref() == Some("moProfileFeature_c")
+                && a < b
+                && ENT_HDRS.iter().all(|p| find(rf, p, n.post.min(b), b).is_none())
+        })
+        .count();
+    let in_config = config_sketches(c0);
+    let mut from_config = (empty_sketches > 0 && in_config.len() == empty_sketches).then(|| in_config.into_iter());
     for (ni, n) in nodes.iter().enumerate() {
         let mut cls = n.cls.clone();
         let (a, b) = span(n);
@@ -2605,7 +2659,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         }
         if cls.as_deref() == Some("moProfileFeature_c") {
             let h = ENT_HDRS.iter().filter_map(|p| find(rf, p, n.post, b)).min().unwrap_or(b);
-            let Some(geo) = h.checked_sub(14).and_then(|body| parse_sketch(rf, body, b)) else {
+            let geo = match (h == b, from_config.as_mut()) {
+                // A sketch whose entities the configuration stream keeps.
+                (true, Some(it)) => it.next().and_then(|(body, end)| parse_sketch(c0, body, end)),
+                _ => h.checked_sub(14).and_then(|body| parse_sketch(rf, body, b)),
+            };
+            let Some(geo) = geo else {
                 last_sketch = None;
                 if let Some(h) = hole.as_mut() {
                     h.sketches += 1;

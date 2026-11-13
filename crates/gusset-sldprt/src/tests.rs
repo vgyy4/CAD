@@ -1238,6 +1238,29 @@ fn a_construction_arc_off_its_circle_is_left_out() {
     assert!(curves.iter().all(|c| c["type"] == "line"));
 }
 
+/// A sketch node without entities takes its entities from the configuration stream's sketch
+/// object (NEMA23_mount's Sketch1, driven by equations, keeps them in `Config-0`).
+#[test]
+fn a_sketch_kept_in_the_configuration_stream_is_read() {
+    let base = feature_stream(&[]);
+    // The square's lists: from the point count to the end of the segments.
+    let body = base.windows(4).position(|w| w == 4u32.to_le_bytes()).unwrap();
+    let ex = base.windows(13).position(|w| w == b"moExtrusion_c").unwrap() - 6;
+    let lists = &base[body..ex - 16];
+    let mut rf = base[..body].to_vec();
+    rf.extend([0u8; 16]);
+    rf.extend(&base[ex..]);
+    let mut c0 = config0();
+    c0.extend(class_decl("sgSketch"));
+    c0.extend(lists);
+    c0.extend([0u8; 16]);
+    let f = ole(&[("Config-0", &c0), ("Config-0-ResolvedFeatures", &rf), ("Preview", b"png")]);
+    let t = features::feature_tree(&f, "part.SLDPRT", &Limits::default()).unwrap().unwrap();
+    let curves = t["features"][0]["curves"].as_array().unwrap();
+    assert_eq!(curves.len(), 4, "{t}");
+    assert_eq!(t["features"][1]["distance"].as_f64(), Some(5.0));
+}
+
 /// Byte 12 of the end condition reverses the default direction: a boss runs against its sketch
 /// normal and a cut along it (200mm Topmost Platform's cuts, no direction vector written).
 #[test]
