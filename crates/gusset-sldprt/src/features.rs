@@ -3440,7 +3440,10 @@ fn emitted(feats: &[Value], name: &str) -> bool {
     })
 }
 
-/// The archive index of each node ([`patterns::object_indices`]).
+/// The archive index of each node ([`patterns::object_indices`]). A node that declares its
+/// class is also the object right after that class, whose index the other nodes of the class
+/// write as their class tag (SG90's `Furo4` declares `moHoleWzd_c`, `Furo1` is `tag 709`:
+/// `Furo4` is object 710, the index its linear pattern names).
 fn node_indices(d: &[u8], nodes: &[Node], span: &impl Fn(&Node) -> (usize, usize)) -> HashMap<u32, usize> {
     let spans: Vec<(usize, usize, u32)> = nodes
         .iter()
@@ -3449,7 +3452,24 @@ fn node_indices(d: &[u8], nodes: &[Node], span: &impl Fn(&Node) -> (usize, usize
             (a, b, m.id)
         })
         .collect();
-    patterns::object_indices(d, &spans)
+    let mut index = patterns::object_indices(d, &spans);
+    for (k, m) in nodes.iter().enumerate() {
+        let Some(cls) = m.cls.as_deref().filter(|_| m.tag.is_none()) else { continue };
+        let mut tags = nodes.iter().filter(|o| o.tag.is_some() && o.cls.as_deref() == Some(cls)).filter_map(|o| o.tag);
+        let Some(t) = tags.next() else { continue };
+        if tags.all(|u| u == t) {
+            let p = u32::from(t) + 1;
+            match index.get(&p) {
+                Some(&other) if other != k => {
+                    index.remove(&p);
+                }
+                _ => {
+                    index.insert(p, k);
+                }
+            }
+        }
+    }
+    index
 }
 
 /// A linear or circular feature pattern (`moLPattern_c`, `moCirPattern_c`) as tree features.
@@ -3856,6 +3876,33 @@ mod pattern_tests {
         let none = |_: u32| None;
         let out = feature_pattern("LPattern1", false, seeds(&[0x33d]), &lines, (ints, reals), none, &feats);
         assert_eq!(out[0]["unresolved"], json!(true));
+    }
+
+    #[test]
+    fn a_node_declaring_its_class_is_the_object_after_it() {
+        let node = |start: usize, cls: &str, tag: Option<u16>, id: u32| Node {
+            start,
+            cls: Some(cls.to_string()),
+            tag,
+            name: format!("n{id}"),
+            flags: 0,
+            id,
+            post: start,
+            head_len: 0,
+        };
+        // Furo4 declares moHoleWzd_c; Furo1 and Furo2 name it as class 709.
+        let nodes = vec![
+            node(0, "moHoleWzd_c", None, 188),
+            node(10, "moHoleWzd_c", Some(709), 167),
+            node(20, "moHoleWzd_c", Some(709), 174),
+            node(30, "moLPattern_c", None, 266),
+        ];
+        let d = vec![0u8; 40];
+        let span = |n: &Node| (n.start, n.start + 10);
+        let index = node_indices(&d, &nodes, &span);
+        assert_eq!(index.get(&710), Some(&0));
+        // A class no other node names gives nothing.
+        assert_eq!(index.len(), 1);
     }
 
     #[test]
