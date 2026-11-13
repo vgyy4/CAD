@@ -25,6 +25,7 @@
 //! Clean room: written from KiCad's published file-format documentation and sample files;
 //! no KiCad (GPL) source was read or copied.
 
+pub mod annotate;
 pub mod board;
 pub mod board3d;
 pub mod check;
@@ -75,6 +76,8 @@ mod tests_phase3;
 mod tests_route;
 #[cfg(test)]
 mod tests_sch;
+#[cfg(test)]
+mod tests_annotate;
 #[cfg(test)]
 mod tests_sch_edit;
 #[cfg(test)]

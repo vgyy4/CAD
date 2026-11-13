@@ -9,6 +9,7 @@ use super::pcb_edit::commit_board;
 use super::*;
 use crate::sch_session::{self, OpenSchematic};
 use gusset_pcb::Limits;
+use gusset_pcb::annotate;
 use gusset_pcb::sch::{LabelKind, Mirror, Schematic, SymbolLib};
 use gusset_pcb::sch_edit::Item;
 use std::sync::Arc;
@@ -271,13 +272,6 @@ fn mirror_of(m: Option<&str>, current: Mirror) -> Result<Mirror, CommandError> {
     }
 }
 
-/// The prefix and number of a reference (`R12` → `("R", Some(12))`, `R?` → `("R", None)`).
-fn split_reference(r: &str) -> (String, Option<u64>) {
-    let p: String = r.chars().take_while(|c| !c.is_ascii_digit() && *c != '?').collect();
-    let rest = r.get(p.len()..).unwrap_or("");
-    (p, rest.parse().ok())
-}
-
 /// Numbers the design's symbols.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -285,52 +279,44 @@ pub struct SchAnnotate {
     /// Renumber every symbol, not only R? ones.
     #[serde(default)]
     pub all: bool,
+    /// x (default) or y: which axis goes first.
+    #[serde(default)]
+    pub order: Option<String>,
+    /// Sheet n starts at n times this (100, 1000).
+    #[serde(default)]
+    pub sheet_step: Option<u32>,
 }
 
 impl Command for SchAnnotate {
     const ID: &'static str = "sch.annotate";
     const TITLE: &'static str = "Annotate";
     const DESCRIPTION: &'static str =
-        "Number unannotated symbols (R? to R3) across the open schematic's sheets, by sheet then place.";
+        "Number unannotated symbols (R? to R3) across the open schematic's sheets; units of a part share a number.";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let open = sch_session::open_schematic(s, &ctx.actor)?.ok_or_else(no_schematic)?;
-        // Numbers kept, by prefix.
-        let mut used: std::collections::HashMap<String, std::collections::HashSet<u64>> = Default::default();
-        let mut todo: Vec<(usize, usize, [f64; 2])> = Vec::new();
-        for (si, (_, sch)) in open.design.sheets.iter().enumerate() {
-            for (k, sym) in sch.symbols.iter().enumerate() {
-                let (prefix, n) = split_reference(sym.reference());
-                match n {
-                    Some(n) if !self.all => {
-                        used.entry(prefix).or_default().insert(n);
-                    }
-                    _ => todo.push((si, k, sym.at)),
-                }
-            }
+        let y_first = match self.order.as_deref() {
+            None | Some("x") => false,
+            Some("y") => true,
+            Some(_) => return Err(CommandError::args("order is x or y")),
+        };
+        let sheet_step = self.sheet_step.unwrap_or(0);
+        if sheet_step > 1_000_000 {
+            return Err(CommandError::args("sheet_step is at most 1000000"));
         }
-        // Sheet by sheet; left to right, then top to bottom (KiCad's default order).
-        todo.sort_by(|a, b| a.0.cmp(&b.0).then(a.2[0].total_cmp(&b.2[0])).then(a.2[1].total_cmp(&b.2[1])));
+        let open = sch_session::open_schematic(s, &ctx.actor)?.ok_or_else(no_schematic)?;
+        let sheet_refs: Vec<&Schematic> = open.design.sheets.iter().map(|(_, x)| x).collect();
+        let opts = annotate::Options { all: self.all, y_first, sheet_step };
+        let plan = annotate::plan(&sheet_refs, opts);
         let mut sheets: Vec<Option<Schematic>> = vec![None; open.design.sheets.len()];
         let mut renamed = Vec::new();
-        for (si, k, _) in todo {
-            let Some((_, orig)) = open.design.sheets.get(si) else { continue };
-            let Some(sym) = orig.symbols.get(k) else { continue };
-            let old = sym.reference().to_string();
-            let (prefix, _) = split_reference(&old);
-            let prefix = if prefix.is_empty() { "U".to_string() } else { prefix };
-            let taken = used.entry(prefix.clone()).or_default();
-            let n = (1..).find(|n| !taken.contains(n)).unwrap_or(1);
-            taken.insert(n);
-            let new = format!("{prefix}{n}");
-            if new == old {
-                continue;
-            }
-            let Some(slot) = sheets.get_mut(si) else { continue };
+        for r in &plan {
+            let Some((_, orig)) = open.design.sheets.get(r.sheet) else { continue };
+            let Some(slot) = sheets.get_mut(r.sheet) else { continue };
             let sch = slot.get_or_insert_with(|| orig.clone());
-            sch.set_field(k, "Reference", &new, &limits()).map_err(sch_err)?;
-            renamed.push(json!([old, new]));
+            sch.set_field(r.symbol, "Reference", &r.new, &limits()).map_err(sch_err)?;
+            let shown = format!("{}{}", r.new, r.unit_letter.as_deref().unwrap_or(""));
+            renamed.push(json!([r.old, shown]));
         }
         let edited: Vec<(usize, &Schematic)> =
             sheets.iter().enumerate().filter_map(|(i, x)| x.as_ref().map(|x| (i, x))).collect();

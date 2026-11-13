@@ -90,3 +90,37 @@ fn wires_follow_orthogonally_and_a_selection_moves_in_one_undo_step() {
         assert!(execute(&mut s, &u(36), "sch.move", args.clone()).is_err(), "{args}");
     }
 }
+
+#[test]
+fn annotation_options_and_unit_letters() {
+    let mut s = setup();
+    run(&mut s, &u(1), "sch.new", json!({"name": "demo"}));
+    // Symbols are placed with a number already (R1..R3); the places differ in X and Y.
+    for (t, at) in [(2, [10.0, 30.0]), (3, [20.0, 10.0]), (4, [30.0, 20.0])] {
+        add(&mut s, t, "R", at, 1);
+    }
+    for r in ["R1", "R2", "R3"] {
+        run(&mut s, &u(5), "sch.set_field", json!({"symbol": r, "field": "Reference", "value": "R?"}));
+    }
+    // By Y first with sheets starting at 100: B (20,10), C (30,20), A (10,30).
+    let r = run(&mut s, &u(6), "sch.annotate", json!({"order": "y", "sheet_step": 100}));
+    assert_eq!(r["count"], 3, "{r}");
+    assert_eq!(refs(&s), ["R102", "R100", "R101"]);
+    // Nothing is unnumbered now: no change; `all` renumbers by X first from 1.
+    let r = run(&mut s, &u(7), "sch.annotate", json!({}));
+    assert_eq!(r["changed"], false);
+    run(&mut s, &u(8), "sch.annotate", json!({"all": true}));
+    assert_eq!(refs(&s), ["R1", "R2", "R3"]);
+    run(&mut s, &u(9), "history.undo", json!({}));
+    assert_eq!(refs(&s), ["R102", "R100", "R101"]);
+    assert!(execute(&mut s, &u(10), "sch.annotate", json!({"order": "z"})).is_err());
+    // Two units of one part share a number: U1A and U1B.
+    add(&mut s, 11, "AMP", [50.0, 10.0], 1);
+    add(&mut s, 12, "AMP", [70.0, 10.0], 2);
+    for i in [3, 4] {
+        run(&mut s, &u(13), "sch.set_field", json!({"symbol": format!("symbol#{i}"), "field": "Reference", "value": "U?"}));
+    }
+    let r = run(&mut s, &u(14), "sch.annotate", json!({}));
+    assert_eq!(r["renamed_user_text"], json!([["U?", "U1A"], ["U?", "U1B"]]), "{r}");
+    assert_eq!(&refs(&s)[3..], ["U1", "U1"]);
+}
