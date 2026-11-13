@@ -2086,7 +2086,9 @@ fn fusion_placement(p: &Value) -> Option<gusset_sat::fusion::Placement> {
 /// tools; 2011 and 931: the one filleted body). Empty, so that nothing is concluded from them,
 /// where the tree has a stored body (a Base Feature's blob holds its own bodies), where a blob or
 /// one of its solid bodies cannot be read, or where there are too many. Per blob: the volumes of
-/// its bodies and the box of all of them.
+/// its bodies and the box of all of them. A body the tree names as a tool a Combine used up
+/// (`used_up`: the blob and the body's tag; the component's body list no longer holds it, while
+/// the blob keeps its last shape, section 60 of the format notes) is no end body (3722).
 fn fusion_end_bodies(
     tree: &Value,
     entries: &[(String, Vec<u8>)],
@@ -2098,13 +2100,21 @@ fn fusion_end_bodies(
     if feats.iter().any(|f| f.get("type").and_then(Value::as_str) == Some("stored_body")) {
         return Vec::new();
     }
+    let used_up = fusion_used_up(feats);
     let limits = gusset_sat::Limits::default();
     let mut blobs: Vec<EndBlob> = Vec::new();
     let mut total = 0;
-    for (_, blob) in
+    for (n, blob) in
         entries.iter().filter(|(n, _)| n.contains("Breps.BlobParts/") && n.to_ascii_lowercase().ends_with(".smbh"))
     {
         let Ok(count) = gusset_sat::body_count(blob, &limits) else { return Vec::new() };
+        let file = n.rsplit('/').next().unwrap_or(n);
+        let gone: Vec<u64> = used_up.iter().filter(|(b, _)| *b == file).map(|(_, t)| *t).collect();
+        let tags = if gone.is_empty() {
+            Vec::new()
+        } else {
+            gusset_sat::body_tags(blob, &limits).ok().filter(|t| t.len() == count).unwrap_or_default()
+        };
         total += count;
         if total > MAX_F3D_BODIES {
             return Vec::new();
@@ -2114,6 +2124,9 @@ fn fusion_end_bodies(
         for nth in 0..count {
             if cancel.load(Ordering::Relaxed) {
                 return Vec::new();
+            }
+            if tags.get(nth).copied().flatten().and_then(|t| u64::try_from(t).ok()).is_some_and(|t| gone.contains(&t)) {
+                continue;
             }
             let step = match gusset_sat::to_step_nth(blob, "end body", &limits, None, nth, count) {
                 Ok(c) => c.step,
@@ -2151,6 +2164,23 @@ fn fusion_end_bodies(
         }
     }
     blobs
+}
+
+/// The bodies the tree's Combines used up that a history blob still holds (`used_up` of a
+/// `combine`: the blob's file name and the body's tag in it, section 60 of the format notes). An
+/// entry not read is left out, so that its blob keeps every body (the check stays whole).
+fn fusion_used_up(feats: &[Value]) -> Vec<(&str, u64)> {
+    let mut out = Vec::new();
+    for f in feats.iter().filter(|f| f.get("type").and_then(Value::as_str) == Some("combine")) {
+        for u in f.get("used_up").and_then(Value::as_array).map_or(&[][..], Vec::as_slice) {
+            if let (Some(blob), Some(tag)) =
+                (u.get("blob").and_then(Value::as_str), u.get("tag").and_then(Value::as_u64))
+            {
+                out.push((blob, tag));
+            }
+        }
+    }
+    out
 }
 
 /// The bodies of one history blob ([`fusion_end_bodies`]): their volumes and the box of all of them.
@@ -4207,6 +4237,18 @@ mod sldasm_tests {
 mod fusion_steps_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_tools_a_combine_used_up_are_read_from_the_tree() {
+        let feats = vec![
+            json!({"type": "combine", "name": "C1", "used_up": [{"blob": "BREP.a.smbh", "tag": 2398}]}),
+            json!({"type": "combine", "name": "C2", "used_up": [{"blob": "BREP.b.smbh"}, {"tag": 5}]}),
+            json!({"type": "extrude", "name": "E1", "used_up": [{"blob": "BREP.c.smbh", "tag": 7}]}),
+            json!({"type": "combine", "name": "C3"}),
+        ];
+        // Only a combine's whole entries: one not read keeps its blob's bodies.
+        assert_eq!(fusion_used_up(&feats), vec![("BREP.a.smbh", 2398)]);
+    }
 
     /// The L-Bracket's steps: prism, blends, slot cut, 2 more slots, the first hole, 8 more.
     fn lbracket(v_count: u64) -> (Vec<Value>, Vec<f64>) {
