@@ -168,3 +168,79 @@ thread T (face: C/side(H/c2), pitch: 1.25 mm, modeled: true, major: 9 mm)
     let v = volume(&ev, &r, "E");
     assert!((v - want).abs() < 2e-5 * want, "{v} vs {want}");
 }
+
+/// 916's foot: a 15.884 mm rod 20 mm long with the M16x1 thread from 4 mm up, and below it a
+/// groove turned into the rod (`V`) whose top wall, 0.942 mm wide, is the plane z = -16.5.
+const FOOT: &str = "gusset 1
+units mm
+
+sketch S (plane: XY, next_id: 3) {
+  p1 = point(0, 0)
+  c2 = circle(p1, RADIUS)
+}
+
+extrude E (profile: S, distance: -20 mm, op: new)
+
+THREAD
+
+sketch R (plane: YZ, next_id: 14) {
+  p1 = point(5.5, -20)
+  p2 = point(7, -18.5)
+  p3 = point(7, -16.5)
+  p4 = point(9.5, -16.5)
+  p5 = point(9.5, -20)
+  l6 = line(p1, p2)
+  l7 = line(p2, p3)
+  l8 = line(p3, p4)
+  l9 = line(p4, p5)
+  l10 = line(p5, p1)
+  p11 = point(0, -25)
+  p12 = point(0, 5)
+  l13 = line(p11, p12)
+}
+
+revolve V (profile: R, axis: R.l13, angle: 360 deg, op: cut, body: E)
+";
+
+/// `FOOT` with or without its thread (without it, the rod is turned to the thread's major
+/// diameter, as the thread does), and with the three 0.5 mm rounds of the groove's edges
+/// (r 7 and r 7.942 at z -16.5, r 7 at z -18.5) when `round`.
+fn foot(thread: bool, round: bool) -> f64 {
+    let line = "thread T (face: E/side(S/c2), pitch: 1 mm, modeled: true, major: 15.884 mm, minor: 14.741 mm, length: 16 mm, offset: 4 mm, along: Z)";
+    let text =
+        FOOT.replace("THREAD", if thread { line } else { "" }).replace("RADIUS", if thread { "9" } else { "7.942" });
+    let (ev, r) = eval(&text);
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    if !round {
+        return volume(&ev, &r, "E");
+    }
+    let b = r.body("E").unwrap();
+    let mut picks = Vec::new();
+    for (i, e) in b.topology.edges.iter().enumerate() {
+        let Some(c) = e.circle else { continue };
+        let (z, rad) = (c.center[2], c.radius);
+        if ((z + 16.5).abs() < 1e-6 && ((rad - 7.0).abs() < 1e-6 || (rad - 7.942).abs() < 1e-6))
+            || ((z + 18.5).abs() < 1e-6 && (rad - 7.0).abs() < 1e-6)
+        {
+            picks.push(b.names.edges[i].to_string());
+        }
+    }
+    assert_eq!(picks.len(), 3, "{picks:?}");
+    let text = format!("{text}\nfillet F (edges: [{}], radius: 0.5 mm)\n", picks.join(", "));
+    let (ev, r) = eval(&text);
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    volume(&ev, &r, "E")
+}
+
+#[test]
+fn rounds_at_a_threads_square_end_are_made_in_the_half_section() {
+    // The convex round of the r 7.942 edge rolls on the concave one beside it (the wall is
+    // narrower than both) and meets the rod at z -16.0017, 1.7 um below the groove's square
+    // end: OCCT's fillet fails on the threaded rod and is made on the revolved half section.
+    // The rounds and the thread do not meet: each changes the volume as it does alone.
+    let (plain, rounded) = (foot(false, false), foot(false, true));
+    let threaded = foot(true, false);
+    let v = foot(true, true);
+    let want = threaded + (rounded - plain);
+    assert!((v - want).abs() < 1e-7 * want, "{v} vs {want}");
+}

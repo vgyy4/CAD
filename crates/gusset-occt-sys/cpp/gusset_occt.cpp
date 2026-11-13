@@ -816,6 +816,11 @@ std::vector<BlendEdge> concave_first(const TopoDS_Shape& s, const std::vector<Bl
 // Defined below: the blend made by cutting away the corner of each edge.
 int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
                      GsShape** out, GsBuf* origins);
+// Defined below: the blend of circles about one axis made on the solid of revolution of a
+// half section and moved onto the shape as two booleans.
+template <typename Mk>
+int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
+                   GsShape** out, GsBuf* origins);
 
 // Blends the edges at once; where OCCT fails, independent edges one after another; failing
 // that, the corners of convex edges between perpendicular faces cut away by tools whose
@@ -882,6 +887,10 @@ int blend_edges(const GsShape* s, const std::vector<BlendEdge>& es, const std::v
   if (concave_passes()) return GS_OK;
   try {
     if (blend_by_corners(s, es, idx, fillet, out, origins) == GS_OK) return GS_OK;
+  } catch (const Standard_Failure&) {
+  }
+  try {
+    if (revolved_blend<Mk>(s, es, idx, fillet, out, origins) == GS_OK) return GS_OK;
   } catch (const Standard_Failure&) {
   }
   return fail(first_error);
@@ -2792,6 +2801,260 @@ int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const s
   to_buf(cut.o, origins);
   *out = new GsShape{cut.result};
   return GS_OK;
+}
+
+// The images in `result` of `f` after `op` (a boolean or a history): its modifications, or
+// itself when the operation kept it.
+template <typename Op>
+std::vector<TopoDS_Shape> images_after(Op& op, const TopoDS_Shape& f, bool gone) {
+  std::vector<TopoDS_Shape> res;
+  const ShapeList& mods = op.Modified(f);
+  for (ShapeList::Iterator it(mods); it.More(); it.Next()) res.push_back(it.Value());
+  if (mods.IsEmpty() && !gone) res.push_back(f);
+  return res;
+}
+
+// A blend of whole circles about one axis, made where OCCT fails on the shape itself (916's
+// Fillet1: three 0.5 mm rounds at the foot of a threaded rod, one of whose tangent lines lies
+// on the square end of the thread's groove, where ChFi3d's first guess of the contact runs
+// along the groove's boundary). The shape is axisymmetric about the circles: its section in a
+// half plane through the axis, in a window a few blend sizes around the circles, is revolved
+// into a solid of revolution with the same circles, and OCCT blends those (at once, or the
+// concave ones first). What the blend took away and what it added (the solid less the blended
+// one and the other way round) are cut from and joined to the shape. Kept only where the
+// change stays inside the window and the shape's volume changes by exactly those two volumes
+// (so the shape is the solid of revolution wherever the blend touched it); else the section is
+// tried at other angles. The blend faces are the blended solid's faces made from the circles.
+template <typename Mk>
+int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
+                   GsShape** out, GsBuf* origins) {
+  if (es.empty()) return fail("no edges");
+  // The circles and their axis.
+  gp_Ax1 axis;
+  double rlo = 1e300, rhi = 0, zlo = 1e300, zhi = -1e300, size = 0;
+  for (size_t i = 0; i < es.size(); ++i) {
+    const BlendEdge& x = es[i];
+    if (!x.ref.IsNull() || x.mode != 0) return fail("not one size");
+    BRepAdaptor_Curve c(x.e);
+    if (c.GetType() != GeomAbs_Circle || std::fabs(c.LastParameter() - c.FirstParameter() - 2 * M_PI) > 1e-9)
+      return fail("not a whole circle");
+    const gp_Circ ci = c.Circle();
+    if (i == 0) axis = ci.Axis();
+    if (!ci.Axis().IsParallel(axis, 1e-9) || gp_Lin(axis).Distance(ci.Location()) > 1e-7)
+      return fail("not about one axis");
+    const double z = gp_Vec(axis.Location(), ci.Location()).Dot(gp_Vec(axis.Direction()));
+    rlo = std::min(rlo, ci.Radius());
+    rhi = std::max(rhi, ci.Radius());
+    zlo = std::min(zlo, z);
+    zhi = std::max(zhi, z);
+    size = std::max(size, x.a);
+  }
+  const double m = 3.1 * size;
+  const double w_r0 = std::max(0.0, rlo - m), w_r1 = rhi + m, w_z0 = zlo - m, w_z1 = zhi + m;
+  const gp_Dir zd = axis.Direction();
+  const gp_Dir x0 = gp_Ax2(axis.Location(), zd).XDirection();
+  // A point at radius r and height z of the half plane at angle `th`.
+  auto at = [&](double th, double r, double z) {
+    gp_Vec x(x0);
+    x.Rotate(axis, th);
+    return axis.Location().Translated(x * r + gp_Vec(zd) * z);
+  };
+  // Is a point of a tool strictly inside the window (or on the axis, where the window starts at it)?
+  auto inside = [&](const gp_Pnt& p) {
+    const gp_Vec v(axis.Location(), p);
+    const double z = v.Dot(gp_Vec(zd));
+    const double r = (v - gp_Vec(zd) * z).Magnitude();
+    const double eps = 1e-6;
+    return z > w_z0 + eps && z < w_z1 - eps && r < w_r1 - eps && (w_r0 == 0 || r > w_r0 + eps);
+  };
+  auto tool_inside = [&](const TopoDS_Shape& t) {
+    for (TopExp_Explorer ex(t, TopAbs_EDGE); ex.More(); ex.Next()) {
+      const TopoDS_Edge& e = TopoDS::Edge(ex.Current());
+      if (BRep_Tool::Degenerated(e)) continue;
+      BRepAdaptor_Curve c(e);
+      for (int k = 0; k <= 8; ++k)
+        if (!inside(c.Value(c.FirstParameter() + (c.LastParameter() - c.FirstParameter()) * k / 8.0))) return false;
+    }
+    return true;
+  };
+  auto solids_of = [](const TopoDS_Shape& t) {
+    ShapeList l;
+    for (TopExp_Explorer ex(t, TopAbs_SOLID); ex.More(); ex.Next()) l.Append(ex.Current());
+    return l;
+  };
+  std::string why = "no section";
+  for (int k = 0; k < 6; ++k) {
+    const double th = 0.3 + k * (2 * M_PI / 6);
+    try {
+      // The section in the window, revolved.
+      BRepBuilderAPI_MakePolygon poly(at(th, w_r0, w_z0), at(th, w_r1, w_z0), at(th, w_r1, w_z1), at(th, w_r0, w_z1),
+                                      true);
+      if (!poly.IsDone()) continue;
+      BRepBuilderAPI_MakeFace wf(poly.Wire(), true);
+      if (!wf.IsDone()) continue;
+      BRepAlgoAPI_Common sec(s->s, wf.Face());
+      sec.SetRunParallel(false);
+      sec.Build();
+      if (!sec.IsDone() || sec.HasErrors()) continue;
+      TopoDS_Compound faces;
+      BRep_Builder bb;
+      bb.MakeCompound(faces);
+      int nf = 0;
+      for (TopExp_Explorer ex(sec.Shape(), TopAbs_FACE); ex.More(); ex.Next(), ++nf) bb.Add(faces, ex.Current());
+      if (nf != 1) {
+        why = "the section is not one face";
+        continue;
+      }
+      TopoDS_Face sf;
+      for (TopExp_Explorer ex(faces, TopAbs_FACE); ex.More(); ex.Next()) sf = TopoDS::Face(ex.Current());
+      BRepPrimAPI_MakeRevol rv(sf, axis, 2 * M_PI);
+      rv.Build();
+      if (!rv.IsDone()) continue;
+      TopoDS_Shape sub;
+      for (TopExp_Explorer ex(rv.Shape(), TopAbs_SOLID); ex.More(); ex.Next()) sub = ex.Current();
+      if (sub.IsNull() || !BRepCheck_Analyzer(sub, true, true).IsValid()) {
+        why = "the revolved section is not a valid solid";
+        continue;
+      }
+      if (signed_volume(sub) < 0) sub.Reverse();
+      // The circles on it.
+      ShapeMap sub_edges;
+      TopExp::MapShapes(sub, TopAbs_EDGE, sub_edges);
+      std::vector<BlendEdge> ses;
+      for (const auto& x : es) {
+        const gp_Circ ci = BRepAdaptor_Curve(x.e).Circle();
+        TopoDS_Edge found;
+        int n = 0;
+        for (int i = 1; i <= sub_edges.Extent(); ++i) {
+          BRepAdaptor_Curve c(TopoDS::Edge(sub_edges(i)));
+          if (c.GetType() != GeomAbs_Circle) continue;
+          const gp_Circ o = c.Circle();
+          if (std::fabs(o.Radius() - ci.Radius()) > 1e-7 || o.Location().Distance(ci.Location()) > 1e-7) continue;
+          found = TopoDS::Edge(sub_edges(i));
+          ++n;
+        }
+        if (n != 1) break;
+        BlendEdge y = x;
+        y.e = found;
+        ses.push_back(y);
+      }
+      if (ses.size() != es.size()) {
+        why = "the circles are not edges of the revolved section";
+        continue;
+      }
+      // The blend of the solid of revolution, and the history of its faces.
+      TopoDS_Shape blended;
+      BRepTools_History bh;
+      {
+        Mk mk(sub);
+        for (const auto& y : ses) add_blend(mk, y);
+        mk.Build();
+        ShapeList args;
+        args.Append(sub);
+        if (mk.IsDone() && BRepCheck_Analyzer(mk.Shape(), true, true).IsValid()) {
+          blended = mk.Shape();
+          bh = BRepTools_History(args, mk);
+        }
+      }
+      if (blended.IsNull() && fillet) {
+        const std::vector<BlendEdge> order = concave_first(sub, ses);
+        TopoDS_Shape made;
+        BRepTools_History hist;
+        if (!order.empty() && blend_in_passes<Mk>(sub, order, made, hist) &&
+            BRepCheck_Analyzer(made, true, true).IsValid()) {
+          blended = made;
+          bh = hist;
+        }
+      }
+      if (blended.IsNull()) {
+        why = "the solid of revolution does not blend";
+        continue;
+      }
+      // What the blend took away and what it added.
+      ShapeList lsub, lbl;
+      lsub.Append(sub);
+      lbl.Append(blended);
+      auto taken = run_boolean(GS_BOOL_CUT, lsub, lbl, false);
+      auto added = run_boolean(GS_BOOL_CUT, lbl, lsub, false);
+      const ShapeList cut_tools = solids_of(taken->Shape()), add_tools = solids_of(added->Shape());
+      if (cut_tools.IsEmpty() && add_tools.IsEmpty()) continue;
+      if (!tool_inside(taken->Shape()) || !tool_inside(added->Shape())) {
+        why = "the blend reaches the window's edge";
+        continue;
+      }
+      const double v_cut = std::fabs(measured_volume(taken->Shape()));
+      const double v_add = std::fabs(measured_volume(added->Shape()));
+      // On the shape: the material taken away cut, then the material added joined.
+      ShapeList args;
+      args.Append(s->s);
+      TopoDS_Shape mid = s->s;
+      std::unique_ptr<BRepAlgoAPI_BooleanOperation> b1, b2;
+      BRepTools_History h;
+      bool first = true;
+      if (!cut_tools.IsEmpty()) {
+        b1 = run_boolean_checked(GS_BOOL_CUT, args, cut_tools);
+        mid = b1->Shape();
+        ShapeList a1 = args;
+        for (ShapeList::Iterator it(cut_tools); it.More(); it.Next()) a1.Append(it.Value());
+        h = BRepTools_History(a1, *b1);
+        first = false;
+      }
+      TopoDS_Shape result = mid;
+      if (!add_tools.IsEmpty()) {
+        ShapeList mids;
+        mids.Append(mid);
+        b2 = run_boolean_checked(GS_BOOL_UNION, mids, add_tools);
+        result = b2->Shape();
+        ShapeList a2 = mids;
+        for (ShapeList::Iterator it(add_tools); it.More(); it.Next()) a2.Append(it.Value());
+        if (first) h = BRepTools_History(a2, *b2);
+        else h.Merge(a2, *b2);
+      }
+      if (result.IsNull()) continue;
+      const double before = std::fabs(measured_volume(s->s)), between = std::fabs(measured_volume(mid)),
+                   after = std::fabs(measured_volume(result));
+      const double tol = 1e-7 * std::max(1.0, before);
+      if (std::fabs(before - between - v_cut) > tol || std::fabs(after - between - v_add) > tol) {
+        why = "the shape is not the solid of revolution where the blend changes it";
+        continue;
+      }
+      // The origins: the shape's faces, and the blend faces (made from the circles on the
+      // solid of revolution, then in a tool, then in the result).
+      ShapeMap out_faces;
+      TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+      std::vector<int64_t> o;
+      record_input_faces(h, s->s, 0, out_faces, o);
+      bool all = true;
+      for (size_t i = 0; i < ses.size() && all; ++i) {
+        bool found = false;
+        const ShapeList& gen = bh.Generated(ses[i].e);
+        for (ShapeList::Iterator g(gen); g.More(); g.Next()) {
+          if (g.Value().ShapeType() != TopAbs_FACE) continue;
+          for (auto* op : {taken.get(), added.get()}) {
+            for (const auto& t : images_after(*op, g.Value(), op->IsDeleted(g.Value()))) {
+              for (const auto& r : images_after(h, t, h.IsRemoved(t))) {
+                const int fi = out_faces.FindIndex(r);
+                if (fi <= 0) continue;
+                found = true;
+                push_origin(o, fi - 1, GS_ORIGIN_FROM_EDGE, 0, idx[i]);
+              }
+            }
+          }
+        }
+        all = found;
+      }
+      if (!all) {
+        why = "a circle left no blend face";
+        continue;
+      }
+      to_buf(o, origins);
+      *out = new GsShape{result};
+      return GS_OK;
+    } catch (const Standard_Failure&) {
+      why = "geometry kernel error";
+    }
+  }
+  return fail(why);
 }
 }  // namespace
 }  // extern "C++"
