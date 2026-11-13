@@ -3296,6 +3296,23 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 plane = Some((fr.origin.map(|v| round_to(v * 1000.0, 6) + 0.0), z.map(|v| round_to(v, 12) + 0.0)));
                 break;
             }
+            // A mirror on a plane feature names it: the plane's id 38 bytes before the display
+            // block of the plane the mirror keeps (`<tag> 00 00 <u32 id> <u32 stamp> ... c7 cf ff ff`;
+            // pulley_large's Mirror1: the Front plane). Only the three standard planes are read
+            // so: a plane feature of the part (base v2's Plane2, a plane through a line square to
+            // another) keeps its definition, not its frame.
+            if plane.is_none()
+                && let Some(m) = find(rf, &[0xc7, 0xcf, 0xff, 0xff], a, b)
+                && let Some(at) = m.checked_sub(38)
+                && rf.get(at.saturating_sub(2)..at) == Some(&[0, 0][..])
+            {
+                plane = match u32_at(rf, at) {
+                    Some(2) => Some(([0.0; 3], [0.0, 0.0, 1.0])),
+                    Some(3) => Some(([0.0; 3], [0.0, 1.0, 0.0])),
+                    Some(4) => Some(([0.0; 3], [1.0, 0.0, 0.0])),
+                    _ => None,
+                };
+            }
             // The mirror face: the first reference of the last face list of the span (the
             // `moSingleFaceRef_w` object; the list before it is another selection).
             if plane.is_none()

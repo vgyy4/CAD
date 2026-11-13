@@ -884,6 +884,35 @@ fn a_mirror_takes_the_plane_of_its_own_frame() {
     assert!(why.contains("Mirror1") && why.contains("not resolved"), "{why}");
 }
 
+#[test]
+fn a_mirror_on_a_standard_plane_names_it_by_id() {
+    // pulley_large's Mirror1: `<tag> 00 00 <u32 plane id> <u32 stamp>`, 30 bytes, then the
+    // display block of the plane (`c7 cf ff ff` three times).
+    let on = |id: u32| {
+        let mut v = feature_node("moMirrorSolid_c", "Mirror1", 20);
+        v.extend([0u8; 12]);
+        v.extend([0x50, 0x46, 0, 0]);
+        v.extend(id.to_le_bytes());
+        v.extend([0xb4, 0x2c, 0x84, 0x5a]);
+        v.extend([0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0xdf, 0, 0, 0]);
+        v.extend([0u8; 12]);
+        for _ in 0..3 {
+            v.extend([0xc7, 0xcf, 0xff, 0xff]);
+        }
+        v.extend([0u8; 40]);
+        v
+    };
+    for (id, normal) in [(2, [0.0, 0.0, 1.0]), (3, [0.0, 1.0, 0.0]), (4, [1.0, 0.0, 0.0])] {
+        let t = history(&feature_stream(&on(id))).unwrap().unwrap();
+        let m = t["features"].as_array().unwrap().last().unwrap();
+        assert_eq!(m["plane"]["origin"], serde_json::json!([0.0, 0.0, 0.0]), "{t}");
+        assert_eq!(m["plane"]["normal"], serde_json::json!(normal));
+    }
+    // A plane feature of the part is not read so.
+    let why = history(&feature_stream(&on(509))).unwrap_err();
+    assert!(why.contains("Mirror1") && why.contains("not resolved"), "{why}");
+}
+
 /// A sketch on a model face: the face's plane data first (axes turned 180 degrees about the
 /// normal), then the sketch's own frame.
 #[test]
