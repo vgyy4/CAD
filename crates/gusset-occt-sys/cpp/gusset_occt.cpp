@@ -5597,7 +5597,23 @@ int gs_move_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, const 
   check_valid(result, "move face");
   // A moved face can pass through another one, which the face checks do not see.
   BRepAlgoAPI_Check self(result, false, true);
-  if (!self.IsValid()) return fail("the moved faces would cut through the rest of the part");
+  if (!self.IsValid()) {
+    // A part that fails the check already (5998's case, cut by the glyph solids its file
+    // stores): the move may only keep those faults, on the shapes it made of them.
+    BRepAlgoAPI_Check before(s->s, false, true);
+    if (before.IsValid() || self.Result().Size() > before.Result().Size())
+      return fail("the moved faces would cut through the rest of the part");
+    ShapeMap known;
+    for (const BOPAlgo_CheckResult& r : before.Result()) {
+      for (const NCollection_List<TopoDS_Shape>* l : {&r.GetFaultyShapes1(), &r.GetFaultyShapes2()})
+        for (ShapeList::Iterator it(*l); it.More(); it.Next()) known.Add(mod.ModifiedShape(it.Value()));
+    }
+    for (const BOPAlgo_CheckResult& r : self.Result()) {
+      for (const NCollection_List<TopoDS_Shape>* l : {&r.GetFaultyShapes1(), &r.GetFaultyShapes2()})
+        for (ShapeList::Iterator it(*l); it.More(); it.Next())
+          if (!known.Contains(it.Value())) return fail("the moved faces would cut through the rest of the part");
+    }
+  }
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;
