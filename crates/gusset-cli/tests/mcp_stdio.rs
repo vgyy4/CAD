@@ -192,12 +192,12 @@ fn text_json(r: &Value) -> Value {
     serde_json::from_str(t.as_ref().and_then(Value::as_str).unwrap_or("null")).unwrap_or(Value::Null)
 }
 
-/// `gusset mcp --tools modeling,pcb` lists the PCB tools next to the modelling ones; an
+/// `gusset mcp --tools modeling,pcb,sch` lists the PCB and schematic tools next to the modelling ones; an
 /// unknown set is refused before the server starts.
 #[test]
 fn mcp_stdio_tools_option_selects_toolsets() {
     let home = tmpdir("tools");
-    let mut p = McpProc::spawn(&["--no-attach", "--tools", "modeling,pcb"], &home);
+    let mut p = McpProc::spawn(&["--no-attach", "--tools", "modeling,pcb,sch"], &home);
     p.initialize();
     let tools = p.request("tools/list", json!({}));
     let names: Vec<&str> = tools["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();

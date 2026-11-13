@@ -74,20 +74,9 @@ pub const CORE_COMMANDS: &[&str] = &[
 /// Name of the tool that switches toolsets during a session.
 pub const TOOLSET: &str = "toolset";
 
-/// The `pcb` toolset: the everyday PCB and schematic commands (the rest stay behind
+/// The `pcb` toolset: the everyday PCB layout commands (the rest stay behind
 /// `commands`/`run`).
 pub const PCB_COMMANDS: &[&str] = &[
-    "sch.new",
-    "sch.open",
-    "sch.save",
-    "sch.add_symbol",
-    "sch.add_wire",
-    "sch.add_label",
-    "sch.move",
-    "sch.set_field",
-    "sch.delete",
-    "sch.netlist",
-    "sch.erc",
     "pcb.new",
     "pcb.open",
     "pcb.save",
@@ -108,6 +97,21 @@ pub const PCB_COMMANDS: &[&str] = &[
     "pcb.export_drill",
 ];
 
+/// The `sch` toolset: the everyday schematic commands.
+pub const SCH_COMMANDS: &[&str] = &[
+    "sch.new",
+    "sch.open",
+    "sch.save",
+    "sch.add_symbol",
+    "sch.add_wire",
+    "sch.add_label",
+    "sch.move",
+    "sch.set_field",
+    "sch.delete",
+    "sch.netlist",
+    "sch.erc",
+];
+
 /// A named set of command tools listed in tools/list. `commands`, `run`, `render_view`
 /// and `get_text` are in every set, so no command is ever unreachable; the list a client
 /// pays for in context is only what the chosen sets add (ADR 0012 amendment).
@@ -115,8 +119,10 @@ pub const PCB_COMMANDS: &[&str] = &[
 pub enum Toolset {
     /// The everyday modelling commands ([`CORE_COMMANDS`]); the default.
     Modeling,
-    /// PCB layout and schematic capture ([`PCB_COMMANDS`]).
+    /// PCB layout ([`PCB_COMMANDS`]).
     Pcb,
+    /// Schematic capture ([`SCH_COMMANDS`]).
+    Sch,
     /// Simulation: every `sim.*` command.
     Sim,
     /// CAM: every `cam.*` command.
@@ -125,7 +131,7 @@ pub enum Toolset {
 
 impl Toolset {
     /// All sets, in listing order.
-    pub const ALL: [Toolset; 4] = [Toolset::Modeling, Toolset::Pcb, Toolset::Sim, Toolset::Cam];
+    pub const ALL: [Toolset; 5] = [Toolset::Modeling, Toolset::Pcb, Toolset::Sch, Toolset::Sim, Toolset::Cam];
 
     /// The name used on the command line and by the `toolset` tool.
     #[must_use]
@@ -133,6 +139,7 @@ impl Toolset {
         match self {
             Toolset::Modeling => "modeling",
             Toolset::Pcb => "pcb",
+            Toolset::Sch => "sch",
             Toolset::Sim => "sim",
             Toolset::Cam => "cam",
         }
@@ -143,9 +150,8 @@ impl Toolset {
     pub fn about(self) -> &'static str {
         match self {
             Toolset::Modeling => "sketches, features, parameters, history, branches (default)",
-            Toolset::Pcb => {
-                "schematic capture and PCB layout: symbols, wires, netlist, ERC, footprints, tracks, DRC, Gerbers"
-            }
+            Toolset::Pcb => "PCB layout: boards, footprints, tracks, zones, routing, DRC, Gerbers",
+            Toolset::Sch => "schematic capture: symbols, wires, labels, netlist, ERC",
             Toolset::Sim => "simulation: sim_static, sim_modal, sim_optimize",
             Toolset::Cam => "CAM: cam_toolpath, cam_export_gcode",
         }
@@ -181,6 +187,7 @@ impl Toolset {
         match self {
             Toolset::Modeling => CORE_COMMANDS.contains(&id),
             Toolset::Pcb => PCB_COMMANDS.contains(&id),
+            Toolset::Sch => SCH_COMMANDS.contains(&id),
             Toolset::Sim => id.starts_with("sim."),
             Toolset::Cam => id.starts_with("cam."),
         }
@@ -1751,8 +1758,8 @@ mod size_tests {
             // The default selection has no `toolset` tool (its list is unchanged).
             assert_eq!(tools.iter().any(|t| t.name == TOOLSET), set != Toolset::Modeling, "{}", set.name());
         }
-        // Every name in the pcb set is a real command.
-        for id in PCB_COMMANDS {
+        // Every name in the pcb and sch sets is a real command.
+        for id in PCB_COMMANDS.iter().chain(SCH_COMMANDS) {
             assert!(find_command(id).is_some(), "{id}");
         }
         assert_eq!(Toolset::parse_list("pcb, modeling,pcb"), Ok(vec![Toolset::Modeling, Toolset::Pcb]));

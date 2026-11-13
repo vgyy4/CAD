@@ -73,7 +73,7 @@ claude mcp add --transport stdio gusset-part -- gusset mcp /path/to/part.gus
 
 Options: `--read-only` rejects every mutating tool (also when relaying to the app);
 `--no-attach` always runs headless, even when the app is open;
-`--tools modeling,pcb` lists more tool groups (`modeling` default, `pcb` schematic and PCB,
+`--tools modeling,pcb,sch` lists more tool groups (`modeling` default, `pcb` PCB layout, `sch` schematic,
 `sim`, `cam`; agents can also switch with the `toolset` tool, and `commands`/`run` reach every
 command whatever is listed). Headless, `render_view`
 renders with the GPU (any adapter, including software Vulkan/GL) or a built-in CPU

@@ -1379,7 +1379,7 @@ async fn the_default_tool_list_is_the_modeling_set_and_unchanged() {
 async fn a_server_started_with_toolsets_lists_them() {
     use gusset_mcp::server::Toolset;
     let server = McpServer::new(host());
-    server.set_toolsets(&[Toolset::Pcb, Toolset::Cam]);
+    server.set_toolsets(&[Toolset::Pcb, Toolset::Sch, Toolset::Cam]);
     let c = connect(&server, Client::new("bot", None), false).await;
     let names = tool_names(&c).await;
     for n in ["pcb_drc", "sch_netlist", "cam_toolpath", "commands", "run", "toolset"] {
@@ -1414,9 +1414,14 @@ async fn the_toolset_tool_switches_the_list_and_notifies() {
     }
     assert_eq!(w.0.load(Ordering::SeqCst), 1, "list_changed arrives once");
     let names = tool_names(&c).await;
-    assert!(names.contains(&"sim_static".to_string()) && names.contains(&"sch_erc".to_string()));
+    assert!(names.contains(&"sim_static".to_string()) && names.contains(&"pcb_drc".to_string()));
     assert!(names.contains(&"toolset".to_string()) && names.contains(&"run".to_string()));
     assert!(!names.contains(&"feature_extrude".to_string()));
+    // Schematic commands are their own set.
+    assert!(!names.contains(&"sch_erc".to_string()));
+    let r = ok(&call_w(&c, "toolset", json!({"enable": ["sch"]})).await);
+    assert_eq!(r["active"], json!(["pcb", "sch", "sim"]), "{r}");
+    assert!(tool_names(&c).await.contains(&"sch_erc".to_string()));
     // Another connection is not affected.
     let other = connect(&server, Client::new("other", None), false).await;
     assert!(!tool_names(&other).await.contains(&"sim_static".to_string()));

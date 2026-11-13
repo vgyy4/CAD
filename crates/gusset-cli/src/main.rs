@@ -26,7 +26,7 @@ const USAGE: &str = "usage:
                OUT: .step .iges .stl .3mf .obj, or .png (path traced; [--samples N] [--size WxH])
   gusset text <model.gus> [--branch NAME]
   gusset pack <model.gus.txt> -o <model.gus>
-  gusset mcp [model.gus] [--read-only] [--no-attach] [--tools modeling,pcb,sim,cam]
+  gusset mcp [model.gus] [--read-only] [--no-attach] [--tools modeling,pcb,sch,sim,cam]
   gusset info
   gusset self-test
   gusset --version
