@@ -442,7 +442,7 @@ it nets and rules, route, pour, check and write every fabrication file without K
 
 ## Next (out of scope of this ADR's work; each needs its own ADR before work)
 * **Routing**: a true shove (segments moved aside keeping their shape, several tracks and
-  vias pushed in a chain), dragging tracks, differential pairs and length tuning, blind and
+  vias pushed in a chain), dragging tracks, differential pairs and length tuning (done, ADR 0055), blind and
   buried vias, routing across layers in one search; a larger walkaround window for dense
   boards (video: 8 of 30 pad pairs). Freerouting runs from the user's setting (phase 3);
   finding it on the PATH is not done on purpose (the user names the install).

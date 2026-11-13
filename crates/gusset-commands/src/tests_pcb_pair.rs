@@ -55,7 +55,7 @@ fn a_pair_is_routed_with_its_class_width_and_gap_and_undone_in_one_step() {
     assert!(r["skew_mm"].as_f64().unwrap() < 0.05, "{r}");
     let b = open(&mut s);
     assert_eq!(b.board.tracks.len(), tracks + r["tracks"].as_u64().unwrap() as usize);
-    assert!(b.board.tracks.iter().skip(tracks).all(|t| t.width == 0.15));
+    assert!(b.board.tracks.iter().skip(tracks).all(|t| (t.width - 0.15).abs() < 1e-9));
     assert!(b.board.tracks.iter().skip(tracks).any(|t| t.start[1] > 14.0), "round the wall");
     let v = gusset_pcb::drc::check(&b.board, &b.rules, 50);
     assert!(v.is_empty(), "{v:?}");
