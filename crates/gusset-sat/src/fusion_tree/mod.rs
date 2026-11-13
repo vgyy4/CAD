@@ -168,6 +168,11 @@ fn built(
     let (meta, bulk) = pick_stream(files)?;
     // Joints make no geometry; they move occurrences, and the stream stores where to.
     let joints = joint_placements(meta, bulk);
+    if meta.len().saturating_add(bulk.len()) <= MAX_STREAM_BYTES
+        && let Some(d) = Design::new(meta, bulk)
+    {
+        joint::place_moved_inserts(&mut tree, &d);
+    }
     joint::place_inserts(&mut tree, &joints);
     insert::splice(&mut tree, resolve, depth)?;
     json::check(&tree)?;

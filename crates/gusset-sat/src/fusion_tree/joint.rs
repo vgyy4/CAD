@@ -429,6 +429,99 @@ pub(super) fn place(bodies: &mut Vec<Placed>, joints: &Joints) {
     *bodies = out;
 }
 
+/// A reference to an occurrence of an inserted design in a path record: `01`, the `u64` id in
+/// that design, `01`, a `u64` (the same for each), `00`, the occurrence class as a 36-character
+/// text, and the zero byte of the list. The offset after it.
+fn foreign_occurrence(rec: &[u8], at: usize) -> Option<usize> {
+    if rec.get(at) != Some(&1) || rec.get(at + 9) != Some(&1) || rec.get(at + 18) != Some(&0) {
+        return None;
+    }
+    let text = at + 19;
+    if u32_at(rec, text)? != 36 || !rec.get(text + 4..text + 40)?.starts_with(OCCURRENCE.as_bytes()) {
+        return None;
+    }
+    (rec.get(text + 40) == Some(&0)).then_some(text + 41)
+}
+
+/// How the root's joints moved the occurrences inside a design inserted by occurrence `occ`
+/// (Component Insert `insert`): each path record from `occ` into the inserted design (its
+/// later entries reference that design's occurrences) stores where the path stood once the
+/// insert was made and where it stands last; the move from the one to the other, the same for
+/// every such path (the inserted design moved as a whole). `None` where no path goes into it,
+/// a record is not laid out as known, or the paths moved apart.
+fn moved_insert(d: &Design, occ: u64, insert: u64) -> Option<Placement> {
+    let mut moves: Vec<Placement> = Vec::new();
+    for id in d.ids.iter().copied().filter(|i| d.is(*i, PATH)).take(MAX_PATHS) {
+        let rec = d.rec(id);
+        let Some((first, _)) = refs_at(d, rec, 0).into_iter().find(|r| d.is(r.1, OCCURRENCE)) else { continue };
+        let Some(at) = first.checked_sub(4) else { continue };
+        let n = u32_at(rec, at).map_or(0, |n| n as usize);
+        if !(2..=MAX_PATH).contains(&n) {
+            continue;
+        }
+        let Some((q, mut pos)) = listed(d, rec, at + 4, OCCURRENCE) else { continue };
+        if q != occ {
+            continue;
+        }
+        for _ in 1..n {
+            pos = foreign_occurrence(rec, pos)?;
+        }
+        let (_, e) = listed(d, rec, pos, COMPONENT)?;
+        let count = u32_at(rec, e + 4)? as usize;
+        if count > MAX_STEPS {
+            return None;
+        }
+        let mut pos = e + 8;
+        let (mut inserted, mut last) = (None, None);
+        for _ in 0..count {
+            if rec.get(pos..pos + 2) != Some(&[1, 0]) {
+                return None;
+            }
+            let (step, e) = ref_end(d, rec, pos + 2).filter(|r| rec.get(r.1) == Some(&0))?;
+            let (m, e) = optional_matrix(rec, e + 1)?;
+            if step == insert {
+                inserted = m;
+            }
+            last = m.or(last);
+            pos = e;
+        }
+        moves.push(last?.then(&inserted?.inverse()));
+    }
+    let first = *moves.first()?;
+    moves.iter().all(|m| same(m, &first)).then_some(first)
+}
+
+/// A design inserted into the root component and then moved by a joint of the root (5998's
+/// board: `Assemble2` puts it 12.563 mm along -x and 11.8 mm down from where `Component
+/// Insert1` placed it): its features stand where the paths into it say, the insert's placement
+/// moved as they moved. Run before [`place_inserts`], which leaves such an insert alone.
+pub(super) fn place_moved_inserts(tree: &mut Value, d: &Design) {
+    let Some(feats) = tree.get_mut("features").and_then(Value::as_array_mut) else { return };
+    for f in feats {
+        if f.get("type").and_then(Value::as_str) != Some("component_insert") {
+            continue;
+        }
+        let (Some(occ), Some(insert)) =
+            (f.get("_occurrence").and_then(Value::as_u64), f.get("source_id").and_then(Value::as_u64))
+        else {
+            continue;
+        };
+        let (Some(pl), Some(moved)) =
+            (f.get("placement").and_then(super::json::placement_of), moved_insert(d, occ, insert))
+        else {
+            continue;
+        };
+        if same(&moved, &Placement::IDENTITY) {
+            continue;
+        }
+        let p = moved.then(&pl);
+        if let Some(o) = f.as_object_mut() {
+            o.insert("placement".into(), json!({"r": p.r, "t": p.t}));
+            o.insert("_moved_inside".into(), true.into());
+        }
+    }
+}
+
 /// See the call in [`super::built`]: a design inserted into the root component stands where
 /// its occurrence's path record has it, not where the Component Insert first put it.
 pub(super) fn place_inserts(tree: &mut Value, joints: &Joints) {
@@ -437,11 +530,41 @@ pub(super) fn place_inserts(tree: &mut Value, joints: &Joints) {
         if f.get("type").and_then(Value::as_str) != Some("component_insert") {
             continue;
         }
+        // Placed by the paths into it already (`place_moved_inserts`).
+        if f.get("_moved_inside").is_some() {
+            continue;
+        }
         let Some(occ) = f.get("_occurrence").and_then(Value::as_u64) else { continue };
         let Some(p) = joints.placements.iter().find(|p| p.path == [occ]) else { continue };
         let (r, t) = (p.placement.r, p.placement.t);
         if let Some(o) = f.as_object_mut() {
             o.insert("placement".into(), json!({"r": r, "t": t}));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+
+    #[test]
+    fn an_occurrence_of_an_inserted_design_is_read_by_its_class_text() {
+        // 5998's path into the inserted board: `01`, the id there, `01`, a key, `00`, the class.
+        let mut rec = vec![7u8];
+        rec.push(1);
+        rec.extend(229u64.to_le_bytes());
+        rec.push(1);
+        rec.extend(0x5932_ca0f_80b9_8db8u64.to_le_bytes());
+        rec.push(0);
+        rec.extend(36u32.to_le_bytes());
+        rec.extend(b"CE2913AA-CFE0-4F04-9102-24424ED3BCFA");
+        rec.push(0);
+        assert_eq!(foreign_occurrence(&rec, 1), Some(rec.len()));
+        // Another class, or no list byte after it: not one.
+        let mut other = rec.clone();
+        other[24] = b'D';
+        assert_eq!(foreign_occurrence(&other, 1), None);
+        assert_eq!(foreign_occurrence(&rec[..rec.len() - 1], 1), None);
     }
 }
