@@ -285,3 +285,60 @@ fn moving_items_refuses_bad_input_and_leaves_the_board() {
     assert!(b.move_items(&[0], &[], [1e9, 0.0], true, &l()).is_err());
     assert_eq!(b.write(), before);
 }
+
+#[test]
+fn moving_a_track_stretches_its_neighbours() {
+    let mut b = pair();
+    b.add_track([10.0, 10.0], [20.0, 10.0], 0.25, "F.Cu", Some("A"), &l()).unwrap(); // 0: moved
+    b.add_track([10.0, 10.0], [10.0, 5.0], 0.25, "F.Cu", Some("A"), &l()).unwrap(); // 1: follows at start
+    b.add_track([20.0, 10.0], [30.0, 10.0], 0.25, "B.Cu", Some("A"), &l()).unwrap(); // 2: other layer
+    b.add_track([20.0, 10.0], [20.0, 15.0], 0.25, "F.Cu", Some("B"), &l()).unwrap(); // 3: other net
+    b.add_track([20.0, 10.0], [25.0, 15.0], 0.25, "F.Cu", Some("A"), &l()).unwrap(); // 4: follows at start
+    b.add_via([20.0, 10.0], 0.8, 0.4, Some("A"), &l()).unwrap();
+    let (t, c) = b.move_items(&[0], &[], [0.0, 2.0], true, &l()).unwrap();
+    assert_eq!((t, c), (1, 2));
+    assert_eq!((b.tracks[0].start, b.tracks[0].end), ([10.0, 12.0], [20.0, 12.0]));
+    assert_eq!((b.tracks[1].start, b.tracks[1].end), ([10.0, 12.0], [10.0, 5.0]));
+    assert_eq!(b.tracks[2].start, [20.0, 10.0]);
+    assert_eq!(b.tracks[3].start, [20.0, 10.0]);
+    assert_eq!((b.tracks[4].start, b.tracks[4].end), ([20.0, 12.0], [25.0, 15.0]));
+    // Vias stay put.
+    assert_eq!(b.vias[0].at, [20.0, 10.0]);
+    // Without `attached` nothing follows; named tracks never count as neighbours.
+    b.move_items(&[0], &[], [0.0, 1.0], false, &l()).unwrap();
+    assert_eq!(b.tracks[1].start, [10.0, 12.0]);
+    let (_, c) = b.move_items(&[0, 1], &[], [1.0, 0.0], true, &l()).unwrap();
+    assert_eq!(c, 0);
+    assert_eq!(b.tracks[1].start, [11.0, 12.0]);
+}
+
+#[test]
+fn a_footprint_carries_the_track_ends_on_its_pads() {
+    let mut b = pair();
+    b.add_track([10.0, 10.0], [20.0, 10.0], 0.25, "F.Cu", Some("A"), &l()).unwrap(); // pad J1.1 centre
+    b.add_track([10.0, 12.54], [20.0, 12.54], 0.25, "F.Cu", Some("A"), &l()).unwrap(); // pad J1.2 is net B
+    b.add_track([10.3, 10.0], [20.0, 8.0], 0.25, "F.Cu", Some("A"), &l()).unwrap(); // inside J1.1 copper
+    b.add_track([10.0, 10.0], [20.0, 7.0], 0.25, "B.Cu", Some("A"), &l()).unwrap(); // thru pad: both layers
+    let mut m = b.clone();
+    let old = m.footprint_pads(0);
+    m.move_footprint(0, [12.0, 11.0], 0.0, &l()).unwrap();
+    assert_eq!(m.carry_track_ends(0, &old, 0.0, &l()).unwrap(), 3);
+    assert_eq!(m.tracks[0].start, [12.0, 11.0]);
+    assert_eq!(m.tracks[0].end, [20.0, 10.0]);
+    assert_eq!(m.tracks[1].start, [10.0, 12.54]);
+    assert!((m.tracks[2].start[0] - 12.3).abs() < 1e-9 && (m.tracks[2].start[1] - 11.0).abs() < 1e-9);
+    assert_eq!(m.tracks[3].start, [12.0, 11.0]);
+    // Turning by 90 degrees about the footprint's place turns the offset end too.
+    let mut r = b.clone();
+    let old = r.footprint_pads(0);
+    r.move_footprint(0, [10.0, 10.0], 90.0, &l()).unwrap();
+    assert_eq!(r.carry_track_ends(0, &old, 90.0, &l()).unwrap(), 3);
+    assert_eq!(r.tracks[0].start, [10.0, 10.0]);
+    // Offset (0.3, 0) from pad 1 turns to (0, -0.3).
+    assert!((r.tracks[2].start[0] - 10.0).abs() < 1e-9 && (r.tracks[2].start[1] - 9.7).abs() < 1e-9);
+    assert_eq!(Board::read(&r.write(), &l()).unwrap().tracks, r.tracks);
+    // Nothing on the pads of the other footprint: nothing carried.
+    let old = b.footprint_pads(1);
+    b.move_footprint(1, [31.0, 10.0], 0.0, &l()).unwrap();
+    assert_eq!(b.carry_track_ends(1, &old, 0.0, &l()).unwrap(), 0);
+}

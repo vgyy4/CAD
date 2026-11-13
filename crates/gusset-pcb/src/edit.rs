@@ -362,7 +362,8 @@ impl Board {
     }
 
     /// Moves tracks and vias by `delta` (mm). With `attached`, track ends that sit on a
-    /// moved via (within 1e-4 mm, any layer) and belong to tracks not named move with it.
+    /// moved via (within 1e-4 mm, any layer), or on an end of a moved track (same layer and
+    /// net), and belong to tracks not named, move with it (the neighbours stretch).
     /// Returns (tracks moved, track ends carried along by vias).
     ///
     /// # Errors
@@ -400,12 +401,24 @@ impl Board {
             plan.push((v.node, [false; 3], true));
         }
         let mut carried = 0;
-        if attached && !via_places.is_empty() {
-            let on = |p: Pt| via_places.iter().any(|v| libm::hypot(p[0] - v[0], p[1] - v[1]) <= 1e-4);
+        if attached && (!via_places.is_empty() || !moved_tracks.is_empty()) {
+            // Ends of the moved tracks (not their arc mids), with layer and net.
+            let ends: Vec<(Pt, &str, &crate::board::NetRef)> = moved_tracks
+                .iter()
+                .filter_map(|&i| self.tracks.get(i))
+                .flat_map(|t| [(t.start, t.layer.as_str(), &t.net), (t.end, t.layer.as_str(), &t.net)])
+                .collect();
+            let near = |p: Pt, q: Pt| libm::hypot(p[0] - q[0], p[1] - q[1]) <= 1e-4;
             for (i, t) in self.tracks.iter().enumerate() {
                 if moved_tracks.binary_search(&i).is_ok() {
                     continue;
                 }
+                // A moved via takes the ends on it (any layer); a moved track takes the
+                // ends of tracks on its layer and net.
+                let on = |p: Pt| {
+                    via_places.iter().any(|&v| near(p, v))
+                        || ends.iter().any(|&(q, layer, net)| near(p, q) && layer == t.layer && same_net(self, net, &t.net))
+                };
                 let (s, e) = (on(t.start), on(t.end));
                 if s || e {
                     carried += usize::from(s) + usize::from(e);
@@ -432,6 +445,86 @@ impl Board {
         }
         self.reread(limits)?;
         Ok((moved_tracks.len(), carried))
+    }
+
+    /// The pads of a footprint as they are now, to hand to [`Board::carry_track_ends`]
+    /// after the footprint has been moved, turned or flipped.
+    pub fn footprint_pads(&self, footprint: usize) -> Vec<crate::board::Pad> {
+        let Some(fp) = self.footprints.get(footprint) else { return Vec::new() };
+        fp.pads.iter().filter_map(|&p| self.pads.get(p)).cloned().collect()
+    }
+
+    /// After a footprint changed (`old` from [`Board::footprint_pads`] taken before),
+    /// moves the track ends that sat on its old pads (on a layer of the pad, same net, on
+    /// the pad's copper or at its centre) with them: the end keeps its place relative to
+    /// the pad, turned by `turned` degrees (0 for a flip or a plain move). Arc mids stay.
+    /// Returns the number of ends moved.
+    ///
+    /// # Errors
+    /// A failed re-read.
+    pub fn carry_track_ends(
+        &mut self,
+        footprint: usize,
+        old: &[crate::board::Pad],
+        turned: f64,
+        limits: &Limits,
+    ) -> Result<usize, Error> {
+        let Some(fp) = self.footprints.get(footprint) else { return Ok(0) };
+        let (s, c) = (turned.to_radians().sin(), turned.to_radians().cos());
+        // New place of an end: pad centre moved, the offset from it turned.
+        let mut edits: Vec<(usize, [Option<Pt>; 2])> = Vec::new();
+        for (t, track) in self.tracks.iter().enumerate() {
+            let mut one = [None, None];
+            for (k, p) in [track.start, track.end].into_iter().enumerate() {
+                let hit = old.iter().zip(&fp.pads).find_map(|(o, &np)| {
+                    let n = self.pads.get(np)?;
+                    let layer_ok = self.on_layer(&o.layers, &track.layer);
+                    let net_ok = same_net(self, &o.net, &track.net);
+                    let at_centre = libm::hypot(p[0] - o.at[0], p[1] - o.at[1]) <= 1e-4;
+                    let in_copper = || match crate::geom::pad_contour(o, 0.0) {
+                        Some(crate::geom::Contour::Circle { center, radius }) => {
+                            libm::hypot(p[0] - center[0], p[1] - center[1]) <= radius
+                        }
+                        Some(ct) => crate::geom::inside(&ct.polygon(0.05), p),
+                        None => false,
+                    };
+                    (layer_ok && net_ok && (at_centre || in_copper())).then_some((o.at, n.at))
+                });
+                if let Some((from, to)) = hit {
+                    let (dx, dy) = (p[0] - from[0], p[1] - from[1]);
+                    one[k] = Some([to[0] + dx * c + dy * s, to[1] - dx * s + dy * c]);
+                }
+            }
+            if one.iter().any(Option::is_some) {
+                edits.push((t, one));
+            }
+        }
+        let mut carried = 0;
+        let mut nodes = Vec::new();
+        for (t, one) in &edits {
+            if let Some(track) = self.tracks.get(*t) {
+                nodes.push((track.node, *one));
+            }
+        }
+        for (_, p) in &nodes {
+            for q in p.iter().flatten() {
+                check_pt(*q)?;
+            }
+        }
+        let items = self.tree.items_mut().ok_or_else(|| bad("not a board"))?;
+        for (node, one) in nodes {
+            let n = items.get_mut(node).ok_or_else(|| bad("not a board"))?;
+            for (h, p) in [("start", one[0]), ("end", one[1])] {
+                if let (Some(p), Some(ch)) = (p, n.child_mut(h)) {
+                    *ch = xy(h, p);
+                    carried += 1;
+                }
+            }
+        }
+        if carried > 0 {
+            self.reread(limits)?;
+        }
+        Ok(carried)
     }
 
     /// Replaces the board outline (the board's own `Edge.Cuts` drawings; footprint ones
@@ -638,5 +731,14 @@ fn flip_node(n: &mut Node, depth: usize) {
                 flip_node(c, depth + 1);
             }
         }
+    }
+}
+
+/// Whether two net references name the same net (by number, else by name).
+fn same_net(board: &Board, a: &crate::board::NetRef, b: &crate::board::NetRef) -> bool {
+    match (board.net_name(a), board.net_name(b)) {
+        (Some(x), Some(y)) => x == y,
+        (None, None) => true,
+        _ => false,
     }
 }

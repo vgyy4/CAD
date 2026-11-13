@@ -233,3 +233,40 @@ fn tracks_and_vias_move_with_attached_ends_in_one_undo_step() {
         assert!(execute(&mut s, &u(10), "pcb.move", args.clone()).is_err(), "{args}");
     }
 }
+
+#[test]
+fn moving_a_track_stretches_its_neighbours_in_one_undo_step() {
+    let mut s = session();
+    run(&mut s, &u(1), "pcb.open", json!({"path": "board.kicad_pcb"}));
+    let t0 = open(&mut s).board.tracks.len();
+    run(&mut s, &u(2), "pcb.add_track", json!({"start": [9, 10], "end": [9, 15]}));
+    run(&mut s, &u(3), "pcb.add_track", json!({"start": [9, 15], "end": [14, 15], "net": "GND"}));
+    let r = run(&mut s, &u(4), "pcb.move", json!({"tracks": [t0], "by": [1, 0]}));
+    assert_eq!(r["ends_carried"], 2, "{r}");
+    let b = open(&mut s);
+    assert_eq!((b.board.tracks[t0].start, b.board.tracks[t0].end), ([10.0, 10.0], [10.0, 15.0]));
+    assert_eq!(b.board.tracks[t0 + 1].start, [10.0, 15.0]);
+    run(&mut s, &u(5), "history.undo", json!({}));
+    assert_eq!(open(&mut s).board.tracks[t0 + 1].start, [9.0, 15.0]);
+}
+
+#[test]
+fn a_footprint_move_carries_track_ends_on_its_pads_in_one_undo_step() {
+    let mut s = session();
+    run(&mut s, &u(1), "pcb.open", json!({"path": "board.kicad_pcb"}));
+    let t = run(&mut s, &u(2), "pcb.add_track", json!({"start": [9, 10], "end": [9, 15]}))["track"].as_u64().unwrap();
+    let t = usize::try_from(t).unwrap();
+    let at = open(&mut s).board.footprints[0].at;
+    assert_eq!(open(&mut s).board.footprints[0].reference, "R1");
+    let to = [at[0] + 2.0, at[1] + 3.0];
+    let r = run(&mut s, &u(3), "pcb.move_footprint", json!({"footprint": "R1", "at": to}));
+    assert_eq!(r["ends_carried"], 2, "{r}");
+    let b = open(&mut s);
+    assert_eq!((b.board.tracks[t].start, b.board.tracks[t].end), ([11.0, 13.0], [9.0, 15.0]));
+    run(&mut s, &u(4), "history.undo", json!({}));
+    assert_eq!(open(&mut s).board.tracks[t].start, [9.0, 10.0]);
+    // Switched off: the track stays.
+    let r = run(&mut s, &u(5), "pcb.move_footprint", json!({"footprint": "R1", "at": to, "carry": false}));
+    assert_eq!(r["ends_carried"], 0, "{r}");
+    assert_eq!(open(&mut s).board.tracks[t].start, [9.0, 10.0]);
+}

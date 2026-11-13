@@ -219,12 +219,15 @@ pub struct PcbMoveFootprint {
     /// To the other side.
     #[serde(default)]
     pub flip: bool,
+    /// Track ends on its pads follow (default true).
+    #[serde(default)]
+    pub carry: Option<bool>,
 }
 
 impl Command for PcbMoveFootprint {
     const ID: &'static str = "pcb.move_footprint";
     const TITLE: &'static str = "Move footprint";
-    const DESCRIPTION: &'static str = "Move, rotate or flip a footprint of the open board.";
+    const DESCRIPTION: &'static str = "Move, rotate or flip a footprint of the open board; track ends on its pads follow.";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -245,12 +248,21 @@ impl Command for PcbMoveFootprint {
             if at.iter().any(|v| !v.is_finite() || v.abs() > 10_000.0) {
                 return Err(CommandError::args("the place must be within 10 m"));
             }
+            let old = b.footprint_pads(i);
+            let turned = angle - fp.angle;
             b.move_footprint(i, at, angle, &limits()).map_err(pcb_err)?;
             if self.flip {
                 b.flip_footprint(i, &limits()).map_err(pcb_err)?;
             }
+            // A flip mirrors the pads: ends then move by the pad's displacement only.
+            let carried = if self.carry.unwrap_or(true) {
+                b.carry_track_ends(i, &old, if self.flip { 0.0 } else { turned }, &limits()).map_err(pcb_err)?
+            } else {
+                0
+            };
             let fp = b.footprints.get(i).ok_or_else(no_board)?;
-            Ok(json!({ "at": fp.at, "angle": fp.angle, "side": if fp.bottom { "bottom" } else { "top" } }))
+            let side = if fp.bottom { "bottom" } else { "top" };
+            Ok(json!({ "at": fp.at, "angle": fp.angle, "side": side, "ends_carried": carried }))
         })
     }
 }
