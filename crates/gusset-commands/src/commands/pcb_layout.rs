@@ -75,7 +75,7 @@ pub struct PcbRoute {
     /// Copper layer (default F.Cu).
     #[serde(default)]
     pub layer: Option<String>,
-    /// Default: the net at the start.
+    /// Default: the start's net.
     #[serde(default)]
     pub net: Option<String>,
     /// mm (default: the net class's).
@@ -84,10 +84,10 @@ pub struct PcbRoute {
     /// false: straight between the points.
     #[serde(default)]
     pub around: Option<bool>,
-    /// Round corners into arcs of this radius (mm).
+    /// Arc corner radius (mm).
     #[serde(default)]
     pub arc_radius: Option<f64>,
-    /// false: never move another net's track aside.
+    /// false: no shoving.
     #[serde(default)]
     pub shove: Option<bool>,
 }
@@ -95,8 +95,7 @@ pub struct PcbRoute {
 impl Command for PcbRoute {
     const ID: &'static str = "pcb.route";
     const TITLE: &'static str = "Route track";
-    const DESCRIPTION: &'static str =
-        "Lay a track through points in 45° segments, walking around other nets (or shoving one track aside).";
+    const DESCRIPTION: &'static str = "Lay a 45° track through points around other nets (may shove one track).";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
