@@ -179,6 +179,18 @@ pub fn body_count(bytes: &[u8], limits: &Limits) -> Result<usize, SatError> {
     Ok(parse(bytes, limits)?.recs.iter().filter(|r| r.ty == "body").count())
 }
 
+/// The tag of each body of a blob, in the order of [`body_count`] and [`to_step_nth`]: the integer
+/// after the body record's attribute pointer (version 7 on), `None` where there is none. In a
+/// Fusion history blob it is the number the design's body map (`74CA4562`) pairs with the
+/// design's body record.
+///
+/// # Errors
+/// [`SatError`] for a damaged blob.
+pub fn body_tags(bytes: &[u8], limits: &Limits) -> Result<Vec<Option<i64>>, SatError> {
+    let sat = parse(bytes, limits)?;
+    Ok(sat.recs.iter().zip(&sat.tags).filter(|(r, _)| r.ty == "body").map(|(_, t)| *t).collect())
+}
+
 /// One body of a blob as STEP text: body `nth` (from 0, in file order) of a blob that must hold
 /// exactly `of` bodies, moved by `place`. A Fusion base feature's output is the last bodies of its
 /// history blob (`BREP.<id>.smbh`). An error where the blob holds another number of bodies or the

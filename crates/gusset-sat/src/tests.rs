@@ -53,6 +53,23 @@ fn hostile_input_is_refused_not_panicked_on() {
 }
 
 #[test]
+fn a_bodys_tag_is_the_integer_after_its_attribute_pointer() {
+    // Version 7 writes an integer and a pointer after each record's attribute pointer; in a
+    // Fusion history blob the integer is the tag the design's body map names (section 60).
+    let text = box_sat(700, [1.0, 2.0, 3.0]).replacen("body $-1 -1 $-1", "body $-1 1758 $-1", 1);
+    for bytes in [text.as_bytes().to_vec(), to_binary(&text)] {
+        assert_eq!(body_tags(&bytes, &Limits::default()).unwrap(), vec![Some(1758)]);
+        assert_eq!(body_count(&bytes, &Limits::default()).unwrap(), 1);
+    }
+    // Before version 7 there is none.
+    assert_eq!(body_tags(box_sat(600, [1.0, 2.0, 3.0]).as_bytes(), &Limits::default()).unwrap(), vec![None]);
+    // The fields read the same with or without the tag.
+    let a = parse(text.as_bytes(), &Limits::default()).unwrap();
+    let b = parse(box_sat(700, [1.0, 2.0, 3.0]).as_bytes(), &Limits::default()).unwrap();
+    assert_eq!(a.recs, b.recs);
+}
+
+#[test]
 fn the_binary_form_converts_like_the_text() {
     let text = box_sat(700, [10.0, 20.0, 30.0]);
     let a = to_step(text.as_bytes(), "box", &Limits::default()).unwrap();

@@ -4,8 +4,9 @@
 //! A field is a pointer `$n` (record number from 0, `$-1` for none) or a word (a number,
 //! `I` for an infinite interval end, `forward`, a string). From version 7 strings are
 //! written `@<length> <text>` and every record carries two extra fields after its
-//! attribute pointer (an integer and a pointer, both unused here); they are dropped so
-//! both layouts read the same.
+//! attribute pointer (an integer and a pointer); they are dropped so both layouts read the same.
+//! The integer is kept apart ([`Sat::tags`]): in a Fusion history blob it is the entity's tag,
+//! which the design's body maps name (section 60 of the format notes).
 
 use crate::{Limits, SatError};
 
@@ -31,6 +32,9 @@ pub struct Sat {
     /// Subtype definitions (`{ exactsur ...`, every `{` not followed by `ref`) in file
     /// order, as (record, field of the `{`): `{ ref n }` names the n-th.
     pub subtypes: Vec<(usize, usize)>,
+    /// Per record: the integer version 7 writes after the attribute pointer (the entity's tag in
+    /// a Fusion history blob); `None` before version 7.
+    pub tags: Vec<Option<i64>>,
 }
 
 impl Sat {
@@ -222,6 +226,7 @@ fn parse_binary(b: &[u8], limits: &Limits) -> Result<Sat, SatError> {
         rd.int()?;
     }
     let mut recs: Vec<Rec> = Vec::new();
+    let mut tags: Vec<Option<i64>> = Vec::new();
     let mut cur: Vec<Tok> = Vec::new();
     let mut ty = String::new();
     // The type is complete once its final 0x0d identifier is read.
@@ -296,16 +301,12 @@ fn parse_binary(b: &[u8], limits: &Limits) -> Result<Sat, SatError> {
                     break;
                 }
                 // As in version 7 text: an integer, then (but in a transform) a pointer.
-                if matches!(f.get(1), Some(Tok::Word(w)) if w.parse::<i64>().is_ok()) {
-                    f.remove(1);
-                    if t != "transform" && matches!(f.get(1), Some(Tok::Ptr(_))) {
-                        f.remove(1);
-                    }
-                }
+                let tag = version_seven_tag(&t, &mut f);
                 if recs.len() >= limits.max_records {
                     return Err(SatError::TooLarge(format!("more than {} records", limits.max_records)));
                 }
                 recs.push(Rec { ty: t, f });
+                tags.push(tag);
             }
             other => return Err(bad(format!("unknown binary tag 0x{other:02x} at byte {}", rd.pos + 14))),
         }
@@ -315,7 +316,21 @@ fn parse_binary(b: &[u8], limits: &Limits) -> Result<Sat, SatError> {
     }
     let scale = units.first().copied().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(1.0);
     let subtypes = subtypes_of(&recs);
-    Ok(Sat { version, scale, recs, subtypes })
+    Ok(Sat { version, scale, recs, subtypes, tags })
+}
+
+/// Removes the integer (and, but in a `transform`, the pointer) version 7 writes after a record's
+/// attribute pointer, and returns the integer.
+fn version_seven_tag(ty: &str, f: &mut Vec<Tok>) -> Option<i64> {
+    let tag = match f.get(1) {
+        Some(Tok::Word(w)) => w.parse::<i64>().ok()?,
+        _ => return None,
+    };
+    f.remove(1);
+    if ty != "transform" && matches!(f.get(1), Some(Tok::Ptr(_))) {
+        f.remove(1);
+    }
+    Some(tag)
 }
 
 struct Bin<'a> {
@@ -416,6 +431,7 @@ fn parse_text(bytes: &[u8], limits: &Limits) -> Result<Sat, SatError> {
     };
     lx.at_strings = version >= 700;
     let mut recs = Vec::new();
+    let mut tags: Vec<Option<i64>> = Vec::new();
     let mut tokens = 0usize;
     let mut cur: Vec<String> = Vec::new();
     while let Some(t) = lx.token() {
@@ -444,20 +460,16 @@ fn parse_text(bytes: &[u8], limits: &Limits) -> Result<Sat, SatError> {
             .collect();
         // Version 7: an integer after the attribute pointer, then (except in a
         // `transform`, whose data follows directly) a pointer.
-        if version >= 700 && matches!(f.get(1), Some(Tok::Word(w)) if w.parse::<i64>().is_ok()) {
-            f.remove(1);
-            if ty != "transform" && matches!(f.get(1), Some(Tok::Ptr(_))) {
-                f.remove(1);
-            }
-        }
+        let tag = if version >= 700 { version_seven_tag(&ty, &mut f) } else { None };
         if recs.len() >= limits.max_records {
             return Err(SatError::TooLarge(format!("more than {} records", limits.max_records)));
         }
         recs.push(Rec { ty, f });
+        tags.push(tag);
     }
     if recs.is_empty() {
         return Err(bad("no records"));
     }
     let subtypes = subtypes_of(&recs);
-    Ok(Sat { version, scale, recs, subtypes })
+    Ok(Sat { version, scale, recs, subtypes, tags })
 }
