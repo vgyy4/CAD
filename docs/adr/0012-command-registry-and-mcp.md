@@ -220,7 +220,7 @@ hint for PCB, schematic, simulation and CAM) so an agent finds an area at once.
   default selection `toolset` is not listed (the default list stays byte-for-byte as
   before, 17.97 KB) but is callable by name; it is listed in every other selection.
   State is per connection; stateless HTTP requests start from the server's selection.
-- Budget: each set alone stays within 18 KB and 2.4 KB per tool (modeling 17.97 KB, pcb
-  13.6 KB, sch 9.3 KB, sim 7.8 KB, cam 7.4 KB); the 600-byte average applies to the broad
+- Budget: each set alone stays within 18 KB and 2.4 KB per tool (modeling 18.0 KB, 17996 bytes, pcb
+  14.3 KB, sch 9.3 KB, sim 7.8 KB, cam 7.4 KB); the 600-byte average applies to the broad
   sets (20 tools or more), as sim/cam are a few commands with large schemas. Combined
   selections add up and are the user's choice.
