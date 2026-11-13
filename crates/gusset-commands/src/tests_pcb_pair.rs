@@ -121,3 +121,24 @@ fn the_shorter_side_is_tuned_in_one_undo_step() {
     let e = execute(&mut s, &u(6), "pcb.tune", json!({"net": "SIG", "target": -1.0})).unwrap_err();
     assert_eq!(e.code, "invalid_args");
 }
+
+#[test]
+fn add_track_takes_a_mid_point_for_an_arc() {
+    let mut s = pair_session();
+    run(&mut s, &u(1), "pcb.open", json!({"path": "pair.kicad_pcb"}));
+    let before = open(&mut s).board.tracks.len();
+    let r =
+        run(&mut s, &u(2), "pcb.add_track", json!({"start": [10, 5], "mid": [12, 7], "end": [14, 5], "net": "SIG"}));
+    assert_eq!(r["track"], before);
+    let b = open(&mut s);
+    let t = b.board.tracks.last().unwrap();
+    assert_eq!((t.start, t.mid, t.end), ([10.0, 5.0], Some([12.0, 7.0]), [14.0, 5.0]));
+    assert!((gusset_pcb::length::track_length(t) - std::f64::consts::PI * 2.0).abs() < 1e-6);
+    // Collinear points are no arc: refused, nothing added.
+    let e =
+        execute(&mut s, &u(3), "pcb.add_track", json!({"start": [10, 5], "mid": [12, 5], "end": [14, 5]})).unwrap_err();
+    assert_eq!(e.code, "invalid_args");
+    assert_eq!(open(&mut s).board.tracks.len(), before + 1);
+    run(&mut s, &u(4), "history.undo", json!({}));
+    assert_eq!(open(&mut s).board.tracks.len(), before);
+}

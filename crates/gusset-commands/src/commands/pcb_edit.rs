@@ -320,12 +320,15 @@ impl Command for PcbMoveFootprint {
     }
 }
 
-/// Adds a straight track segment.
+/// Adds a straight or arc track segment.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PcbAddTrack {
     pub start: [f64; 2],
     pub end: [f64; 2],
+    /// Makes an arc: a point on it.
+    #[serde(default)]
+    pub mid: Option<[f64; 2]>,
     /// Copper layer (default F.Cu).
     #[serde(default)]
     pub layer: Option<String>,
@@ -348,7 +351,17 @@ impl Command for PcbAddTrack {
             let layer = self.layer.clone().unwrap_or_else(|| "F.Cu".into());
             let net = self.net.clone().or_else(|| b.net_at(self.start, &layer)).or_else(|| b.net_at(self.end, &layer));
             let width = self.width.unwrap_or_else(|| open.rules.track_width_of(net.as_deref()));
-            let i = b.add_track(self.start, self.end, width, &layer, net.as_deref(), &limits()).map_err(pcb_err)?;
+            let i = match self.mid {
+                None => b.add_track(self.start, self.end, width, &layer, net.as_deref(), &limits()).map_err(pcb_err)?,
+                Some(mid) => {
+                    // Three points on a circle: collinear ones are a straight track, not an arc.
+                    if gusset_pcb::geom::circle_through(self.start, mid, self.end).is_none() {
+                        return Err(CommandError::args("start, mid and end must not lie on a line"));
+                    }
+                    let seg = gusset_pcb::route::Seg { start: self.start, end: self.end, mid: Some(mid) };
+                    b.add_route(&[seg], width, &layer, net.as_deref(), &limits()).map_err(pcb_err)?
+                }
+            };
             Ok(json!({ "track": i, "width": width, "net_user_text": net }))
         })
     }
