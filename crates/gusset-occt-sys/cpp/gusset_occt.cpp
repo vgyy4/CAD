@@ -44,6 +44,9 @@
 #include <BRepClass_FaceClassifier.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp_Face.hxx>
+#include <BRepGProp_Domain.hxx>
+#include <BRepGProp_Vinert.hxx>
+#include <BRepGProp_VinertGK.hxx>
 #include <GeomAdaptor_Curve.hxx>
 #include <GeomConvert_CurveToAnaCurve.hxx>
 #include <ShapeAnalysis_FreeBounds.hxx>
@@ -985,53 +988,111 @@ bool is_wound_face(const TopoDS_Face& f) {
   return false;
 }
 
-bool has_wound_face(const TopoDS_Shape& s) {
-  for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
-    if (is_wound_face(TopoDS::Face(ex.Current()))) return true;
+// The reference point of a shape's volume integration: the mean of its vertices, as OCCT's own.
+gp_Pnt vertex_mean(const TopoDS_Shape& s) {
+  gp_XYZ sum(0, 0, 0);
+  int n = 0;
+  for (TopExp_Explorer ex(s, TopAbs_VERTEX); ex.More(); ex.Next(), ++n) {
+    sum += BRep_Tool::Pnt(TopoDS::Vertex(ex.Current())).XYZ();
   }
-  return false;
+  return n > 0 ? gp_Pnt(sum / n) : gp_Pnt(0, 0, 0);
 }
 
-// Volume and area as `gs_mass` measures them. Torus and freeform faces are integrated
-// adaptively (the default quadrature is off by a few tenths of a percent on twisted surfaces,
-// by some 1e-7 on tori trimmed by planes), the rest by the default quadrature. A shape with a
-// wound face is integrated face by face: the wound faces by the default quadrature, the others
-// as above (the volume is a sum over faces, each face's part taken about the same origin: the
-// faces go into two compounds). On the whole shape the default quadrature put 3350's stored nut,
-// a revolved spline trimmed by the hexagon's sides beside a thread, 0.049 mm3 (1.4e-4) off.
-// `area` may be null (the volume alone).
+// The relative tolerance of the Gauss-Kronrod integration of a face (`measured_props`).
+const double kVolumeTol = 1e-9;
+
+// Volume and centre as `measured_props` sums them up, face by face.
+struct SummedProps : GProp_GProps {
+  SummedProps(double mass, const gp_Pnt& centre) {
+    dim = mass;
+    loc = centre;  // `g` is the centre's offset from `loc`: none
+  }
+};
+
+// Volume and area as `gs_mass` measures them. A shape of planes, cylinders, cones and spheres
+// alone is integrated by OCCT's default quadrature. Otherwise the volume is integrated face by
+// face about one point (the mean of the shape's vertices), first by the default quadrature,
+// then every face that does not wind round its surface (`is_wound_face`: the adaptive
+// quadratures take a wound domain for one period, Gauss-Kronrod took minutes on 5753's stored
+// screws) again by Gauss-Kronrod over the spans of its surface and edges to a relative 1e-9.
+// The default quadrature is off by a few tenths of a percent on twisted surfaces, by some 1e-7
+// on tori trimmed by planes and on the planes trimmed by them (their edges B-splines); OCCT's
+// adaptive one (a relative error of 1e-7 asked for) by 8e-6 on 3722's revolved dome faces, so
+// the globe's coil body measured 0.4 mm3 off and moved by 0.1 to 0.2 mm3 between equal shapes.
+// Gauss-Kronrod asks a relative error of each integral, so a face whose part is nothing but
+// rounding (a plane through the point: a helical sweep's end caps hold its axis) would be
+// subdivided a thousand times over (and inside each piece the inner integral again): a face
+// whose volume the default quadrature puts below 1e-9 of the sum of all faces' keeps that value,
+// and the centre is the default quadrature's (a moment about the point cancels out on a face
+// round it: an extruded circle's side took 3 s).
+// The area: the adaptive quadrature (the wound faces the default one). `area` may be null.
 void measured_props(const TopoDS_Shape& s, GProp_GProps& vol, GProp_GProps* area) {
   if (!has_freeform_face(s) && !has_torus_face(s)) {
     BRepGProp::VolumeProperties(s, vol);
     if (area) BRepGProp::SurfaceProperties(s, *area);
     return;
   }
-  const double eps = has_elliptic_face(s) ? 1e-10 : 1e-7;
-  if (!has_wound_face(s)) {
-    BRepGProp::VolumeProperties(s, vol, eps);
-    if (area) BRepGProp::SurfaceProperties(s, *area, eps);
-    return;
-  }
+  const gp_Pnt p = vertex_mean(s);
+  struct Part {
+    TopoDS_Face face;
+    bool wound;
+    double mass;
+  };
+  std::vector<Part> parts;
+  BRepGProp_Vinert fixed;
+  fixed.SetLocation(p);
   BRep_Builder b;
   TopoDS_Compound wound, rest;
   b.MakeCompound(wound);
   b.MakeCompound(rest);
+  double mass_scale = 0, fixed_mass = 0;
+  gp_XYZ moment(0, 0, 0);  // the volume times the centre's offset from `p`
   for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
     const TopoDS_Face& f = TopoDS::Face(ex.Current());
-    b.Add(is_wound_face(f) ? wound : rest, f);
+    const bool is_wound = is_wound_face(f);
+    if (area) b.Add(is_wound ? wound : rest, f);
+    if (f.Orientation() != TopAbs_FORWARD && f.Orientation() != TopAbs_REVERSED) continue;
+    TopLoc_Location loc;
+    if (BRep_Tool::Surface(f, loc).IsNull()) continue;
+    BRepGProp_Face face(f);
+    if (f.NbChildren() == 0) {
+      fixed.Perform(face);
+    } else {
+      BRepGProp_Domain dom(f);
+      fixed.Perform(face, dom);
+    }
+    const gp_XYZ m = (fixed.CentreOfMass().XYZ() - p.XYZ()) * fixed.Mass();
+    parts.push_back(Part{f, is_wound, fixed.Mass()});
+    mass_scale += std::fabs(fixed.Mass());
+    fixed_mass += fixed.Mass();
+    moment += m;
   }
-  GProp_GProps wv, rv;
-  BRepGProp::VolumeProperties(wound, wv);
-  BRepGProp::VolumeProperties(rest, rv, eps);
-  wv.Add(rv);
-  vol = wv;
-  if (area) {
-    GProp_GProps wa, ra;
-    BRepGProp::SurfaceProperties(wound, wa);
-    BRepGProp::SurfaceProperties(rest, ra, eps);
-    wa.Add(ra);
-    *area = wa;
+  BRepGProp_VinertGK gk;
+  gk.SetLocation(p);
+  double mass = 0;
+  for (Part& part : parts) {
+    if (!part.wound && std::fabs(part.mass) > 1e-9 * mass_scale) {
+      BRepGProp_Face face(part.face, true);
+      double err = 0;
+      if (part.face.NbChildren() == 0) {
+        err = gk.Perform(face, kVolumeTol, false, false);
+      } else {
+        BRepGProp_Domain dom(part.face);
+        err = gk.Perform(face, dom, kVolumeTol, false, false);
+      }
+      if (err < 0) throw Standard_Failure("the volume integration of a face failed");
+      part.mass = gk.Mass();
+    }
+    mass += part.mass;
   }
+  vol = SummedProps(mass, std::fabs(fixed_mass) > 0 ? gp_Pnt(p.XYZ() + moment / fixed_mass) : p);
+  if (!area) return;
+  const double eps = has_elliptic_face(s) ? 1e-10 : 1e-7;
+  GProp_GProps wa, ra;
+  BRepGProp::SurfaceProperties(wound, wa);
+  BRepGProp::SurfaceProperties(rest, ra, eps);
+  wa.Add(ra);
+  *area = wa;
 }
 
 // ---------------------------------------------------------------- sweep and loft helpers
@@ -3315,8 +3376,8 @@ bool merge_pieces(const std::vector<TopoDS_Face>& pieces, const gp_Ax1& ax, doub
 // such face is cut along the line at the angle farthest from the edges' ends
 // (`BRepFeat_SplitShape`, which splits the edges it crosses in the neighbouring faces too)
 // and its pieces made again into faces on the surface turned to that angle
-// (`merge_pieces`). The copy must be valid and of the same volume (to 1e-5: the integration of
-// the faces cut anew differs by some 1e-6 on 3722's coil). The faces of the copy keep
+// (`merge_pieces`). The copy must be valid and of the same volume (to 1e-7: the copy's faces
+// lie on the same surfaces, `measured_props` integrates them to 1e-9). The faces of the copy keep
 // the origins of the faces they came from (a face of the copy can hold pieces of two: a coil
 // that winds a whole turn round the face cut it into two at the old seam and does at the new).
 template <typename Mk>
@@ -3499,7 +3560,7 @@ int seam_moved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const s
   const TopoDS_Shape moved = rs.Apply(cut);
   if (!BRepCheck_Analyzer(moved, true, true).IsValid()) return fail("the shape with its seams moved is invalid");
   const double v0 = std::fabs(measured_volume(s->s)), v1 = std::fabs(measured_volume(moved));
-  if (std::fabs(v1 - v0) > 1e-5 * std::max(1.0, v0)) return fail("moving the seams changed the volume");
+  if (std::fabs(v1 - v0) > 1e-7 * std::max(1.0, v0)) return fail("moving the seams changed the volume");
   // The blend on it.
   // Each edge is one edge of it (cut along the edges it crosses, the faces only re-bound them).
   auto image = [&](const TopoDS_Shape& x) {

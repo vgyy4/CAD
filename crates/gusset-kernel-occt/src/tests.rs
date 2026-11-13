@@ -2429,6 +2429,50 @@ fn a_chamfer_that_ends_on_a_seam_is_made_with_the_seam_moved() {
 }
 
 #[test]
+fn a_revolved_dome_measures_its_exact_volume_however_it_is_turned() {
+    // 3722's globe: the section under an arc of radius 54 about (0.658, 61.865), from the base's
+    // side (r 33.5) out and up to the axis, revolved. OCCT's adaptive quadrature put this
+    // surface of revolution 7.4 mm3 (1e-5) off and 3722's coil body 0.4 mm3 off, moving with
+    // the shape's place; each face is integrated by Gauss-Kronrod now.
+    let (c, zc, r, x1): (f64, f64, f64, f64) = (0.658, 61.865, 54.0, 33.5);
+    let z1 = zc - (r * r - (x1 - c) * (x1 - c)).sqrt();
+    let top = zc + (r * r - c * c).sqrt();
+    let line = |a: [f64; 2], b: [f64; 2], tag: u64| ProfileEdge { seg: Seg2::Line { a, b }, tag };
+    let edges = vec![
+        line([0.0, 0.0], [x1, 0.0], 1),
+        line([x1, 0.0], [x1, z1], 2),
+        ProfileEdge { seg: Seg2::Arc { center: [c, zc], start: [x1, z1], end: [0.0, top], ccw: true }, tag: 3 },
+        line([0.0, top], [0.0, 0.0], 4),
+    ];
+    let p = Profile { frame: Frame::XZ, regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }] };
+    let dome = k()
+        .revolve(&p, &RevolveSpec { axis_origin: [0.0, 0.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::TAU })
+        .unwrap()
+        .shape;
+    // Pappus: 2 pi times the integral of x times the section's height at x; up to x1 the height
+    // is the upper half circle's, beyond it (x = c + r cos t, t from t1 down to 0) the chord's.
+    let s = |u: f64| (r * r - u * u).sqrt();
+    let (u0, u1) = (-c, x1 - c);
+    let upper = zc * (x1 * x1 / 2.0)
+        + (-(s(u1).powi(3)) + s(u0).powi(3)) / 3.0
+        + c * ((u1 * s(u1) + r * r * (u1 / r).asin()) - (u0 * s(u0) + r * r * (u0 / r).asin())) / 2.0;
+    let t1 = (u1 / r).acos();
+    let outer = 2.0 * r * r * (c * (t1 / 2.0 - (2.0 * t1).sin() / 4.0) + r * t1.sin().powi(3) / 3.0);
+    let want = std::f64::consts::TAU * (upper + outer);
+    // The dome is a surface of revolution (its arc's centre is off the axis).
+    let kinds: Vec<SurfaceKind> = k().topology(&dome).unwrap().faces.iter().map(|f| f.kind).collect();
+    assert!(kinds.contains(&SurfaceKind::Other), "{kinds:?}");
+    let v = |s: &Shape| k().mass_properties(s).unwrap().volume;
+    assert!(close(v(&dome), want, 1e-9), "{} vs {want}", v(&dome));
+    for angle in [0.3, 1.0, 2.5] {
+        let turned =
+            k().transform(&dome, &Transform::Rotate { origin: [0.0; 3], axis: [0.0, 0.0, 1.0], angle }).unwrap().shape;
+        let moved = k().transform(&turned, &Transform::Translate([40.0, -25.0, 7.0])).unwrap().shape;
+        assert!(close(v(&moved), want, 1e-9), "{angle}: {} vs {want}", v(&moved));
+    }
+}
+
+#[test]
 fn a_shell_of_a_spindle_dome_is_its_section_offset_and_revolved() {
     // 3722's globe: a base cylinder r 33.5 mm, 19 mm tall, under a dome of r 54 mm about a
     // centre 0.658 mm off the axis (a spindle torus, a point of it on the axis), the corner
