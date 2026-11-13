@@ -47,7 +47,9 @@ fn file_name(path: &str) -> String {
     n.chars().filter(|c| !c.is_control()).take(255).collect()
 }
 
-/// Stores a board (and its project file) and commits a document that names it.
+/// Stores a board (and its project file) and commits a document that names it. With the
+/// session's fill-on-edit option on, the zones the edit touched are poured again first,
+/// so the edit and its fills are one undo step (ADR 0053).
 pub(super) fn commit_board(
     s: &mut Session,
     ctx: &CmdCtx,
@@ -55,8 +57,25 @@ pub(super) fn commit_board(
     file: String,
     board: &Board,
     project: Option<Option<String>>,
-    extra: Value,
+    mut extra: Value,
 ) -> Result<Value, CommandError> {
+    let mut refilled = None;
+    if s.pcb_fill_on_edit
+        && project.is_none()
+        && let Some(open) = pcb_session::open_board(s, &ctx.actor)?
+    {
+        let mut nb = board.clone();
+        let (zones, filled) =
+            gusset_pcb::refill::refill_after_edit(&open.board, &mut nb, &open.rules, &limits()).map_err(pcb_err)?;
+        if !zones.is_empty() {
+            if let Value::Object(m) = &mut extra {
+                m.insert("refilled_zones".into(), json!(zones));
+                m.insert("starved_thermal".into(), json!(super::pcb_layout::starved_json(&nb, &filled)));
+            }
+            refilled = Some(nb);
+        }
+    }
+    let board = refilled.as_ref().unwrap_or(board);
     let hash = s.put_blob(board.write().as_bytes()).to_hex();
     let mut out = edit(s, ctx, label, |doc, _| {
         let project = match project {

@@ -71,6 +71,48 @@ fn zones_fill_with_undo_and_reach_the_gerbers() {
     assert!(open(&mut s).board.zones[0].fills.is_empty());
 }
 
+fn fill_area(s: &mut Session) -> f64 {
+    let b = open(s);
+    b.board.zones[0]
+        .fills
+        .iter()
+        .map(|(_, p)| gusset_pcb::poly::total_area(&gusset_pcb::poly::union(std::slice::from_ref(p))))
+        .sum()
+}
+
+#[test]
+fn filling_on_edit_is_one_undo_step() {
+    let mut s = layout_session();
+    run(&mut s, &u(1), "pcb.open", json!({"path": "layout.kicad_pcb"}));
+    run(&mut s, &u(2), "pcb.fill_zones", json!({}));
+    let whole = fill_area(&mut s);
+    // Off (the default): a SIG track across the zone leaves the old fill in place.
+    let track = json!({"start": [10, 15], "end": [20, 15], "layer": "B.Cu", "net": "SIG"});
+    let r = run(&mut s, &u(3), "pcb.add_track", track.clone());
+    assert!(r.get("refilled_zones").is_none(), "{r}");
+    assert_eq!(fill_area(&mut s), whole);
+    run(&mut s, &u(4), "history.undo", json!({}));
+    // On: the edit pours the zone it touches.
+    s.pcb_fill_on_edit = true;
+    let r = run(&mut s, &u(5), "pcb.add_track", track);
+    assert_eq!(r["refilled_zones"], json!([0]), "{r}");
+    let cut = fill_area(&mut s);
+    // The strip: 10 mm long, 0.25 wide, 0.3 clear each side (+ margin).
+    assert!(cut < whole - 10.0 * 0.8, "{cut} vs {whole}");
+    let b = open(&mut s);
+    assert!(gusset_pcb::drc::check(&b.board, &b.rules, 50).iter().all(|v| !v.message.contains("zone")));
+    // A track on F.Cu touches no B.Cu zone.
+    let r = run(&mut s, &u(6), "pcb.add_track", json!({"start": [10, 5], "end": [20, 5], "layer": "F.Cu", "net": "SIG"}));
+    assert!(r.get("refilled_zones").is_none(), "{r}");
+    run(&mut s, &u(7), "history.undo", json!({}));
+    // One undo takes the track and its refill together.
+    run(&mut s, &u(8), "history.undo", json!({}));
+    assert_eq!(open(&mut s).board.tracks.len(), 0);
+    assert_eq!(fill_area(&mut s), whole);
+    run(&mut s, &u(9), "history.redo", json!({}));
+    assert_eq!(fill_area(&mut s), cut);
+}
+
 #[test]
 fn step_export_checks_its_target_and_reaches_the_kernel() {
     let mut s = layout_session();
