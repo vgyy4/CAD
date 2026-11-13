@@ -887,3 +887,69 @@ read (4 patterns of bodies, 5 seeds not found, one second circular direction, on
 reasons, by parts: imported bodies only 540, volume mismatch 85, fillet edges 42, `moShell_c` 22, no feature stream 21,
 edge midpoint not on the model 18, up-to-surface ends 16, split body 16, loft 16, sketches without closed regions 14,
 mirror plane not resolved 12. RJ45-LED and Link_2 are skipped by the corpus driver as before.
+
+## L15. Round 9 (sw4: measured blockers; equations, shells, closed edges, standard mirror planes)
+Measured first against round sw3's final logs (slip-pad 24, arig-revisions 15, zenodo 1, sw-more 199). The refusal
+tally put no single cause above a dozen parts that a decode could reach: imported bodies only 549, volume mismatches 85,
+features that do not rebuild 74 (fillet edge midpoints not on the model 19, sketches without closed regions 15, the rest
+one or two parts each), fillet and chamfer edges not all read 52, `moShell_c` 22 (14 of them the r3 keycap family, which
+then stops at a variable fillet). The blockers taken, in order of parts per effort, decoded from the sample bytes:
+* **Alignment groups before a sketch's entities.** A sketch node can be followed by its `moAlignGroup_c` nodes (Arm Tab
+  Large PolyCarb First's Sketch2: thirteen of them) and only then by its entities; the span of the sketch held none, so it
+  read empty ("no closed regions"). When a sketch's own span holds no entity header, it now runs on over the alignment
+  groups after it, for the entities and the plane (9 LakerRobotics Arm Tab parts).
+* **The 8 zero bytes before an entity payload** are written by some version 1 headers too (the Hecatron OpenBuilds
+  Aluminum Spacer: every point read as type 0); they are skipped whatever the header version (a payload never starts
+  with 8 zero bytes).
+* **Depths an equation drives.** A feature whose `D1` an equation drives keeps no `D1` in its node. The configuration
+  stream writes the equation as a CString (`"D1@Boss-Extrude1"= "rod_length_xaxis"`), then a `moRelDimension_c`,
+  `moDimRefWrapper_c`, `moFeatureDimHandle_c` and the dimension's own parameter object named `D1`, laid out as in the
+  feature stream, a few hundred bytes on. A blind or mid-plane extrusion without a depth takes it from there
+  (ThreadedRod 369.52 mm, ThreadedRod-ZAxis, LinearRod, debug_block). HGR20's configurations drive different lengths
+  (125 and 350 mm) and the part's body matches neither: it stays a volume mismatch.
+* **Mirror planes named by id.** A mirror without its own frame block names its plane: the plane feature's `u32` id 38
+  bytes before the display block it keeps (`<tag> 00 00 <id> <stamp> 00 00 03 00 ... c7 cf ff ff` x3). For the Front, Top
+  and Right planes (ids 2, 3, 4) that is the plane (pulley_large, Handle Bar, 2_2kw_spindle, Link 6, the HalitKosemen
+  Turkish parts); arm's Mirror1 had taken a tilted face from the fallback face list and is the Front plane. A plane
+  feature of the part keeps its definition, not a frame (base v2's Plane2 is a `moConstraintCoincLinePerpPlaneRefplaneData_c`:
+  through a line, square to a plane; the four doubles in it are display extents): not read, the face-list fallback stays.
+* **Closed edges.** An edge record `[A, B, B, B]` (the last three references one face) names the closed loop where face A
+  meets face B. Where A is the wall of a full circle of an extrusion, or the cylinder or cone a revolve sweeps from a
+  profile line, and B a plane across it (a flat face of an extrusion, or the disc a revolve sweeps from a line square to
+  its axis), the loop is the circle cut by the plane; it is picked opposite the circle's start, as revolve circles are
+  (ballscrew_nut_block's and y_tram_new's Chamfer1: hole rims on a side wall).
+* **Edges along an extrusion between other features' planes.** An edge between two sides of one extrusion ran between
+  that extrusion's caps unless both vertex faces were caps of one feature; when both vertex faces are planes across the
+  edge (a cap, or a flat wall of another feature) it now runs between them (T-Nut-M4/M5-DropIn's Fillet2: from the boss's
+  top down to the wall of a cut made from the side).
+* **Shells.** `moShell_c` writes its wall as `D1` and, last in its span, a record whose first reference is the face it
+  removes (the records before it name the shell's own faces). It becomes a tree shell of that face, picked as end faces
+  are; caps of profiles of arcs only (RobotCap's disc) are now picked just inside the middle of their largest arc. RobotCap
+  (two copies) and Motor Holder rebuild; Linear Actuator Bracket and Rover Top build the shell's face but the kernel's
+  shell fails; station_lower's face (a side of a profile arc) is not placed. Several removed faces were not seen.
+
+**Per-feature harness over the 85 sw-more volume mismatches of round sw3** (scratch): the harness's own booleans against
+the stored body failed for 28 parts in round sw3; where the cut fails it now takes the other cut or the common part
+(`vol = common + outside`, `truth = common + missing`), which leaves 2 without a verdict (piston, 8020-228104: all three
+booleans fail on the Parasolid body). The feature that grows the larger of the final outside or missing volumes most:
+a cut 26, the first boss 24, a later boss 12, material never added by any feature 7 (6mm Motor Holder, Part8, the 4bd
+zsCAD part ...), stored or imported bodies 6 (zsCAD `Body___<n>`, Hobby Motor, StationUpper, 10-32 Nylock Nut), the
+bearings' chamfer 4, a pattern or mirror 2 (Link 3's CirPattern1, 47065T177's Mirror1), a hole 2 (Link_1v2, Link_4). No
+cause covers more than a handful of parts that one decode could fix.
+
+**Findings, not fixed.** Up-to-surface ends whose face is not placed (18 parts: caps of all-arc profiles now are, but the
+rebuilt V-Slot Wheels and gt2_pulley 2 then differ in volume, so the change to their ends was not kept), fillets on pattern
+copies (3 parts where it is the first blocker), a mirror of a mirror feature (Link 6: Gusset's tree import mirrors
+extrudes, holes, fillets and drafts, not mirror copies), mirror planes on plane features of the part, revolve faces swept
+from profile circles (EX +2.4's flange edge), saddle-shaped closed edges (Krank mili).
+
+**Coverage after the round** (rebuild check unchanged; whole corpora, the history test through the corpus driver at
+bc4c71f): slip-pad 24 of 35, arig-revisions 15 of 50, zenodo 1 of 14 (unchanged), sw-more **223 of 1253** (was 199; none
+lost): the nine Arm Tab Large parts, ThreadedRod, ThreadedRod-ZAxis, LinearRod, debug_block, T-Nut-M4/M5-DropIn,
+Aluminum Spacer, Motor Holder, RobotCap (two), arm, Handle Bar, 2_2kw_spindle, ballscrew_nut_block, y_tram_new. All
+corpora: 239 -> 263 of 1352. Remaining sw-more reasons, by parts: imported bodies only 540, volume mismatch 91 (arm left
+it; HGR20, pulley_large, tekerlek and others entered it once they read whole), features that do not rebuild 69
+(edge midpoints not on the model 19), fillet and chamfer edges 50, no feature stream 21, variable fillets 16 (the r3
+keycaps, past their shells), lofts 12, up-to-surface ends 11, sketches without closed regions 4, mirror planes not
+resolved 4. RJ45-LED and Link_2 are skipped by the corpus driver as before. What is left divides into blockers of one to
+three parts each.

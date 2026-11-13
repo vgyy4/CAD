@@ -512,3 +512,38 @@ No part lost its history. arig-revisions has no single cause: 29 of its 35 refus
 the mirrored body of another part (a stored body, not a rebuild), the other 6 are one part's revisions that stop at a loft
 cut followed by thin extrudes. Not decoded: faces of pattern copies in later fillets (18 parts), mirror planes on user
 planes, the bearings' eight-edge chamfer (now 0.2 to 0.5 % light), lofts, shells.
+
+## Amendment (2026-11-13): measured blockers, equations, shells (round sw4)
+
+Round sw4 measured the refusals first and took only blockers with a count (`docs/formats/solidworks-feature-tree.md`
+L15). Decoded from the sample bytes:
+
+- **Sketch entities past alignment groups**: a sketch whose span holds no entity reads on over the `moAlignGroup_c`
+  nodes written after it; entity payloads skip 8 leading zero bytes whatever the header version.
+- **Depths an equation drives**: a blind or mid-plane extrusion without `D1` takes it from the configuration stream,
+  where the equation `"D1@<feature>"= ...` is followed by the dimension's own parameter object.
+- **Mirror planes named by id**: a mirror without a frame block names its plane by the plane feature's id; the Front,
+  Top and Right planes are read so (plane features of the part are not: they keep a definition, not a frame).
+- **Edges**: closed edges `[A, B, B, B]` (a circle's wall or a revolve's cylinder or cone cut by a plane across it), and
+  edges along an extrusion that end on other features' planes.
+- **Shells** (`moShell_c`) of one removed face: the face is the first reference of the node's last record, the wall
+  `D1`; caps of profiles of arcs only are picked inside their largest arc.
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4 of the diagonal), and so are
+the stored-body rules.
+
+**Coverage** (history / parts; whole corpora):
+
+| corpus | round sw3 | round sw4 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 199 / 1253 | **223** / 1253 |
+| all | 239 / 1352 | **263** / 1352 |
+
+No part lost its history. The per-feature harness over round sw3's 85 volume mismatches no longer loses its verdict when
+one boolean against the stored body fails (2 parts left without one); the larger discrepancy grows most at a cut (26), the
+first boss (24), a later boss (12), material no feature adds (7), stored bodies (6): no shared cause. The remaining
+blockers each cover one to three parts: fillets on pattern copies, up-to-surface ends on faces not placed, mirror planes on
+plane features of the part, mirrors of mirror features, shells of several faces, variable fillets, lofts.
