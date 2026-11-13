@@ -745,11 +745,12 @@ fn find_headers(d: &[u8], a: usize, b: usize) -> Option<Vec<usize>> {
 /// geometry.
 fn payload(d: &[u8], h: usize) -> Option<(Option<usize>, bool)> {
     // Version 3 headers of the newer parts put 8 zero bytes before the payload; some
-    // (adpator, a chunk-container part of an intermediate version) do not. A payload never
+    // (adpator, a chunk-container part of an intermediate version) do not, and some version 1
+    // headers do too (the Hecatron OpenBuilds parts: Aluminum Spacer's Sketch1). A payload never
     // starts with 8 zero bytes (a point starts with its type 0x1e/0x1f, a segment with two
-    // different point indices), so the bytes say which.
-    let v3 = d.get(h + 4) == Some(&3);
-    let after = |q: usize| if v3 && d.get(q..q + 8).is_some_and(|w| w.iter().all(|&b| b == 0)) { q + 8 } else { q };
+    // different point indices, a circle with its point twice and the word 1), so the bytes say
+    // which.
+    let after = |q: usize| if d.get(q..q + 8).is_some_and(|w| w.iter().all(|&b| b == 0)) { q + 8 } else { q };
     let ext = u16_at(d, h + 35)?;
     if ext == 0 {
         let p = h + 40;

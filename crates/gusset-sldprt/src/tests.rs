@@ -1522,6 +1522,9 @@ fn entity_headers_of_older_modellers_and_version_3_without_a_gap() {
     gap.extend([0u8; 8]);
     let v3gap = replaced(&v3, &pair, &gap);
     assert_eq!(history(&v3gap).unwrap().unwrap()["features"], want["features"]);
+    // Version 1 headers with the gap too (the Hecatron OpenBuilds parts).
+    let v1gap = replaced(&feature_stream(&[]), &pair, &gap);
+    assert_eq!(history(&v1gap).unwrap().unwrap()["features"], want["features"]);
 }
 
 #[test]
