@@ -1096,6 +1096,11 @@ fn sketch_json(name: &str, g: &Geometry, plane: Option<&Plane>, jp: &JsonPlane) 
                 o.insert("end".into(), json!(pid(s.e)));
             }
             SegKind::Arc if s.s == s.e => {
+                // A circle through its own centre bounds nothing (mid_elbow's Sketch9 has one about
+                // a projected point, beside the 1.5 mm hole there); Gusset refuses it.
+                if libm::hypot(ps.x - pc.x, ps.y - pc.y) < 1e-12 {
+                    continue;
+                }
                 o.insert("type".into(), json!("circle"));
                 o.insert("center".into(), json!(pid(s.c)));
                 o.insert("radius".into(), json!(mm(libm::hypot(ps.x - pc.x, ps.y - pc.y))));
