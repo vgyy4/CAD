@@ -32,6 +32,8 @@ pub enum Tool {
     Select,
     Route,
     Via,
+    /// Click adds a board text from the panel; a click on a text picks it for editing.
+    Text,
     /// Puts down the footprint picked in the panel's library list.
     Place,
     /// Clicks add zone corners; a double click, Enter or a click on the first corner
@@ -45,6 +47,8 @@ pub enum Sel {
     Footprint(usize),
     Track(usize),
     Via(usize),
+    /// A board text (not a footprint's), index in the board's texts.
+    Text(usize),
 }
 
 /// A design rule marker from the last `pcb.drc`.
@@ -103,6 +107,13 @@ pub struct State {
     /// Zone tool: corners so far, the new zone's net, hatch and its grid (mm).
     pub zone_pts: Vec<Pt>,
     pub zone_net: String,
+    /// Text tool: the words, height (mm), angle and side of a new text.
+    pub text_words: String,
+    pub text_size: f64,
+    pub text_angle: f64,
+    pub text_back: bool,
+    /// The picked text as edited in the panel: (board hash, index, words, height, angle, mirrored).
+    pub text_edit: Option<TextEdit>,
     pub zone_hatch: bool,
     pub hatch_thickness: f64,
     pub hatch_gap: f64,
@@ -118,6 +129,9 @@ pub struct State {
     pub freerouting_java: String,
     pub freerouting_timeout: u64,
 }
+
+/// The picked text as edited: (board hash, index, words, height mm, angle, mirrored).
+pub type TextEdit = (String, usize, String, f64, f64, bool);
 
 /// The picked footprint's pad nets as edited: (board hash, footprint, (pad, net) rows).
 pub type PadNets = (String, usize, Vec<(String, String)>);
@@ -180,6 +194,11 @@ impl Default for State {
             footprint: String::new(),
             zone_pts: Vec::new(),
             zone_net: String::new(),
+            text_words: "TEXT".into(),
+            text_size: 1.0,
+            text_angle: 0.0,
+            text_back: false,
+            text_edit: None,
             zone_hatch: false,
             hatch_thickness: 0.5,
             hatch_gap: 1.0,
@@ -485,6 +504,29 @@ fn footprint_box(board: &Board, i: usize) -> Option<[Pt; 2]> {
     (lo[0] <= hi[0]).then_some([lo, hi])
 }
 
+/// How far board point `p` is from the strokes of text `i` (mm, the pen's half width
+/// taken off), `None` for a text with nothing to draw.
+pub fn text_dist(board: &Board, i: usize, p: Pt) -> Option<f64> {
+    let t = board.texts.get(i)?;
+    if t.hidden {
+        return None;
+    }
+    let fp = t.footprint.and_then(|k| board.footprints.get(k));
+    let words = gusset_pcb::font::shown(&t.text, fp.map_or("", |f| &f.reference), fp.map_or("", |f| &f.value));
+    let r = gusset_pcb::font::thickness(t) / 2.0;
+    gusset_pcb::font::strokes(t, &words)
+        .iter()
+        .flat_map(|l| {
+            if let [q] = l.as_slice() {
+                vec![dist_seg(p, *q, *q)]
+            } else {
+                l.windows(2).filter_map(|w| Some(dist_seg(p, *w.first()?, *w.get(1)?))).collect()
+            }
+        })
+        .min_by(f64::total_cmp)
+        .map(|d| d - r)
+}
+
 /// What is under board point `p` (`tol` mm of slack): vias, then tracks on shown layers,
 /// then the smallest footprint around it.
 pub fn hit(board: &Board, p: Pt, tol: f64, shown: &dyn Fn(&str) -> bool) -> Option<Sel> {
@@ -501,6 +543,14 @@ pub fn hit(board: &Board, p: Pt, tol: f64, shown: &dyn Fn(&str) -> bool) -> Opti
         .min_by(|a, b| a.1.total_cmp(&b.1));
     if let Some((i, _)) = track {
         return Some(Sel::Track(i));
+    }
+    let text = (0..board.texts.len())
+        .filter(|&i| board.texts.get(i).is_some_and(|t| t.footprint.is_none() && shown(&t.layer)))
+        .filter_map(|i| text_dist(board, i, p).map(|d| (i, d)))
+        .filter(|(_, d)| *d <= tol)
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((i, _)) = text {
+        return Some(Sel::Text(i));
     }
     (0..board.footprints.len())
         .filter_map(|i| footprint_box(board, i).map(|b| (i, b)))
@@ -550,8 +600,23 @@ pub fn delete_command(sel: Sel) -> Option<(&'static str, Value)> {
     match sel {
         Sel::Track(i) => Some(("pcb.delete", json!({ "tracks": [i] }))),
         Sel::Via(i) => Some(("pcb.delete", json!({ "vias": [i] }))),
+        Sel::Text(i) => Some(("pcb.text", json!({ "index": i, "delete": true }))),
         Sel::Footprint(_) => None,
     }
+}
+
+/// A new text from the Text tool's settings.
+pub fn text_add_command(st: &State, at: Pt) -> (&'static str, Value) {
+    let layer = if st.text_back { "B.SilkS" } else { "F.SilkS" };
+    (
+        "pcb.text",
+        json!({ "text": st.text_words, "at": at, "layer": layer, "size": st.text_size, "angle": st.text_angle }),
+    )
+}
+
+/// Changes of the picked text.
+pub fn text_edit_command(i: usize, words: &str, size: f64, angle: f64, mirrored: bool) -> (&'static str, Value) {
+    ("pcb.text", json!({ "index": i, "text": words, "size": size, "angle": angle, "mirrored": mirrored }))
 }
 
 pub fn track_command(a: Pt, b: Pt, layer: &str) -> (&'static str, Value) {
@@ -670,7 +735,7 @@ pub fn net_of(board: &Board, sel: Sel) -> Option<String> {
     match sel {
         Sel::Track(i) => board.tracks.get(i).and_then(|t| board.net_name(&t.net)),
         Sel::Via(i) => board.vias.get(i).and_then(|v| board.net_name(&v.net)),
-        Sel::Footprint(_) => None,
+        Sel::Footprint(_) | Sel::Text(_) => None,
     }
 }
 
@@ -796,6 +861,7 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
             (Tool::Select, "pcb.select", "pcb.tip_select"),
             (Tool::Route, "pcb.route", "pcb.tip_route"),
             (Tool::Via, "pcb.via", "pcb.tip_via"),
+            (Tool::Text, "pcb.text", "pcb.tip_text"),
             (Tool::Place, "pcb.place", "pcb.tip_place"),
             (Tool::Zone, "pcb.zone", "pcb.tip_zone"),
         ] {
@@ -908,6 +974,40 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
     if let Some(n) = &st.route_net {
         ui.weak(format!("{}: {n}", tr("pcb.net")));
     }
+    if st.tool == Tool::Text {
+        ui.separator();
+        ui.label(tr("pcb.text"));
+        crate::theme::text_field(
+            ui,
+            egui::TextEdit::singleline(&mut st.text_words).hint_text(tr("pcb.text_words")).desired_width(f32::INFINITY),
+        );
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut st.text_size).range(0.2..=50.0).speed(0.05).suffix(" mm"));
+            ui.add(egui::DragValue::new(&mut st.text_angle).range(-360.0..=360.0).speed(1.0).suffix("°"));
+        });
+        ui.checkbox(&mut st.text_back, tr("pcb.text_back"));
+    }
+    if let (Some(Sel::Text(i)), Some(t)) =
+        (st.selected, st.selected.and_then(|s| if let Sel::Text(i) = s { b_text(open, i) } else { None }))
+    {
+        let fresh = st.text_edit.as_ref().is_none_or(|e| e.0 != open.board_hash || e.1 != i);
+        if fresh {
+            st.text_edit = Some((open.board_hash.clone(), i, t.text.clone(), t.size, t.angle, t.mirrored));
+        }
+        if let Some(e) = st.text_edit.as_mut() {
+            ui.separator();
+            ui.label(tr("pcb.text"));
+            crate::theme::text_field(ui, egui::TextEdit::singleline(&mut e.2).desired_width(f32::INFINITY));
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut e.3).range(0.2..=50.0).speed(0.05).suffix(" mm"));
+                ui.add(egui::DragValue::new(&mut e.4).range(-360.0..=360.0).speed(1.0).suffix("°"));
+            });
+            ui.checkbox(&mut e.5, tr("pcb.text_back"));
+            if ui.add_enabled(!e.2.trim().is_empty(), egui::Button::new(tr("pcb.text_apply"))).clicked() {
+                out.commands.push(text_edit_command(i, &e.2, e.3, e.4, e.5));
+            }
+        }
+    }
     if st.tool == Tool::Zone {
         ui.separator();
         ui.label(tr("pcb.zone"));
@@ -952,6 +1052,10 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
 
 /// The panel's net editing: the picked footprint's pad nets, renaming the highlighted
 /// net, net classes, and the autorouter.
+fn b_text(open: &OpenBoard, i: usize) -> Option<&gusset_pcb::board::Text> {
+    open.board.texts.get(i)
+}
+
 fn nets_panel(ui: &mut Ui, open: &OpenBoard, st: &mut State, out: &mut Out) {
     let b = &open.board;
     ui.label(tr("pcb.nets"));
@@ -1166,6 +1270,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         Sel::Footprint(i) => i < b.footprints.len(),
         Sel::Track(i) => i < b.tracks.len(),
         Sel::Via(i) => i < b.vias.len(),
+        Sel::Text(i) => i < b.texts.len(),
     });
     if resp.double_clicked() && st.tool == Tool::Select || st.auto_fit.is_some_and(|s| s != rect.size()) {
         st.fit(rect, b);
@@ -1278,6 +1383,11 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                 }
             }
             Tool::Via => out.commands.push(via_command(snap(p, st.grid))),
+            Tool::Text => match hit(b, p, tol, &shown) {
+                Some(x @ Sel::Text(_)) => st.selected = Some(x),
+                _ if st.text_words.trim().is_empty() => {}
+                _ => out.commands.push(text_add_command(st, snap(p, st.grid))),
+            },
             Tool::Place => out.commands.extend(place_command(st, snap(p, st.grid))),
             Tool::Zone => {
                 let q = snap(p, st.grid);
@@ -1530,19 +1640,28 @@ fn paint(painter: &egui::Painter, map: &Map, open: &OpenBoard, st: &mut State, d
         for g in b.graphics.iter().filter(|g| g.layer == layer) {
             paint_shape(painter, map, &g.shape, g.width, g.filled, c, off_of(g.footprint));
         }
-        // Texts, in the UI font at their height and angle (centred on their place).
-        for t in b.texts.iter().filter(|t| t.layer == layer && !t.hidden && !t.text.is_empty()) {
-            let px = t.size as f32 * map.zoom;
-            if !(4.0..=400.0).contains(&px) {
+        // Texts in Gusset's own stroke font (as plotted in the Gerbers), placed, turned and
+        // mirrored as the text says.
+        for (ti, t) in b.texts.iter().enumerate().filter(|(_, t)| t.layer == layer && !t.hidden && !t.text.is_empty()) {
+            if t.size as f32 * map.zoom < 3.0 {
                 continue;
             }
-            let shown_text: String = t.text.chars().filter(|ch| !ch.is_control()).take(200).collect();
-            let galley = painter.layout_no_wrap(shown_text, FontId::proportional(px), c);
-            let a = -(t.angle as f32).to_radians();
-            let half = galley.size() / 2.0;
-            let rot = |v: Vec2| Vec2::new(v.x * a.cos() - v.y * a.sin(), v.x * a.sin() + v.y * a.cos());
-            let pos = map.to(t.at) + off_of(t.footprint) - rot(half);
-            painter.add(egui::epaint::TextShape::new(pos, galley, c).with_angle(a));
+            let fp = t.footprint.and_then(|k| b.footprints.get(k));
+            let words = gusset_pcb::font::shown(&t.text, fp.map_or("", |f| &f.reference), fp.map_or("", |f| &f.value));
+            let col = if is_picked(st, Sel::Text(ti)) { Color32::WHITE } else { c };
+            let w = (gusset_pcb::font::thickness(t) as f32 * map.zoom).max(1.0);
+            let off = off_of(t.footprint);
+            for line in gusset_pcb::font::strokes(t, &words) {
+                let pts: Vec<Pos2> = line.iter().map(|q| map.to(*q) + off).collect();
+                match pts.as_slice() {
+                    [q] => {
+                        painter.circle_filled(*q, w / 2.0, col);
+                    }
+                    _ => {
+                        painter.add(Shape::line(pts, Stroke::new(w, col)));
+                    }
+                }
+            }
         }
         if !is_cu {
             continue;

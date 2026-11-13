@@ -308,3 +308,64 @@ fn zones_pad_nets_classes_and_the_autorouter_from_the_panel() {
     h.state_mut().wait_idle();
     assert!(h.state().snapshot.pcb.as_ref().unwrap().board.zones.is_empty());
 }
+
+#[test]
+fn texts_are_picked_and_added_through_the_registry() {
+    let mut b = board();
+    let l = Limits::default();
+    let i = b
+        .add_text(
+            &gusset_pcb::text_edit::NewText {
+                text: "HELLO".into(),
+                at: [5.0, 15.0],
+                layer: Some("B.SilkS".into()),
+                size: Some(2.0),
+                thickness: None,
+                angle: None,
+                mirrored: None,
+                justify: None,
+            },
+            &l,
+        )
+        .unwrap();
+    assert!(b.texts[i].mirrored);
+    let all = |_: &str| true;
+    // A point on the first letter's stem picks the text; one far away does not.
+    let strokes = gusset_pcb::font::strokes(&b.texts[i], "HELLO");
+    let on = strokes[0][0];
+    assert_eq!(pcb_view::hit(&b, on, 0.05, &all), Some(Sel::Text(i)));
+    assert!(pcb_view::text_dist(&b, i, [0.0, 0.0]).is_some_and(|d| d > 5.0));
+    // A hidden layer's text is not picked.
+    assert_ne!(pcb_view::hit(&b, on, 0.05, &|l: &str| l != "B.SilkS"), Some(Sel::Text(i)));
+    // The commands the editor sends exist and carry the panel's settings.
+    let mut st = pcb_view::State::default();
+    st.text_words = "REV".into();
+    st.text_back = true;
+    let add = pcb_view::text_add_command(&st, [3.0, 4.0]);
+    assert_eq!((add.0, add.1["layer"].as_str(), add.1["at"].clone()), ("pcb.text", Some("B.SilkS"), json!([3.0, 4.0])));
+    assert!(gusset_commands::find("pcb.text").is_some());
+    let del = pcb_view::delete_command(Sel::Text(i)).unwrap();
+    assert_eq!((del.0, del.1["delete"].as_bool()), ("pcb.text", Some(true)));
+    // Through the app: add, edit and undo each take one step.
+    let mut h = harness(app());
+    h.run();
+    h.state_mut().ribbon_action(crate::ribbon::Action::PcbTab);
+    h.run();
+    h.state_mut().run("pcb.new", json!({"width": "40 mm", "height": "30 mm"})).unwrap();
+    h.state_mut().wait_idle();
+    h.state_mut().pcb_state.tool = Tool::Text;
+    let out = pcb_view::Out { commands: vec![pcb_view::text_add_command(&st, [10.0, 10.0])], blocked: None };
+    h.state_mut().pcb_commands(out);
+    h.state_mut().wait_idle();
+    let n = h.state().snapshot.pcb.as_ref().unwrap().board.texts.len();
+    assert_eq!(n, 1);
+    let out = pcb_view::Out { commands: vec![pcb_view::text_edit_command(0, "NEW", 2.0, 90.0, false)], blocked: None };
+    h.state_mut().pcb_commands(out);
+    h.state_mut().wait_idle();
+    let t = h.state().snapshot.pcb.as_ref().unwrap().board.texts[0].clone();
+    assert_eq!((t.text.as_str(), t.size, t.angle, t.mirrored), ("NEW", 2.0, 90.0, false));
+    h.state_mut().run("history.undo", json!({})).unwrap();
+    h.state_mut().wait_idle();
+    assert_eq!(h.state().snapshot.pcb.as_ref().unwrap().board.texts[0].text, "REV");
+    h.run();
+}

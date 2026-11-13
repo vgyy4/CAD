@@ -385,7 +385,7 @@ impl Command for PcbSetOutline {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PcbText {
-    /// Text to change (pcb.info); none adds.
+    /// Text to change (see pcb_info); none adds.
     #[serde(default)]
     pub index: Option<usize>,
     #[serde(default)]

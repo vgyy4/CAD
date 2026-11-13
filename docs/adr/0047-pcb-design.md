@@ -459,8 +459,8 @@ it nets and rules, route, pour, check and write every fabrication file without K
   an optional download with notices; placing footprints from it.
 * DRC: hole-to-hole, courtyard overlap, silk on pads and drill sizes are done (ADR 0048);
   per-class rules beyond clearance; KiCad's custom rules (`.kicad_dru`).
-* Editor: texts drawn in our stroke font in the editor too (the UI font today) and mirrored
-  on flip, adding and editing board texts, a pad picked on its own (pad nets are edited
+* Editor: (texts in our stroke font, mirrored on flip, adding and editing board texts: done,
+  see ADR 0049), a pad picked on its own (pad nets are edited
   per footprint in the panel), arc tracks
   drawn freehand, board outline drawing with the mouse (today: the `pcb.set_outline` form),
   moving tracks and vias.
