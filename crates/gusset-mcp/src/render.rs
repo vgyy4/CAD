@@ -79,10 +79,10 @@ pub struct RenderRequest {
     /// Explicit camera.
     #[serde(default)]
     pub camera: Option<Camera>,
-    /// Image width in pixels (1..=2048, default 800).
+    /// Pixels, 1..=2048 (default 800).
     #[serde(default = "default_size")]
     pub width: u32,
-    /// Image height in pixels (1..=2048, default 600).
+    /// Pixels, 1..=2048 (default 600).
     #[serde(default = "default_height")]
     pub height: u32,
     /// shaded, wireframe or photo (path traced, slow).

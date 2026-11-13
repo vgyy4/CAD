@@ -811,8 +811,8 @@ pub fn tool_list_for(sets: &[Toolset]) -> Vec<Tool> {
     tools.push(
         Tool::new(
             RENDER_VIEW,
-            "Render a PNG image of your current branch's model (named view or camera, up to 2048x2048, shaded or \
-             wireframe, optional highlighted faces/edges by name) to check your work visually.",
+            "Render a PNG of your current branch's model (named view or camera; faces/edges highlighted by name) \
+             to check your work visually.",
             schema_object::<RenderRequest>(),
         )
         .with_title("Render view")
@@ -837,7 +837,7 @@ pub fn tool_list_for(sets: &[Toolset]) -> Vec<Tool> {
 fn toolset_tool() -> Tool {
     Tool::new(
         TOOLSET,
-        "Choose which command groups are listed as tools: modeling, pcb, sim, cam. Nothing becomes unreachable: \
+        "Choose which command groups are listed as tools: modeling, pcb, sch, sim, cam. Nothing becomes unreachable: \
          `commands` and `run` reach every command.",
         schema_object::<ToolsetArgs>(),
     )

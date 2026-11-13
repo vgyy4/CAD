@@ -16,7 +16,7 @@ Phase 3 has started (see Next).
   next to Hole, Bend in SHEET METAL, new icons; a picked body face fills the form's `face`
   (hole, thread; replaces the sketch for extrude/sweep), a picked sketch line fills Bend's
   `line`. Mock-kernel command tests check text and refusals; modeled geometry stays covered
-  by the OCCT tests. MCP core list 17996/18000 bytes, 580 per command (tight; the revolve axis on a body edge added 25).
+  by the OCCT tests. MCP core list 17912/18000 bytes, 577 per command (tight; render_view wording trimmed after the revolve axis field).
 - Import history choice (owner request, 2026-11-12; ADR 0042 amendment): Fusion, SolidWorks,
   Inventor and FreeCAD imports classify their feature history as perfect (the unchanged strict
   check), imperfect (read, but differs: the reason says which feature or how much) or none
