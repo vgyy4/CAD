@@ -17,6 +17,7 @@ const POINT: &str = "C2CEDAE7";
 const LINE: &str = "DCA267ED";
 const ARC: &str = "F0130424";
 const SPLINE: &str = "D82E012F";
+const ELLIPSE: &str = "FF23079A";
 
 #[derive(Debug, Clone)]
 pub(super) struct Line {
@@ -35,6 +36,47 @@ pub(super) struct Arc {
     pub a0: f64,
     pub a1: f64,
     pub refs: Vec<u64>,
+}
+
+/// A whole sketch ellipse `FF23079A` (6124's logo, `Sketch6 (2)`): after the curve ids, the
+/// centre, the major axis's unit direction, the minor axis's (in the sketch plane), the two
+/// semi-axes and the parameter range, 13 doubles (cm); then the centre point's reference.
+#[derive(Debug, Clone)]
+pub(super) struct Ellipse {
+    pub center: V3,
+    pub major: V3,
+    pub minor: V3,
+    pub a: f64,
+    pub b: f64,
+    pub center_ref: u64,
+}
+
+fn ellipse(d: &Design, i: u64, points: &BTreeMap<u64, V3>) -> Option<Ellipse> {
+    let rec = d.rec(i);
+    let from = parse_header(rec)?.body;
+    for o in from..from.saturating_add(16) {
+        let Some(v) = dbl::<13>(rec, o) else { continue };
+        let (c, mj, mn) = ([v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]);
+        let unit_len = |w: V3| (geom::dot(w, w) - 1.0).abs() < 1e-9;
+        let (a, b, t0, t1) = (v[9], v[10], v[11], v[12]);
+        if !(unit_len(mj) && unit_len(mn) && geom::dot(mj, mn).abs() < 1e-9)
+            || !(a > 0.0 && b > 0.0 && b <= a * (1.0 + 1e-12) && a < 1e6)
+            || [c[2], mj[2], mn[2]].iter().any(|z| z.abs() > 1e-9)
+        {
+            continue;
+        }
+        // Only whole ellipses are read (both of the corpus are); an arc's ends are not decoded.
+        if t0.abs() > 1e-12 || (t1 - 2.0 * std::f64::consts::PI).abs() > 1e-9 {
+            return None;
+        }
+        let center_ref = refs_at(d, rec, o + 104).into_iter().map(|p| p.1).find(|q| points.contains_key(q))?;
+        if points.get(&center_ref).is_none_or(|p| geom::dist([p[0], p[1]], [c[0], c[1]]) > 1e-7) {
+            return None;
+        }
+        cover::field(rec, o, 104, "ellipse.center-axes-radii-range");
+        return Some(Ellipse { center: c, major: mj, minor: mn, a, b, center_ref });
+    }
+    None
 }
 
 /// A sketch spline: the stored B-spline curve (control points in cm, sketch space).
@@ -218,6 +260,7 @@ pub(super) struct Sketch {
     pub lines: BTreeMap<u64, Line>,
     pub arcs: BTreeMap<u64, Arc>,
     pub splines: BTreeMap<u64, Spline>,
+    pub ellipses: BTreeMap<u64, Ellipse>,
     pub other: BTreeMap<u64, String>,
 }
 
@@ -404,6 +447,10 @@ pub(super) fn read_sketch(d: &Design, sid: u64) -> Sketch {
             && let Some(sp) = spline(d, q, &out.points)
         {
             out.splines.insert(q, sp);
+        } else if d.is(q, ELLIPSE)
+            && let Some(el) = ellipse(d, q, &out.points)
+        {
+            out.ellipses.insert(q, el);
         } else if has_section(d, q, LINE) {
             if let Some(l) = line(d, q)
                 && let Some((b, _)) = find_section(d, q, LINE)
@@ -631,6 +678,22 @@ fn curve_polyline(d: &Design, s: &Sketch, q: u64) -> Option<Vec<P2>> {
     if let Some(sp) = s.splines.get(&q) {
         return sp.polyline();
     }
+    if let Some(e) = s.ellipses.get(&q) {
+        // From the end of the major axis round (the seam), from the major axis to the minor.
+        let m = 256usize;
+        return Some(
+            (0..=m)
+                .map(|k| {
+                    let t = 2.0 * std::f64::consts::PI * k as f64 / m as f64;
+                    let (c, s_) = if k == m { (1.0, 0.0) } else { (libm::cos(t), libm::sin(t)) };
+                    [
+                        e.center[0] + e.a * c * e.major[0] + e.b * s_ * e.minor[0],
+                        e.center[1] + e.a * c * e.major[1] + e.b * s_ * e.minor[1],
+                    ]
+                })
+                .collect(),
+        );
+    }
     // Other curve classes (splines of an unread layout): a chord through the point references, in
     // record order.
     let mut uniq: Vec<P2> = Vec::new();
@@ -766,7 +829,9 @@ impl RegionCache {
         // same key replaces an earlier one in place.
         let mut keymap: HashMap<(u64, u64), u64> = HashMap::new();
         let mut key_order: Vec<(u64, u64)> = Vec::new();
-        for q in s.lines.keys().chain(s.arcs.keys()).chain(s.splines.keys()).chain(s.other.keys()) {
+        for q in
+            s.lines.keys().chain(s.arcs.keys()).chain(s.splines.keys()).chain(s.ellipses.keys()).chain(s.other.keys())
+        {
             if let Some(k) = crv_key(d, *q)
                 && keymap.insert(k, *q).is_none()
             {

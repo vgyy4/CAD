@@ -181,6 +181,10 @@ fn sketch_json(cx: &mut Ctx, fid: u64, name: &str) -> Option<(Value, u64)> {
                 .push(json!({"id": format!("c{q}"), "type": "arc", "center": format!("p{c}"), "start": ss, "end": se}));
         }
     }
+    for (q, e) in &s.ellipses {
+        curves.push(json!({"id": format!("c{q}"), "type": "ellipse", "center": pid(e.center_ref),
+            "major": [e.major[0], e.major[1]], "a": mm(e.a), "b": mm(e.b)}));
+    }
     j.insert("points".into(), points.into());
     j.insert("curves".into(), curves.into());
     if !s.other.is_empty() {
