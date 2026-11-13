@@ -246,3 +246,42 @@ fn zone_fills_connect_the_pads_they_touch() {
     assert_eq!(r.unrouted(), 1);
     assert_eq!(r.lines[0].net, "B");
 }
+
+#[test]
+fn tracks_and_vias_move_and_attached_ends_follow() {
+    let mut b = pair();
+    b.add_track([10.0, 10.0], [20.0, 10.0], 0.25, "F.Cu", Some("A"), &l()).unwrap();
+    b.add_track([20.0, 10.0], [30.0, 10.0], 0.25, "B.Cu", Some("A"), &l()).unwrap();
+    b.add_track([5.0, 5.0], [6.0, 5.0], 0.25, "F.Cu", None, &l()).unwrap();
+    b.add_via([20.0, 10.0], 0.8, 0.4, Some("A"), &l()).unwrap();
+    // A via drags the ends on it (both layers), not the far ends or other tracks.
+    let (t, c) = b.move_items(&[], &[0], [0.0, 3.0], true, &l()).unwrap();
+    assert_eq!((t, c), (0, 2));
+    assert_eq!(b.vias[0].at, [20.0, 13.0]);
+    assert_eq!((b.tracks[0].start, b.tracks[0].end), ([10.0, 10.0], [20.0, 13.0]));
+    assert_eq!((b.tracks[1].start, b.tracks[1].end), ([20.0, 13.0], [30.0, 10.0]));
+    assert_eq!(b.tracks[2].start, [5.0, 5.0]);
+    // Without `attached` the ends stay.
+    b.move_items(&[], &[0], [1.0, 0.0], false, &l()).unwrap();
+    assert_eq!(b.tracks[0].end, [20.0, 13.0]);
+    // A track moves whole; the file reads back the same.
+    let (t, c) = b.move_items(&[2, 2], &[], [-1.0, 2.0], true, &l()).unwrap();
+    assert_eq!((t, c), (1, 0));
+    assert_eq!((b.tracks[2].start, b.tracks[2].end), ([4.0, 7.0], [5.0, 7.0]));
+    let again = Board::read(&b.write(), &l()).unwrap();
+    assert_eq!(again.tracks, b.tracks);
+    assert_eq!(again.vias, b.vias);
+}
+
+#[test]
+fn moving_items_refuses_bad_input_and_leaves_the_board() {
+    let mut b = pair();
+    b.add_track([10.0, 10.0], [20.0, 10.0], 0.25, "F.Cu", Some("A"), &l()).unwrap();
+    let before = b.write();
+    assert!(b.move_items(&[], &[], [1.0, 0.0], true, &l()).is_err());
+    assert!(b.move_items(&[5], &[], [1.0, 0.0], true, &l()).is_err());
+    assert!(b.move_items(&[], &[0], [1.0, 0.0], true, &l()).is_err());
+    assert!(b.move_items(&[0], &[], [f64::NAN, 0.0], true, &l()).is_err());
+    assert!(b.move_items(&[0], &[], [1e9, 0.0], true, &l()).is_err());
+    assert_eq!(b.write(), before);
+}

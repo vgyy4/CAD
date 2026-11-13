@@ -90,6 +90,7 @@ pub const PCB_COMMANDS: &[&str] = &[
     "pcb.add_via",
     "pcb.text",
     "pcb.delete",
+    "pcb.move",
     "pcb.route",
     "pcb.fill_zones",
     "pcb.drc",

@@ -20,6 +20,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<PcbAddTrack>(),
         spec::<PcbAddVia>(),
         spec::<PcbDelete>(),
+        spec::<PcbMove>(),
         spec::<PcbSetOutline>(),
         spec::<PcbText>(),
         spec::<PcbDrc>(),
@@ -355,6 +356,44 @@ impl Command for PcbDelete {
                 b.delete_items(&self.tracks, &self.vias, &limits()).map_err(pcb_err)?
             };
             Ok(json!({ "deleted": n + z }))
+        })
+    }
+}
+
+/// Moves tracks and vias.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PcbMove {
+    /// Track indices.
+    #[serde(default)]
+    pub tracks: Vec<usize>,
+    #[serde(default)]
+    pub vias: Vec<usize>,
+    /// Offset, mm.
+    pub by: [f64; 2],
+    /// Track ends on a moved via follow it (default true).
+    #[serde(default)]
+    pub attached: Option<bool>,
+}
+
+impl Command for PcbMove {
+    const ID: &'static str = "pcb.move";
+    const TITLE: &'static str = "Move tracks and vias";
+    const DESCRIPTION: &'static str = "Move tracks and vias of the open board by an offset; ends on a moved via follow.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if self.tracks.len() + self.vias.len() > 100_000 {
+            return Err(CommandError::args("at most 100000 items at once"));
+        }
+        board_edit(s, ctx, "Move tracks", |b, _| {
+            let (tracks, carried) = b
+                .move_items(&self.tracks, &self.vias, self.by, self.attached.unwrap_or(true), &limits())
+                .map_err(|e| match e {
+                    gusset_pcb::board::Error::Edit(m) if m.contains("there is no") => CommandError::not_found(m),
+                    e => pcb_err(e),
+                })?;
+            Ok(json!({ "tracks": tracks, "vias": self.vias.len(), "ends_carried": carried }))
         })
     }
 }

@@ -361,6 +361,82 @@ impl Board {
         Ok(nodes.len())
     }
 
+    /// Moves tracks and vias by `delta` (mm). With `attached`, track ends that sit on a
+    /// moved via (within 1e-4 mm, any layer) and belong to tracks not named move with it.
+    /// Returns (tracks moved, track ends carried along by vias).
+    ///
+    /// # Errors
+    /// An index past the lists, a bad delta, nothing named, places beyond 10 m, or a failed
+    /// re-read.
+    pub fn move_items(
+        &mut self,
+        tracks: &[usize],
+        vias: &[usize],
+        delta: Pt,
+        attached: bool,
+        limits: &Limits,
+    ) -> Result<(usize, usize), Error> {
+        check_pt(delta)?;
+        if tracks.is_empty() && vias.is_empty() {
+            return Err(bad("name the tracks or vias to move"));
+        }
+        // Per tree node: which of start/mid/end/at move.
+        let mut plan: Vec<(usize, [bool; 3], bool)> = Vec::new();
+        let mut moved_tracks: Vec<usize> = tracks.to_vec();
+        moved_tracks.sort_unstable();
+        moved_tracks.dedup();
+        for &i in &moved_tracks {
+            let t = self.tracks.get(i).ok_or_else(|| bad(format!("there is no track {i}")))?;
+            plan.push((t.node, [true, true, true], false));
+        }
+        let mut via_places = Vec::new();
+        let mut moved_vias: Vec<usize> = vias.to_vec();
+        moved_vias.sort_unstable();
+        moved_vias.dedup();
+        for &i in &moved_vias {
+            let v = self.vias.get(i).ok_or_else(|| bad(format!("there is no via {i}")))?;
+            check_pt([v.at[0] + delta[0], v.at[1] + delta[1]])?;
+            via_places.push(v.at);
+            plan.push((v.node, [false; 3], true));
+        }
+        let mut carried = 0;
+        if attached && !via_places.is_empty() {
+            let on = |p: Pt| via_places.iter().any(|v| libm::hypot(p[0] - v[0], p[1] - v[1]) <= 1e-4);
+            for (i, t) in self.tracks.iter().enumerate() {
+                if moved_tracks.binary_search(&i).is_ok() {
+                    continue;
+                }
+                let (s, e) = (on(t.start), on(t.end));
+                if s || e {
+                    carried += usize::from(s) + usize::from(e);
+                    plan.push((t.node, [s, false, e], false));
+                }
+            }
+        }
+        let shift = |p: Pt| [p[0] + delta[0], p[1] + delta[1]];
+        let items = self.tree.items_mut().ok_or_else(|| bad("not a board"))?;
+        for (node, which, is_via) in plan {
+            let n = items.get_mut(node).ok_or_else(|| bad("not a board"))?;
+            let heads: &[(&str, bool)] = if is_via {
+                &[("at", true)]
+            } else {
+                &[("start", which[0]), ("mid", which[1]), ("end", which[2])]
+            };
+            for &(h, go) in heads {
+                if !go {
+                    continue;
+                }
+                let Some(old) = n.child(h).and_then(|c| Some([c.num_arg(0)?, c.num_arg(1)?])) else { continue };
+                // Keeps any further arguments of the child (a via's `at` has none).
+                if let Some(c) = n.child_mut(h) {
+                    *c = xy(h, shift(old));
+                }
+            }
+        }
+        self.reread(limits)?;
+        Ok((moved_tracks.len(), carried))
+    }
+
     /// Replaces the board outline (the board's own `Edge.Cuts` drawings; footprint ones
     /// stay) with one closed polygon (at least 3 points).
     ///

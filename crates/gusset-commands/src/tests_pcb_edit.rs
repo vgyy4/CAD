@@ -196,3 +196,39 @@ fn board_texts_are_added_edited_deleted_and_undone_one_step_each() {
     }
     assert_eq!(open(&mut s).board.texts.len(), n0 + 1);
 }
+
+#[test]
+fn tracks_and_vias_move_with_attached_ends_in_one_undo_step() {
+    let mut s = session();
+    run(&mut s, &u(1), "pcb.open", json!({"path": "board.kicad_pcb"}));
+    let (t0, v0) = {
+        let b = open(&mut s);
+        (b.board.tracks.len(), b.board.vias.len())
+    };
+    run(&mut s, &u(2), "pcb.add_track", json!({"start": [9, 10], "end": [9, 15]}));
+    run(&mut s, &u(3), "pcb.add_via", json!({"at": [9, 15]}));
+    run(&mut s, &u(4), "pcb.add_track", json!({"start": [9, 15], "end": [14, 15], "layer": "B.Cu"}));
+    // The via drags both ends sitting on it.
+    let r = run(&mut s, &u(5), "pcb.move", json!({"vias": [v0], "by": [1, 2]}));
+    assert_eq!((r["ends_carried"].as_u64(), r["vias"].as_u64()), (Some(2), Some(1)), "{r}");
+    let b = open(&mut s);
+    assert_eq!(b.board.vias[v0].at, [10.0, 17.0]);
+    assert_eq!(b.board.tracks[t0].end, [10.0, 17.0]);
+    assert_eq!(b.board.tracks[t0].start, [9.0, 10.0]);
+    assert_eq!(b.board.tracks[t0 + 1].start, [10.0, 17.0]);
+    run(&mut s, &u(6), "history.undo", json!({}));
+    let b = open(&mut s);
+    assert_eq!((b.board.vias[v0].at, b.board.tracks[t0].end), ([9.0, 15.0], [9.0, 15.0]));
+    // A track alone, without following; then undo and redo.
+    run(&mut s, &u(7), "pcb.move", json!({"tracks": [t0 + 1], "by": [0, -1], "attached": false}));
+    let b = open(&mut s);
+    assert_eq!((b.board.tracks[t0 + 1].start, b.board.tracks[t0 + 1].end), ([9.0, 14.0], [14.0, 14.0]));
+    run(&mut s, &u(8), "history.undo", json!({}));
+    assert_eq!(open(&mut s).board.tracks[t0 + 1].start, [9.0, 15.0]);
+    run(&mut s, &u(9), "history.redo", json!({}));
+    assert_eq!(open(&mut s).board.tracks[t0 + 1].start, [9.0, 14.0]);
+    // Mistakes are refused.
+    for args in [json!({"by": [1, 1]}), json!({"tracks": [999], "by": [1, 1]}), json!({"vias": [999], "by": [1, 1]})] {
+        assert!(execute(&mut s, &u(10), "pcb.move", args.clone()).is_err(), "{args}");
+    }
+}
