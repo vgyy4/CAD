@@ -275,6 +275,9 @@ impl Board {
             fill.push(kv("thermal_gap", Node::num(st.thermal_gap)));
             fill.push(kv("thermal_bridge_width", Node::num(st.thermal_width)));
         }
+        if let Some(a) = st.thermal_angle {
+            fill.push(kv("thermal_bridge_angle", Node::num(a)));
+        }
         if st.island_mode != 0 {
             fill.push(kv("island_removal_mode", Node::num(f64::from(st.island_mode))));
             fill.push(kv("island_area_min", Node::num(st.island_min_area)));

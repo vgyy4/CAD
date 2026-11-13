@@ -4,15 +4,16 @@
 //! Zone fills are checked against other nets' copper and each other; copper inside one
 //! footprint's own pads of one net is not.
 
-use crate::board::{Board, PadKind, PadShape, Pt};
+use crate::board::{Board, PadKind, PadShape, Pt, ZoneConnect};
 use crate::copper::{self, Copper, ItemRef, Prim};
+use crate::geom;
 use crate::rules::Rules;
 
 /// One rule broken somewhere.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Violation {
     /// `clearance`, `short`, `track_width`, `annular_ring`, `hole_to_edge`, `copper_to_edge`, and ADR 0048's
-    /// `hole_to_hole`, `drill_size`, `courtyard_overlap`, `silk_over_pad`.
+    /// `hole_to_hole`, `drill_size`, `courtyard_overlap`, `silk_over_pad`, and ADR 0053's `starved_thermal`.
     pub code: &'static str,
     pub message: String,
     /// Where (board mm, Y down).
@@ -104,12 +105,57 @@ pub fn check(board: &Board, rules: &Rules, max: usize) -> Vec<Violation> {
         }
     }
     zones(board, rules, &copper, max, &mut out);
+    starved_thermals(board, rules, &copper, max, &mut out);
     annular_rings(board, rules, max, &mut out);
     edges(board, rules, &copper, max, &mut out);
     crate::drc_more::holes(board, rules, max, &mut out);
     crate::drc_more::drawings(board, rules, max, &mut out);
     out.truncate(max);
     out
+}
+
+/// Pads of a zone's net in a thermal relief that fewer than `rules.min_spokes` spokes
+/// reach (ADR 0053), judged on the fills stored in the board: a spoke is there when copper
+/// lies in the middle of the relief's gap along its direction. Zones not filled are not
+/// checked.
+fn starved_thermals(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Vec<Violation>) {
+    for (zi, z) in board.zones.iter().enumerate().filter(|(_, z)| !z.keepout) {
+        let Some(net) = board.net_name(&z.net) else { continue };
+        for (li, layer) in copper.layers.iter().enumerate() {
+            let polys: Vec<&Vec<Pt>> = z.fills.iter().filter(|(l, _)| l == layer).map(|(_, p)| p).collect();
+            if polys.is_empty() {
+                continue;
+            }
+            let covered = |q: Pt| polys.iter().any(|p| geom::inside(p, q));
+            for it in
+                copper.items.iter().filter(|it| it.net.as_deref() == Some(net.as_str()) && it.layers.contains(&li))
+            {
+                let ItemRef::Pad(p) = it.what else { continue };
+                let Some(pad) = board.pads.get(p) else { continue };
+                if crate::zones::pad_connect(board, p, &z.settings) != ZoneConnect::Thermal
+                    || !z.outlines().any(|o| geom::inside(o, pad.at))
+                {
+                    continue;
+                }
+                let n = crate::zones::spoke_count(pad, &z.settings, &covered);
+                if n < rules.min_spokes && out.len() < max {
+                    out.push(Violation {
+                        code: "starved_thermal",
+                        message: format!(
+                            "{} in {}: {n} thermal spoke{} reach it, {} needed",
+                            describe(board, it.what),
+                            describe(board, ItemRef::Zone(zi)),
+                            if n == 1 { "" } else { "s" },
+                            rules.min_spokes
+                        ),
+                        at: pad.at,
+                        layer: Some(layer.clone()),
+                        items: vec![ItemRef::Zone(zi), it.what],
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// Zone fills against the copper of other nets on their layer, and against each other.

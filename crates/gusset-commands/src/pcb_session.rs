@@ -161,6 +161,10 @@ pub fn apply_project(rules: &mut Rules, pro: &Value) {
     if let Some(v) = mm(r.get("min_silk_clearance")) {
         rules.silk_clearance = v;
     }
+    // ADR 0053: the fewest thermal spokes a pad needs.
+    if let Some(v) = r.get("min_resolved_spokes").and_then(Value::as_u64) {
+        rules.min_spokes = usize::try_from(v.min(4)).unwrap_or(2);
+    }
 }
 
 /// A Freerouting install the user named in Settings (ADR 0047 phase 3). Gusset never

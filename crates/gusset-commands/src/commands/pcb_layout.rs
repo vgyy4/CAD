@@ -26,6 +26,17 @@ fn pcb_err(e: gusset_pcb::board::Error) -> CommandError {
     }
 }
 
+/// The pads left with too few thermal spokes, as JSON (ADR 0053).
+pub(super) fn starved_json(b: &gusset_pcb::Board, f: &zones::Filled) -> Vec<Value> {
+    f.starved
+        .iter()
+        .map(|x| {
+            let pad = gusset_pcb::drc::describe(b, gusset_pcb::copper::ItemRef::Pad(x.pad));
+            json!({ "zone": x.zone, "layer_user_text": x.layer, "pad_user_text": pad, "spokes": x.spokes })
+        })
+        .collect()
+}
+
 /// Fills the open board's copper zones.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -38,8 +49,7 @@ pub struct PcbFillZones {
 impl Command for PcbFillZones {
     const ID: &'static str = "pcb.fill_zones";
     const TITLE: &'static str = "Fill zones";
-    const DESCRIPTION: &'static str =
-        "Pour the open board's copper zones: clearances, thermals, minimum width, islands removed.";
+    const DESCRIPTION: &'static str = "Pour the open board's copper zones: clearances, thermals, minimum width, islands removed; pads left with too few thermal spokes are listed.";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -61,7 +71,8 @@ impl Command for PcbFillZones {
         }
         let areas: Vec<Value> =
             per_zone.iter().map(|(z, a)| json!({ "zone": z, "area_mm2": (a * 100.0).round() / 100.0 })).collect();
-        let extra = json!({ "zones": areas, "polygons": polygons, "notes_user_text": filled.notes });
+        let starved = starved_json(&b, &filled);
+        let extra = json!({ "zones": areas, "polygons": polygons, "starved_thermal": starved, "notes_user_text": filled.notes });
         commit_board(s, ctx, "Fill zones", open.file.clone(), &b, None, extra)
     }
 }

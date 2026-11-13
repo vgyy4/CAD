@@ -59,6 +59,9 @@ pub struct Rules {
     pub min_via_diameter: f64,
     /// Silkscreen to pad copper and mask opening (`min_silk_clearance`).
     pub silk_clearance: f64,
+    /// Fewest thermal spokes a pad needs to count as connected (`min_resolved_spokes`);
+    /// pads with fewer are `starved_thermal`.
+    pub min_spokes: usize,
     /// Width of new tracks, via size and drill, when no class says otherwise.
     pub track_width: f64,
     pub via_diameter: f64,
@@ -84,6 +87,7 @@ impl Default for Rules {
             min_via_drill: 0.2,
             min_via_diameter: 0.0,
             silk_clearance: 0.0,
+            min_spokes: 2,
             track_width: 0.25,
             via_diameter: 0.6,
             via_drill: 0.3,

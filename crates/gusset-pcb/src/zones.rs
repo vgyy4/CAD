@@ -36,10 +36,23 @@ pub struct Fill {
     pub areas: Areas,
 }
 
-/// The result of filling: the fills, and notes for the user.
+/// A pad in a thermal relief that fewer spokes than the rules' minimum reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Starved {
+    pub zone: usize,
+    pub layer: String,
+    /// Index in [`Board::pads`].
+    pub pad: usize,
+    /// Spokes that reach the fill.
+    pub spokes: usize,
+}
+
+/// The result of filling: the fills, pads left with too few thermal spokes, and notes for
+/// the user.
 #[derive(Debug, Clone, Default)]
 pub struct Filled {
     pub fills: Vec<Fill>,
+    pub starved: Vec<Starved>,
     pub notes: Vec<String>,
 }
 
@@ -169,7 +182,26 @@ pub fn fill(board: &Board, rules: &Rules, only: Option<&[usize]>) -> Filled {
         .filter(|&i| board.zones.get(i).is_some_and(|z| !z.keepout && z.outlines().next().is_some()))
         .collect();
     order.sort_by_key(|&i| std::cmp::Reverse(board.zones.get(i).map_or(0, |z| z.settings.priority)));
-    let pad_tht = |i: usize| board.pads.get(i).is_some_and(|p| p.kind == PadKind::Tht);
+    if let Some(only) = only {
+        // Zones filled after the last wanted one cannot matter to it, and neither can
+        // those far from every wanted zone.
+        if let Some(last) = order.iter().rposition(|i| only.contains(i)) {
+            order.truncate(last + 1);
+        }
+        let boxes: Vec<[Pt; 2]> = only
+            .iter()
+            .filter_map(|&i| board.zones.get(i))
+            .map(|z| bbox(&z.outlines().flatten().copied().collect::<Vec<_>>()))
+            .collect();
+        let reach = 2.0 * rules.clearance + 2.0;
+        order.retain(|&i| {
+            only.contains(&i)
+                || board.zones.get(i).is_some_and(|z| {
+                    let b = bbox(&z.outlines().flatten().copied().collect::<Vec<_>>());
+                    boxes.iter().any(|o| near(o, &b, reach + z.settings.clearance))
+                })
+        });
+    }
     let mut done: Vec<Fill> = Vec::new();
     for zi in order {
         let Some(z) = board.zones.get(zi) else { continue };
@@ -203,13 +235,7 @@ pub fn fill(board: &Board, rules: &Rules, only: Option<&[usize]>) -> Filled {
                     continue;
                 }
                 let ItemRef::Pad(p) = it.what else { continue };
-                let mode = board.pads.get(p).and_then(|x| x.zone_connect).unwrap_or(st.connect);
-                let mode = match mode {
-                    ZoneConnect::ThtThermal if pad_tht(p) => ZoneConnect::Thermal,
-                    ZoneConnect::ThtThermal => ZoneConnect::Solid,
-                    m => m,
-                };
-                match mode {
+                match pad_connect(board, p, &st) {
                     ZoneConnect::Solid | ZoneConnect::ThtThermal => {}
                     ZoneConnect::None => obst.extend(pad_polys(board, p, clear_to(None))),
                     ZoneConnect::Thermal => {
@@ -285,6 +311,17 @@ pub fn fill(board: &Board, rules: &Rules, only: Option<&[usize]>) -> Filled {
                 }
             }
             let kept = islands(&copper, li, net.as_deref(), &st, fill);
+            // Pads under the zone whose spokes are cut off below the minimum.
+            for &p in &thermals {
+                let Some(pad) = board.pads.get(p) else { continue };
+                if !outline.iter().any(|a| poly::contains(a, pad.at)) {
+                    continue;
+                }
+                let n = spoke_count(pad, &st, &|q| kept.iter().any(|a| poly::contains(a, q)));
+                if n < rules.min_spokes {
+                    out.starved.push(Starved { zone: zi, layer: layer.clone(), pad: p, spokes: n });
+                }
+            }
             done.push(Fill { zone: zi, layer: layer.clone(), areas: kept });
         }
     }
@@ -343,18 +380,56 @@ pub fn hatch(fill: &Areas, h: &crate::board::Hatch, solid: &Areas) -> Option<Are
     Some(poly::difference(fill, &poly::union(&holes)))
 }
 
-/// The spokes of a thermal relief: bars from the pad's centre along its axes (45° turned
-/// for round pads) out past the gap, kept where their ends land in the fill.
-fn spokes_of(pad: &crate::board::Pad, st: &crate::board::ZoneSettings, fill: &Areas) -> Vec<Vec<Pt>> {
-    let place = Place { at: pad.at, angle: pad.angle };
+/// How a zone joins a pad: the pad's own setting, else the zone's, with "thermal for
+/// through-hole only" resolved for this pad.
+pub fn pad_connect(board: &Board, pad: usize, st: &crate::board::ZoneSettings) -> ZoneConnect {
+    let mode = board.pads.get(pad).and_then(|x| x.zone_connect).unwrap_or(st.connect);
+    let tht = board.pads.get(pad).is_some_and(|p| p.kind == PadKind::Tht);
+    match mode {
+        ZoneConnect::ThtThermal if tht => ZoneConnect::Thermal,
+        ZoneConnect::ThtThermal => ZoneConnect::Solid,
+        m => m,
+    }
+}
+
+/// The four spoke directions of a pad: (cos, sin) in the pad's frame and how far the pad's
+/// copper reaches that way. They run along the pad's axes (45° turned for round pads), or
+/// as the zone's `thermal_bridge_angle` says.
+fn spoke_dirs(pad: &crate::board::Pad, st: &crate::board::ZoneSettings) -> Vec<(f64, f64, f64)> {
     let round = matches!(pad.shape, PadShape::Circle | PadShape::Custom { anchor_circle: true });
     let (hx, hy) = (pad.size[0] / 2.0, pad.size[1] / 2.0);
+    let turn = st.thermal_angle.map_or(if round { std::f64::consts::FRAC_PI_4 } else { 0.0 }, f64::to_radians);
+    (0..4)
+        .map(|k| {
+            let a = std::f64::consts::FRAC_PI_2 * f64::from(k) + turn;
+            let (c, s) = (libm::cos(a), libm::sin(a));
+            let reach = if round {
+                hx
+            } else {
+                // Distance to the pad's box edge along the direction.
+                let lim = |h: f64, v: f64| if v.abs() > 1e-9 { h / v.abs() } else { f64::INFINITY };
+                lim(hx, c).min(lim(hy, s))
+            };
+            (c, s, reach)
+        })
+        .collect()
+}
+
+/// Spokes narrower than the zone's minimum width do not survive the fill's opening.
+fn spokes_survive(st: &crate::board::ZoneSettings) -> bool {
+    st.thermal_width >= st.min_width - 1e-9
+}
+
+/// The spokes of a thermal relief: bars from the pad's centre along its spoke directions
+/// out past the gap, kept where their ends land in the fill.
+fn spokes_of(pad: &crate::board::Pad, st: &crate::board::ZoneSettings, fill: &Areas) -> Vec<Vec<Pt>> {
+    if !spokes_survive(st) {
+        return Vec::new();
+    }
+    let place = Place { at: pad.at, angle: pad.angle };
     let w = st.thermal_width.max(1e-3);
     let mut out = Vec::new();
-    for k in 0..4 {
-        let a = std::f64::consts::FRAC_PI_2 * f64::from(k) + if round { std::f64::consts::FRAC_PI_4 } else { 0.0 };
-        let (c, s) = (libm::cos(a), libm::sin(a));
-        let reach = if round || k % 2 == 0 { hx } else { hy };
+    for (c, s, reach) in spoke_dirs(pad, st) {
         let probe = reach + st.thermal_gap + st.min_width.max(w) / 2.0;
         let tip = reach + st.thermal_gap + st.min_width.max(w);
         let at = |d: f64| place.apply([c * d, s * d]);
@@ -363,6 +438,20 @@ fn spokes_of(pad: &crate::board::Pad, st: &crate::board::ZoneSettings, fill: &Ar
         }
     }
     out
+}
+
+/// How many of a pad's spokes are present: those whose middle of the gap (between the pad's
+/// copper and the fill round it) lies in copper, as `covered` says. Works on a fill just
+/// computed and on one read from a file.
+pub fn spoke_count(pad: &crate::board::Pad, st: &crate::board::ZoneSettings, covered: &dyn Fn(Pt) -> bool) -> usize {
+    let place = Place { at: pad.at, angle: pad.angle };
+    spoke_dirs(pad, st)
+        .into_iter()
+        .filter(|&(c, s, reach)| {
+            let d = reach + st.thermal_gap / 2.0;
+            covered(place.apply([c * d, s * d]))
+        })
+        .count()
 }
 
 /// The parts of a fill to keep: those touching copper of the zone's net on the layer, or

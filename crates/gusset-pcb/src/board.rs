@@ -411,6 +411,9 @@ pub struct ZoneSettings {
     pub connect: ZoneConnect,
     pub thermal_gap: f64,
     pub thermal_width: f64,
+    /// Turn of the thermal spokes in the pad's frame, degrees (`thermal_bridge_angle`);
+    /// `None`: along the pad's axes, 45° for round pads.
+    pub thermal_angle: Option<f64>,
     /// Higher fills first; lower ones keep clear of them.
     pub priority: i64,
     /// 0: remove islands, 1: keep them, 2: remove those under `island_min_area`.
@@ -440,6 +443,7 @@ impl Default for ZoneSettings {
             connect: ZoneConnect::Thermal,
             thermal_gap: 0.5,
             thermal_width: 0.5,
+            thermal_angle: None,
             priority: 0,
             island_mode: 0,
             island_min_area: 10.0,
@@ -807,6 +811,7 @@ fn zone_settings(n: &Node) -> ZoneSettings {
         connect,
         thermal_gap: len(fill.and_then(|f| num(f, "thermal_gap")), d.thermal_gap),
         thermal_width: len(fill.and_then(|f| num(f, "thermal_bridge_width")), d.thermal_width),
+        thermal_angle: fill.and_then(|f| num(f, "thermal_bridge_angle")).filter(|v| v.is_finite() && v.abs() <= 360.0),
         priority: num(n, "priority").filter(|v| v.is_finite()).map_or(0, |v| v.clamp(-1e9, 1e9) as i64),
         island_mode: fill
             .and_then(|f| num(f, "island_removal_mode"))
