@@ -3069,3 +3069,98 @@ importer: `tree_import/v2.rs` (`thread`, `offset_face`), `tree_import.rs` (`move
   a patterned thread on holes off the origin). Designs with offsets of faces (3027, 3464 history; 858, 6299, 5998,
   6002, 3093, 6126, the Crickit assembly at their earlier blockers) unchanged; 3000 history again (above).
 
+## 51. Round 27 B: sketch text in a font Gusset has, the sheet-metal Bend, new box primitives (2026-11-12)
+Readers: `fusion_tree/text.rs` (`read_text`, `extrude_texts`, `text_extrude`), `fusion_tree/bend.rs` (`bend_json`),
+`fusion_tree/pcb.rs` (`box_primitive`), `fusion_tree/json.rs` (Base Feature bodies a Bend changes). Generator:
+`tree_import.rs` (`text_feature`, `bend_feature`). Document: `bend` (ADR 0037 amendment, `gusset-eval/src/bend.rs`).
+
+### Sketch text `E0618268` (5998, 6114, 6124, 6126, 6299)
+* Five designs hold sketch text (19 records). The record: an `f64` 1 and an `f64` 0 and an `f32` 1, the font's name
+  (`u32` length + UTF-16: "Arial", "Arial Rounded MT Bold", "Arial Narrow"), `u8 0`, the height (`f64`, cm; also the
+  `D91D429C` holder that follows, whose parameter is the same value), `u8 0`, a `u32` code, three zero bytes, the
+  string (`u32` length + UTF-16), a `u32` code, `u8 0`, the weight (400 or 700), five zero bytes, a 4x4 (row-major,
+  cm), then `00 00 00 00 01`, `f32` 1 twice and the sketch's reference (`44A64366`) last. The 4x4 is a turn in the
+  sketch plane and a shift: its first column is the baseline's direction, its translation the text box's corner
+  (6299's "RESET" turned 75 deg, 6114's "USB" and "SOLAR" turned 90 deg). The two codes are 3 and 2 (5998's "+" and
+  "-"), 3 and 3 (its "C" and "D"), 1 and 1 everywhere else: alignment or box kind, not read.
+* An extrude of text names one `92F9A5F4` profile per text (5998's `Extrude11 (2)`: four); the profile's `90055C05`
+  child ends in the text record's id as a plain `u64` (not a reference: `c5 22` = 8901, the "+").
+* The glyph outlines come from the font, which the file does not hold. A cut of text stores its tools, one solid per
+  text: 5998's four glyph prisms are bodies 0..3 of `BREP.274f068a...smb`, each exactly the cut's 0.4 mm deep from
+  the sketch plane (x 14.1..14.5 mm on the plane x = 14.5 mm). Their boxes lie up and right of the text corners: the
+  glyphs start 0.02..0.44 mm right of the corner and 0.31..0.90 mm above it ("+" at 3 mm: y -4.761..-2.780, z
+  1.432..3.415 mm against the corner (-4.778, 0.947) mm). The same blob holds the glyphs' side sheets (a few nm wide).
+* **Reading.** A text extrude becomes, per text, a `text` feature in a font Gusset has (`mono` for a fixed-pitch
+  family, `sans` otherwise; no serif font is bundled). Where every text has its stored tools (solids exactly the
+  extrude's reach from the sketch plane, at least 10 um wide, half or more of whose box lies in the box the text
+  takes from its corner, 0.8 heights per character by -0.5..1.5 heights, and a quarter or less in any other text's),
+  the tree adds them as `stored_body` features and a `combine` named after the extrude cuts (or joins) them: the
+  texts stay as suppressed `text` features, centred on their glyphs, so they can be edited and switched on. Without
+  stored tools the texts do the extrude in the substitute font and the rebuild check judges them (it is not
+  loosened: a substitute font changes the volume, so such a design comes in as bodies). The import warns once per
+  text: "the font 'Arial' is not in the file; the text "+" uses Gusset's sans font instead; it is kept suppressed,
+  and the glyphs the file stores make the feature".
+* A Gusset base plane whose normal is the sketch's reversed (`flipped`) would mirror the text: the text gets a
+  datum plane with the sketch's own normal instead (the tilted placement).
+* 5998 now reads past `Extrude11 (2)` and in full, then stops in the rebuild at `Draft1` (a face pick that two pieces
+  of `Extrude5`'s end cap hold equally). 6124's "GND", "4.5V" and "3V" (Top's `Extrude4 (2)`, a cut of 0.28 mm
+  capitals) match nine stored solids, one per character (3, 4 and 2), by the rule above; their placements carry
+  3e-14 out of the sketch plane, accepted below 1e-9. 6124 then stops at `Fillet4` (four edges unresolved), with
+  `Combine1` (its operation value 1 not confirmed) after it; 6299 at
+  `Extrude17` (a face profile), 6126 at its thin extrude, 6114 has no feature history (an `.f3z` whose root design
+  has none).
+
+### Bend `1CF7B9E3` (3502)
+* Read: `BendAngle` (-90 deg in both bends) and `BendRadius` (0.45 mm) are the record's own holders; the rule
+  (`E75C86D6` -> `B42ED662`, "FPC cable (Convert) (Derived)") holds `Thickness` (0.05 mm) and, as the double right
+  after its 36-character id text, the K-factor 0.44 (with "Aluminum", "Thickness * 4.0", ".45mm" around it). The line
+  is `88277bc9` -> `2CA5A1CD` -> `5A1BF548` -> `E2CEFD18` (a sweep path of one line: `Sketch1`'s `c4724` at
+  y -39.4, of two parallel lines 0.4 mm apart; `Sketch2`'s `c4940`). The `88277bc9`'s body is `01 00` and a `u32` 2 in
+  both. The `69EE2FA7` holds two doubles, a zero byte and a point (cm, the body's component frame) of the face that
+  stays: Bend1 (2.6807, 0.05, -4.6194) mm, on the flat flex's top face short of the line; Bend2 (4.6836, -2.5560,
+  -4.6586) mm, on the outer face of the straight Bend1 stood up.
+* **The geometry the file stores.** Component7's DM body in `BREP.1c3b3597...smbh` is the bent flex (5.080812 mm3, x
+  0..9.47, y -3.3436..0.05, z -4.6586..2.4364 mm); its PM body in `BREP.f284f2bf...smb` (body 1 of 6) is the flat one
+  (5.077285 mm3 = the outline's 101.5457 mm2 times 0.05 mm, z -14.63..0). Bent minus flat, 0.003527 mm3, is
+  `theta t^2 (1/2 - k) sum w` with k = 0.44 and both bends across the full widths (9.47 + 5.5 mm). The bent box fits
+  straights of 4.1586, 2.3936 and 6.595 mm with two zones of pi/2 (0.45 + 0.022) = 0.74142 mm each, together the flat
+  14.63 mm: the first zone runs from z -4.1586 to -4.9 mm, where `c4724` lies (y 39.4 mm is 4.9 mm from the flex's
+  edge at 34.5). So the zone ends at the line on the side that stays; the `u32` 2 is read as that and other codes are
+  refused. Bend2 agrees: its line (z 2.72 mm on the stood-up straight) lies 3.135 mm (2.3936 + 0.7414) past the first
+  zone's end, which puts that end at z -0.415 mm, where `Sketch2`'s projected outline has an edge. `Sketch1` holds the flat flex's whole outline (14.63
+  mm long in one plane): the bends were drawn on the flat body, so the Base Feature's body a Bend changes comes in
+  as its PM body.
+* **Gusset's `bend`** (new): the document had no bend. `bend B1 (body: ..., line: S.l3, angle: ..., bend_radius: ...,
+  k_factor: ..., [side: left|right], [position: center|start|end], [flip: true])`, evaluated with the kernel's
+  booleans, revolve and transforms (no new kernel operation), OCCT test in `modeling_sheet.rs`. The tree's bend keeps
+  the side holding the point; a negative angle turns against the source sketch's normal; both are mapped through a
+  reversed Gusset sketch.
+* **Not finished.** 3502 now reads in full; the import stops at its guard "a feature changes a stored body that
+  already is a finished body of the file": the PM body is one of the file's `.smb` bodies, so the guard (which keeps a
+  feature from passing because its stored body already is the end result) fires. It was not changed. With it set aside
+  in a local experiment, `Bend1` finds the flex 1.525 mm above `Sketch1`'s plane and 5.94 mm along the line from where
+  the sketch's outline has it (the tree places Component7 elsewhere than the sketch was drawn against; the bodies
+  import places that body at a third place, mirrored in x): the placement of Component7's occurrence against the root
+  sketches is the next step, then whether a dropped-input PM body may be changed (an owner's decision on the guard).
+
+### Box primitives (2354)
+* The corpus holds `BoxPrimitive` (78 records in 13 designs) and `CoilPrimitive` (3722) only; no cylinder, sphere or
+  torus primitive occurs, so none is read. A new box whose history blob holds a later state of it (2354's
+  BoxPrimitive1, 1 (2), 3, 8, 1 (4): "the history blob holds 3 solid bodies, its state list 1", "a body is not in its
+  own state list") is placed by its signed height, as a join or cut is; where the stored body is the box itself it
+  still decides the side. 2354 then stops at `Extrude1 (2)`, whose profile is a face (another round's work).
+
+### 3093 and 3802 (investigated, unchanged)
+* As section 43 found: 3093's `Combine1` targets one copy of `R-Pattern1` (link 26330) and the record does not say
+  which copy a link is; with it let through the design stops at `R-Pattern2`, a pattern of the combined body. 3802's
+  `Extrude4` join names the bodies of `Extrude1` and `Extrude2`, which later features (Extrude5, Split1, Extrude14)
+  still name apart: the join merged neither into the other, and which one the tool joins is not in the record; with
+  either it stops at `Fillet2` (four edges unresolved). Neither is in reach without a rule the files do not show.
+
+### Result
+* adafruit-next: 123 of 150 as history, adafruit-more: 133 of 150, adafruit: 13 of 18; the same designs as the base
+  run of this branch's start (none gained, none lost). The rounding fix of 6124's text placements came after the run
+  and was checked on 6124 alone.
+* First blockers: 2354 `Extrude1 (2)` (a face profile; was BoxPrimitive1); 5998 `Draft1` in the rebuild (a face pick
+  two pieces of one cap hold equally; was the text extrude); 6124 `Fillet4` (was the text extrude); 3502 the
+  importer's finished-body guard (was "Bend is not supported"), then Component7's placement against the root sketches.
