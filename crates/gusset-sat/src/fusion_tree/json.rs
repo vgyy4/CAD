@@ -35,6 +35,10 @@ const NON_GEOMETRIC: [(&str, &str); 13] = [
 
 /// Derived Base Feature: the bodies of another design, derived into this one (section 30).
 const DERIVED_BASE: &str = "B1E5B971";
+/// Position (captured occurrence positions), and the key under which a feature names the last
+/// one before it in the timeline.
+const POSITION: &str = "8EE00B00";
+pub(super) const AT_POSITION: &str = "_at_position";
 
 pub(super) fn op_name(op: u8) -> String {
     match op {
@@ -1779,10 +1783,15 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             order.push(b);
         }
     }
+    // The last Position (captured occurrence positions) before the feature in the timeline.
+    let mut position: Option<u64> = None;
     for &fid in &order {
         let (base, name0) = feature_name(d, fid);
         let class = d.cls(fid);
         let c8 = class.get(..8).unwrap_or("").to_string();
+        if c8 == POSITION && tl.contains(&fid) {
+            position = Some(fid);
+        }
         let mut name = name0;
         if let Some(n) = &mut name {
             if used_names.contains(n.as_str()) {
@@ -2041,7 +2050,11 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 [one] => Some(one.clone()),
                 _ => None,
             };
-            feats.push(Value::Object(super::bend::bend_json(cx, fid, &nm, &sketch_names, target)));
+            let mut j = super::bend::bend_json(cx, fid, &nm, &sketch_names, target);
+            if let Some(p) = position {
+                j.insert(AT_POSITION.into(), p.into());
+            }
+            feats.push(Value::Object(j));
         } else if d.is(fid, super::loft::PIPE) {
             let mut j = super::loft::pipe_json(cx, fid, &nm, &sketch_names, &mut feats);
             in_own_component(&mut j, "path", comp, &mut feats, nbefore, format!("{nm} path"));
@@ -3306,7 +3319,11 @@ fn get3(v: Option<&Value>) -> Option<V3> {
 /// Puts the features of each component where the occurrence of the component stands: every
 /// point (sketch planes, edge midpoints, hole positions, mirror planes) moves with it and every
 /// direction turns with it. A component whose bodies have different placements is refused.
-pub(super) fn place(tree: &mut Value, placed: &[crate::fusion::Placed]) -> Result<(), String> {
+pub(super) fn place(
+    tree: &mut Value,
+    placed: &[crate::fusion::Placed],
+    then: &HashMap<(u64, u64), crate::fusion::Placement>,
+) -> Result<(), String> {
     let comps: Vec<(u64, Vec<String>)> = tree
         .get("components")
         .and_then(Value::as_array)
@@ -3366,6 +3383,7 @@ pub(super) fn place(tree: &mut Value, placed: &[crate::fusion::Placed]) -> Resul
             o.remove("_component");
         }
     }
+    sketches_where_they_were_drawn_against(feats, &by_comp, then);
     for f in feats.iter_mut() {
         let inst = f.get("_instance").and_then(Value::as_u64).unwrap_or(0) as usize;
         let Some(pl) = f
@@ -3409,6 +3427,74 @@ pub(super) fn place(tree: &mut Value, placed: &[crate::fusion::Placed]) -> Resul
 }
 
 /// A `{"r": [[..]x3], "t": [..]}` placement.
+/// A feature of a placed component that works with a sketch of an unplaced one (the root) used
+/// the sketch where the component stood when the feature was computed: at the last Position
+/// before it, which the occurrence path records keep (`then`, by component and Position). Where
+/// the component moved after it, the feature gets a copy of the sketch moved by the final
+/// placement after the inverse of that one, so that the sketch keeps its place on the component.
+/// 3502's Bend1 and Bend2 bend the flat flex of Component7 along lines of root sketches drawn
+/// on it (Sketch1 holds its whole outline); Position3 then turned the display assembly over.
+pub(super) fn sketches_where_they_were_drawn_against(
+    feats: &mut Vec<Value>,
+    by_comp: &HashMap<u64, Vec<crate::fusion::Placement>>,
+    then: &HashMap<(u64, u64), crate::fusion::Placement>,
+) {
+    let mut k = 0;
+    while k < feats.len() {
+        let at = |f: &Value, key: &str| f.get(key).and_then(Value::as_u64);
+        let Some(f) = feats.get(k) else { break };
+        let (Some(pos), Some(comp), Some(sketch)) =
+            (at(f, AT_POSITION), at(f, "_component"), f.get("sketch").and_then(Value::as_str).map(str::to_string))
+        else {
+            k += 1;
+            continue;
+        };
+        let (Some([last]), Some(was)) = (by_comp.get(&comp).map(Vec::as_slice), then.get(&(comp, pos))) else {
+            k += 1;
+            continue;
+        };
+        let moved = last.then(&was.inverse());
+        let still = moved
+            .r
+            .iter()
+            .enumerate()
+            .all(|(i, row)| row.iter().enumerate().all(|(j, x)| (x - if i == j { 1.0 } else { 0.0 }).abs() < 1e-9))
+            && moved.t.iter().all(|x| x.abs() < 1e-6);
+        let source = feats.get(..k).unwrap_or_default().iter().rposition(|g| {
+            g.get("type").and_then(Value::as_str) == Some("sketch")
+                && g.get("name").and_then(Value::as_str) == Some(sketch.as_str())
+        });
+        let Some(source) = source else {
+            k += 1;
+            continue;
+        };
+        let unplaced = feats
+            .get(source)
+            .and_then(|g| at(g, "_component"))
+            .is_none_or(|c| by_comp.get(&c).is_none_or(|v| v.iter().all(|p| *p == crate::fusion::Placement::IDENTITY)));
+        if still || !unplaced {
+            k += 1;
+            continue;
+        }
+        let name = feats.get(k).and_then(|f| f.get("name")).and_then(Value::as_str).unwrap_or("?").to_string();
+        let copy_name = format!("{sketch} where {name} used it");
+        let Some(mut copy) = feats.get(source).cloned() else { break };
+        move_feature(&mut copy, &moved);
+        if let Some(o) = copy.as_object_mut() {
+            o.insert("name".into(), copy_name.clone().into());
+            o.insert(
+                "plane_note".into(),
+                "where the component stood when the feature was computed (its last Position before it)".into(),
+            );
+        }
+        if let Some(o) = feats.get_mut(k).and_then(Value::as_object_mut) {
+            o.insert("sketch".into(), copy_name.into());
+        }
+        feats.insert(k, copy);
+        k += 2;
+    }
+}
+
 pub(super) fn placement_of(v: &Value) -> Option<crate::fusion::Placement> {
     let mut r = [[0.0; 3]; 3];
     let mut t = [0.0; 3];

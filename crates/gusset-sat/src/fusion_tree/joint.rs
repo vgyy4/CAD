@@ -347,6 +347,36 @@ pub(super) fn paths(d: &Design) -> Vec<JointPlacement> {
     if unread { Vec::new() } else { final_placements(d, &read) }
 }
 
+/// Where each component stood once each timeline feature that moved occurrences (a Position, a
+/// joint) was computed, by (component, feature), for the components of one occurrence path
+/// (none where a path record is not read).
+pub(super) fn positions(d: &Design) -> std::collections::HashMap<(u64, u64), Placement> {
+    let records: Vec<u64> = d.ids.iter().copied().filter(|i| d.is(*i, PATH)).take(MAX_PATHS).collect();
+    let read: Vec<Option<OccPath>> = records.iter().map(|i| occ_path(d, *i)).collect();
+    let mut out = std::collections::HashMap::new();
+    let unread = records
+        .iter()
+        .zip(&read)
+        .any(|(i, p)| p.is_none() && refs_at(d, d.rec(*i), 0).iter().any(|r| d.is(r.1, OCCURRENCE)));
+    if unread {
+        return out;
+    }
+    let comps: Vec<Option<u64>> =
+        read.iter().flatten().map(|p| p.path.last().and_then(|o| occ_component(d, *o))).collect();
+    for (p, c) in read.iter().flatten().zip(&comps) {
+        let Some(c) = *c else { continue };
+        if comps.iter().filter(|x| **x == Some(c)).count() != 1 {
+            continue;
+        }
+        for (q, m) in &p.steps {
+            if m.is_some() {
+                out.insert((c, *q), after(p, *q));
+            }
+        }
+    }
+    out
+}
+
 /// See [`super::place_by_joints`].
 pub(super) fn place(bodies: &mut Vec<Placed>, joints: &Joints) {
     let mut by_blob: BTreeMap<&str, Vec<(&str, Placement)>> = BTreeMap::new();

@@ -174,7 +174,8 @@ fn built(
     place_by_joints(&mut placed, &occurrence_placements(meta, bulk));
     add_pattern_copies(&mut placed, &pattern_copies(meta, bulk));
     place_by_joints(&mut placed, &joints);
-    json::place(&mut tree, &placed)?;
+    let then = Design::new(meta, bulk).map(|d| joint::positions(&d)).unwrap_or_default();
+    json::place(&mut tree, &placed, &then)?;
     Ok(tree)
 }
 

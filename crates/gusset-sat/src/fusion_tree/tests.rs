@@ -687,7 +687,7 @@ fn a_components_features_move_with_its_placement() {
     // A quarter turn about z and a lift of 5 mm.
     let pl = crate::fusion::Placement { r: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], t: [0.0, 0.0, 5.0] };
     let placed = vec![crate::fusion::Placed { brep: "abc".into(), occurrence: "o".into(), placement: pl }];
-    place(&mut tree, &placed).unwrap();
+    place(&mut tree, &placed, &Default::default()).unwrap();
     assert_eq!(tree["features"][0]["plane"]["origin"], json!([0.0, 1.0, 5.0]));
     assert_eq!(tree["features"][0]["plane"]["x_axis"], json!([0.0, 1.0, 0.0]));
     assert_eq!(tree["features"][1]["edges"][0]["midpoint"], json!([0.0, 0.0, 5.0]));
@@ -708,7 +708,7 @@ fn a_components_features_move_with_its_placement() {
         {"type": "extrude", "name": "Other", "sketch": "S2", "operation": "new"},
         {"type": "extrude", "name": "Cut", "_component": 9, "sketch": "S", "operation": "cut", "target": "E"},
     ]});
-    place(&mut tree, &two).unwrap();
+    place(&mut tree, &two, &Default::default()).unwrap();
     let names: Vec<&str> = tree["features"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["S", "S [2]", "E", "E [2]", "Other", "Cut", "Cut [2]"]);
     assert_eq!(tree["features"][3]["sketch"], "S [2]");
@@ -723,7 +723,7 @@ fn a_components_features_move_with_its_placement() {
     if let Some(o) = other.get_mut(1) {
         o.brep = "def".into();
     }
-    assert!(place(&mut mixed, &other).is_err());
+    assert!(place(&mut mixed, &other, &Default::default()).is_err());
 }
 
 #[test]
@@ -2531,4 +2531,37 @@ fn a_side_faces_away_from_its_own_region_of_a_profile() {
     assert_eq!(eg.away_from_profile([1.0, 0.0, 0.0], [2.0, 1.0, 0.5]), Some(1.0));
     // A face inside the area (no side) tells nothing.
     assert_eq!(eg.away_from_profile([1.0, 0.0, 0.0], [11.0, 1.0, 0.5]), None);
+}
+
+#[test]
+fn a_root_sketch_a_component_feature_used_moves_with_the_component_after_it() {
+    // 3502: Component7 stood at `was` (Position2) when Bend1 bent it along a root sketch's line;
+    // Position3 turned it over (`last`). The bend gets the sketch where it lay on the flex.
+    use std::collections::HashMap;
+    let was = crate::fusion::Placement {
+        r: [[-1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, -1.0, 0.0]],
+        t: [24.703, 34.5, -0.865],
+    };
+    let last =
+        crate::fusion::Placement { r: [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]], t: [-24.703, 34.5, 0.61] };
+    let sketch = json!({"type": "sketch", "name": "Sketch1", "_component": 3,
+        "plane": {"origin": [0.0, 0.0, -0.915], "x_axis": [1.0, 0.0, 0.0], "y_axis": [0.0, -1.0, 0.0]}});
+    let mut bend = json!({"type": "bend", "name": "Bend1", "_component": 3998, "sketch": "Sketch1"});
+    bend[json::AT_POSITION] = 4548.into();
+    let by_comp = HashMap::from([(3998u64, vec![last])]);
+    let then = HashMap::from([((3998u64, 4548u64), was)]);
+    let mut feats = vec![sketch.clone(), bend.clone()];
+    json::sketches_where_they_were_drawn_against(&mut feats, &by_comp, &then);
+    assert_eq!(feats.len(), 3);
+    let copy = json!("Sketch1 where Bend1 used it");
+    assert_eq!((&feats[1]["name"], &feats[2]["sketch"]), (&copy, &copy));
+    let close = |v: &serde_json::Value, w: [f64; 3]| (0..3).all(|i| (v[i].as_f64().unwrap() - w[i]).abs() < 1e-9);
+    let pl = &feats[1]["plane"];
+    assert!(close(&pl["origin"], [0.0, 0.0, 0.66]), "{pl}");
+    assert!(close(&pl["x_axis"], [-1.0, 0.0, 0.0]) && close(&pl["y_axis"], [0.0, -1.0, 0.0]), "{pl}");
+    // A component that has not moved since keeps the sketch as it is.
+    let then = HashMap::from([((3998u64, 4548u64), last)]);
+    let mut feats = vec![sketch, bend];
+    json::sketches_where_they_were_drawn_against(&mut feats, &by_comp, &then);
+    assert_eq!(feats.len(), 2);
 }
