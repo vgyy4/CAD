@@ -59,6 +59,7 @@ mod tests_pcb_edit;
 mod tests_pcb_layout;
 #[cfg(test)]
 mod tests_sch;
+#[cfg(test)]
 mod tests_sheet;
 #[cfg(test)]
 mod tests_sketch;
