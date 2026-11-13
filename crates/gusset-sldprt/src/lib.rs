@@ -147,16 +147,17 @@ pub fn named_local_bodies(
 }
 
 /// The name of the record that ends just before the block at `at`: `FF FE FF <n>`, n UTF-16
-/// units, then at most 16 bytes of sizes and flags.
+/// units, then at most 32 bytes of flags and sizes (10 in the older parts, 18 in
+/// newer ones: `3v motor hole -v2`).
 fn record_name(stream: &[u8], at: usize) -> String {
-    let lo = at.saturating_sub(4 + 2 * 255 + 16);
+    let lo = at.saturating_sub(4 + 2 * 255 + 32);
     for p in (lo..at).rev() {
         if stream.get(p..p + 3) != Some(&[0xff, 0xfe, 0xff][..]) {
             continue;
         }
         let n = usize::from(stream.get(p + 3).copied().unwrap_or(0));
         let end = p + 4 + 2 * n;
-        if end <= at && at - end <= 16 {
+        if end <= at && at - end <= 32 {
             let units: Vec<u16> = stream
                 .get(p + 4..end)
                 .unwrap_or_default()

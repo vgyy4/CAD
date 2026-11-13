@@ -1268,9 +1268,11 @@ fn local_bodies_keep_their_names_and_chunks_past_one_mib() {
     blk.extend(&zb);
     blk.extend([0u8; 8]);
     let mut local = 2u32.to_le_bytes().to_vec();
-    for (name, blk) in [("Imported1", blk), ("Imp2", block(&xt("second", 70)))] {
+    // The second record has the two more words of the newer parts (`3v motor hole -v2`).
+    for (name, blk, words) in [("Imported1", blk, 0), ("Imp2", block(&xt("second", 70)), 2)] {
         local.extend([0xff, 0xfe, 0xff, name.len() as u8]);
         local.extend(name.encode_utf16().flat_map(u16::to_le_bytes));
+        local.extend(std::iter::repeat_n([0, 0, 0, 0], words).flatten());
         local.extend([1, 0, 0, 0, 0]);
         local.extend(((blk.len() + 5) as u32).to_le_bytes());
         local.push(0);
