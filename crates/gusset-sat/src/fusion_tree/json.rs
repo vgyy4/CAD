@@ -1405,6 +1405,33 @@ fn hole_json(cx: &mut Ctx, fid: u64, name: &str) -> Map<String, Value> {
     j
 }
 
+/// Whether a linear pattern's distance is its extent (`Some(true)`) or the spacing of its
+/// copies (`Some(false)`): the byte after `02 00 00 00 02 00 00 00` behind the direction
+/// reference (`F2A7590D`) of its definition record (`EA0E146E`), 1 in 2354's two patterns
+/// (whose stored copies stand extent / (count - 1) apart) and 0 in the 22 others of the sets
+/// that have the layout; the `u32` after it is the count less one. `None` where the layout
+/// is another.
+fn pattern_extent(d: &Design, fid: u64) -> Option<bool> {
+    let def = ref_ids(d, d.rec(fid)).into_iter().find(|q| d.is(*q, "EA0E146E"))?;
+    let rec = d.rec(def);
+    let (_, after) = stream::refs_at(d, rec, 0)
+        .into_iter()
+        .find(|(_, q)| d.is(*q, "F2A7590D"))
+        .and_then(|(at, _)| stream::ref_end(d, rec, at))?;
+    let mut j = after;
+    while rec.get(j) == Some(&0) {
+        j += 1;
+    }
+    if rec.get(j..j + 8) != Some(&[2, 0, 0, 0, 2, 0, 0, 0][..]) {
+        return None;
+    }
+    match rec.get(j + 8) {
+        Some(0) => Some(false),
+        Some(1) => Some(true),
+        _ => None,
+    }
+}
+
 pub(super) struct PatternInputs<'a> {
     pub(super) name: &'a str,
     pub(super) originals: &'a [String],
@@ -2280,14 +2307,23 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 _ => None,
             };
             let inputs_ok = if ins.is_empty() { target.is_some() } else { ins.iter().all(|q| names.contains_key(q)) };
-            if linear && inputs_ok && !dirs.is_empty() && val("countU").is_some() {
+            // An extent is the distance from the original to the last copy: the copies stand at
+            // extent / (count - 1) (2354's R-Pattern1: 40 strips over 21.5 mm, its stored copies
+            // 0.5513 mm apart). An extent in two directions is not read.
+            let count = val("countU").unwrap_or(1.0);
+            let per = match pattern_extent(d, fid) {
+                Some(true) if val("CountV").unwrap_or(1.0) <= 1.5 && count > 1.5 => Some(count.round() - 1.0),
+                Some(true) => None,
+                _ => Some(1.0),
+            };
+            if let (true, true, false, Some(_), Some(per)) = (linear, inputs_ok, dirs.is_empty(), val("countU"), per) {
                 let sym = feature::pattern_symmetric(d, fid).unwrap_or([false; 3]);
                 let p = PatternInputs {
                     name: &nm,
                     originals: &in_names,
-                    count: val("countU").unwrap_or(1.0),
+                    count,
                     count_v: val("CountV").unwrap_or(1.0),
-                    spacing: val("uSpaceDistance").map_or(0.0, mm),
+                    spacing: val("uSpaceDistance").map_or(0.0, |v| mm(v / per)),
                     spacing_v: val("vSpaceDistance").map_or(0.0, mm),
                     dirs: &dirs,
                     sym,
