@@ -2542,10 +2542,8 @@ pub(super) fn joins_that_make_bodies(feats: &mut [Value]) {
 /// the tree's feature joins the tool to one of them and a `combine` after it joins the others
 /// to that one. The body that lives on is the one a later feature names (a join of the bodies of
 /// Extrude1 and Extrude9 followed by a join to Extrude9's keeps Extrude9's), the first where none
-/// does; where later features name two of them the feature stays as it is (refused), unless one
-/// of them names two in its target list and none puts one to another as a tool: they are one
-/// body then, under the name every later feature naming one of them uses (else the first),
-/// and later features name it so.
+/// does; where later features name several of them, the one every later feature naming any of
+/// them names, the others they name staying bodies of their own (refused where none is).
 /// The features of a MirrorComponent: one body mirror (into a new body) per body its source
 /// component has, in the new component (section 33). Also lists the new component.
 type NewComp = (u64, Option<String>);
@@ -2616,75 +2614,49 @@ pub(super) fn joins_of_several_bodies(feats: &mut Vec<Value>) {
                 }
             }
         }
-        // A later feature whose target list names two of them acts on one body that carries
-        // both names (2354: BoxPrimitive6 joins a box to the ribbon's three bodies, then
-        // Extrude5 cuts "the bodies of BoxPrimitive3 and Revolve1"), unless a later feature
-        // joins or cuts one of them with another as its tool (they are apart then).
-        let names = |g: &Value, key: &str| -> Vec<String> {
-            match g.get(key) {
-                Some(Value::String(t)) => vec![t.clone()],
-                Some(Value::Array(a)) => a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect(),
-                _ => Vec::new(),
-            }
+        // Where later features name several of them, the tool joined the one every later feature
+        // naming any of them names; the others they name stayed bodies of their own (the tool
+        // did not reach them), and those no later feature names became part of it. 2354:
+        // BoxPrimitive6 joins a box to the ribbon's flat part, its bent part and a strip the
+        // box does not touch; Extrude5 then cuts "BoxPrimitive3 and Revolve1", every later
+        // feature names Revolve1, and Fillet2's rounds of the flat part's far end are on
+        // Revolve1's body.
+        let names = |g: &Value| -> Vec<String> {
+            ["target", "tools"]
+                .iter()
+                .flat_map(|key| match g.get(*key) {
+                    Some(Value::String(t)) => vec![t.clone()],
+                    Some(Value::Array(a)) => a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect(),
+                    _ => Vec::new(),
+                })
+                .collect()
         };
         let rest = feats.get(i + 1..).unwrap_or_default();
-        let together = rest.iter().any(|g| names(g, "target").iter().filter(|t| targets.contains(t)).count() >= 2);
-        let apart = rest.iter().any(|g| {
-            let (t, tools) = (names(g, "target"), names(g, "tools"));
-            t.iter().any(|a| targets.contains(a) && tools.iter().any(|b| b != a && targets.contains(b)))
-        });
-        let (keep, rename) = match later.as_slice() {
-            [] => (targets.first().cloned(), false),
-            [one] => (Some((*one).clone()), false),
-            // The name every later feature that names one of them uses, else the first.
-            [first, ..] if together && !apart => {
-                let every = later.iter().find(|t| {
+        let keep = match later.as_slice() {
+            [] => targets.first().cloned(),
+            [one] => Some((*one).clone()),
+            _ => later
+                .iter()
+                .find(|t| {
                     rest.iter().all(|g| {
-                        let n = [names(g, "target"), names(g, "tools")].concat();
+                        let n = names(g);
                         !n.iter().any(|x| targets.contains(x)) || n.contains(t)
                     })
-                });
-                (Some((*every.unwrap_or(first)).clone()), true)
-            }
-            _ => (None, false),
+                })
+                .map(|t| (*t).clone()),
         };
         let Some(keep) = keep else {
             i += 1;
             continue;
         };
-        if rename {
-            for g in feats.iter_mut().skip(i + 1) {
-                let Some(o) = g.as_object_mut() else { continue };
-                for key in ["target", "tools"] {
-                    let mut named = names(&Value::Object(o.clone()), key);
-                    if named.is_empty() || !named.iter().any(|t| targets.contains(t)) {
-                        continue;
-                    }
-                    for t in &mut named {
-                        if targets.contains(t) {
-                            t.clone_from(&keep);
-                        }
-                    }
-                    let mut seen: Vec<String> = Vec::new();
-                    named.retain(|t| {
-                        if seen.contains(t) {
-                            false
-                        } else {
-                            seen.push(t.clone());
-                            true
-                        }
-                    });
-                    let v = match (key, named.as_slice()) {
-                        ("target", [one]) => Value::from(one.as_str()),
-                        _ => Value::from(named),
-                    };
-                    o.insert(key.into(), v);
-                }
-            }
-        }
-        let tools: Vec<String> = targets.iter().filter(|t| **t != keep).cloned().collect();
+        let apart: Vec<String> = later.iter().filter(|t| ***t != keep).map(|t| (*t).clone()).collect();
+        let tools: Vec<String> = targets.iter().filter(|t| **t != keep && !apart.contains(t)).cloned().collect();
         let Some(Value::Object(o)) = feats.get_mut(i) else { break };
         o.insert("target".into(), keep.as_str().into());
+        if tools.is_empty() {
+            i += 1;
+            continue;
+        }
         let name = o.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
         let mut c = Map::new();
         c.insert("type".into(), "combine".into());

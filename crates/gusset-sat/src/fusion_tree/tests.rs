@@ -1971,25 +1971,24 @@ fn a_join_of_several_bodies_is_a_join_and_a_combine() {
     let mut feats = vec![join("Extrude7", json!(["Extrude1", "Extrude6"]))];
     super::json::joins_of_several_bodies(&mut feats);
     assert_eq!((&feats[0]["target"], &feats[1]["tools"]), (&json!("Extrude1"), &json!(["Extrude6"])));
-    // Later features name both, or the join also makes a body: left as it is.
+    // Later features name both: the tool joined the one every later feature names, the other
+    // stayed a body of its own (a later combine joins it).
     let mut feats =
         vec![join("E3", json!(["A", "B"])), json!({"type": "combine", "name": "C", "target": "A", "tools": ["B"]})];
     super::json::joins_of_several_bodies(&mut feats);
-    assert_eq!((feats.len(), &feats[0]["target"]), (2, &json!(["A", "B"])));
-    // A later feature's target list names two of them: one body under both names (2354's
-    // BoxPrimitive6, then Extrude5 cutting "BoxPrimitive3 and Revolve1"), kept under the name
-    // every later feature uses.
+    assert_eq!((feats.len(), &feats[0]["target"]), (2, &json!("A")));
+    // 2354's BoxPrimitive6: later features name B and C, every one of them C. The tool joined C
+    // and A (named no more); B stayed apart, and the cut still cuts both bodies.
     let cut = json!({"type": "extrude", "name": "E5", "operation": "cut", "target": ["B", "C"]});
-    let mut feats = vec![join("E3", json!(["A", "B", "C"])), cut.clone(), join("E6", json!("C"))];
+    let mut feats = vec![join("E3", json!(["A", "B", "C"])), cut, join("E6", json!("C"))];
     super::json::joins_of_several_bodies(&mut feats);
     assert_eq!(feats.len(), 4);
-    assert_eq!((&feats[0]["target"], &feats[1]["tools"]), (&json!("C"), &json!(["A", "B"])));
-    assert_eq!((&feats[2]["target"], &feats[3]["target"]), (&json!("C"), &json!("C")));
-    // ... unless a later feature puts one of them to another as a tool.
-    let apart = json!({"type": "combine", "name": "C1", "target": "B", "tools": ["C"]});
-    let mut feats = vec![join("E3", json!(["A", "B", "C"])), cut, apart];
+    assert_eq!((&feats[0]["target"], &feats[1]["tools"]), (&json!("C"), &json!(["A"])));
+    assert_eq!((&feats[2]["target"], &feats[3]["target"]), (&json!(["B", "C"]), &json!("C")));
+    // No body every later feature names: left as it is.
+    let mut feats = vec![join("E3", json!(["A", "B"])), join("E4", json!("A")), join("E5", json!("B"))];
     super::json::joins_of_several_bodies(&mut feats);
-    assert_eq!((feats.len(), &feats[0]["target"]), (3, &json!(["A", "B", "C"])));
+    assert_eq!((feats.len(), &feats[0]["target"]), (3, &json!(["A", "B"])));
     let mut makes = join("E4", json!(["A", "B"]));
     makes["creates_bodies"] = 1.into();
     let mut feats = vec![makes];
