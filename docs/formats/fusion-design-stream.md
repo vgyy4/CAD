@@ -3164,3 +3164,93 @@ Readers: `fusion_tree/text.rs` (`read_text`, `extrude_texts`, `text_extrude`), `
 * First blockers: 2354 `Extrude1 (2)` (a face profile; was BoxPrimitive1); 5998 `Draft1` in the rebuild (a face pick
   two pieces of one cap hold equally; was the text extrude); 6124 `Fillet4` (was the text extrude); 3502 the
   importer's finished-body guard (was "Bend is not supported"), then Component7's placement against the root sketches.
+
+## 52. Round 27 G: geometry failures: posts rounded across, a dome shelled, a circle's path ends, legs mirrored (2026-11-12)
+Reader: `fusion_tree/naming.rs` (`ExtGeom::away_from_profile`, `face_of_fillet`), `fusion_tree/feature.rs`
+(`ExtGeom::bounds`); importer: `tree_import.rs` (`containing_edges`), `tree_import/v2.rs` (`new_body_copies`);
+kernel: `gusset_occt.cpp` (`revolved_cavity`, `shell_by_cavity`).
+
+### 2315: rounds of posts that use up their ends
+* `Extrude12` joins four posts 8 x 4 mm (one extrude of eight regions: each post a rectangle less a circle, and the
+  circle); `Fillet2` rounds their 16 vertical edges by 2 mm, which uses up the 4 mm ends (each end becomes a half
+  cylinder); `Fillet3` rounds the posts' top edges by 1 mm. Its picks were 1.5 mm and 3 mm off the model's edges.
+  Three faults:
+  - **Which way a side faces.** A planar side's outward normal was taken away from the middle of all the profile's
+    points (x 33 mm, between the posts): the ends of the posts right of the middle faced inward, and the rounds of
+    `Fillet2` on them were put outside the posts (centres 4 mm from the model's). The normal now comes from the
+    profile's own area where it can: probes 0.1 um either side of the face, tested even-odd against the curve
+    pieces that bound the extruded area (those of one region only; a piece two regions share lies inside it), where
+    one probe is in and one out. The middle of the points stays the fallback (open profiles, thin walls).
+  - **Fillet face numbers.** `Fillet3`'s recipes name `Fillet2`'s faces `1` to `8` (the stored state after it has
+    8 cylinders r 2 mm, one per end), not 16: the two rounds of a used-up end lie on one cylinder and are one face.
+    Face `g` of a fillet is now the `g`-th distinct round in recipe order (two recipes whose rounds have the same
+    radius and axis share a number); where a recipe's round cannot be worked out, the `g`-th recipe as before. The
+    stored faces confirm all 8 (`4 [329]` is the left end of the third post, centre (37.62, -52.83) mm, and so on).
+  - **Quarter arcs of a half circle.** Fusion keeps the two rounds of an end apart, so its top edge there is two
+    quarter arcs; Gusset's is one half circle. A Fusion pick without a path is now also held by a model edge its
+    midpoint lies on, away from the edge's ends (a line, or a circle's arc, within 0.01 mm); the blend's state check
+    rejects a wrong guess.
+* 2315 comes in as history.
+
+### 3722: Shell3, the shell of a spindle dome
+* `Revolve2` is a cylinder r 33.5 mm, 19 mm tall, under a dome: the arc of r 54 mm about (0.658, 61.865) mm, which
+  meets the axis at z 115.861 mm (a spindle torus: its section dips to the axis in a notch of 1.4 deg). `Fillet2`
+  rounds the corner by 2 mm (concave: the dome bulges past the cylinder there). `Shell3` opens the base, 2 mm
+  inside. OCCT's thick solid throws on the point of the axis. New fallback in the shim, for a single solid opened
+  at faces across an axis, inward walls only, when OCCT fails or throws:
+  - the axis is that of the solid's faces of revolution (all on one line, every plane across it); the solid is one
+    of revolution when Pappus on the half sections at two angles (0 and 2 rad) gives its volume within 1e-5;
+  - the section through the axis (both halves: a point of the axis is a corner of it), with a rectangle 2 x the
+    wall deep on each piece of an opened face's trace beyond it (OCCT's revolve leaves a line across the axis a
+    surface of revolution: an opened face counts as a plane when its points lie at one height along the axis,
+    within 1e-6 mm), unified, its boolean B-spline edges made lines and arcs (`GeomConvert_CurveToAnaCurve`, 1e-6);
+  - offset inward in its plane (`BRepOffsetAPI_MakeOffset`, intersection joins; arc joins only where that fails and
+    the one concave corner is on the axis, where a round over microns at radius 0 changes nothing), the half on the
+    radial side kept and revolved: the cavity. A concave corner off the axis is refused (OCCT's 3D offset extends
+    faces there, the 2D one would round them);
+  - the shell is the solid less the cavity; the solid's faces keep their identity (the base becomes the ring left
+    of it), each cavity face is an offset of the solid's face that lies the wall's thickness from it along its
+    normal (the nearer of the two sides).
+* Golden test `a_shell_of_a_spindle_dome_is_its_section_offset_and_revolved` (3722's dimensions): 72499.74 mm3 by
+  Pappus (wall between the outer radius and the inner one: 31.5 mm, the round offset to r 4 mm about its centre,
+  the circle r 52 mm to the axis at z 113.861 mm, as section 47 found Fusion's), three offset faces. The kernel
+  measures the shell 72500.31 mm3 and the dome 725066.58 against 725058.50 by Pappus: the adaptive integration
+  (`measured_props`, 1e-7) of the revolved arc face that reaches the axis is 1.1e-5 off, OCCT's default one is
+  right (2e-8). Within the importer's 2e-5; not changed here.
+* 3722 now builds `Shell3`; it stops at `Chamfer1` (the coil starts on `Revolve2`'s seam, section 47), then
+  `Chamfer1 (2)`. A blend fallback that moves the seam of a closed face (rebuild the face on its surface turned
+  about the axis, split the closed edges at the new seam, replace them in the neighbouring faces) was judged too
+  large for this round.
+
+### 858: the path ends of a cut circle
+* `Fillet3` picks the bottom edge of `Extrude2`'s r 14 mm side between the rectangle's side x = 7.3 mm and the
+  tab's line y = -3.5 mm. Gusset's bottom edge there is the whole circle (one vertex, at (-7.3, -11.946) mm), and the
+  containing-edge rule (an edge holding the pick's midpoint and path ends) should take it, but the reader's path
+  ends are (7.3, -11.927) and (13.538, -3.5) mm: 0.016 mm inside the circle (r 13.9836 mm), where its other
+  points lie on it. Where no edge holds the ends, the path points next to them stand in for them. `Fillet3` and
+  `Fillet4` now build.
+* 858 then stops at `Extrude13` ("could not build an arc of the profile"): its sketch draws two r 0.5 mm arcs twice
+  (`c4208` is `c4015`, `c4216` is `c4009`: same centre, start and end), as section 35's circles drawn twice; then
+  `OffsetFaces2`. Not attempted.
+
+### 1119: a mirror of legs and their notches
+* `Sweep1` makes a leg (a new body), `Extrude3` cuts a notch 0.15 mm deep in it (targets `Extrude1` and `Sweep1`),
+  `Mirror1` mirrors `Extrude3` and `Sweep1` across z, `Mirror2` mirrors `Sweep1`, `Mirror1` and `Extrude3` across x.
+  A mirror of features is now a mirrored copy of each body where every listed feature is a sweep that made a new
+  body, an imported mirror of such features, or a cut whose targets include one of those bodies (the copy carries
+  the cut). Both mirrors build (four legs).
+* 1119 then fails the step check: each stored leg is 0.2702 mm3 (two notch tools of 0.0041 mm3 each: 0.2784 mm3
+  before them), Gusset's sweep 0.3153 mm3. The profile (1 x 0.45 mm in the plane x = 6 mm, at the path's end) lies
+  in a plane that holds the path's first tangent: the sweep of a profile that is not across its path, along a
+  chain of three lines with corners, which Fusion and OCCT's Frenet sweep orient differently. Not resolved.
+
+### Not attempted
+* 5981 `Chamfer6` (negative generators `-3`, `-6`, `-8` of a thin extrude: section 37, still too few cases to decode)
+  and 6118 (`Fillet1 (2)`: how many copies it makes is not in the tree).
+
+### Result
+* adafruit-next: 124 of 150 as history (2315 gained; none lost against the base, where 3000 already fails its step
+  check on `Extrude7`, as in round 26 W's run; round 26 X's own run had it). adafruit-more: 133 of 150 (unchanged,
+  none lost). adafruit: 13 of 18 (unchanged, none lost).
+* First blockers: 2315 passes; 3722 `Chamfer1` (the seam); 858 `Extrude13` (arcs drawn twice); 1119 the step
+  check (the leg's sweep).
