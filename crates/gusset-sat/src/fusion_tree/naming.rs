@@ -1414,6 +1414,59 @@ impl Ctx<'_> {
             .or_else(|| self.rim_named_minus_one(faces))
             .or_else(|| self.mirrored_edge(faces))
             .or_else(|| self.line_on_cylinder(faces))
+            .or_else(|| self.across_the_extrude(faces))
+    }
+
+    /// An edge between a cap of an extrude and a face that runs straight across the extrude
+    /// (a plane along the extrude's direction, a cylinder about it: the side of a slot cut
+    /// through a plate), where no stored state holds it but one holds the edge between that face
+    /// and the extrude's other cap with the same faces at its ends: that edge moved along the
+    /// extrude's direction onto this cap (6299's `Chamfer2` takes the top rim of slots cut
+    /// through the plate `Extrude8`; the stored bodies hold the bottom rim, and the top rim only
+    /// chamfered). A side that does not reach the cap leaves no model edge there, and the
+    /// import stops.
+    fn across_the_extrude(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
+        let (f0, f1) = (faces.first()?, faces.get(1)?);
+        for (k, (cap, side)) in [(f0, f1), (f1, f0)].into_iter().enumerate() {
+            let [(g, ops)] = cap.as_slice() else { continue };
+            let other = match g.as_str() {
+                "1" => "2",
+                "2" => "1",
+                _ => continue,
+            };
+            let [op] = ops.as_slice() else { continue };
+            if !self.op_feature(*op).is_some_and(|q| self.d.is(q, super::EXTRUDE)) {
+                continue;
+            }
+            let (Some((p, n)), Some((_, n2))) = (self.stored_plane(g, ops), self.stored_plane(other, ops)) else {
+                continue;
+            };
+            if (dot(n, n2).abs() - 1.0).abs() > 1e-9 {
+                continue;
+            }
+            let Some((sg, sops)) = side.first() else { continue };
+            let surfaces = self.stored_surfaces(sg, sops);
+            let along = |s: &Surface| match s {
+                Surface::Plane { normal, .. } => unit(*normal).is_some_and(|m| dot(m, n).abs() < 1e-9),
+                Surface::Cylinder { axis, .. } => unit(*axis).is_some_and(|a| (dot(a, n).abs() - 1.0).abs() < 1e-9),
+                _ => false,
+            };
+            if surfaces.is_empty() || !surfaces.iter().all(along) {
+                continue;
+            }
+            let mut there = faces.to_vec();
+            if let Some(f) = there.get_mut(k) {
+                *f = vec![(other.to_string(), ops.clone())];
+            }
+            // A state after the blend holds that edge as it was: the blend does not take it.
+            let blend = std::mem::take(&mut self.blend_ops);
+            let found = self.stored_edge(&there);
+            self.blend_ops = blend;
+            let Some((mid, arc, path)) = found else { continue };
+            let onto = |q: V3| add(q, mul(n, dot(n, sub(p, q))));
+            return Some((onto(mid), arc, path.into_iter().map(onto).collect()));
+        }
+        None
     }
 
     /// A straight edge where a plane along a cylinder's axis meets the cylinder, known only
