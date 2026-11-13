@@ -302,6 +302,29 @@ fn zones_pad_nets_classes_and_the_autorouter_from_the_panel() {
     h.state_mut().wait_idle();
     let cfg = h.state().host().with_session(|s| s.freerouting.clone()).unwrap();
     assert_eq!(cfg.map(|c| c.path), Some(std::path::PathBuf::from("/nonexistent/freerouting.jar")));
+    // KiCad's own checks: refused until the user names a kicad-cli; then it reaches the session.
+    h.state_mut().pcb_commands(pcb_view::Out { commands: vec![("pcb.kicad_drc", json!({}))], blocked: None });
+    h.state_mut().wait_idle();
+    h.run();
+    let notice = h.state().notice.clone().map(|n| n.text).unwrap_or_default();
+    assert!(notice.contains("no kicad-cli"), "{notice}");
+    assert!(h.state().host().with_session(|s| s.kicad_cli.clone()).unwrap().is_none());
+    h.state_mut().pcb_state.kicad_cli = "/nonexistent/kicad-cli".into();
+    h.state_mut().pcb_state.kicad_cli_timeout = 42;
+    h.state_mut().pcb_commands(pcb_view::Out { commands: vec![("pcb.kicad_drc", json!({}))], blocked: None });
+    h.state_mut().wait_idle();
+    h.run();
+    let k = h.state().host().with_session(|s| s.kicad_cli.clone()).unwrap().unwrap();
+    assert_eq!((k.path, k.timeout_s), (std::path::PathBuf::from("/nonexistent/kicad-cli"), 42));
+    let notice = h.state().notice.clone().map(|n| n.text).unwrap_or_default();
+    assert!(notice.contains("could not start kicad-cli"), "{notice}");
+    // Findings of the report show as markers and list lines marked as KiCad's.
+    let report = json!({"violations": [{"source": "kicad", "message_user_text": "Clearance", "at": [1.0, 2.0]}]});
+    assert_eq!(pcb_view::markers_from(&report)[0].text, "[KiCad] Clearance");
+    let lines = crate::sch_view::kicad_issues_from(
+        &json!({"issues": [{"severity": "error", "sheet_user_text": "/", "message_user_text": "Pin not connected"}]}),
+    );
+    assert_eq!(lines, ["error /: Pin not connected"]);
     h.state_mut().run("history.undo", json!({})).unwrap();
     h.state_mut().wait_idle();
     h.state_mut().run("history.undo", json!({})).unwrap();

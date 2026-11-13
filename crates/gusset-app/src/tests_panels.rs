@@ -625,6 +625,8 @@ fn saved_preferences_come_back_in_a_new_window() {
         freerouting: "/opt/fr/freerouting.jar".into(),
         freerouting_java: String::new(),
         freerouting_timeout: 120,
+        kicad_cli: "/opt/kicad/bin/kicad-cli".into(),
+        kicad_cli_timeout: 77,
         pcb_fill_on_edit: true,
     };
     crate::prefs::save(&crate::prefs::path(dirs.data_dir()), &want).unwrap();
@@ -635,6 +637,7 @@ fn saved_preferences_come_back_in_a_new_window() {
     assert_eq!(a.quick_tools, [vec!["feature.shell"], vec![]]);
     assert!(a.browser_collapsed && !a.timeline_collapsed && a.docks_swapped);
     assert_eq!((a.pcb_state.freerouting.as_str(), a.pcb_state.freerouting_timeout), ("/opt/fr/freerouting.jar", 120));
+    assert_eq!((a.pcb_state.kicad_cli.as_str(), a.pcb_state.kicad_cli_timeout), ("/opt/kicad/bin/kicad-cli", 77));
     drop(a);
     let _ = std::fs::remove_dir_all(&dir);
 }

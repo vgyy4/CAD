@@ -306,6 +306,8 @@ pub struct App {
     /// The Freerouting setting the session last got (so agents' `pcb.autoroute` uses the
     /// user's setting too); `None` after a new session.
     freerouting_sent: Option<Option<gusset_commands::pcb_session::Freerouting>>,
+    /// The same for the user's `kicad-cli` (ADR 0056).
+    kicad_sent: Option<Option<gusset_commands::pcb_session::KicadCli>>,
     /// The fill-on-edit option the session last got; `None` after a new session.
     fill_on_edit_sent: Option<bool>,
     /// The Schematic tab is chosen (ADR 0047 phase 2a): the schematic editor replaces the
@@ -478,6 +480,7 @@ impl App {
             pcb_state: crate::pcb_view::State::default(),
             autoroute_cancel: None,
             freerouting_sent: None,
+            kicad_sent: None,
             fill_on_edit_sent: None,
             sch_tab: false,
             sch_state: crate::sch_view::State::default(),
@@ -556,6 +559,8 @@ impl App {
         self.pcb_state.freerouting = prefs.freerouting;
         self.pcb_state.freerouting_java = prefs.freerouting_java;
         self.pcb_state.freerouting_timeout = prefs.freerouting_timeout;
+        self.pcb_state.kicad_cli = prefs.kicad_cli;
+        self.pcb_state.kicad_cli_timeout = prefs.kicad_cli_timeout;
         self.pcb_state.fill_on_edit = prefs.pcb_fill_on_edit;
     }
 
@@ -621,6 +626,11 @@ impl App {
         let ctx = Self::ctx();
         if id == "pcb.autoroute" {
             self.start_autoroute();
+        }
+        // The user's kicad-cli reaches the session before the command that runs it.
+        if matches!(id, "pcb.kicad_drc" | "sch.kicad_erc" | "pcb.kicad_export") {
+            self.sync_freerouting();
+            self.save_prefs();
         }
         if id == "history.sync" {
             self.sync_args = Some(args.clone());
@@ -1087,10 +1097,16 @@ impl App {
             self.autoroute_cancel = None;
         }
         // Design rule markers for the board editor, wherever the check was started.
-        if id == "pcb.drc"
+        if matches!(id, "pcb.drc" | "pcb.kicad_drc")
             && let Ok(v) = &result
         {
             self.pcb_state.markers = crate::pcb_view::markers_from(v);
+        }
+        // KiCad's ERC findings, listed in the schematic panel.
+        if id == "sch.kicad_erc"
+            && let Ok(v) = &result
+        {
+            self.sch_state.kicad_issues = crate::sch_view::kicad_issues_from(v);
         }
         match then {
             Then::Notice => self.report(id, &result),
@@ -1464,6 +1480,8 @@ impl App {
             freerouting: self.pcb_state.freerouting.clone(),
             freerouting_java: self.pcb_state.freerouting_java.clone(),
             freerouting_timeout: self.pcb_state.freerouting_timeout,
+            kicad_cli: self.pcb_state.kicad_cli.clone(),
+            kicad_cli_timeout: self.pcb_state.kicad_cli_timeout,
             pcb_fill_on_edit: self.pcb_state.fill_on_edit,
         }
     }
@@ -1878,6 +1896,7 @@ impl App {
         self.has_project = project.is_some();
         self.host = Host::spawn(session, project);
         self.freerouting_sent = None;
+        self.kicad_sent = None;
         self.fill_on_edit_sent = None;
         link::spawn_listener(self.host.subscribe(), self.waker.clone());
         self.events = self.host.subscribe();
@@ -2677,12 +2696,20 @@ impl App {
     /// Sends what the board editor asked for: registry commands, like every other edit.
     pub(crate) fn pcb_commands(&mut self, out: crate::pcb_view::Out) {
         for (id, args) in out.commands {
-            let then =
-                if matches!(id, "pcb.drc" | "sch.erc" | "pcb.update_from_schematic" | "pcb.route_pair" | "pcb.tune") {
-                    Then::Notice
-                } else {
-                    Then::Quiet
-                };
+            let then = if matches!(
+                id,
+                "pcb.drc"
+                    | "pcb.kicad_drc"
+                    | "sch.erc"
+                    | "sch.kicad_erc"
+                    | "pcb.update_from_schematic"
+                    | "pcb.route_pair"
+                    | "pcb.tune"
+            ) {
+                Then::Notice
+            } else {
+                Then::Quiet
+            };
             self.submit_command(id, args, then);
         }
     }
@@ -2725,12 +2752,29 @@ impl App {
             let _ = self.host.exec_detached(move |s, _| s.pcb_fill_on_edit = on, |_| {});
             self.save_prefs();
         }
+        // The schematic panel's KiCad buttons follow the same setting.
+        self.sch_state.kicad_ready = self.kicad_setting().is_some();
+        let kicad = self.kicad_setting();
+        if self.kicad_sent.as_ref() != Some(&kicad) {
+            self.kicad_sent = Some(kicad.clone());
+            let _ = self.host.exec_detached(move |s, _| s.kicad_cli = kicad, |_| {});
+        }
         let cfg = self.freerouting_setting();
         if self.freerouting_sent.as_ref() == Some(&cfg) {
             return;
         }
         self.freerouting_sent = Some(cfg.clone());
         let _ = self.host.exec_detached(move |s, _| s.freerouting = cfg, |_| {});
+    }
+
+    /// The `kicad-cli` the user named in the PCB panel, if any (never searched for).
+    fn kicad_setting(&self) -> Option<gusset_commands::pcb_session::KicadCli> {
+        let st = &self.pcb_state;
+        let path = st.kicad_cli.trim();
+        (!path.is_empty()).then(|| gusset_commands::pcb_session::KicadCli {
+            path: PathBuf::from(path),
+            timeout_s: st.kicad_cli_timeout.max(1),
+        })
     }
 
     /// The ribbon of the active tab.

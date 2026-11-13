@@ -1728,7 +1728,7 @@ mod size_tests {
             assert!(n <= 1_300, "{}: {n} bytes", t.name);
         }
         let text = serde_json::to_string(&tools).unwrap_or_default();
-        for noise in ["\"format\"", "\"$schema\"", "\"additionalProperties\"", "\"null\"", "\"default\":null"] {
+        for noise in ["\"format\":\"", "\"$schema\"", "\"additionalProperties\"", "\"null\"", "\"default\":null"] {
             assert!(!text.contains(noise), "{noise} in tools/list");
         }
     }

@@ -147,6 +147,11 @@ pub struct State {
     pub freerouting: String,
     pub freerouting_java: String,
     pub freerouting_timeout: u64,
+    /// The user's `kicad-cli` and the run's limit (s) (ADR 0056); empty: none.
+    pub kicad_cli: String,
+    pub kicad_cli_timeout: u64,
+    /// The path typed for `pcb.kicad_export` in the KiCad section.
+    pub kicad_export_path: String,
     /// The zone picked by the Edit zone tool, its picked corner and a corner in drag.
     pub zone_edit: Option<crate::pcb_zone_edit::ZoneEdit>,
     /// Pour the zones an edit touched in the same undo step (a session option, ADR 0053).
@@ -257,6 +262,9 @@ impl Default for State {
             freerouting: String::new(),
             freerouting_java: String::new(),
             freerouting_timeout: 600,
+            kicad_cli: String::new(),
+            kicad_cli_timeout: 300,
+            kicad_export_path: String::new(),
             zone_edit: None,
             fill_on_edit: false,
             arc_segment: false,
@@ -1063,7 +1071,13 @@ pub fn markers_from(result: &Value) -> Vec<Marker> {
                     let at = x.get("at")?.as_array()?;
                     let p = [at.first()?.as_f64()?, at.get(1)?.as_f64()?];
                     let text = x.get("message_user_text").and_then(Value::as_str).unwrap_or_default();
-                    let text = text.chars().filter(|c| !c.is_control()).take(200).collect();
+                    let text: String = text.chars().filter(|c| !c.is_control()).take(200).collect();
+                    // Findings of the user's kicad-cli say so.
+                    let text = if x.get("source").and_then(Value::as_str) == Some("kicad") {
+                        format!("[KiCad] {text}")
+                    } else {
+                        text
+                    };
                     Some(Marker { at: p, text })
                 })
                 .collect()
@@ -1610,6 +1624,55 @@ fn nets_panel(ui: &mut Ui, open: &OpenBoard, st: &mut State, out: &mut Out) {
             .clicked()
         {
             out.commands.push(("pcb.autoroute", json!({})));
+        }
+    });
+    kicad_section(ui, st, out);
+}
+
+/// The user's own `kicad-cli` (never downloaded or searched for): its path, and the
+/// authoritative DRC and the STEP, IPC-2581 and ODB++ exports once a path is set.
+fn kicad_section(ui: &mut Ui, st: &mut State, out: &mut Out) {
+    egui::CollapsingHeader::new(tr("pcb.kicad")).id_salt("pcb_kicad").show(ui, |ui| {
+        ui.weak(tr("pcb.kicad_hint"));
+        crate::theme::text_field(
+            ui,
+            egui::TextEdit::singleline(&mut st.kicad_cli).hint_text(tr("pcb.kicad_path")).desired_width(f32::INFINITY),
+        );
+        ui.horizontal(|ui| {
+            ui.label(tr("pcb.time_limit"));
+            ui.add(egui::DragValue::new(&mut st.kicad_cli_timeout).range(5..=3_600).suffix(" s"));
+        });
+        let ready = !st.kicad_cli.trim().is_empty();
+        if ui
+            .add_enabled(ready, egui::Button::new(tr("pcb.kicad_drc")))
+            .on_disabled_hover_text(tr("pcb.kicad_hint"))
+            .clicked()
+        {
+            out.commands.push(("pcb.kicad_drc", json!({})));
+        }
+        crate::theme::text_field(
+            ui,
+            egui::TextEdit::singleline(&mut st.kicad_export_path)
+                .hint_text(tr("pcb.kicad_export_path"))
+                .desired_width(f32::INFINITY),
+        );
+        let lower = st.kicad_export_path.trim().to_ascii_lowercase();
+        let format = if lower.ends_with(".step") || lower.ends_with(".stp") {
+            Some("step")
+        } else if lower.ends_with(".xml") {
+            Some("ipc2581")
+        } else if lower.ends_with(".zip") {
+            Some("odb")
+        } else {
+            None
+        };
+        if ui
+            .add_enabled(ready && format.is_some(), egui::Button::new(tr("pcb.kicad_export")))
+            .on_hover_text(tr("pcb.kicad_export_tip"))
+            .clicked()
+            && let Some(f) = format
+        {
+            out.commands.push(("pcb.kicad_export", json!({ "format": f, "path": st.kicad_export_path.trim() })));
         }
     });
 }

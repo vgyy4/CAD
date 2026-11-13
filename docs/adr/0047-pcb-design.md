@@ -452,8 +452,8 @@ it nets and rules, route, pour, check and write every fabrication file without K
   box select, annotation options: done, see ADR 0052. Still open: bus aliases and
   KiCad's naming of bus member nets in every case (25 of 2046 video pads differ in the name
   chosen); a symbol library
-  browser; sheet creation and editing; KiCad 5 `.sch` files; back-annotation from the board;
-  `kicad-cli sch erc` for the authoritative check.
+  browser; sheet creation and editing; KiCad 5 `.sch` files; back-annotation from the board
+  (`kicad-cli sch erc` for the authoritative check: done, ADR 0056).
 * **KiCad library content pack** (footprints, symbols, 3D models; CC-BY-SA-4.0 with exception) as
   an optional download with notices; placing footprints from it.
 * DRC: hole-to-hole, courtyard overlap, silk on pads and drill sizes are done (ADR 0048);
@@ -465,8 +465,9 @@ it nets and rules, route, pour, check and write every fabrication file without K
   length tuning tool: done, see the ADR 0050 amendment).
 * From phase 1a: Gerber object attributes (`.N`, `.P`, `.C`), a test-only re-reader and a local
   corpus test: done, see ADR 0051.
-* **KiCad IPC bridge** (protobuf over NNG to a running KiCad, after the `.proto` licence is confirmed)
-  and a `kicad-cli` wrapper for authoritative DRC/ERC and STEP/IPC-2581/ODB++ export.
+* **KiCad IPC bridge** (protobuf over NNG to a running KiCad, after the `.proto` licence is confirmed).
+  The `kicad-cli` wrapper for authoritative DRC/ERC and STEP/IPC-2581/ODB++ export is done, see
+  ADR 0056 (still to verify against a real KiCad).
 
 ## Consequences
 * Users can bring a KiCad board into Gusset to design an enclosure around it, and write fabrication

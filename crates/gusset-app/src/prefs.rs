@@ -35,6 +35,10 @@ pub struct Prefs {
     pub freerouting: String,
     pub freerouting_java: String,
     pub freerouting_timeout: u64,
+    /// The user's `kicad-cli` (empty: none) and its longest run in seconds (ADR 0056).
+    /// Never downloaded, bundled or searched for by Gusset.
+    pub kicad_cli: String,
+    pub kicad_cli_timeout: u64,
     /// Pour zones on edit (ADR 0053).
     pub pcb_fill_on_edit: bool,
 }
@@ -64,6 +68,8 @@ impl Default for Prefs {
             freerouting: String::new(),
             freerouting_java: String::new(),
             freerouting_timeout: 600,
+            kicad_cli: String::new(),
+            kicad_cli_timeout: 300,
             pcb_fill_on_edit: false,
         }
     }
@@ -132,6 +138,12 @@ pub fn load(path: &Path) -> Prefs {
             .and_then(Value::as_u64)
             .filter(|t| (5..=86_400).contains(t))
             .unwrap_or(d.freerouting_timeout),
+        kicad_cli: path_pref(&v, "kicad_cli"),
+        kicad_cli_timeout: v
+            .get("kicad_cli_timeout")
+            .and_then(Value::as_u64)
+            .filter(|t| (5..=3_600).contains(t))
+            .unwrap_or(d.kicad_cli_timeout),
         pcb_fill_on_edit: v.get("pcb_fill_on_edit").and_then(Value::as_bool).unwrap_or(false),
     }
 }
@@ -184,6 +196,8 @@ pub fn save(path: &Path, p: &Prefs) -> Result<(), String> {
         "freerouting": p.freerouting,
         "freerouting_java": p.freerouting_java,
         "freerouting_timeout": p.freerouting_timeout,
+        "kicad_cli": p.kicad_cli,
+        "kicad_cli_timeout": p.kicad_cli_timeout,
         "pcb_fill_on_edit": p.pcb_fill_on_edit,
     });
     let bytes = serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())?;
@@ -213,6 +227,8 @@ mod tests {
             docks_swapped: true,
             freerouting: "C:\\fr\\freerouting.jar".into(),
             freerouting_timeout: 90,
+            kicad_cli: "/opt/kicad/bin/kicad-cli".into(),
+            kicad_cli_timeout: 45,
             ..Prefs::default()
         };
         remember(&mut want.recent, "/a.gus");

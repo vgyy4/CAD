@@ -76,6 +76,10 @@ pub struct State {
     pub library: String,
     pub symbol: String,
     pub show_markers: bool,
+    /// The user named a `kicad-cli` (ADR 0056): the KiCad ERC button is offered.
+    pub kicad_ready: bool,
+    /// The last `sch.kicad_erc` findings, one line each.
+    pub kicad_issues: Vec<String>,
     /// The reference of the symbol last picked (for cross-probing).
     pub probe: Option<String>,
     /// A net drawn highlighted (from a picked wire or label, or the board).
@@ -104,6 +108,8 @@ impl Default for State {
             library: String::new(),
             symbol: String::new(),
             show_markers: true,
+            kicad_ready: false,
+            kicad_issues: Vec::new(),
             probe: None,
             highlight: None,
             fields: None,
@@ -536,6 +542,23 @@ impl State {
     }
 }
 
+/// The lines for a `sch.kicad_erc` result: severity, sheet and KiCad's message.
+pub fn kicad_issues_from(result: &Value) -> Vec<String> {
+    result
+        .get("issues")
+        .and_then(Value::as_array)
+        .map(|v| {
+            v.iter()
+                .map(|x| {
+                    let s = |k: &str| x.get(k).and_then(Value::as_str).unwrap_or_default();
+                    let line = format!("{} {}: {}", s("severity"), s("sheet_user_text"), s("message_user_text"));
+                    line.chars().filter(|c| !c.is_control()).take(240).collect()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The side panel: sheet, tools, grid, label and symbol to place, ERC summary.
 pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &mut State) -> Out {
     let mut out = Out::default();
@@ -657,6 +680,20 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenSchematic>, st: &m
     ui.checkbox(&mut st.show_markers, tr("sch.markers"));
     if ui.button(tr("sch.run_erc")).clicked() {
         out.commands.push(("sch.erc", json!({})));
+    }
+    if st.kicad_ready && ui.button(tr("sch.kicad_erc")).on_hover_text(tr("pcb.kicad_hint")).clicked() {
+        out.commands.push(("sch.kicad_erc", json!({})));
+    }
+    if !st.kicad_issues.is_empty() {
+        ui.colored_label(pal.danger, format!("{}: {}", tr("sch.kicad_issues"), st.kicad_issues.len()));
+        egui::ScrollArea::vertical().id_salt("sch_kicad_issues").max_height(160.0).show(ui, |ui| {
+            for t in st.kicad_issues.iter().take(200) {
+                ui.label(egui::RichText::new(t).small());
+            }
+        });
+        if ui.small_button(tr("pcb.clear_markers")).clicked() {
+            st.kicad_issues.clear();
+        }
     }
     if st.show_markers {
         let m = markers(open, st);
