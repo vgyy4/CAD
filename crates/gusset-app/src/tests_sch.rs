@@ -25,7 +25,7 @@ fn sheet() -> Schematic {
     let lib = SymbolLib::read(LIB, &lim).unwrap();
     let node = lib.embedded_node("R", "hand:R").unwrap();
     let mut s = Schematic::new_empty("t").unwrap();
-    s.add_symbol(&node, "hand:R", [100.0, 50.0], 0.0, Mirror::None, 1, "R1", "t", &lim).unwrap();
+    s.add_symbol(&node, "hand:R", [100.0, 50.0], 0.0, Mirror::None, 1, "R1", "t", &[], &lim).unwrap();
     s.add_wires(&[[100.0, 46.19], [100.0, 40.0], [110.0, 40.0]], &lim).unwrap();
     s.add_label(LabelKind::Local, "OUT", [100.0, 53.81], 0.0, None, &lim).unwrap();
     s

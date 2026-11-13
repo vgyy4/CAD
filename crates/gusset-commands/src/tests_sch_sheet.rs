@@ -191,3 +191,24 @@ fn deleting_and_moving_a_sheet_are_single_undoable_steps() {
     assert_eq!((o.design.sheets.len(), o.design.sheets[0].1.sheets.len()), (2, 1));
     assert_eq!(o.design.sheets[1].1.symbols.len(), 1);
 }
+
+#[test]
+fn a_symbol_on_a_sub_sheet_has_the_sub_sheets_instance_path() {
+    let mut s = setup();
+    two_sheets(&mut s);
+    let o = open(&s);
+    let uses = o.design.uses();
+    let sub = o.design.sheet_named("power.kicad_sch").unwrap();
+    let want: Vec<String> = uses.iter().filter(|u| u.sheet == sub).map(|u| u.path.clone()).collect();
+    assert_eq!(want.len(), 1);
+    assert_eq!(want[0].matches('/').count(), 2, "{want:?}");
+    let (_, sch) = o.design.sheets.get(sub).unwrap();
+    let r2 = sch.symbols.last().unwrap();
+    let paths: Vec<&str> = r2.instances.iter().map(|i| i.path.as_str()).collect();
+    assert_eq!(paths, [want[0].as_str()]);
+    assert_eq!(r2.reference_in(&want[0]), "R2");
+    // On the root, the root's own path.
+    let (_, root) = o.design.sheets.first().unwrap();
+    let r1 = root.symbols.first().unwrap();
+    assert_eq!(r1.instances.iter().map(|i| i.path.clone()).collect::<Vec<_>>(), [uses[0].path.clone()]);
+}

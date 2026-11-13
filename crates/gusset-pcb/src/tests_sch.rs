@@ -69,7 +69,7 @@ pub(crate) fn place(
 ) -> usize {
     let l = lib();
     let node = l.embedded_node(name, &format!("Hand:{name}")).unwrap();
-    s.add_symbol(&node, &format!("Hand:{name}"), at, angle, mirror, unit, r, "demo", &Limits::default()).unwrap()
+    s.add_symbol(&node, &format!("Hand:{name}"), at, angle, mirror, unit, r, "demo", &[], &Limits::default()).unwrap()
 }
 
 /// R1 (100, 50) and R2 (110, 50) joined at pin 1 by a wire; R2 pin 2 labelled OUT; R1 pin
@@ -398,7 +398,7 @@ fn edits_move_turn_mirror_and_delete() {
     let u = place(&mut s, "AMP", [10.0, 10.0], 0.0, Mirror::None, 2, "U1");
     assert_eq!(s.symbols[u].unit, 2);
     let node = lib().embedded_node("AMP", "Hand:AMP").unwrap();
-    assert!(s.add_symbol(&node, "Hand:AMP", [0.0, 0.0], 0.0, Mirror::None, 3, "U2", "demo", &lim).is_err());
+    assert!(s.add_symbol(&node, "Hand:AMP", [0.0, 0.0], 0.0, Mirror::None, 3, "U2", "demo", &[], &lim).is_err());
     assert!(s.add_label(LabelKind::Global, "bad\nname", [0.0, 0.0], 0.0, None, &lim).is_err());
     let g = s.add_label(LabelKind::Global, "VBUS", [1.0, 1.0], 0.0, Some("output"), &lim).unwrap();
     assert_eq!((s.labels[g].kind, s.labels[g].shape.as_deref()), (LabelKind::Global, Some("output")));

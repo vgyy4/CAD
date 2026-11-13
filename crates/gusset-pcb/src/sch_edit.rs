@@ -195,8 +195,10 @@ impl Schematic {
 
     /// Places a symbol: `lib_node` is its library node (see
     /// [`crate::sch::SymbolLib::embedded_node`]), added to `lib_symbols` under `lib_id`
-    /// when missing. `project` names the instance (KiCad's project name). Returns the
-    /// index in [`Schematic::symbols`].
+    /// when missing. `project` names the instance (KiCad's project name); `paths` are the
+    /// instance paths of every use of this sheet ([`crate::netlist::Design::uses`]), each
+    /// getting the reference (empty: this file's own root path). Returns the index in
+    /// [`Schematic::symbols`].
     ///
     /// # Errors
     /// Bad place, angle, unit or reference, or a failed re-read.
@@ -211,6 +213,7 @@ impl Schematic {
         unit: u32,
         reference: &str,
         project: &str,
+        paths: &[String],
         limits: &Limits,
     ) -> Result<usize, Error> {
         check_pt(at)?;
@@ -282,20 +285,18 @@ impl Schematic {
             let id = uuid_for(&format!("{sym_uuid} pin {n}"), k);
             items.push(list(vec![Node::sym("pin"), Node::str(*n), kv("uuid", Node::str(id))]));
         }
-        let root = format!("/{}", self.uuid.as_deref().unwrap_or(""));
-        items.push(list(vec![
-            Node::sym("instances"),
-            list(vec![
-                Node::sym("project"),
-                Node::str(project),
-                list(vec![
-                    Node::sym("path"),
-                    Node::str(root),
-                    kv("reference", Node::str(reference)),
-                    kv("unit", Node::num(f64::from(unit))),
-                ]),
-            ]),
-        ]));
+        let root = vec![format!("/{}", self.uuid.as_deref().unwrap_or(""))];
+        let paths = if paths.is_empty() { root.as_slice() } else { paths };
+        let mut project_items = vec![Node::sym("project"), Node::str(project)];
+        for path in paths {
+            project_items.push(list(vec![
+                Node::sym("path"),
+                Node::str(path),
+                kv("reference", Node::str(reference)),
+                kv("unit", Node::num(f64::from(unit))),
+            ]));
+        }
+        items.push(list(vec![Node::sym("instances"), list(project_items)]));
         self.insert(list(items))?;
         let n = self.symbols.len();
         self.reread(limits)?;

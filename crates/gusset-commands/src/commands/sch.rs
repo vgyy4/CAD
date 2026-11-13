@@ -455,6 +455,11 @@ impl Command for SchAddSymbol {
                 let f = open.file();
                 f.get(..f.len().saturating_sub(".kicad_sch".len())).unwrap_or(f).to_string()
             });
+            // Every use of the edited sheet gets an instance (a sub-sheet's paths run from
+            // the root through the sheet symbols).
+            let edited = open.sheet(self.sheet.as_deref()).map_or(0, |(k, _)| k);
+            let paths: Vec<String> =
+                open.design.uses().into_iter().filter(|u| u.sheet == edited).map(|u| u.path).collect();
             let i = sch
                 .add_symbol(
                     &node,
@@ -465,6 +470,7 @@ impl Command for SchAddSymbol {
                     self.unit.unwrap_or(1),
                     &reference,
                     &project,
+                    &paths,
                     &limits(),
                 )
                 .map_err(sch_err)?;

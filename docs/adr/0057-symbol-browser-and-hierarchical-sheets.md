@@ -93,6 +93,7 @@ picking and moving, enter, leave and breadcrumbs); `every_toolset_fits_the_budge
   from a hierarchical label (or the label from the pin) in one step.
 * The browser searches names, descriptions and keywords only (no pin names, no footprint filters);
   KiCad's `.kicad_symdir` folders and library tables are not read; no favourites or recent list.
-* `sch.add_symbol` still writes the symbol's instance path as the root path; a symbol placed on a
-  sub-sheet takes its reference from its `Reference` field (as before).
+* (Fixed after review) `sch.add_symbol` writes one instance per use of the edited sheet, its path
+  running from the root through the sheet symbols; every use gets the same reference (annotate to
+  number a sheet used twice apart).
 * Page numbers are numbered by use count; reordering pages is not offered.
