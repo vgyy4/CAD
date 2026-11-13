@@ -396,3 +396,32 @@ fn a_body_count_unlike_the_sources_is_warned() {
     // Volumes agree, so that is the only warning.
     assert_eq!(r["warnings_user_text"].as_array().unwrap().len(), 1, "{r}");
 }
+
+#[test]
+fn curve_ends_on_one_spot_of_a_sketch_without_constraints_are_one_point() {
+    // A rectangle whose two right corners are each two points (one per line): written as one
+    // point each, so the solver cannot move them apart (858's Extrude13 sketch). A line from a
+    // point to its twin keeps both.
+    let mut s = session();
+    let mut sk = rect("Sketch1", xy(), 40.0, 20.0);
+    sk["points"].as_array_mut().unwrap().push(json!({"id": "p2b", "x": 40.0, "y": 0.0}));
+    sk["points"].as_array_mut().unwrap().push(json!({"id": "p3b", "x": 40.0, "y": 20.0}));
+    sk["curves"][1] = json!({"id": "l2", "type": "line", "start": "p2b", "end": "p3b"});
+    let t = tree(
+        json!([]),
+        json!([sk.clone(), {"type": "extrude", "name": "Extrude1", "sketch": "Sketch1", "profiles": "all",
+             "distance": 10, "operation": "new"}]),
+        json!([{"name": "Body1", "volume_mm3": 8000.0}]),
+    );
+    let r = import(&mut s, "plate.gtree.json", &t).unwrap();
+    assert_eq!(r["features"], json!(["Sketch1", "Extrude1"]), "{r}");
+    let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert_eq!(text.matches("= point(").count(), 4, "{text}");
+    assert!((volume(&mut s) - 8000.0).abs() < 1e-6);
+    // A line between twins keeps them apart.
+    let mut s = session();
+    sk["curves"].as_array_mut().unwrap().push(json!({"id": "l5", "type": "line", "start": "p2", "end": "p2b"}));
+    let _ = import(&mut s, "plate.gtree.json", &tree(json!([]), json!([sk]), json!([])));
+    let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert_eq!(text.matches("= point(").count(), 5, "{text}");
+}

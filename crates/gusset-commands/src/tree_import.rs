@@ -1227,6 +1227,49 @@ fn keep_suppressed(g: &mut Gen, text_len: usize, why: &str) -> bool {
     true
 }
 
+/// The curve ends of a sketch without constraints that lie exactly where an earlier point does,
+/// to the earlier point's id: one point of the document stands for both. A Fusion sketch can
+/// hold two points in one place that its curves share by a coincidence (858's `Sketch` of
+/// `Extrude13`: the arc `c4225` starts on `p4220`, the line `c4003` on `p3998`); written apart,
+/// the solver that makes an arc's ends agree on its radius (the file's 7 digits differ by 4e-7)
+/// moves the one and not the other, and the profile's arc no longer ends on the circle. Points
+/// a curve uses twice once merged (a zero-length line), poles and construction points stay
+/// apart.
+fn shared_points<'a>(d: &'a SketchF) -> HashMap<&'a str, &'a str> {
+    let mut out: HashMap<&str, &str> = HashMap::new();
+    if !d.constraints.is_empty() {
+        return out;
+    }
+    let poles: HashSet<&str> = d.curves.iter().filter_map(|c| c.poles.as_ref()).flatten().map(String::as_str).collect();
+    let ends: HashSet<&str> =
+        d.curves.iter().flat_map(|c| [&c.start, &c.end, &c.center]).filter_map(|p| p.as_deref()).collect();
+    let mut first: Vec<&SkPoint> = Vec::new();
+    for p in &d.points {
+        let movable = !p.construction && ends.contains(p.id.as_str()) && !poles.contains(p.id.as_str());
+        match first.iter().find(|q| (q.x - p.x).abs() <= 1e-12 && (q.y - p.y).abs() <= 1e-12) {
+            Some(q) if movable && ends.contains(q.id.as_str()) && !q.construction && !poles.contains(q.id.as_str()) => {
+                out.insert(p.id.as_str(), q.id.as_str());
+            }
+            Some(_) => {}
+            None => first.push(p),
+        }
+    }
+    // A curve that would use one point twice keeps its points apart.
+    let root = |k: &'a Option<String>| k.as_deref().map(|k| out.get(k).copied().unwrap_or(k));
+    let twice: Vec<&str> = d
+        .curves
+        .iter()
+        .filter(|c| {
+            let r = [root(&c.start), root(&c.end), root(&c.center)];
+            r.iter().enumerate().any(|(i, a)| a.is_some() && r.iter().skip(i + 1).any(|b| b == a))
+        })
+        .flat_map(|c| [&c.start, &c.end, &c.center])
+        .filter_map(|p| p.as_deref())
+        .collect();
+    out.retain(|k, v| !twice.contains(k) && !twice.contains(v));
+    out
+}
+
 fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
     let count = d.points.len() + d.curves.len() + d.constraints.len();
     if count > MAX_ENTITIES {
@@ -1269,7 +1312,16 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
         .collect();
     // So do the poles of B-splines (they define an exact curve).
     on_arc.extend(d.curves.iter().filter_map(|c| c.poles.as_ref()).flatten().map(String::as_str));
+    let same_as = shared_points(d);
+    // A point an arc runs through keeps its digits for every curve that shares it.
+    let roots: Vec<&str> = same_as.iter().filter(|(k, _)| on_arc.contains(*k)).map(|(_, v)| *v).collect();
+    on_arc.extend(roots);
     for p in &d.points {
+        if let Some(first) = same_as.get(p.id.as_str()).and_then(|f| map.ids.get(*f).cloned()) {
+            map.ids.insert(p.id.clone(), first);
+            points.insert(p.id.clone());
+            continue;
+        }
         let id = next("p");
         let [u, v] = map.map(finite(p.x, "a point")?, finite(p.y, "a point")?);
         let (u, v) = (finite(u, "a point")?, finite(v, "a point")?);
