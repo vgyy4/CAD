@@ -98,7 +98,8 @@ fn text(v: &Value) -> Option<String> {
 
 /// Net classes and minimums from a KiCad project file (`.kicad_pro`, KiCad 6 and later):
 /// `net_settings.classes`, `netclass_assignments` and `netclass_patterns`, and
-/// `board.design_settings.rules` (minimum track width, via annular ring, copper to edge).
+/// `board.design_settings.rules` (minimum track width, via annular ring, copper to edge, hole to hole, through-hole
+/// and via drill, via diameter, silkscreen clearance).
 /// Unknown or odd values are ignored.
 pub fn apply_project(rules: &mut Rules, pro: &Value) {
     let ns = at(pro, "net_settings");
@@ -145,6 +146,20 @@ pub fn apply_project(rules: &mut Rules, pro: &Value) {
     }
     if let Some(v) = mm(r.get("min_copper_edge_clearance")) {
         rules.edge_clearance = v;
+    }
+    // ADR 0048: hole to hole, drill sizes, via copper and silkscreen.
+    if let Some(v) = mm(r.get("min_hole_to_hole")) {
+        rules.hole_to_hole = v;
+    }
+    if let Some(v) = mm(r.get("min_through_hole_diameter")) {
+        rules.min_through_hole = v;
+        rules.min_via_drill = v;
+    }
+    if let Some(v) = mm(r.get("min_via_diameter")) {
+        rules.min_via_diameter = v;
+    }
+    if let Some(v) = mm(r.get("min_silk_clearance")) {
+        rules.silk_clearance = v;
     }
 }
 

@@ -441,6 +441,11 @@ impl Command for PcbDrc {
                 "min_ring": rules.min_annular_ring,
                 "hole_to_edge": rules.hole_to_edge,
                 "copper_to_edge": rules.edge_clearance,
+                "hole_to_hole": rules.hole_to_hole,
+                "min_through_hole": rules.min_through_hole,
+                "min_via_drill": rules.min_via_drill,
+                "min_via_diameter": rules.min_via_diameter,
+                "silk_clearance": rules.silk_clearance,
                 "net_classes": rules.classes.len(),
             },
         }))

@@ -210,8 +210,7 @@ fn courtyard_loops(shapes: &[&Shape]) -> Vec<Vec<Pt>> {
         }
     }
     while let Some(mut cur) = chains.pop() {
-        loop {
-            let (Some(first), Some(last)) = (cur.first().copied(), cur.last().copied()) else { break };
+        while let (Some(first), Some(last)) = (cur.first().copied(), cur.last().copied()) {
             if cur.len() >= 3 && near(first, last) {
                 cur.pop();
                 loops.push(cur);

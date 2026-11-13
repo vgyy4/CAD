@@ -76,7 +76,7 @@ fn a_new_board_and_project_rules() {
             "classes": [{"name": "Default", "clearance": 0.15, "track_width": 0.2}, {"name": "Power", "clearance": 0.3, "track_width": 0.6}],
             "netclass_patterns": [{"netclass": "Power", "pattern": "GN*"}]
         },
-        "board": {"design_settings": {"rules": {"min_track_width": 0.1}}}
+        "board": {"design_settings": {"rules": {"min_track_width": 0.1, "min_hole_to_hole": 0.4, "min_through_hole_diameter": 0.35, "min_via_diameter": 0.5, "min_silk_clearance": 0.1}}}
     });
     std::fs::write(dir.join("board.kicad_pro"), pro.to_string()).unwrap();
     let r = run(&mut s, &u(3), "pcb.open", json!({"path": "board.kicad_pcb"}));
@@ -88,6 +88,13 @@ fn a_new_board_and_project_rules() {
     let r = run(&mut s, &u(5), "pcb.drc", json!({}));
     assert_eq!(r["rules_mm"]["clearance"], 0.15, "{r}");
     assert_eq!(r["rules_mm"]["net_classes"], 2, "{r}");
+    // ADR 0048 minimums from the project file.
+    let m = &r["rules_mm"];
+    assert_eq!(
+        (&m["hole_to_hole"], &m["min_through_hole"], &m["min_via_drill"], &m["min_via_diameter"], &m["silk_clearance"]),
+        (&json!(0.4), &json!(0.35), &json!(0.35), &json!(0.5), &json!(0.1)),
+        "{r}"
+    );
 }
 
 #[test]
