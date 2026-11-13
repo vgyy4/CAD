@@ -99,7 +99,8 @@ pub fn plan(sheets: &[&Schematic], opts: Options) -> Vec<Renumber> {
         }
     }
     let order = |a: &(usize, usize, [f64; 2]), b: &(usize, usize, [f64; 2])| {
-        let (a1, a2, b1, b2) = if opts.y_first { (a.2[1], a.2[0], b.2[1], b.2[0]) } else { (a.2[0], a.2[1], b.2[0], b.2[1]) };
+        let (a1, a2, b1, b2) =
+            if opts.y_first { (a.2[1], a.2[0], b.2[1], b.2[0]) } else { (a.2[0], a.2[1], b.2[0], b.2[1]) };
         a.0.cmp(&b.0).then(a1.total_cmp(&b1)).then(a2.total_cmp(&b2))
     };
     todo.sort_by(order);
@@ -125,7 +126,9 @@ pub fn plan(sheets: &[&Schematic], opts: Options) -> Vec<Renumber> {
             if n.is_none()
                 && let Some(g) = kept
                     .iter_mut()
-                    .filter(|g| g.sheet == *si && g.lib == sym.lib_key() && g.prefix == prefix && !g.units.contains(&sym.unit))
+                    .filter(|g| {
+                        g.sheet == *si && g.lib == sym.lib_key() && g.prefix == prefix && !g.units.contains(&sym.unit)
+                    })
                     .min_by_key(|g| g.number)
             {
                 g.units.insert(sym.unit);
@@ -166,7 +169,11 @@ pub fn plan(sheets: &[&Schematic], opts: Options) -> Vec<Renumber> {
     for g in &groups {
         let Some(sch) = sheets.get(g.sheet) else { continue };
         let prefix = if g.prefix.is_empty() { "U".to_string() } else { g.prefix.clone() };
-        let start = if opts.sheet_step > 0 { u64::from(opts.sheet_step) * (u64::try_from(g.sheet).unwrap_or(0) + 1) } else { 1 };
+        let start = if opts.sheet_step > 0 {
+            u64::from(opts.sheet_step) * (u64::try_from(g.sheet).unwrap_or(0) + 1)
+        } else {
+            1
+        };
         let taken = used.entry(prefix.clone()).or_default();
         let n = (start..).find(|n| !taken.contains(n)).unwrap_or(start);
         taken.insert(n);

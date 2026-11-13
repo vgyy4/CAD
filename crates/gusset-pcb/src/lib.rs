@@ -61,6 +61,8 @@ pub use board::{Board, Limits};
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_annotate;
+#[cfg(test)]
 mod tests_drc_more;
 #[cfg(test)]
 mod tests_dsn;
@@ -76,8 +78,6 @@ mod tests_phase3;
 mod tests_route;
 #[cfg(test)]
 mod tests_sch;
-#[cfg(test)]
-mod tests_annotate;
 #[cfg(test)]
 mod tests_sch_edit;
 #[cfg(test)]

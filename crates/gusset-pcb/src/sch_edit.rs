@@ -386,7 +386,7 @@ impl Schematic {
     /// wires with both ends moved, are stretched straight. Returns the wires to add (a, b)
     /// and the points to check for junctions. Edits the tree only; call
     /// [`Schematic::finish_reroute`] after.
-    fn reroute(&mut self, moves: &[(Pt, Pt)], skip: &[usize]) -> Result<(Vec<(Pt, Pt)>, Vec<Pt>), Error> {
+    fn reroute(&mut self, moves: &[(Pt, Pt)], skip: &[usize]) -> Result<Reroute, Error> {
         let eps = 1e-6;
         let near = |a: Pt, b: Pt| libm::hypot(a[0] - b[0], a[1] - b[1]) < eps;
         let target = |p: Pt| moves.iter().find(|(from, _)| near(*from, p)).map(|(_, to)| *to);
@@ -453,12 +453,8 @@ impl Schematic {
     /// or more wire ends meeting, and none there yet.
     fn needs_junction(&self, p: Pt) -> bool {
         let eps = crate::netlist::EPS;
-        let ends = self
-            .wires
-            .iter()
-            .flat_map(|w| [w.a, w.b])
-            .filter(|q| libm::hypot(q[0] - p[0], q[1] - p[1]) <= eps)
-            .count();
+        let ends =
+            self.wires.iter().flat_map(|w| [w.a, w.b]).filter(|q| libm::hypot(q[0] - p[0], q[1] - p[1]) <= eps).count();
         (ends >= 3 || (ends >= 1 && self.on_wire_middle(p)))
             && !self.junctions.iter().any(|j| libm::hypot(j.at[0] - p[0], j.at[1] - p[1]) <= eps)
     }
@@ -824,6 +820,9 @@ impl Schematic {
         Ok(nodes.len())
     }
 }
+
+/// Wires to add (a, b) and points to check for junctions.
+type Reroute = (Vec<(Pt, Pt)>, Vec<Pt>);
 
 /// Shifts a node's `at` or its `pts` by `d`.
 fn shift_node(items: &mut [Node], d: Pt) {

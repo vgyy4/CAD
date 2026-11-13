@@ -1,6 +1,8 @@
 //! Schematic editing options (ADR 0052): orthogonal following, moving a selection in one
 //! undo step, annotation orders, ranges and units.
 
+#![allow(clippy::float_cmp)]
+
 use crate::tests_pcb::{run, session};
 use crate::*;
 use serde_json::json;
@@ -118,7 +120,12 @@ fn annotation_options_and_unit_letters() {
     add(&mut s, 11, "AMP", [50.0, 10.0], 1);
     add(&mut s, 12, "AMP", [70.0, 10.0], 2);
     for i in [3, 4] {
-        run(&mut s, &u(13), "sch.set_field", json!({"symbol": format!("symbol#{i}"), "field": "Reference", "value": "U?"}));
+        run(
+            &mut s,
+            &u(13),
+            "sch.set_field",
+            json!({"symbol": format!("symbol#{i}"), "field": "Reference", "value": "U?"}),
+        );
     }
     let r = run(&mut s, &u(14), "sch.annotate", json!({}));
     assert_eq!(r["renamed_user_text"], json!([["U?", "U1A"], ["U?", "U1B"]]), "{r}");

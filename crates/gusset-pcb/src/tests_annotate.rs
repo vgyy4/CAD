@@ -44,7 +44,10 @@ fn annotation_ranges_and_keeping_numbers() {
     // Sheet n starts at n * 100: R100.. on the first sheet, R200 on the second; R7 stays.
     let step = Options { sheet_step: 100, ..Options::default() };
     let p = annotate::plan(&[&a, &b], step);
-    assert_eq!(by_symbol(&p.iter().filter(|r| r.sheet == 0).cloned().collect::<Vec<_>>()), ["R101", "R102", "R103", "R100"]);
+    assert_eq!(
+        by_symbol(&p.iter().filter(|r| r.sheet == 0).cloned().collect::<Vec<_>>()),
+        ["R101", "R102", "R103", "R100"]
+    );
     assert_eq!(p.iter().filter(|r| r.sheet == 1).map(|r| r.new.as_str()).collect::<Vec<_>>(), ["R200"]);
     // Everything again: R7 is renumbered too (the second sheet's first place is R7's).
     let all = annotate::plan(&[&a, &b], Options { all: true, sheet_step: 1000, ..Options::default() });

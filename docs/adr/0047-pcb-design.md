@@ -449,10 +449,10 @@ it nets and rules, route, pour, check and write every fabrication file without K
 * **Zones**: zones over several outlines, KiCad's exact thermal spoke rules (minimum spoke
   count), hatch smoothing and border options, filling on edit, a zone outline editor
   (moving corners).
-* **Schematic, after phase 2b**: wires dragged orthogonally with symbols; bus aliases and
+* **Schematic, after phase 2b**: wires dragged orthogonally with symbols, multi-select and
+  box select, annotation options: done, see ADR 0052. Still open: bus aliases and
   KiCad's naming of bus member nets in every case (25 of 2046 video pads differ in the name
-  chosen); multi-select and box select; annotation options (by Y first, per sheet
-  ranges, multi-unit parts sharing a number); a symbol library
+  chosen); a symbol library
   browser; sheet creation and editing; KiCad 5 `.sch` files; back-annotation from the board;
   `kicad-cli sch erc` for the authoritative check.
 * **KiCad library content pack** (footprints, symbols, 3D models; CC-BY-SA-4.0 with exception) as

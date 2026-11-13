@@ -157,10 +157,8 @@ pub fn box_select(sch: &Schematic, a: Pt, b: Pt) -> Vec<Item> {
         }
         // Crosses the box without an end inside: against its four sides.
         let corners = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
-        (0..4).any(|k| {
-            let (c, d) = (corners[k], corners[(k + 1) % 4]);
-            segments_cross(p, q, c, d)
-        })
+        let next = [corners[1], corners[2], corners[3], corners[0]];
+        corners.iter().zip(next).any(|(c, d)| segments_cross(p, q, *c, d))
     };
     let mut out = Vec::new();
     for (i, s) in sch.symbols.iter().enumerate() {

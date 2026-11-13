@@ -5,7 +5,7 @@ use crate::Limits;
 use crate::netlist::{Design, netlist};
 use crate::sch::{Mirror, Schematic};
 use crate::sch_edit::Item;
-use crate::tests_sch::{divider, place};
+use crate::tests_sch::divider;
 
 fn orthogonal(s: &Schematic) -> bool {
     s.wires.iter().all(|w| (w.a[0] - w.b[0]).abs() < 1e-9 || (w.a[1] - w.b[1]).abs() < 1e-9)
@@ -65,8 +65,7 @@ fn junctions_stay_and_appear_where_wires_meet() {
 fn several_items_move_together() {
     let lim = Limits::default();
     let mut s = divider();
-    let items =
-        [Item::parse(&s, "R1").unwrap(), Item::parse(&s, "R2").unwrap(), Item::Wire(0), Item::Label(0)];
+    let items = [Item::parse(&s, "R1").unwrap(), Item::parse(&s, "R2").unwrap(), Item::Wire(0), Item::Label(0)];
     let n = s.move_items(&items, [5.0, 10.0], &lim).unwrap();
     assert_eq!(n, 4);
     assert_eq!(s.symbols[s.symbol_index("R1").unwrap()].at, [105.0, 60.0]);
