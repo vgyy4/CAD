@@ -271,8 +271,13 @@ fn piece_at(poly: &[P2], closed: bool, fs: Vec<f64>, a: u32, b: u32) -> Option<V
     let (a, b) = (a as usize, b as usize);
     let fs: Vec<f64> = fs.into_iter().filter(|f| (*f > 1e-6 && *f < 1.0 - 1e-6) || closed).collect();
     if closed {
-        let mut fs: Vec<f64> =
-            fs.into_iter().map(|f| round9(f.rem_euclid(1.0))).map(|f| if f >= 1.0 { 0.0 } else { f }).collect();
+        // A cut within 1e-6 of the start is at the start (6124's logo: a line crosses a closed
+        // spline 3e-8 cm from its first point, where the spline's own points are rounded).
+        let mut fs: Vec<f64> = fs
+            .into_iter()
+            .map(|f| round9(f.rem_euclid(1.0)))
+            .map(|f| if !(1e-6..1.0 - 1e-6).contains(&f) { 0.0 } else { f })
+            .collect();
         fs.sort_by(f64::total_cmp);
         fs.dedup_by(|x, y| x == y);
         if fs.len() != b {
@@ -510,6 +515,123 @@ pub(super) fn bridged(polys: &[Vec<P2>]) -> Option<(Vec<P2>, Vec<Vec<P2>>)> {
         rings.push(r);
     }
     Some((outer, rings))
+}
+
+/// [`bridged`] where the hole is itself a chain of open pieces (6124's logo: the petals'
+/// outline, a piece of a line from it into the region, and the five lines of a pentagon there):
+/// the pieces with an end no other piece meets are the curve walked both ways; the others fall
+/// into closed chains, one of which holds the rest (the outline), and each bridge joins the
+/// outline to a hole.
+pub(super) fn bridged_chains(polys: &[Vec<P2>]) -> Option<(Vec<P2>, Vec<Vec<P2>>)> {
+    let polys = drop_covered(polys).unwrap_or_else(|| polys.to_vec());
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for p in polys.iter().flatten() {
+        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+    }
+    let tol = 1e-4 * dist(lo, hi).max(1e-6);
+    let mut open: Vec<Vec<P2>> = polys;
+    let mut bridges: Vec<Vec<P2>> = Vec::new();
+    loop {
+        let ends: Vec<(usize, P2)> = open
+            .iter()
+            .enumerate()
+            .flat_map(|(i, p)| [p.first(), p.last()].into_iter().flatten().map(move |e| (i, *e)))
+            .collect();
+        let spur = open.iter().enumerate().position(|(i, p)| {
+            [p.first(), p.last()]
+                .into_iter()
+                .flatten()
+                .any(|e| !ends.iter().any(|(j, e2)| *j != i && dist(*e, *e2) < tol))
+        });
+        match spur {
+            Some(i) => bridges.push(open.remove(i)),
+            None => break,
+        }
+    }
+    if bridges.is_empty() {
+        // A bridge the loop lists once (6124: it walks the line piece from the outline to the
+        // pentagon one way only): the one piece without which the others close in rings.
+        for i in 0..open.len() {
+            let mut rest = open.clone();
+            let b = rest.remove(i);
+            if let Some((outer, holes)) = rings_with_bridges(rest, vec![b], tol) {
+                return Some((outer, holes));
+            }
+        }
+        return None;
+    }
+    rings_with_bridges(open, bridges, tol)
+}
+
+/// The closed chains `open` falls into, the one holding the others first, where each of
+/// `bridges` joins it to another (see [`bridged_chains`]).
+fn rings_with_bridges(open: Vec<Vec<P2>>, bridges: Vec<Vec<P2>>, tol: f64) -> Option<(Vec<P2>, Vec<Vec<P2>>)> {
+    if open.is_empty() {
+        return None;
+    }
+    // The pieces that meet, in groups.
+    let n = open.len();
+    let mut group: Vec<usize> = (0..n).collect();
+    fn root(g: &mut [usize], mut i: usize) -> usize {
+        while let Some(&p) = g.get(i) {
+            if p == i {
+                break;
+            }
+            i = p;
+        }
+        i
+    }
+    for i in 0..n {
+        for j in i + 1..n {
+            let (Some(a), Some(b)) = (open.get(i), open.get(j)) else { continue };
+            let meet = [a.first(), a.last()]
+                .into_iter()
+                .flatten()
+                .any(|e| [b.first(), b.last()].into_iter().flatten().any(|e2| dist(*e, *e2) < tol));
+            if meet {
+                let (ri, rj) = (root(&mut group, i), root(&mut group, j));
+                if let Some(x) = group.get_mut(ri) {
+                    *x = rj;
+                }
+            }
+        }
+    }
+    let mut chains: Vec<Vec<P2>> = Vec::new();
+    let roots: Vec<usize> = (0..n).map(|i| root(&mut group, i)).collect();
+    let mut seen: Vec<usize> = Vec::new();
+    for r in &roots {
+        if seen.contains(r) {
+            continue;
+        }
+        seen.push(*r);
+        let members: Vec<Vec<P2>> = open.iter().zip(&roots).filter(|(_, q)| *q == r).map(|(p, _)| p.clone()).collect();
+        chains.push(chain(&members)?);
+    }
+    if chains.len() < 2 {
+        return None;
+    }
+    let area = |r: &[P2]| {
+        r.iter().zip(r.iter().cycle().skip(1)).map(|(a, b)| a[0] * b[1] - b[0] * a[1]).sum::<f64>().abs() / 2.0
+    };
+    let k = (0..chains.len()).max_by(|a, b| {
+        let (x, y) = (chains.get(*a).map_or(0.0, |r| area(r)), chains.get(*b).map_or(0.0, |r| area(r)));
+        x.total_cmp(&y)
+    })?;
+    let outer = chains.remove(k);
+    if !chains.iter().all(|h| h.iter().all(|p| inside(*p, &outer) || poly_dist(*p, &outer) < tol)) {
+        return None;
+    }
+    // Every bridge runs from the outline to a hole.
+    let on = |e: P2, r: &[P2]| poly_dist(e, r) < tol;
+    let joins = |b: &Vec<P2>| {
+        let (Some(s), Some(t)) = (b.first(), b.last()) else { return false };
+        (on(*s, &outer) && chains.iter().any(|h| on(*t, h))) || (on(*t, &outer) && chains.iter().any(|h| on(*s, h)))
+    };
+    if !bridges.iter().all(joins) {
+        return None;
+    }
+    Some((outer, chains))
 }
 
 /// A hole loop of closed curves joined by open pieces that run from one closed curve to

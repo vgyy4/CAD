@@ -272,6 +272,47 @@ fn a_closed_curve_cut_at_its_start_has_two_pieces_not_three() {
 }
 
 #[test]
+fn a_cut_a_hair_past_a_closed_curves_start_is_at_its_start() {
+    // As above, the cutting line 2e-9 above the start: the pieces are numbered as for a cut at
+    // the start (6124's logo spline, crossed 3e-8 cm from its first point).
+    let circle: Vec<P2> = (0..=64)
+        .map(|k| {
+            let t = f64::from(k) / 64.0 * std::f64::consts::TAU;
+            [libm::cos(t), libm::sin(t)]
+        })
+        .collect();
+    let cut: Vec<P2> = vec![[-2.0, 2e-9], [2.0, 2e-9]];
+    let others: Vec<&[P2]> = vec![&cut];
+    let a = geom::piece(&circle, true, &others, 1, 2).unwrap();
+    let b = geom::piece(&circle, true, &others, 2, 2).unwrap();
+    assert!(a.iter().all(|p| p[1] >= -1e-6) && b.iter().all(|p| p[1] <= 1e-6), "{a:?}");
+}
+
+#[test]
+fn a_hole_of_several_curves_hangs_on_a_bridge_walked_once() {
+    // A 4 x 4 square (its bottom edge in two at x = 2), a triangle inside it and the line from
+    // the bottom edge up to the triangle's corner, listed once (6124's logo and its pentagon).
+    let polys: Vec<Vec<P2>> = vec![
+        vec![[0.0, 0.0], [2.0, 0.0]],
+        vec![[2.0, 0.0], [4.0, 0.0]],
+        vec![[4.0, 0.0], [4.0, 4.0]],
+        vec![[4.0, 4.0], [0.0, 4.0]],
+        vec![[0.0, 4.0], [0.0, 0.0]],
+        vec![[2.0, 0.0], [2.0, 1.0]],
+        vec![[2.0, 1.0], [3.0, 2.5]],
+        vec![[3.0, 2.5], [1.0, 2.5]],
+        vec![[1.0, 2.5], [2.0, 1.0]],
+    ];
+    assert!(geom::chain(&polys).is_none() && geom::bridged(&polys).is_none());
+    let (outer, holes) = geom::bridged_chains(&polys).unwrap();
+    assert_eq!((outer.len(), holes.len()), (5, 1));
+    assert_eq!(holes.first().unwrap().len(), 3);
+    assert!(geom::inside([0.5, 0.5], &outer) && geom::inside([2.0, 2.0], holes.first().unwrap()));
+    // Without the triangle's last side nothing closes.
+    assert!(geom::bridged_chains(&polys[..8]).is_none());
+}
+
+#[test]
 fn a_circle_drawn_twice_is_cut_by_the_other_copys_seam_not_everywhere() {
     // A chord's two ends on a circle and the same circle drawn again: the copy touches the
     // circle everywhere, so only its ends (the shared seam) cut it, giving 3 pieces.

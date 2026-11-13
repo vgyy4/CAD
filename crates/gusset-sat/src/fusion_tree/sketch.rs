@@ -979,6 +979,14 @@ impl RegionCache {
                 ring = Some(outer);
                 islands = inner;
             }
+            if ring.is_none()
+                && l.flag == 1
+                && let Some((outer, inner)) = geom::bridged_chains(&polys)
+            {
+                // So is a hole of several curves.
+                ring = Some(outer);
+                islands = inner;
+            }
             if ring.is_none() {
                 // The record can leave out a curve of the loop (a corner arc that a duplicate
                 // arc of the sketch shadows): a sketch curve that joins exactly the open ends
