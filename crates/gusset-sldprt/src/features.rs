@@ -2234,6 +2234,97 @@ fn midpoint(
     Ok(plane_edge(&faces, sketches))
 }
 
+/// What [`closed_edge`] reads from the features before the fillet.
+struct Model<'a> {
+    swept: &'a HashMap<u32, Swept>,
+    rounds: &'a HashMap<u32, Vec<Option<Round>>>,
+    revolved: &'a HashMap<u32, Revolved>,
+    sketches: &'a [Geometry],
+    cap_tags: &'a HashSet<u16>,
+}
+
+/// The profile line a revolve face is swept from, and the revolve's axis: a point on it and
+/// its unit direction (mm, model axes).
+fn revolve_line(r: &Rep, m: &Model) -> Option<(V3, V3, V3, V3)> {
+    let rv = m.revolved.get(&r.fid)?;
+    let g = m.sketches.get(rv.on.sketch)?;
+    let mut it = g.segs.iter().filter(|s| s.a == r.idx && !s.construction && !s.centerline);
+    let (Some(s), None) = (it.next(), it.next()) else { return None };
+    if s.kind != SegKind::Line {
+        return None;
+    }
+    let at = |p: Pt| lift(&rv.on, p.x * 1000.0, p.y * 1000.0, 0.0);
+    let (p, q) = (at(point(&g.pts, s.s)?), at(point(&g.pts, s.e)?));
+    let [a0, a1] = rv.axis;
+    let (o, o1) = (at(a0), at(a1));
+    let d = sub(o1, o);
+    let l = libm::sqrt(dot(d, d));
+    (l > 1e-9).then(|| (p, q, o, d.map(|c| c / l)))
+}
+
+/// The plane of a face a closed edge lies on: a flat face of an extrusion, or the disc a
+/// revolve sweeps from a profile line square to its axis.
+fn loop_plane(r: &Rep, m: &Model) -> Option<(V3, V3)> {
+    if let Some((p, q, _, u)) = revolve_line(r, m) {
+        return (dot(sub(q, p), u).abs() < 1e-9).then_some((p, u));
+    }
+    let face = face_of(r, m.swept, m.rounds, m.sketches, m.cap_tags)?;
+    if matches!(face, Face::Cap(_, g, _) if g.through) {
+        return None;
+    }
+    face_plane(&face, m.sketches)
+}
+
+/// A closed edge: a record `[A, B, B, B]` names the loop where face A meets face B, with B in
+/// both vertex slots (ballscrew_nut_block's Chamfer1: the rims of the holes Cut-Extrude3
+/// drilled into a side wall of Boss-Extrude1). B is a plane across A; A is the wall of a full
+/// circle of an extrusion, or a revolve's cylinder or cone about an axis square to B. The point
+/// returned lies on the loop opposite the circle's start (as [`revolve_circle`]'s).
+fn closed_edge(reps: &[Rep], m: &Model, work: &mut u64) -> Result<Option<V3>, String> {
+    let same = |a: &Rep, b: &Rep| (a.tag, a.fid, a.idx, a.via) == (b.tag, b.fid, b.idx, b.via);
+    let [r0, r1, r2, r3] = reps else { return Ok(None) };
+    if !same(r1, r2) || !same(r1, r3) || same(r0, r1) {
+        return Ok(None);
+    }
+    for (wall, across) in [(r0, r1), (r1, r0)] {
+        let Some((o, n)) = loop_plane(across, m) else { continue };
+        if let Some((p, q, a, u)) = revolve_line(wall, m) {
+            // The line's point where the plane cuts the axis' height.
+            let (tp, tq) = (dot(sub(p, a), u), dot(sub(q, a), u));
+            let den = dot(u, n);
+            if (tq - tp).abs() < 1e-9 || (den.abs() - 1.0).abs() > 1e-6 {
+                continue;
+            }
+            let t = dot(sub(o, a), n) / den;
+            let k = (t - tp) / (tq - tp);
+            if !(-1e-9..=1.0 + 1e-9).contains(&k) {
+                continue;
+            }
+            let x = comb(p, 1.0 - k, q, k);
+            let c = comb(a, 1.0, u, t);
+            let w = sub(x, c);
+            if dot(w, w) < 1e-12 {
+                continue;
+            }
+            return Ok(Some(round3(sub(c, w)).map(|v| v + 0.0)));
+        }
+        let Some(Face::Side(_, f, s)) = face_of(wall, m.swept, m.rounds, m.sketches, m.cap_tags) else { continue };
+        if s.kind != SegKind::Arc || s.s != s.e {
+            continue;
+        }
+        let (Some(g), along) = (m.sketches.get(f.sketch), normal(f)) else { continue };
+        let den = dot(along, n);
+        if den.abs() < 1e-6 {
+            continue;
+        }
+        let Some(a) = poly(f, g, &s, work)? else { continue };
+        let Some(p) = point_at(&a, 0.5) else { continue };
+        let p = comb(p, 1.0, along, dot(sub(o, p), n) / den);
+        return Ok(Some(round3(snap(p, f, g, &s))));
+    }
+    Ok(None)
+}
+
 fn midpoint_sketch(
     reps: &[Rep],
     swept: &HashMap<u32, Swept>,
@@ -3309,7 +3400,19 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 let m = match mirrored_edge(reps, &swept, &mirror_planes) {
                     Some((plane, reps, swept)) => midpoint(&reps, &swept, &rounds, &sketches, &cap_tags, &mut work)?
                         .map(|m| reflect(m, plane).map(|c| round_to(c, 6) + 0.0)),
-                    None => midpoint(reps, &swept, &rounds, &sketches, &cap_tags, &mut work)?,
+                    None => match midpoint(reps, &swept, &rounds, &sketches, &cap_tags, &mut work)? {
+                        Some(m) => Some(m),
+                        None => {
+                            let model = Model {
+                                swept: &swept,
+                                rounds: &rounds,
+                                revolved: &revolved,
+                                sketches: &sketches,
+                                cap_tags: &cap_tags,
+                            };
+                            closed_edge(reps, &model, &mut work)?
+                        }
+                    },
                 };
                 mids.push(m);
                 made.push(ps.first().filter(|_| fillet).and_then(|r| round_of(reps, &swept, &sketches, &cap_tags, *r)));
@@ -3729,6 +3832,72 @@ mod end_face_tests {
         let d = node(3);
         assert_eq!(end_face_ref(&d, 0, d.len()).map(|r| r.idx), Some(1));
         assert!(end_face_ref(&d, 0, 40).is_none());
+    }
+
+    #[test]
+    fn a_closed_edge_is_a_circle_cut_by_the_plane_across_it() {
+        let (mut swept, mut sketches) = plate();
+        let seg = |kind, a, s, e, c| Seg {
+            kind,
+            id: a,
+            a,
+            s,
+            e,
+            c,
+            dir: 1,
+            construction: false,
+            centerline: false,
+            external: false,
+        };
+        // A hole of r 1 mm drilled into the plate's side wall x = 20 (side 3), its centre at
+        // y 5, z 2.5: a circle (key 7) on a sketch whose normal is +x.
+        sketches.push(Geometry {
+            pts: vec![pt(0.005, 0.0025), pt(0.006, 0.0025)],
+            segs: vec![seg(SegKind::Arc, 7, 1, 1, 0)],
+            ellipse_axes: Vec::new(),
+        });
+        let plane = JsonPlane { origin: [20.0, 0.0, 0.0], x: [0.0, 1.0, 0.0], y: [0.0, 0.0, 1.0] };
+        swept.insert(33, Swept { sketch: 1, plane, distance: -10.0, symmetric: false, through: false });
+        // A revolve about the y axis of the Front plane: line 4 at x = 5 mm sweeps a cylinder.
+        sketches.push(Geometry {
+            pts: vec![pt(0.005, 0.0), pt(0.005, 0.01)],
+            segs: vec![seg(SegKind::Line, 4, 0, 1, 0)],
+            ellipse_axes: Vec::new(),
+        });
+        let on = Swept {
+            sketch: 2,
+            plane: JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] },
+            distance: 0.0,
+            symmetric: false,
+            through: false,
+        };
+        let revolved = HashMap::from([(
+            34,
+            Revolved {
+                on,
+                axis: [
+                    Pt { x: 0.0, y: 0.0, ext: false, id: 0, alone: 0 },
+                    Pt { x: 0.0, y: 0.01, ext: false, id: 0, alone: 0 },
+                ],
+            },
+        )]);
+        let cap_tags = HashSet::from([9u16]);
+        let rounds = HashMap::new();
+        let m = Model { swept: &swept, rounds: &rounds, revolved: &revolved, sketches: &sketches, cap_tags: &cap_tags };
+        let rep = |tag, fid, idx| Rep { tag, fid, idx, ext: false, ext2: false, via: None };
+        let mut work = 0;
+        // `[hole, wall, wall, wall]`: the rim, opposite the circle's start.
+        let reps = [rep(1, 33, 7), rep(1, 32, 3), rep(1, 32, 3), rep(1, 32, 3)];
+        assert_eq!(closed_edge(&reps, &m, &mut work).unwrap(), Some([20.0, 4.0, 2.5]));
+        // Either face may come first.
+        let reps = [rep(1, 32, 3), rep(1, 33, 7), rep(1, 33, 7), rep(1, 33, 7)];
+        assert_eq!(closed_edge(&reps, &m, &mut work).unwrap(), Some([20.0, 4.0, 2.5]));
+        // The cylinder cut by the plate's side y = 0 (side 2): the circle of r 5 in that plane.
+        let reps = [rep(1, 34, 4), rep(1, 32, 2), rep(1, 32, 2), rep(1, 32, 2)];
+        assert_eq!(closed_edge(&reps, &m, &mut work).unwrap(), Some([-5.0, 0.0, 0.0]));
+        // A record whose vertex faces differ is not a closed edge.
+        let reps = [rep(1, 33, 7), rep(1, 32, 3), rep(9, 32, 1), rep(1, 32, 3)];
+        assert_eq!(closed_edge(&reps, &m, &mut work).unwrap(), None);
     }
 
     #[test]
