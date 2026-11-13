@@ -1499,6 +1499,7 @@ fn a_rounded_edge_recorded_before_an_offset_moves_with_its_face() {
     let plain = std::f64::consts::PI * 1.4 * 1.4;
     let most = (1.0 - std::f64::consts::FRAC_PI_4) * 0.04 * std::f64::consts::TAU * 1.4;
     assert!(v < plain && v > plain - most, "{v}");
+}
 
 // ---- Face profiles, surface extrudes, Thicken, edge paths (section 49 of the Fusion notes) ----
 
@@ -1559,6 +1560,7 @@ fn a_loft_from_a_face_and_a_sweep_along_an_edge() {
     let v = volume_of(&mut s, "Spire");
     assert!(v > 25.0 * std::f64::consts::PI * 10.0 && v < 8000.0, "{v}");
     assert_vol(volume_of(&mut s, "Rail"), std::f64::consts::PI * 40.0);
+}
 
 /// A sketch with no curves (one that only holds text).
 fn bare_sketch(name: &str, plane: Value) -> Value {
