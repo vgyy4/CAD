@@ -446,6 +446,30 @@ fn feature_nodes(d: &[u8], nt: [u8; 2]) -> Result<Vec<Node>, String> {
     Ok(out)
 }
 
+/// Drops node names written inside the header of the node before them (both find the same
+/// block): an attribute in a sketch's header (zsCAD's `Assoc1`), or the `Sketch3<3>` name a
+/// feature that reuses Sketch3 writes in its own header (Connecting Plate_BOTTOM_M3's
+/// Boss-Extrude2, V-Slot Rail_PIVOT's Boss-Extrude3: the feature's end condition follows, and the
+/// name had cut the feature's span short). Other nested names (a hole wizard's sketches) stay.
+fn drop_nested(nodes: &mut Vec<Node>) {
+    let reused = |n: &str| {
+        n.strip_suffix('>')
+            .and_then(|r| r.rsplit_once('<'))
+            .is_some_and(|(base, k)| !base.is_empty() && !k.is_empty() && k.bytes().all(|c| c.is_ascii_digit()))
+    };
+    let mut prev: Option<(usize, usize)> = None;
+    nodes.retain(|n| {
+        let nested = prev.is_some_and(|(post, start)| post == n.post && start < n.start);
+        let drop = nested
+            && (n.cls.as_deref() == Some("moAttribute_c")
+                || (n.cls.as_deref() == Some("moProfileFeature_c") && reused(&n.name)));
+        if !drop {
+            prev = Some((n.post, n.start));
+        }
+        !drop
+    });
+}
+
 /// Maps class-reference tags to declared classes by signature (`nodes2.classify`, a guess
 /// the prototype settles this way).
 fn classify(d: &[u8], nodes: &mut [Node]) {
@@ -2504,6 +2528,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let nt = node_tag(rf).ok_or("the feature stream has no node names")?;
     let mut nodes = feature_nodes(rf, nt)?;
     classify(rf, &mut nodes);
+    drop_nested(&mut nodes);
     let mut starts: Vec<usize> = nodes.iter().map(|n| n.start).collect();
     starts.push(rf.len());
     starts.sort_unstable();
@@ -3370,5 +3395,32 @@ mod end_face_tests {
             assert_eq!(dir, [0.0, 0.0, -1.0]);
         }
         assert_eq!(line_ref(&[0u8; 100], 0, 100), None);
+    }
+
+    /// Node names inside the header of the node before them: a reused sketch's `Sketch3<3>` and
+    /// an attribute go; a hole wizard's nested sketch stays.
+    #[test]
+    fn nested_names_do_not_cut_a_feature_short() {
+        let node = |start: usize, post: usize, cls: &str, name: &str| Node {
+            start,
+            cls: Some(cls.into()),
+            tag: None,
+            name: name.into(),
+            flags: 0,
+            id: 0,
+            post,
+            head_len: 0,
+        };
+        let mut nodes = vec![
+            node(100, 300, "moExtrusion_c", "Boss-Extrude2"),
+            node(160, 300, "moProfileFeature_c", "Sketch3<3>"),
+            node(400, 600, "moProfileFeature_c", "Sketch4"),
+            node(450, 600, "moAttribute_c", "Assoc1"),
+            node(700, 900, "moHoleWzd_c", "Hole1"),
+            node(760, 900, "moProfileFeature_c", "Sketch5"),
+        ];
+        drop_nested(&mut nodes);
+        let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["Boss-Extrude2", "Sketch4", "Hole1", "Sketch5"]);
     }
 }
