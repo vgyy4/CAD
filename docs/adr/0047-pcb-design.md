@@ -457,7 +457,8 @@ it nets and rules, route, pour, check and write every fabrication file without K
 * **KiCad library content pack** (footprints, symbols, 3D models; CC-BY-SA-4.0 with exception) as
   an optional download with notices; placing footprints from it.
 * DRC: hole-to-hole, courtyard overlap, silk on pads and drill sizes are done (ADR 0048);
-  per-class rules beyond clearance; KiCad's custom rules (`.kicad_dru`).
+  per-class rules beyond clearance and a subset of KiCad's custom rules (`.kicad_dru`): done, see
+  ADR 0054. Still open there: area functions, `severity`, `B.` in single-item constraints.
 * Editor: (texts in our stroke font, mirrored on flip, adding and editing board texts: done,
   see ADR 0049; a pad picked on its own, moving tracks and vias, and the board outline drawn
   with the mouse: done, see ADR 0050), arc tracks drawn freehand.
