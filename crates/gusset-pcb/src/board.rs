@@ -365,8 +365,11 @@ pub struct Zone {
     pub net: NetRef,
     /// Layer names as written (`*.Cu` possible).
     pub layers: Vec<String>,
-    /// The outline drawn by the user.
+    /// The outline drawn by the user (the first polygon of the zone).
     pub outline: Vec<Pt>,
+    /// Further outlines of the same zone (KiCad keeps several polygons in one zone); the
+    /// zone covers the union of all.
+    pub more_outlines: Vec<Vec<Pt>>,
     /// Filled areas as KiCad computed them: (layer, polygon).
     pub fills: Vec<(String, Vec<Pt>)>,
     /// A keep-out/rule area (no copper of its own).
@@ -375,6 +378,13 @@ pub struct Zone {
     pub settings: ZoneSettings,
     /// Position of the zone's node in the board's tree.
     pub node: usize,
+}
+
+impl Zone {
+    /// Every outline of the zone, the first one first (those under 3 points left out).
+    pub fn outlines(&self) -> impl Iterator<Item = &Vec<Pt>> {
+        std::iter::once(&self.outline).chain(self.more_outlines.iter()).filter(|o| o.len() >= 3)
+    }
 }
 
 /// How a zone joins the pads of its own net.
@@ -989,7 +999,9 @@ impl Reader<'_> {
         if let Some(l) = n.child("layers") {
             layers.extend(l.args().iter().filter_map(Node::atom).map(str::to_string));
         }
-        let outline = n.child("polygon").and_then(|p| pts(p.child("pts"), max)).unwrap_or_default();
+        let mut polys = n.children("polygon").filter_map(|p| pts(p.child("pts"), max));
+        let outline = polys.next().unwrap_or_default();
+        let more_outlines: Vec<Vec<Pt>> = polys.take(1000).collect();
         let mut fills = Vec::new();
         for f in n.children("filled_polygon") {
             let layer =
@@ -1000,7 +1012,7 @@ impl Reader<'_> {
         }
         let keepout = n.child("keepout").is_some() || n.child("rule_area").is_some();
         let settings = zone_settings(n);
-        self.board.zones.push(Zone { net: net_ref(n), layers, outline, fills, keepout, settings, node });
+        self.board.zones.push(Zone { net: net_ref(n), layers, outline, more_outlines, fills, keepout, settings, node });
         Ok(())
     }
 

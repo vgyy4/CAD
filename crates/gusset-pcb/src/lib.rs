@@ -84,3 +84,5 @@ mod tests_sch_edit;
 mod tests_text;
 #[cfg(test)]
 mod tests_zone;
+#[cfg(test)]
+mod tests_zone_more;

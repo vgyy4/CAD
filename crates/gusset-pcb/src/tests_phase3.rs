@@ -138,6 +138,7 @@ fn nets_are_set_renamed_and_merged() {
 fn zones_are_added_and_hatched_fills_have_holes() {
     let mut b = Board::new_two_layer(30.0, 20.0).unwrap();
     let solid = NewZone {
+        more_outlines: Vec::new(),
         outline: vec![[1.0, 1.0], [14.0, 1.0], [14.0, 19.0], [1.0, 19.0]],
         layers: vec!["F.Cu".into()],
         net: Some("GND".into()),
@@ -149,6 +150,7 @@ fn zones_are_added_and_hatched_fills_have_holes() {
     assert_eq!(b.net_name(&b.zones[0].net).as_deref(), Some("GND"));
     let h = Hatch { thickness: 0.5, gap: 1.0, angle: 0.0, min_hole_area: 0.3 };
     let hatched = NewZone {
+        more_outlines: Vec::new(),
         outline: vec![[16.0, 1.0], [29.0, 1.0], [29.0, 19.0], [16.0, 19.0]],
         layers: vec!["F.Cu".into(), "B.Cu".into()],
         net: None,
@@ -214,6 +216,7 @@ fn texts_are_plotted_in_the_stroke_font() {
     );
     c = Board::read(&text, &lim()).unwrap();
     let z = NewZone {
+        more_outlines: Vec::new(),
         outline: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
         layers: vec!["F.Cu".into()],
         net: None,

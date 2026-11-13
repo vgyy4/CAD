@@ -293,6 +293,9 @@ pub struct ZoneHatch {
 pub struct PcbAddZone {
     /// Polygon, mm.
     pub outline: Vec<[f64; 2]>,
+    /// More polygons of the same zone.
+    #[serde(default)]
+    pub more_outlines: Vec<Vec<[f64; 2]>>,
     /// Default ["F.Cu"].
     #[serde(default)]
     pub layers: Vec<String>,
@@ -340,6 +343,7 @@ impl Command for PcbAddZone {
         let layers = if self.layers.is_empty() { vec!["F.Cu".to_string()] } else { self.layers.clone() };
         let z = NewZone {
             outline: self.outline.clone(),
+            more_outlines: self.more_outlines.clone(),
             layers,
             net: self.net.clone().filter(|n| !n.is_empty()),
             settings: st,

@@ -166,7 +166,7 @@ pub fn fill(board: &Board, rules: &Rules, only: Option<&[usize]>) -> Filled {
     }
     // Highest priority first; the file's order among equals.
     let mut order: Vec<usize> = (0..board.zones.len())
-        .filter(|&i| board.zones.get(i).is_some_and(|z| !z.keepout && z.outline.len() >= 3))
+        .filter(|&i| board.zones.get(i).is_some_and(|z| !z.keepout && z.outlines().next().is_some()))
         .collect();
     order.sort_by_key(|&i| std::cmp::Reverse(board.zones.get(i).map_or(0, |z| z.settings.priority)));
     let pad_tht = |i: usize| board.pads.get(i).is_some_and(|p| p.kind == PadKind::Tht);
@@ -175,8 +175,9 @@ pub fn fill(board: &Board, rules: &Rules, only: Option<&[usize]>) -> Filled {
         let Some(z) = board.zones.get(zi) else { continue };
         let net = board.net_name(&z.net);
         let st = z.settings;
-        let outline = poly::union(std::slice::from_ref(&z.outline));
-        let zb = bbox(&z.outline);
+        let outlines: Vec<Vec<Pt>> = z.outlines().cloned().collect();
+        let outline = poly::union(&outlines);
+        let zb = bbox(&outlines.concat());
         let reach = st.clearance.max(rules.clearance_of(net.as_deref())) + 1.0;
         for layer in zone_layers(board, &z.layers) {
             let Some(li) = cu.iter().position(|l| *l == layer) else { continue };
@@ -230,9 +231,9 @@ pub fn fill(board: &Board, rules: &Rules, only: Option<&[usize]>) -> Filled {
             for (a, b, r) in crate::font::layer_strokes(board, &layer) {
                 obst.push(poly::capsule(a, b, r + clear_to(None)));
             }
-            for k in board.zones.iter().filter(|k| k.keepout && k.settings.no_pour && k.outline.len() >= 3) {
+            for k in board.zones.iter().filter(|k| k.keepout && k.settings.no_pour) {
                 if board.on_layer(&k.layers, &layer) {
-                    obst.push(k.outline.clone());
+                    obst.extend(k.outlines().cloned());
                 }
             }
             for f in done.iter().filter(|f| f.layer == layer) {

@@ -102,7 +102,7 @@ impl Obstacles {
                     .push((Prim::Capsule { a: h.at, b: h.slot_end.unwrap_or(h.at), r: h.diameter / 2.0 }, mine + half));
             }
         }
-        for z in board.zones.iter().filter(|z| z.keepout && z.outline.len() >= 3 && board.on_layer(&z.layers, layer)) {
+        for z in board.zones.iter().filter(|z| z.keepout && board.on_layer(&z.layers, layer)) {
             let no_tracks = board
                 .tree
                 .items()
@@ -112,7 +112,7 @@ impl Obstacles {
                 .and_then(|t| t.arg(0))
                 == Some("not_allowed");
             if no_tracks {
-                prims.push((Prim::Poly { pts: z.outline.clone() }, half));
+                prims.extend(z.outlines().map(|o| (Prim::Poly { pts: o.clone() }, half)));
             }
         }
         let (loops, _) = geom::outline_loops(board, crate::check::OUTLINE_TOL);

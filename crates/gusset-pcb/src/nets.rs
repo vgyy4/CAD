@@ -97,6 +97,8 @@ impl Rename<'_> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewZone {
     pub outline: Vec<Pt>,
+    /// More outlines of the same zone (KiCad's several polygons in one zone).
+    pub more_outlines: Vec<Vec<Pt>>,
     pub layers: Vec<String>,
     pub net: Option<String>,
     pub settings: ZoneSettings,
@@ -212,12 +214,8 @@ impl Board {
     /// # Errors
     /// Fewer than 3 or bad points, a layer that is not copper, or a failed re-read.
     pub fn add_zone(&mut self, z: &NewZone, limits: &Limits) -> Result<usize, Error> {
-        if z.outline.len() < 3 || z.outline.len() > 100_000 {
-            return Err(bad("a zone outline has 3 to 100000 points"));
-        }
-        if z.outline.iter().flatten().any(|v| !v.is_finite() || v.abs() > 10_000.0) {
-            return Err(bad("coordinates must be finite and within 10 m"));
-        }
+        let all: Vec<Vec<Pt>> = std::iter::once(z.outline.clone()).chain(z.more_outlines.iter().cloned()).collect();
+        check_outlines(&all)?;
         if z.layers.is_empty() {
             return Err(bad("a zone needs a copper layer"));
         }
@@ -242,7 +240,7 @@ impl Board {
             v.extend(z.layers.iter().map(|l| Node::str(l.clone())));
             items.push(list(v));
         }
-        let text = format!("zone {:?} {:?} {:?}", z.outline, z.layers, z.net);
+        let text = format!("zone {:?} {:?} {:?} {:?}", z.outline, z.more_outlines, z.layers, z.net);
         if self.writes_uuids() {
             items.push(kv("uuid", Node::str(crate::edit::uuid_for(&text, self.tree.items().len()))));
         }
@@ -282,9 +280,7 @@ impl Board {
             fill.push(kv("island_area_min", Node::num(st.island_min_area)));
         }
         items.push(list(fill));
-        let mut pts = vec![Node::sym("pts")];
-        pts.extend(z.outline.iter().map(|p| list(vec![Node::sym("xy"), Node::num(p[0]), Node::num(p[1])])));
-        items.push(list(vec![Node::sym("polygon"), list(pts)]));
+        items.extend(all.iter().map(|o| polygon_node(o)));
         let n = self.zones.len();
         let node = list(items);
         // Zones go after the tracks, as KiCad writes them.
@@ -300,6 +296,25 @@ impl Board {
         }
         // The new zone is the one at the inserted place.
         self.zones.iter().position(|z| z.node == at).ok_or_else(|| bad("the zone did not read back"))
+    }
+
+    /// Replaces the outlines of zone `zone` (the first is the zone's main polygon). The
+    /// zone's fills are dropped (they no longer match); fill it again.
+    ///
+    /// # Errors
+    /// No such zone, an outline of fewer than 3 or bad points, or a failed re-read.
+    pub fn set_zone_outlines(&mut self, zone: usize, outlines: &[Vec<Pt>], limits: &Limits) -> Result<(), Error> {
+        check_outlines(outlines)?;
+        let node = self.zones.get(zone).ok_or_else(|| bad(format!("there is no zone {zone}")))?.node;
+        let items = self.tree.items_mut().and_then(|v| v.get_mut(node)).and_then(Node::items_mut);
+        let items = items.ok_or_else(|| bad("not a board"))?;
+        let at = items.iter().position(|c| c.head() == Some("polygon")).unwrap_or(items.len());
+        items.retain(|c| !matches!(c.head(), Some("polygon" | "filled_polygon" | "fill_segments")));
+        let at = at.min(items.len());
+        for (k, o) in outlines.iter().enumerate() {
+            items.insert(at + k, polygon_node(o));
+        }
+        self.reread(limits)
     }
 
     /// Deletes zones by index in [`Board::zones`]; returns how many went.
@@ -322,4 +337,25 @@ impl Board {
         self.reread(limits)?;
         Ok(nodes.len())
     }
+}
+
+/// Outlines of a zone: 1 to 1000, each 3 to 100000 finite points within 10 m.
+fn check_outlines(all: &[Vec<Pt>]) -> Result<(), Error> {
+    if all.is_empty() || all.len() > 1000 {
+        return Err(bad("a zone has 1 to 1000 outlines"));
+    }
+    if all.iter().any(|o| o.len() < 3 || o.len() > 100_000) {
+        return Err(bad("a zone outline has 3 to 100000 points"));
+    }
+    if all.iter().flatten().flatten().any(|v| !v.is_finite() || v.abs() > 10_000.0) {
+        return Err(bad("coordinates must be finite and within 10 m"));
+    }
+    Ok(())
+}
+
+/// `(polygon (pts (xy x y) ...))`.
+fn polygon_node(o: &[Pt]) -> Node {
+    let mut pts = vec![Node::sym("pts")];
+    pts.extend(o.iter().map(|p| list(vec![Node::sym("xy"), Node::num(p[0]), Node::num(p[1])])));
+    list(vec![Node::sym("polygon"), list(pts)])
 }
