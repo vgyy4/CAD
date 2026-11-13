@@ -177,6 +177,10 @@ enum Profiles {
 struct Axis {
     #[serde(default)]
     line: Option<String>,
+    /// A straight body edge (by its middle), the axis of a revolve of a face; for a part turn
+    /// `direction` is the way along it the revolve turns right-handed about.
+    #[serde(default)]
+    edge: Option<EdgePick>,
     #[serde(default)]
     origin: Option<[f64; 3]>,
     #[serde(default)]
@@ -210,8 +214,9 @@ struct SolidF {
     /// Empty for an extrude whose profile is `profile_face`.
     #[serde(default)]
     sketch: String,
-    /// Extrude: a planar face of a body as the profile (a pick of the face as it is before
-    /// this feature), instead of sketch regions; the distance counts along its outward normal.
+    /// Extrude or revolve: a planar face of a body as the profile (a pick of the face as it is
+    /// before this feature), instead of sketch regions; an extrude's distance counts along its
+    /// outward normal, a revolve turns it about a body edge.
     #[serde(default)]
     profile_face: Option<v2::FacePick>,
     /// A surface extrude: the ids of the sketch curves swept into a sheet (no profile).
@@ -1506,10 +1511,10 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
 
 fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), String> {
     if let Some(pick) = &d.profile_face {
-        if revolve || !d.sketch.is_empty() || !d.curves.is_empty() {
-            return Err("a face profile belongs to an extrude without a sketch".into());
+        if !d.sketch.is_empty() || !d.curves.is_empty() {
+            return Err("a face profile belongs to an extrude or revolve without a sketch".into());
         }
-        return face_extrude(g, s, d, pick);
+        return if revolve { face_revolve(g, s, d, pick) } else { face_extrude(g, s, d, pick) };
     }
     let sm =
         g.sketches.get(&d.sketch).ok_or_else(|| format!("its sketch '{}' was not imported", short(&d.sketch)))?.clone();
@@ -1713,6 +1718,86 @@ fn face_extrude(g: &mut Gen, s: &Session, d: &SolidF, pick: &v2::FacePick) -> Re
     g.made.push(name.clone());
     g.features.insert(d.name.clone(), name);
     Ok(())
+}
+
+/// A revolve of a planar body face about a straight body edge (both found by their picks). A part
+/// turn about an edge pointing against the tree's `direction` (the document's edge axis points
+/// towards +X, else +Y, else +Z) is written with a negative angle.
+fn face_revolve(g: &mut Gen, s: &Session, d: &SolidF, pick: &v2::FacePick) -> Result<(), String> {
+    let angle = finite(d.angle.unwrap_or(360.0), "the angle")?;
+    if !(angle > 1e-9 && angle <= 360.0 + 1e-9) {
+        return Err("a revolve's angle is not within 0 to 360 degrees".into());
+    }
+    let ax = d.axis.as_ref().ok_or("a revolve of a face needs an edge as its axis")?;
+    let edge = ax.edge.as_ref().ok_or("a revolve of a face needs an edge as its axis")?;
+    let part = angle < 360.0 - 1e-9;
+    let mut signed = if part { angle } else { 360.0 };
+    if part {
+        let dir = ax.direction.ok_or("a part revolve of a face without the way it turns")?;
+        let dir =
+            Some(dir).filter(|v| v.iter().all(|c| c.is_finite())).ok_or("the revolve's direction is not finite")?;
+        let ev = g.evaluate(s).map_err(|e| e.message)?;
+        let along = edge_line(&ev, edge.midpoint).ok_or("the revolve's axis is not a straight edge of the model")?;
+        // The document's edge axis: towards +X, else +Y, else +Z.
+        let flip = along.iter().find(|c| c.abs() > 1e-6).is_some_and(|c| *c < 0.0);
+        let canonical = if flip { along.map(|c| -c) } else { along };
+        if dot(canonical, dir) < 0.0 {
+            signed = -angle;
+        }
+    }
+    let op = match d.operation.as_deref().unwrap_or("new") {
+        "new" => "new",
+        "join" => "add",
+        "cut" => "cut",
+        "intersect" => "intersect",
+        other => return Err(format!("operation '{}' is not new, join, cut or intersect", short(other))),
+    };
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    let (on, face) = v2::pick_face_name(g, s, &ev, pick)?;
+    let axis = v2::edge_path(g, s, std::slice::from_ref(edge))?;
+    let axis = axis.strip_prefix('[').and_then(|a| a.strip_suffix(']')).unwrap_or(&axis).to_string();
+    let name = g.fresh(&d.name, "Revolve");
+    let mut args = vec![
+        format!("profile: {face}"),
+        format!("axis: {axis}"),
+        format!("angle: {} deg", num(signed)),
+        format!("op: {op}"),
+    ];
+    if op != "new" {
+        let t = match &d.target {
+            Some(t) => g.body_named(t.one()?, "target")?,
+            None => on,
+        };
+        args.push(format!("body: {t}"));
+        if !d.refine {
+            args.push("refine: false".into());
+        }
+    }
+    let _ = writeln!(g.text, "\nrevolve {name} ({})", args.join(", "));
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {
+        return Err(format!("it does not build here: {}", e.message));
+    }
+    g.made.push(name.clone());
+    g.features.insert(d.name.clone(), name);
+    Ok(())
+}
+
+/// The unit direction of the straight model edge whose middle is `mid` (0.01 mm), end to end.
+fn edge_line(ev: &gusset_eval::Evaluation, mid: [f64; 3]) -> Option<[f64; 3]> {
+    for b in &ev.bodies {
+        for e in &b.topology.edges {
+            if norm(sub(e.midpoint, mid)) > 0.01 || e.kind != gusset_kernel::CurveKind::Line {
+                continue;
+            }
+            let [a, c] = e.vertices.as_slice() else { continue };
+            let (p, q) = (b.topology.vertices.get(*a as usize)?.point, b.topology.vertices.get(*c as usize)?.point);
+            let v = sub(q, p);
+            let n = norm(v);
+            return (n > 1e-9).then(|| v.map(|x| x / n));
+        }
+    }
+    None
 }
 
 /// A surface extrude: the sketch curves swept along the sketch normal into a sheet, a new body.

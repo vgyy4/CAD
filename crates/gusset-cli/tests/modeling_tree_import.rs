@@ -1523,6 +1523,31 @@ fn extrudes_of_body_faces() {
 }
 
 #[test]
+fn a_face_revolved_about_an_edge_either_way() {
+    // The plate's side y = 0 a quarter turn about its bottom edge: right-handed about +x it leaves
+    // the plate (towards -y), about -x it turns into it (written with a negative angle, as the
+    // document's edge axis points along +x).
+    for (dir, y) in [(1.0, -10.0), (-1.0, 10.0)] {
+        let (mut s, _) = import_v2_session(vec![
+            rect("Sketch1", plane_at(0.0), 0.0, 0.0, 40.0, 20.0),
+            extrude("Plate", "Sketch1", 10.0, "new"),
+            json!({"type": "revolve", "name": "Hinge", "profile_face": {"point": [20, 0, 5]},
+                   "axis": {"edge": {"midpoint": [20, 0, 0]}, "direction": [dir, 0, 0]}, "angle": 90,
+                   "operation": "new"}),
+        ]);
+        let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+        let angle = if dir > 0.0 { "angle: 90 deg" } else { "angle: -90 deg" };
+        assert!(text.contains("revolve Hinge (profile: ") && text.contains(angle), "{text}");
+        assert_vol(volume_of(&mut s, "Hinge"), 1000.0 * std::f64::consts::PI);
+        let ev = s.evaluate(&gusset_history::Actor::User).unwrap();
+        let b = ev.body("Hinge").unwrap();
+        let bb = s.kernel().bbox(&b.shape).unwrap();
+        let far = if y < 0.0 { bb.min[1] } else { bb.max[1] };
+        assert!((far - y).abs() < 1e-6, "{bb:?}");
+    }
+}
+
+#[test]
 fn a_sheet_thickened_into_a_body_and_repeated() {
     // A wall 30 mm long and 5 high swept up from a line on the plate's top, thickened 2 mm (1 to
     // each side) into the plate; the pattern turns the pair a quarter about the plate's middle:

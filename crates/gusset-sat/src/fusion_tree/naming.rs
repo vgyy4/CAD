@@ -1096,6 +1096,80 @@ impl Ctx<'_> {
         Some((mid, mul(n, side.signum())))
     }
 
+    /// Which way a revolve (operation `op`, `angle` radians, about an axis through `at`, cm)
+    /// turned, from its stored faces: the unit axis direction about which a right-handed turn by
+    /// `angle` from the start cap (`1 [op]`, or the end cap `2 [op]` turned back) sweeps every
+    /// point of its faces. The axis's line comes from the faces that are not caps (a cylinder or
+    /// cone about it, a plane across it). `None` where the faces do not tell one way alone.
+    pub(super) fn revolve_turn(&mut self, op: i32, at: V3, angle: f64) -> Option<V3> {
+        let faces: Vec<acis::NamedFace> = self
+            .named_faces()
+            .iter()
+            .filter(|f| f.name.first().is_some_and(|(_, o)| o.as_slice() == [op]))
+            .cloned()
+            .collect();
+        let gen_of = |f: &acis::NamedFace| f.name.first().map_or("", |(g, _)| g.as_str()).to_string();
+        let mut axis: Option<V3> = None;
+        for f in faces.iter().filter(|f| !matches!(gen_of(f).as_str(), "1" | "2")) {
+            let a = match Surface::of(f)? {
+                Surface::Cylinder { origin, axis, .. } | Surface::Cone { origin, axis, .. } => {
+                    if norm(cross(sub(at, origin), unit(axis)?)) > 1e-6 {
+                        return None;
+                    }
+                    axis
+                }
+                Surface::Plane { normal, .. } => normal,
+                Surface::Other => continue,
+            };
+            let a = unit(a)?;
+            match axis {
+                None => axis = Some(a),
+                Some(b) if (dot(a, b).abs() - 1.0).abs() < 1e-9 => {}
+                Some(_) => return None,
+            }
+        }
+        let axis = axis?;
+        let radial = |q: V3| {
+            let r = sub(q, at);
+            sub(r, mul(axis, dot(r, axis)))
+        };
+        let points = |f: &acis::NamedFace| f.verts.iter().chain(&f.edge_pts).copied().collect::<Vec<V3>>();
+        // The way a cap leaves the axis; `None` for a cap on both sides of it (2354's `Revolve2`:
+        // a face the axis halves, which a half turn makes a whole cylinder of either way).
+        let cap = |g: &str| {
+            let ps: Vec<V3> = faces.iter().filter(|f| gen_of(f) == g).flat_map(points).map(radial).collect();
+            let dir = unit(ps.iter().fold([0.0; 3], |acc, r| add(acc, *r)))?;
+            ps.iter().all(|r| dot(*r, dir) > -1e-7).then_some(dir)
+        };
+        let (start, end) = (cap("1"), cap("2"));
+        let all: Vec<V3> = faces.iter().flat_map(points).collect();
+        let fits = |a: V3| -> Option<bool> {
+            let s = match (start, end) {
+                (Some(s), _) => s,
+                // The end cap turned back by the angle (`end` is across the axis).
+                (None, Some(e)) => add(mul(e, libm::cos(angle)), mul(cross(a, e), -libm::sin(angle))),
+                (None, None) => return None,
+            };
+            Some(all.iter().all(|q| {
+                let r = radial(*q);
+                if norm(r) < 1e-7 {
+                    return true;
+                }
+                let mut phi = libm::atan2(dot(a, cross(s, r)), dot(s, r));
+                if phi < 0.0 {
+                    phi += std::f64::consts::TAU;
+                }
+                phi <= angle + 1e-6 || phi >= std::f64::consts::TAU - 1e-6
+            }))
+        };
+        let back = mul(axis, -1.0);
+        match (fits(axis)?, fits(back)?) {
+            (true, false) => Some(axis),
+            (false, true) => Some(back),
+            _ => None,
+        }
+    }
+
     fn named_faces(&mut self) -> &[acis::NamedFace] {
         let files = self.acis;
         self.named_faces.get_or_insert_with(|| {

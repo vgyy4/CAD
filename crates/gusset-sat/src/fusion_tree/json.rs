@@ -757,7 +757,7 @@ fn revolve_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
     j.insert("sketch".into(), profile.and_then(|s| sketch_names.get(&s)).map_or(Value::Null, |s| s.as_str().into()));
     j.insert("sketch_source_id".into(), profile.map_or(Value::Null, Value::from));
     let Some(sid) = profile else {
-        j.insert("error".into(), "the profile is not a sketch profile".into());
+        revolve_of_a_face(cx, fid, &mut j);
         return j;
     };
     let s = cx.sketch(sid);
@@ -777,20 +777,9 @@ fn revolve_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
             return j;
         }
     }
-    let ps = params_of(d, fid);
-    let Some(angle) = pget(&ps, "AlongAngle").and_then(|p| p.value) else {
-        j.insert("error".into(), "the revolve has no angle".into());
-        return j;
-    };
-    if let Some((other, _)) = ps.iter().find(|(k, _)| k != "AlongAngle") {
-        j.insert("error".into(), format!("the revolve has a parameter '{other}' (not decoded)").into());
+    if revolve_angle(d, fid, &mut j, true).is_none() {
         return j;
     }
-    if (angle.abs() - std::f64::consts::TAU).abs() > 1e-9 {
-        j.insert("error".into(), "a part revolve (which way it turns is not decoded)".into());
-        return j;
-    }
-    j.insert("angle".into(), 360.0.into());
     let mut axes: Vec<(u64, u64)> = Vec::new();
     for q in ref_ids(d, rec).into_iter().filter(|q| d.is(*q, "2CA5A1CD")) {
         for q2 in ref_ids(d, d.rec(q)).into_iter().filter(|q2| d.is(*q2, "5A1BF548")) {
@@ -850,6 +839,86 @@ fn revolve_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         }
     }
     j
+}
+
+/// A revolve's angle (the parameter `AlongAngle`, radians) into `j` (degrees); `None` (with an
+/// `error`) where it is not read, or is a part turn and `whole` is asked for.
+fn revolve_angle(d: &Design, fid: u64, j: &mut Map<String, Value>, whole: bool) -> Option<f64> {
+    let ps = params_of(d, fid);
+    let Some(angle) = pget(&ps, "AlongAngle").and_then(|p| p.value) else {
+        j.insert("error".into(), "the revolve has no angle".into());
+        return None;
+    };
+    if let Some((other, _)) = ps.iter().find(|(k, _)| k != "AlongAngle") {
+        j.insert("error".into(), format!("the revolve has a parameter '{other}' (not decoded)").into());
+        return None;
+    }
+    let full = (angle.abs() - std::f64::consts::TAU).abs() <= 1e-9;
+    if whole && !full {
+        j.insert("error".into(), "a part revolve (which way it turns is not decoded)".into());
+        return None;
+    }
+    if !(angle.is_finite() && angle.abs() > 1e-9 && angle.abs() <= std::f64::consts::TAU + 1e-9) {
+        j.insert("error".into(), "the revolve's angle is out of range".into());
+        return None;
+    }
+    let angle = if full { std::f64::consts::TAU } else { angle.abs() };
+    j.insert("angle".into(), round9(angle.to_degrees()).into());
+    Some(angle)
+}
+
+/// A revolve whose profile is one face of a body (2354's `Revolve1`: the selection `2CA5A1CD` ->
+/// `5662F619` names a bounded-face recipe, no `4BD53E5A` profile) about a body edge (a second
+/// selection naming one edge recipe): `profile_face` (a pick of the face) and the axis as
+/// `{"edge": <the edge's middle>}`. A part turn (2354's: 240 and 180 degrees) also gives the
+/// axis `direction` it turns right-handed about, read from the revolve's stored faces
+/// ([`Ctx::revolve_turn`]); where they do not tell, the revolve is not read.
+fn revolve_of_a_face(cx: &mut Ctx, fid: u64, j: &mut Map<String, Value>) {
+    let faces = profile_faces(cx.d, fid);
+    let pick = match faces.as_slice() {
+        [(g, ops)] => face_pick(cx, g, ops),
+        _ => None,
+    };
+    let Some(pick) = pick else {
+        j.insert("error".into(), "the profile is not a sketch profile or one face".into());
+        return;
+    };
+    let Some(angle) = revolve_angle(cx.d, fid, j, false) else { return };
+    let axis = match sweep_path_edges(cx, fid) {
+        Ok(edges) => match edges.as_slice() {
+            [e] => e.clone(),
+            _ => {
+                j.insert("error".into(), "the revolve axis is several edges".into());
+                return;
+            }
+        },
+        Err(why) => {
+            let why = why.unwrap_or_else(|| "the revolve axis of a face profile is not a body edge".into());
+            j.insert("error".into(), why.replace("a sweep path of body edges", "a revolve axis edge").into());
+            return;
+        }
+    };
+    let mut ax = json!({ "edge": axis });
+    if angle < std::f64::consts::TAU {
+        let ops: Vec<i32> =
+            cx.opmap.iter().filter(|(_, f)| **f == fid).filter_map(|(k, _)| i32::try_from(*k).ok()).collect();
+        let at = get3(ax.pointer("/edge/midpoint")).map(|m| m.map(|c| c / 10.0));
+        let dir = match (ops.as_slice(), at) {
+            ([op], Some(at)) => cx.revolve_turn(*op, at, angle),
+            _ => None,
+        };
+        let Some(dir) = dir else {
+            j.insert("error".into(), "a part revolve whose stored faces do not tell which way it turns".into());
+            return;
+        };
+        if let Some(o) = ax.as_object_mut() {
+            o.insert("direction".into(), json!([round9(dir[0]), round9(dir[1]), round9(dir[2])]));
+        }
+    }
+    j.insert("profiles".into(), Value::Null);
+    j.insert("profile_face".into(), pick);
+    j.insert("profile_from".into(), "a face of a body (its outline and holes)".into());
+    j.insert("axis".into(), ax);
 }
 
 /// A revolve's axis when it is the axis of a cylindrical face of a body: the selection
@@ -3063,7 +3132,8 @@ fn blocker(f: &Value) -> Option<String> {
             if has("error") {
                 return Some(text("error").unwrap_or("its layout is not recognised").to_string());
             }
-            if !f.get("profiles").is_some_and(Value::is_array) || !has("axis") || !has("angle") {
+            if !(f.get("profiles").is_some_and(Value::is_array) || has("profile_face")) || !has("axis") || !has("angle")
+            {
                 return Some("its profile, axis or angle is not decoded".into());
             }
             let op = text("operation").unwrap_or("");

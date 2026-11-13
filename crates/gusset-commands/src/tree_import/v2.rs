@@ -1200,7 +1200,7 @@ pub(super) fn sweep(g: &mut Gen, s: &Session, d: &SweepF) -> Result<(), String> 
 
 /// A path of model edges: each pick's edge (the nearest middle, within 0.01 mm), all on one body,
 /// as the document's `[edge(...), ...]`.
-fn edge_path(g: &mut Gen, s: &Session, picks: &[super::EdgePick]) -> Result<String, String> {
+pub(super) fn edge_path(g: &mut Gen, s: &Session, picks: &[super::EdgePick]) -> Result<String, String> {
     if picks.len() > MAX_PICKS {
         return Err("too many path edges".into());
     }
