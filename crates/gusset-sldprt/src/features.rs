@@ -2708,10 +2708,30 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut hole: Option<HoleState> = None;
     // Sketch nodes without entities take the configuration stream's sketch objects in order,
     // when there are as many of each.
+    // The end of a sketch's entities: its span, or, when that holds none, past the alignment
+    // groups written right after the sketch node (Arm Tab Large PolyCarb First's Sketch2: thirteen
+    // `moAlignGroup_c` nodes, then the sketch's entities).
+    let sketch_end = |ni: usize, n: &Node| -> usize {
+        let (_, b) = span(n);
+        if ENT_HDRS.iter().any(|p| find(rf, p, n.post.min(b), b).is_some()) {
+            return b;
+        }
+        let mut j = ni + 1;
+        while nodes.get(j).is_some_and(|m| m.cls.as_deref() == Some("moAlignGroup_c")) {
+            j += 1;
+        }
+        if j == ni + 1 {
+            return b;
+        }
+        let e = nodes.get(j).map_or(rf.len(), |m| m.start);
+        if ENT_HDRS.iter().any(|p| find(rf, p, n.post.min(e), e).is_some()) { e } else { b }
+    };
     let empty_sketches = nodes
         .iter()
-        .filter(|n| {
-            let (a, b) = span(n);
+        .enumerate()
+        .filter(|&(ni, n)| {
+            let (a, _) = span(n);
+            let b = sketch_end(ni, n);
             n.cls.as_deref() == Some("moProfileFeature_c")
                 && a < b
                 && ENT_HDRS.iter().all(|p| find(rf, p, n.post.min(b), b).is_none())
@@ -2753,11 +2773,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             continue;
         }
         if cls.as_deref() == Some("moProfileFeature_c") {
-            let h = ENT_HDRS.iter().filter_map(|p| find(rf, p, n.post, b)).min().unwrap_or(b);
-            let geo = match (h == b, from_config.as_mut()) {
+            let eb = sketch_end(ni, n);
+            let h = ENT_HDRS.iter().filter_map(|p| find(rf, p, n.post, eb)).min().unwrap_or(eb);
+            let geo = match (h == eb, from_config.as_mut()) {
                 // A sketch whose entities the configuration stream keeps.
                 (true, Some(it)) => it.next().and_then(|(body, end)| parse_sketch(c0, body, end)),
-                _ => h.checked_sub(14).and_then(|body| parse_sketch(rf, body, b)),
+                _ => h.checked_sub(14).and_then(|body| parse_sketch(rf, body, eb)),
             };
             let Some(geo) = geo else {
                 last_sketch = None;
@@ -2766,7 +2787,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 }
                 continue;
             };
-            let mut plane = find_plane(rf, a, b, uc)?;
+            let mut plane = find_plane(rf, a, eb, uc)?;
             if plane.is_none()
                 // The first sketch of a file: its plane object is written just before the node.
                 && let Some(j) = rfind(rf, b"moCompRefPlane_c", a.saturating_sub(400), a)

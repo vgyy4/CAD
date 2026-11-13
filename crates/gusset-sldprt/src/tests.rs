@@ -632,10 +632,16 @@ fn parameter(name: &str, value: f64) -> Vec<u8> {
 
 /// A 10 x 10 mm square sketch on the Front plane, extruded 5 mm (and `extra` nodes after).
 fn feature_stream(extra: &[u8]) -> Vec<u8> {
+    feature_stream_with(&[], extra)
+}
+
+/// [`feature_stream`] with `between` written after the sketch's plane, before its entities.
+fn feature_stream_with(between: &[u8], extra: &[u8]) -> Vec<u8> {
     let mut rf = vec![3, 0];
     rf.extend(feature_node("moProfileFeature_c", "Sketch1", 5));
     // The plane: a reference-plane component of plane feature 2 (Front), identity, t = 0.
     rf.extend(comp_plane(2, 0.0));
+    rf.extend(between);
     rf.extend([0u8; 16]);
     let corners = [(0.0, 0.0), (0.01, 0.0), (0.01, 0.01), (0.0, 0.01)];
     rf.extend(4u32.to_le_bytes());
@@ -714,6 +720,24 @@ fn a_sketch_and_an_extrude_become_a_tree() {
         features::feature_tree(&c, "part.sldprt", &Limits::default()).unwrap().unwrap()["features"],
         t["features"]
     );
+}
+
+#[test]
+fn a_sketch_reads_its_entities_past_its_alignment_groups() {
+    // Arm Tab Large PolyCarb First: the sketch node, its alignment groups, then its entities.
+    let mut groups = feature_node("moAlignGroup_c", "AlignGroup1", 9);
+    groups.extend([0u8; 16]);
+    groups.extend(feature_node("moAlignGroup_c", "AlignGroup2", 10));
+    groups.extend([0u8; 16]);
+    let t = history(&feature_stream_with(&groups, &[])).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap();
+    assert_eq!(f[0]["name"], "Sketch1", "{t}");
+    assert_eq!(f[0]["curves"].as_array().map(Vec::len), Some(4), "{t}");
+    assert_eq!(f[0]["plane"]["ref"], "Front");
+    assert_eq!(f[1]["sketch"], "Sketch1");
+    // Groups of a sketch that already holds its entities keep their own span.
+    let t2 = history(&feature_stream(&groups)).unwrap().unwrap();
+    assert_eq!(t2["features"].as_array().map(Vec::len), Some(2), "{t2}");
 }
 
 #[test]
