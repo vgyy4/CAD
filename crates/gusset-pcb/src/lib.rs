@@ -50,6 +50,7 @@ pub mod sexpr;
 pub mod shove;
 pub mod specctra;
 pub mod sync;
+pub mod text_edit;
 pub mod zones;
 
 pub use board::{Board, Limits};
@@ -70,5 +71,7 @@ mod tests_phase3;
 mod tests_route;
 #[cfg(test)]
 mod tests_sch;
+#[cfg(test)]
+mod tests_text;
 #[cfg(test)]
 mod tests_zone;

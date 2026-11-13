@@ -175,6 +175,11 @@ pub struct Text {
     /// Justification: horizontal -1 left, 0 centre, 1 right; vertical -1 top, 0 centre,
     /// 1 bottom (KiCad's default is centred both ways).
     pub justify: [i8; 2],
+    /// Position in the board's tree: the top-level node (a `gr_text`, or the footprint
+    /// holding the text) and, for footprint texts, the child's place in it (0: the node
+    /// itself).
+    pub node: usize,
+    pub sub: usize,
 }
 
 /// A text's height, angle, hidden and mirrored flags from its node.
@@ -519,7 +524,7 @@ impl Board {
             setup_mins: SetupMins::default(),
             notes: Vec::new(),
         };
-        let mut r = Reader { limits, board: &mut b };
+        let mut r = Reader { limits, board: &mut b, pos: (0, 0) };
         match head.as_str() {
             "kicad_pcb" => r.board_items(&tree)?,
             // A footprint file is one footprint at the origin.
@@ -730,6 +735,8 @@ impl Place {
 struct Reader<'a> {
     limits: &'a Limits,
     board: &'a mut Board,
+    /// Tree place (node, child) of the text being read.
+    pos: (usize, usize),
 }
 
 fn pt(n: Option<&Node>) -> Option<Pt> {
@@ -926,7 +933,10 @@ impl Reader<'_> {
                 Some("arc") => self.track(n, true, node)?,
                 Some("via") => self.via(n, node)?,
                 Some("zone") => self.zone(n, node)?,
-                Some(h) if h.starts_with("gr_") => self.graphic(n, None, &Place::ORIGIN)?,
+                Some(h) if h.starts_with("gr_") => {
+                    self.pos = (node, 0);
+                    self.graphic(n, None, &Place::ORIGIN)?;
+                }
                 _ => {}
             }
         }
@@ -1054,6 +1064,8 @@ impl Reader<'_> {
                     width,
                     thickness,
                     justify,
+                    node: self.pos.0,
+                    sub: self.pos.1,
                 });
                 return Ok(());
             }
@@ -1096,7 +1108,7 @@ impl Reader<'_> {
         let fp_paste = num(n, "solder_paste_margin");
         let fp_ratio = num(n, "solder_paste_ratio").or_else(|| num(n, "solder_paste_margin_ratio"));
         let fp_zone = zone_connect(n);
-        for c in n.args() {
+        for (sub, c) in n.args().iter().enumerate() {
             match c.head() {
                 Some("property") => {
                     match c.arg(0) {
@@ -1121,6 +1133,8 @@ impl Reader<'_> {
                             width,
                             thickness,
                             justify,
+                            node,
+                            sub: sub + 1,
                         });
                     }
                 }
@@ -1130,6 +1144,7 @@ impl Reader<'_> {
                         Some("value") => fp.value = text_arg(c, 1),
                         _ => {}
                     }
+                    self.pos = (node, sub + 1);
                     self.graphic(c, Some(index), &place)?;
                 }
                 Some("pad") => {
@@ -1150,7 +1165,10 @@ impl Reader<'_> {
                         fp.models.push(m);
                     }
                 }
-                Some(h) if h.starts_with("fp_") => self.graphic(c, Some(index), &place)?,
+                Some(h) if h.starts_with("fp_") => {
+                    self.pos = (node, sub + 1);
+                    self.graphic(c, Some(index), &place)?;
+                }
                 _ => {}
             }
         }

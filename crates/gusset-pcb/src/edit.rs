@@ -552,6 +552,11 @@ fn flip_node(n: &mut Node, depth: usize) {
         }
         // 3D models follow the side on their own.
         Some("model") => return,
+        // Texts read from below on the other side.
+        Some("effects") => {
+            crate::text_edit::toggle_mirror(n);
+            return;
+        }
         _ => {}
     }
     if let Some(items) = n.items_mut() {
