@@ -1368,7 +1368,19 @@ impl Ctx<'_> {
             return None;
         }
         if let Some(caps) = self.thin_caps.get(&fid) {
-            return caps.face(g, ops.len() > 1);
+            let on_chain = ops.len() > 1;
+            // Offsets of faces read so far that moved this face (under either of its names).
+            let role = caps.role(g, on_chain);
+            let shift: f64 = self
+                .moved
+                .iter()
+                .filter(|(mg, mops, _)| {
+                    let by = mops.first().and_then(|o| u64::try_from(*o).ok()).and_then(|o| self.opmap.get(&o));
+                    role.is_some() && by == Some(&fid) && caps.role(mg, mops.len() > 1) == role
+                })
+                .map(|(_, _, dist)| *dist)
+                .sum();
+            return caps.face(g, on_chain, shift);
         }
         let eg = self.ext_geom(fid)?;
         let pl = eg.pl;

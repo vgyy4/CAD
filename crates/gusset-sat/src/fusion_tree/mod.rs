@@ -75,6 +75,8 @@ struct Ctx<'a> {
     blend_ops: Vec<i32>,
     /// The end caps of each thin extrude read so far (section 33).
     thin_caps: HashMap<u64, thin::Caps>,
+    /// The faces offsets of faces read so far moved, by name, and how far (cm, out of the part).
+    moved: Vec<(String, Vec<i32>, f64)>,
 }
 
 impl<'a> Ctx<'a> {
@@ -95,6 +97,7 @@ impl<'a> Ctx<'a> {
             named_faces: None,
             blend_ops: Vec::new(),
             thin_caps: HashMap::new(),
+            moved: Vec::new(),
         }
     }
 }

@@ -6,7 +6,7 @@
 
 use super::Ctx;
 use super::feature::{extrude_raw, pget};
-use super::geom::{V3, dot, mm, round6, world};
+use super::geom::{V3, add, cross, dot, mm, mul, round6, sub, unit, world};
 use super::naming::FaceG;
 use super::sketch;
 use super::stream::{param, ref_ids, refs_at};
@@ -24,6 +24,13 @@ const HOLDER: &str = "D91D429C";
 /// curves). The extrude is two operations; of a curve's two sides the one on the chain itself
 /// carries both (5981: its edges lie on the chain's points), the other only the first. The sides
 /// along arcs are not modelled.
+///
+/// A wall about the middle of lines that are chains of their own (6126's `Extrude5 (2)`: a "-"
+/// and a "+", [`LineWall`]) is named per selected line k instead: `12 + 7k` both sides (the
+/// left one, about the sketch normal and the line's run, also carries the second operation),
+/// `+3` the cap on the sketch plane, `+5` the floor, `+4` and `+6` the ends at the line's start
+/// and end. The first operation's `+1` and `+2` are the same two ends: a later offset selects
+/// the end `+4`, a blend's edge runs between `+1` and a side and ends on `+4`'s plane.
 pub(super) struct Caps {
     n: usize,
     start: (V3, V3),
@@ -32,10 +39,100 @@ pub(super) struct Caps {
     sides: Vec<Option<(V3, V3)>>,
     /// The offset (cm, along the left normal) of the side off the chain.
     off: f64,
+    /// The walls about separate lines (empty for a wall along one chain).
+    lines: Vec<LineWall>,
+}
+
+/// A wall about the middle of one line (cm): the line's start on the sketch plane, its unit run
+/// and left normal, its length, half the wall, the sketch normal and the depth along it (signed),
+/// and whether the wall was cut away (its inside is then empty).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LineWall {
+    at: V3,
+    dir: V3,
+    left: V3,
+    len: f64,
+    half: f64,
+    z: V3,
+    depth: f64,
+    cut: bool,
+}
+
+/// A face of a wall about a line: its left or right side, its start or end, its cap on the
+/// sketch plane or its floor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Role {
+    Left,
+    Right,
+    Start,
+    End,
+    Cap,
+    Floor,
+}
+
+impl LineWall {
+    /// The wall's middle.
+    fn centre(&self) -> V3 {
+        add(add(self.at, mul(self.dir, self.len / 2.0)), mul(self.z, self.depth / 2.0))
+    }
+
+    /// The face's normal and its middle (a point of its plane).
+    fn plane(&self, role: Role) -> (V3, V3) {
+        let (n, off) = match role {
+            Role::Left => (self.left, mul(self.left, self.half)),
+            Role::Right => (self.left, mul(self.left, -self.half)),
+            Role::Start => (self.dir, mul(self.dir, -self.len / 2.0)),
+            Role::End => (self.dir, mul(self.dir, self.len / 2.0)),
+            Role::Cap => (self.z, mul(self.z, -self.depth / 2.0)),
+            Role::Floor => (self.z, mul(self.z, self.depth / 2.0)),
+        };
+        (n, add(self.centre(), off))
+    }
+
+    /// The face's unit normal out of the part: into the wall where it was cut away, out of it
+    /// where it was added.
+    fn outward(&self, role: Role) -> Option<V3> {
+        let (n, p) = self.plane(role);
+        let s = dot(n, sub(self.centre(), p));
+        if s.abs() < 1e-12 {
+            return None;
+        }
+        let into = if s > 0.0 { n } else { mul(n, -1.0) };
+        Some(if self.cut { into } else { mul(into, -1.0) })
+    }
 }
 
 impl Caps {
-    pub(super) fn face(&self, g: &str, on_chain: bool) -> Option<FaceG> {
+    /// The line and the face of a wall about separate lines that the generator names.
+    pub(super) fn role(&self, g: &str, on_chain: bool) -> Option<(usize, Role)> {
+        let j = g.parse::<usize>().ok()?.checked_sub(12)?;
+        let (k, r) = (j / 7, j % 7);
+        if k >= self.lines.len() {
+            return None;
+        }
+        let role = match r {
+            0 if on_chain => Role::Left,
+            0 => Role::Right,
+            1 | 4 => Role::Start,
+            2 | 6 => Role::End,
+            3 => Role::Cap,
+            _ => Role::Floor,
+        };
+        Some((k, role))
+    }
+
+    /// The face `g` names (`on_chain`: its name carries the extrude's second operation), moved
+    /// `shift` cm out of the part where later offsets of faces moved it (walls about lines only).
+    pub(super) fn face(&self, g: &str, on_chain: bool, shift: f64) -> Option<FaceG> {
+        if !self.lines.is_empty() {
+            let (k, role) = self.role(g, on_chain)?;
+            let w = self.lines.get(k)?;
+            let (n, mut p) = w.plane(role);
+            if shift != 0.0 {
+                p = add(p, mul(w.outward(role)?, shift));
+            }
+            return Some(FaceG::Plane { n, p, cap: true, mid: p });
+        }
         let k = g.parse::<usize>().ok()?.checked_sub(10)?;
         let (p, n) = if k < self.n {
             let (p, n) = (*self.sides.get(k)?)?;
@@ -494,7 +591,40 @@ pub(super) fn thin_extrude(
             })
             .collect();
         let off = if lo != 0.0 { lo } else { hi } / 10.0;
-        cx.thin_caps.insert(fid, Caps { n: ids.len(), start: cap(s0, u0), end: cap(e1, u1), sides, off });
+        cx.thin_caps
+            .insert(fid, Caps { n: ids.len(), start: cap(s0, u0), end: cap(e1, u1), sides, off, lines: Vec::new() });
+    }
+    // A wall about the middle of lines that are chains of their own: named per line.
+    if let (Some(pl), 1, false) = (plane, loc, more.is_empty()) {
+        let sel = pieces_of(&sketch_feat, &ids).unwrap_or_default();
+        let depth = j.get("distance").and_then(Value::as_f64).map(|v| v / 10.0);
+        let cut = j.get("operation").and_then(Value::as_str) == Some("cut");
+        let z = unit(pl.z);
+        let lines: Option<Vec<LineWall>> = sel
+            .iter()
+            .map(|p| {
+                let Piece::Line { a, b } = *p else { return None };
+                let at = world(&pl, [a[0] / 10.0, a[1] / 10.0], 0.0);
+                let to = world(&pl, [b[0] / 10.0, b[1] / 10.0], 0.0);
+                let len = super::geom::norm(sub(to, at));
+                let dir = unit(sub(to, at))?;
+                let z = z?;
+                Some(LineWall { at, dir, left: cross(z, dir), len, half: w / 20.0, z, depth: depth?, cut })
+            })
+            .collect();
+        if let Some(lines) = lines.filter(|l| l.len() == all.len()) {
+            cx.thin_caps.insert(
+                fid,
+                Caps {
+                    n: 0,
+                    start: ([0.0; 3], [0.0; 3]),
+                    end: ([0.0; 3], [0.0; 3]),
+                    sides: Vec::new(),
+                    off: 0.0,
+                    lines,
+                },
+            );
+        }
     }
     let copy = format!("{nm} wall");
     let wall_sketch = |name: &str, points: Vec<Value>, curves: Vec<Value>| {
@@ -591,6 +721,50 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert!(out[0].get(THIN_MORE).is_none());
         assert_eq!((&out[1]["name"], &out[1]["distance"]), (&json!("E5 part 2"), &json!(-0.6)));
+    }
+
+    #[test]
+    fn a_wall_about_separate_lines_names_its_faces_per_line() {
+        // 6126's Extrude5 (2) (cm): a 1 mm wall cut 0.6 mm down from z = 1.56 about the line
+        // x = 0.4, y -0.53 -> -0.15 (the second selected line, k = 1: faces 19 to 25).
+        let at = [0.4, -0.53, 1.56];
+        let line = |at: V3| LineWall {
+            at,
+            dir: [0.0, 1.0, 0.0],
+            left: [-1.0, 0.0, 0.0],
+            len: 0.38,
+            half: 0.05,
+            z: [0.0, 0.0, 1.0],
+            depth: -0.06,
+            cut: true,
+        };
+        let caps = Caps {
+            n: 0,
+            start: ([0.0; 3], [0.0; 3]),
+            end: ([0.0; 3], [0.0; 3]),
+            sides: Vec::new(),
+            off: 0.0,
+            lines: vec![line([0.4, 0.15, 1.56]), line(at)],
+        };
+        let plane = |g: &str, on: bool, shift: f64| match caps.face(g, on, shift).unwrap() {
+            FaceG::Plane { n, p, .. } => (n, p),
+            _ => unreachable!(),
+        };
+        let close = |a: V3, b: V3| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-12);
+        // The left side (x = 0.35) carries both operations; the right one (x = 0.45) the first.
+        assert!((plane("19", true, 0.0).1[0] - 0.35).abs() < 1e-12);
+        assert!((plane("19", false, 0.0).1[0] - 0.45).abs() < 1e-12);
+        // Cap on the sketch plane, floor, and both names of each end.
+        assert!((plane("22", false, 0.0).1[2] - 1.56).abs() < 1e-12);
+        assert!((plane("24", false, 0.0).1[2] - 1.5).abs() < 1e-12);
+        assert!(close(plane("20", false, 0.0).1, plane("23", false, 0.0).1));
+        assert!(close(plane("21", false, 0.0).1, plane("25", false, 0.0).1));
+        assert!((plane("25", false, 0.0).1[1] + 0.15).abs() < 1e-12);
+        assert_eq!(caps.role("21", false), caps.role("25", false));
+        // OffsetFaces1 (-0.25 mm) moves the end into the part: the slot grows to y = -0.125.
+        assert!((plane("21", false, -0.025).1[1] + 0.125).abs() < 1e-12);
+        assert!((plane("20", false, -0.025).1[1] + 0.555).abs() < 1e-12);
+        assert!(caps.face("33", false, 0.0).is_none());
     }
 
     #[test]

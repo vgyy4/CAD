@@ -2702,6 +2702,7 @@ fn offset_faces_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, clas
         return fail("the offset distance is zero");
     }
     let mut faces: Vec<Value> = Vec::new();
+    let mut moved = Vec::new();
     for rid in cx.input_recipes(fid) {
         let (kind, names) = naming::recipe(d, rid);
         let (Some(naming::RecipeKind::Face | naming::RecipeKind::BoundedFace), Some(names)) = (kind, names) else {
@@ -2710,6 +2711,7 @@ fn offset_faces_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, clas
         let Some((g, ops)) = names.first().and_then(|f| f.first()) else {
             return fail("an offset face has no name");
         };
+        moved.push((g.clone(), ops.clone(), *distance));
         match cx.face_with_middle(g, ops) {
             // A side's middle; a cap's point is its plane's (the importer takes the nearest face
             // of that plane).
@@ -2725,6 +2727,9 @@ fn offset_faces_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, clas
     if faces.is_empty() {
         return fail("no offset face was found");
     }
+    // Later features see the faces where the offset left them (6126's `Fillet2 (2)` rounds the
+    // ends of slots `OffsetFaces1` lengthened; their names stay the extrude's).
+    cx.moved.extend(moved);
     json!({"type": "offset_face", "name": name, "source_id": fid, "faces": faces, "distance": mm(*distance)})
 }
 
