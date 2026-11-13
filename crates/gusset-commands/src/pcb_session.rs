@@ -80,6 +80,10 @@ pub fn board_of(s: &Session, p: &gusset_doc::PcbBoard) -> Result<Arc<OpenBoard>,
     Ok(open)
 }
 
+/// The key of the project blob holding the board's `.kicad_dru` text (removed again when the
+/// project file is written out, where the rules go to their own file).
+pub const CUSTOM_RULES_KEY: &str = "gusset_custom_rules";
+
 /// A length from the project file (mm), when sane.
 fn mm(v: Option<&Value>) -> Option<f64> {
     v?.as_f64().filter(|x| x.is_finite() && (0.0..100.0).contains(x))
@@ -114,6 +118,12 @@ pub fn apply_project(rules: &mut Rules, pro: &Value) {
                 track_width: mm(c.get("track_width")),
                 via_diameter: mm(c.get("via_diameter")),
                 via_drill: mm(c.get("via_drill")),
+                // Gusset's own keys (ADR 0054); KiCad's class values are defaults, not limits.
+                min_track_width: mm(c.get("min_track_width")),
+                min_via_diameter: mm(c.get("min_via_diameter")),
+                min_via_drill: mm(c.get("min_via_drill")),
+                diff_pair_width: mm(c.get("diff_pair_width")),
+                diff_pair_gap: mm(c.get("diff_pair_gap")),
                 nets,
             };
             rules.classes.retain(|x| x.name != class.name);
@@ -137,6 +147,10 @@ pub fn apply_project(rules: &mut Rules, pro: &Value) {
         }
     }
     rules.apply_default_class();
+    // The custom rules (`.kicad_dru`) kept in the project blob by `pcb.open` (ADR 0054).
+    if let Some(t) = pro.get(CUSTOM_RULES_KEY).and_then(Value::as_str) {
+        rules.custom = gusset_pcb::dru::CustomRules::parse(t);
+    }
     let r = pro.pointer("/board/design_settings/rules").unwrap_or(&NULL);
     if let Some(v) = mm(r.get("min_track_width")) {
         rules.min_track_width = v;

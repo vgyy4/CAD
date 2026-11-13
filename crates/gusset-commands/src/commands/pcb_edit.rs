@@ -137,6 +137,27 @@ impl Command for PcbOpen {
             .and_then(|full| crate::import::open_regular(&full, &pro_path, MAX_PROJECT_BYTES).ok())
             .and_then(|f| crate::import::read_capped(f, MAX_PROJECT_BYTES, &AtomicBool::new(false)).ok())
             .filter(|bytes| serde_json::from_slice::<Value>(bytes).is_ok_and(|v| v.is_object()));
+        // The custom rules beside it (`.kicad_dru`) ride in the project blob (ADR 0054).
+        let dru_path = format!("{}.kicad_dru", self.path.get(..self.path.len() - ".kicad_pcb".len()).unwrap_or(""));
+        let dru = crate::paths::read_target(s.project_dir.as_deref(), &dru_path, &ctx.actor)
+            .ok()
+            .filter(|p| p.is_file())
+            .and_then(|full| crate::import::open_regular(&full, &dru_path, MAX_PROJECT_BYTES).ok())
+            .and_then(|f| crate::import::read_capped(f, MAX_PROJECT_BYTES, &AtomicBool::new(false)).ok())
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        let project = match (project, dru) {
+            (p, Some(t)) => {
+                let mut v = p
+                    .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                    .filter(Value::is_object)
+                    .unwrap_or_else(|| json!({ "net_settings": { "classes": [{ "name": "Default" }] } }));
+                if let Some(m) = v.as_object_mut() {
+                    m.insert(pcb_session::CUSTOM_RULES_KEY.into(), json!(t));
+                }
+                serde_json::to_vec(&v).ok()
+            }
+            (p, None) => p,
+        };
         let project = project.map(|bytes| s.put_blob(&bytes).to_hex());
         let hash = s.put_blob(text.as_bytes()).to_hex();
         let file = file_name(&self.path);
@@ -215,9 +236,21 @@ impl Command for PcbSave {
         // The project file (net classes, rules) beside it, when the board has one.
         if let Some(pro) = open.project_hash.as_ref().and_then(|h| s.blobs().blob(h)) {
             let stem = name.get(..name.len() - ".kicad_pcb".len()).unwrap_or(name);
-            let text = String::from_utf8_lossy(&pro).into_owned();
+            let mut text = String::from_utf8_lossy(&pro).into_owned();
+            let mut dru = None;
+            if let Ok(mut v) = serde_json::from_str::<Value>(&text)
+                && let Some(m) = v.as_object_mut()
+                && let Some(t) = m.remove(pcb_session::CUSTOM_RULES_KEY)
+            {
+                dru = t.as_str().map(str::to_string);
+                text = serde_json::to_string_pretty(&v).unwrap_or(text);
+            }
             let files = [(format!("{stem}.kicad_pro"), text)];
             written.extend(write_outputs(s, ctx, folder, self.overwrite, "kicad_pro", &files)?);
+            if let Some(t) = dru {
+                let files = [(format!("{stem}.kicad_dru"), t)];
+                written.extend(write_outputs(s, ctx, folder, self.overwrite, "kicad_dru", &files)?);
+            }
         }
         Ok(json!({ "written": written }))
     }
@@ -586,6 +619,7 @@ impl Command for PcbDrc {
                     "message_user_text": v.message,
                     "at": [round4(v.at[0]), round4(v.at[1])],
                     "layer_user_text": v.layer,
+                    "rule_user_text": v.rule,
                 })
             })
             .collect();
@@ -605,7 +639,9 @@ impl Command for PcbDrc {
                 "min_via_diameter": rules.min_via_diameter,
                 "silk_clearance": rules.silk_clearance,
                 "net_classes": rules.classes.len(),
+                "custom_rules": rules.custom.rules.len(),
             },
+            "rule_warnings_user_text": rules.custom.warnings,
         }))
     }
 }

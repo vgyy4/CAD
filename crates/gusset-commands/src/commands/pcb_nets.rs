@@ -172,6 +172,18 @@ pub struct PcbNetClass {
     pub via_diameter: Option<f64>,
     #[serde(default)]
     pub via_drill: Option<f64>,
+    /// DRC limits of the class's nets.
+    #[serde(default)]
+    pub min_track_width: Option<f64>,
+    #[serde(default)]
+    pub min_via_diameter: Option<f64>,
+    #[serde(default)]
+    pub min_via_drill: Option<f64>,
+    /// Kept for routing later.
+    #[serde(default)]
+    pub diff_pair_width: Option<f64>,
+    #[serde(default)]
+    pub diff_pair_gap: Option<f64>,
     #[serde(default)]
     pub nets: Vec<String>,
     /// Net name patterns (* and ?).
@@ -197,6 +209,11 @@ impl Command for PcbNetClass {
             ("track_width", self.track_width),
             ("via_diameter", self.via_diameter),
             ("via_drill", self.via_drill),
+            ("min_track_width", self.min_track_width),
+            ("min_via_diameter", self.min_via_diameter),
+            ("min_via_drill", self.min_via_drill),
+            ("diff_pair_width", self.diff_pair_width),
+            ("diff_pair_gap", self.diff_pair_gap),
         ];
         if sizes.iter().any(|(_, v)| v.is_some_and(|v| !(v.is_finite() && v > 0.0 && v < 100.0))) {
             return Err(CommandError::args("sizes are above 0 and below 100 mm"));

@@ -222,3 +222,10 @@ path = "fuzz_targets/pcb_nets.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "pcb_dru"
+path = "fuzz_targets/pcb_dru.rs"
+test = false
+doc = false
+bench = false
