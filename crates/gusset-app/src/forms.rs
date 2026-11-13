@@ -274,7 +274,9 @@ impl Form {
         for f in &self.fields {
             let t = f.value.trim();
             if t.is_empty() && f.kind != FieldKind::Bool {
-                if f.required && f.kind != FieldKind::StringList {
+                // An extrude or sweep takes a face instead of a sketch.
+                let by_face = f.name == "sketch" && self.value("face").is_some_and(|v| !v.trim().is_empty());
+                if f.required && f.kind != FieldKind::StringList && !by_face {
                     return Err(format!("{} is required", f.label));
                 }
                 continue;

@@ -2153,6 +2153,7 @@ fn feature_name(doc: &Document, name: Option<String>, base: &str) -> Result<Stri
 #[serde(deny_unknown_fields)]
 pub struct Extrude {
     #[serde(default)]
+    #[schemars(extend("x-essential" = true))]
     pub sketch: String,
     /// Region ids (query_sketch) or an entity bounding one; empty = all, holes left open.
     #[serde(default)]

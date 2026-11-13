@@ -12,6 +12,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
 pub struct Sweep {
     /// Profile sketch (omit when `face` is given).
     #[serde(default)]
+    #[schemars(extend("x-essential" = true))]
     pub sketch: String,
     /// Region ids; empty = all, holes left open.
     #[serde(default)]

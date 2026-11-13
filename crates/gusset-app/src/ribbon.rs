@@ -77,6 +77,7 @@ const SOLID: &[Group] = &[
             d("feature.extrude", "Extrude"),
             d("feature.revolve", "Revolve"),
             d("feature.hole", "Hole"),
+            d("feature.thread", "Face thread"),
             d("feature.sweep", "Sweep"),
             d("feature.loft", "Loft"),
             d("generate.gear", "Gear"),
@@ -179,12 +180,13 @@ const RENDER: &[Group] = &[
 const SHEET: &[Group] = &[
     Group {
         key: "ribbon.create",
-        large: 4,
+        large: 5,
         tools: &[
             d("sketch.create", "Sketch"),
             d("feature.tab", "Tab"),
             d("feature.contour_flange", "Contour"),
             d("feature.edge_flange", "Flange"),
+            d("feature.bend", "Bend"),
         ],
     },
     Group { key: "ribbon.modify", large: 2, tools: &[d("feature.hole", "Hole"), d("feature.extrude", "Cut")] },

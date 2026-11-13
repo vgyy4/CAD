@@ -277,6 +277,10 @@ pub enum Tool {
     Zone,
     /// A new empty document: a page with a plus.
     NewFile,
+    /// A thread on a cylinder: a shaft with slanted turns.
+    Thread,
+    /// A sheet bent along a line.
+    Bend,
 }
 
 impl Tool {
@@ -361,6 +365,8 @@ impl Tool {
         Tool::Via,
         Tool::Zone,
         Tool::NewFile,
+        Tool::Thread,
+        Tool::Bend,
     ];
 }
 
@@ -373,6 +379,8 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "feature.sweep" => Tool::Sweep,
         "feature.loft" => Tool::Loft,
         "feature.hole" => Tool::Hole,
+        "feature.thread" => Tool::Thread,
+        "feature.bend" => Tool::Bend,
         "generate.gear" | "generate.rack" | "generate.worm" => Tool::Gear,
         "generate.spring" | "generate.thread" => Tool::Sweep,
         "generate.nut" => Tool::Hole,
@@ -464,7 +472,9 @@ pub fn tool_for_keyword(keyword: &str) -> Tool {
         "import" => Tool::Import,
         "shell" | "thicken" => Tool::Shell,
         "surface_extrude" | "tab" => Tool::Extrude,
-        "contour_flange" | "edge_flange" | "bend" => Tool::Shell,
+        "contour_flange" | "edge_flange" => Tool::Shell,
+        "bend" => Tool::Bend,
+        "thread" => Tool::Thread,
         "patch" => Tool::Rect,
         "stitch" => Tool::Combine,
         "draft" => Tool::Draft,
@@ -1085,6 +1095,20 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
             pen.line(&[(14.0, 3.0), (14.0, 8.0), (19.0, 8.0)], ink);
             pen.line(&[(12.0, 12.0), (12.0, 18.0)], a);
             pen.line(&[(9.0, 15.0), (15.0, 15.0)], a);
+        }
+        Tool::Thread => {
+            // A shaft seen from the side, with slanted turns across it.
+            pen.poly(&[(7.0, 3.0), (17.0, 3.0), (17.0, 21.0), (7.0, 21.0)], pen.fill, ink);
+            for y in [7.0f32, 11.0, 15.0, 19.0] {
+                pen.line(&[(7.0, y + 2.0), (17.0, y - 1.0)], a);
+            }
+        }
+        Tool::Bend => {
+            // A sheet folded up along a line: flat part, bend, raised flange.
+            pen.poly(&[(3.0, 16.0), (13.0, 16.0), (13.0, 20.0), (3.0, 20.0)], pen.fill, ink);
+            pen.poly(&[(13.0, 16.0), (17.0, 16.0), (21.0, 8.0), (17.0, 8.0)], pen.fill, ink);
+            pen.line(&[(13.0, 16.0), (13.0, 20.0)], a);
+            pen.arc(13.0, 16.0, 9.0, 0.0, PI * 0.30, a);
         }
         Tool::Zone => {
             pen.poly(&[(3.0, 5.0), (21.0, 5.0), (21.0, 19.0), (3.0, 19.0)], pen.fill, ink);

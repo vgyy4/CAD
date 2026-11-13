@@ -1326,6 +1326,31 @@ impl App {
             }
             None => {}
         }
+        // A picked body face is a face-taking command's `face` (hole, thread) or the profile of
+        // an extrude or sweep, which then has no sketch (unless one is being edited).
+        let body_face = self.selection.iter().rev().find_map(|h| match h {
+            Hit::Face { name, .. } => Some(name.as_str()),
+            _ => None,
+        });
+        if let Some(f) = body_face
+            && form.fields.iter().any(|x| x.name == "face")
+        {
+            let profile = matches!(form.command, "feature.extrude" | "feature.sweep");
+            if !profile || self.active_sketch.is_none() {
+                form.set("face", f);
+                if profile {
+                    form.set("sketch", "");
+                    form.set("regions", "");
+                }
+            }
+        }
+        // Bend: the picked sketch line is its bend line.
+        if form.command == "feature.bend"
+            && let Some(Hit::Sketch { sketch, id }) =
+                self.selection.iter().rev().find(|h| matches!(h, Hit::Sketch { .. }))
+        {
+            form.set("line", &format!("{sketch}.{id}"));
+        }
         // Measure: the first two picked faces or edges.
         if form.command == "query.measure" {
             let picks: Vec<String> = self

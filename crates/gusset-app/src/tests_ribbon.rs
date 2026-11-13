@@ -1088,3 +1088,39 @@ fn the_results_panel_goes_out_of_date_when_the_model_changes() {
     assert!(h.state().results.as_ref().is_some_and(|r| !r.stale));
     assert!(h.state().toolpath.is_some());
 }
+
+#[test]
+fn thread_bend_and_face_profile_forms_take_their_picks() {
+    use crate::viewport::Hit;
+    let mut a = with_body();
+    let body = a.evaluation().and_then(|e| e.bodies.first().cloned()).expect("body");
+    let face = body.names.faces.first().map(ToString::to_string).expect("face");
+    a.selection = vec![Hit::Face { body: body.name.clone(), index: 0, name: face.clone() }];
+    // Thread: the picked face is its face.
+    a.start_command("feature.thread");
+    assert_eq!(a.form.as_ref().and_then(|f| f.value("face")), Some(face.as_str()));
+    a.form = None;
+    // Extrude: a picked face replaces the sketch as the profile.
+    a.start_command("feature.extrude");
+    let f = a.form.as_ref().expect("form");
+    assert_eq!((f.value("face"), f.value("sketch")), (Some(face.as_str()), Some("")));
+    a.form = None;
+    // Bend: a picked sketch line is the bend line.
+    a.selection = vec![Hit::Sketch { sketch: "Sketch1".into(), id: "l2".into() }];
+    a.start_command("feature.bend");
+    assert_eq!(a.form.as_ref().and_then(|f| f.value("line")), Some("Sketch1.l2"));
+}
+
+#[test]
+fn the_ribbon_offers_thread_and_bend() {
+    let mut h = harness(app());
+    h.run();
+    h.get_by_label("SHEET METAL").click();
+    h.run();
+    h.get_by_label(title("feature.bend")).click();
+    h.run();
+    assert_eq!(form_command(&h), Some("feature.bend"));
+    assert!(gusset_commands::find("feature.thread").is_some());
+    assert!(crate::icons::tool_for_command("feature.thread").is_some());
+    assert!(crate::icons::tool_for_command("feature.bend").is_some());
+}

@@ -541,7 +541,7 @@ pub struct Thread {
 
 impl Command for Thread {
     const ID: &'static str = "feature.thread";
-    const TITLE: &'static str = "Thread";
+    const TITLE: &'static str = "Face thread";
     const DESCRIPTION: &'static str =
         "Thread a cylindrical face: cosmetic by default, or modeled (helical groove cut; OCCT only).";
     const CATEGORY: Category = Category::Solid;
