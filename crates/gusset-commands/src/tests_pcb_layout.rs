@@ -102,7 +102,8 @@ fn filling_on_edit_is_one_undo_step() {
     let b = open(&mut s);
     assert!(gusset_pcb::drc::check(&b.board, &b.rules, 50).iter().all(|v| !v.message.contains("zone")));
     // A track on F.Cu touches no B.Cu zone.
-    let r = run(&mut s, &u(6), "pcb.add_track", json!({"start": [10, 5], "end": [20, 5], "layer": "F.Cu", "net": "SIG"}));
+    let r =
+        run(&mut s, &u(6), "pcb.add_track", json!({"start": [10, 5], "end": [20, 5], "layer": "F.Cu", "net": "SIG"}));
     assert!(r.get("refilled_zones").is_none(), "{r}");
     run(&mut s, &u(7), "history.undo", json!({}));
     // One undo takes the track and its refill together.
@@ -111,6 +112,46 @@ fn filling_on_edit_is_one_undo_step() {
     assert_eq!(fill_area(&mut s), whole);
     run(&mut s, &u(9), "history.redo", json!({}));
     assert_eq!(fill_area(&mut s), cut);
+}
+
+#[test]
+fn zone_outlines_are_edited_in_one_undo_step() {
+    let mut s = layout_session();
+    run(&mut s, &u(1), "pcb.open", json!({"path": "layout.kicad_pcb"}));
+    run(&mut s, &u(2), "pcb.fill_zones", json!({}));
+    let whole = fill_area(&mut s);
+    // Two outlines: the left part (with the GND via) and a separate right part, which
+    // touches no GND copper and goes as an island. Filled at once.
+    let two = json!([[[1, 1], [10, 1], [10, 19], [1, 19]], [[20, 1], [29, 1], [29, 19], [20, 19]]]);
+    let r = run(&mut s, &u(3), "pcb.zone_outline", json!({"zone": 0, "outlines": two}));
+    let want = 9.0 * 18.0;
+    assert!((r["filled_mm2"].as_f64().unwrap() - want).abs() < 0.5, "{r}");
+    let b = open(&mut s);
+    assert_eq!(b.board.zones[0].more_outlines.len(), 1);
+    assert_eq!(b.board.zones[0].fills.len(), 1, "the island of the second outline is gone");
+    assert!(gusset_pcb::drc::check(&b.board, &b.rules, 50).iter().all(|v| !v.message.contains("zone")));
+    // Undone in one step: the old outline and fill are back.
+    run(&mut s, &u(4), "history.undo", json!({}));
+    let b = open(&mut s);
+    assert!(b.board.zones[0].more_outlines.is_empty());
+    assert_eq!(fill_area(&mut s), whole);
+    // Bad input is refused and changes nothing.
+    let e = execute(&mut s, &u(5), "pcb.zone_outline", json!({"zone": 4, "outlines": [[[0, 0], [1, 0], [1, 1]]]}));
+    assert_eq!(e.unwrap_err().code, "not_found");
+    let e = execute(&mut s, &u(6), "pcb.zone_outline", json!({"zone": 0, "outlines": [[[0, 0], [1, 0]]]}));
+    assert_eq!(e.unwrap_err().code, "invalid_args");
+    let e = execute(&mut s, &u(7), "pcb.zone_outline", json!({"zone": 0, "outlines": []}));
+    assert_eq!(e.unwrap_err().code, "invalid_args");
+    assert_eq!(fill_area(&mut s), whole);
+    // A zone added over two outlines.
+    let r = run(
+        &mut s,
+        &u(8),
+        "pcb.add_zone",
+        json!({"outline": [[2, 2], [8, 2], [8, 8], [2, 8]], "more_outlines": [[[12, 2], [18, 2], [18, 8], [12, 8]]], "layers": ["F.Cu"], "net": "GND"}),
+    );
+    assert_eq!(r["zone"], 1, "{r}");
+    assert_eq!(open(&mut s).board.zones[1].more_outlines.len(), 1);
 }
 
 #[test]

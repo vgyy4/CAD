@@ -49,7 +49,7 @@ pub struct PcbFillZones {
 impl Command for PcbFillZones {
     const ID: &'static str = "pcb.fill_zones";
     const TITLE: &'static str = "Fill zones";
-    const DESCRIPTION: &'static str = "Pour the open board's copper zones: clearances, thermals, minimum width, islands removed; pads left with too few thermal spokes are listed.";
+    const DESCRIPTION: &'static str = "Pour the open board's copper zones: clearances, thermals, minimum width, islands removed; lists starved thermal pads.";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

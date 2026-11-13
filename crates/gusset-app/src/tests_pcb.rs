@@ -498,3 +498,93 @@ fn texts_are_picked_and_added_through_the_registry() {
     assert_eq!(h.state().snapshot.pcb.as_ref().unwrap().board.texts[0].text, "REV");
     h.run();
 }
+
+#[test]
+fn zone_outlines_are_edited_by_corner_through_the_registry() {
+    use crate::pcb_zone_edit as ze;
+    let sq = vec![vec![[2.0, 2.0], [12.0, 2.0], [12.0, 12.0], [2.0, 12.0]]];
+    // Hits: a corner, an edge's middle handle, and the picked zone.
+    assert_eq!(ze::corner_at(&sq, [12.05, 2.05], 0.2), Some((0, 1)));
+    assert_eq!(ze::corner_at(&sq, [7.0, 7.0], 0.2), None);
+    assert_eq!(ze::edge_mid(&sq, (0, 3)), Some([2.0, 7.0]));
+    assert_eq!(ze::edge_at(&sq, [7.1, 1.9], 0.3), Some((0, 0)));
+    assert_eq!(ze::edge_at(&sq, [2.1, 2.1], 0.3), None, "a corner is not a middle");
+    // Move, insert, delete (always at least three corners).
+    let moved = ze::move_corner(&sq, (0, 2), [14.0003, 13.0]).unwrap();
+    assert_eq!(moved[0][2], [14.0, 13.0]);
+    assert!(ze::move_corner(&sq, (0, 9), [0.0, 0.0]).is_none());
+    let (ins, new) = ze::insert_corner(&sq, (0, 0)).unwrap();
+    assert_eq!((ins[0].len(), new, ins[0][1]), (5, (0, 1), [7.0, 2.0]));
+    let del = ze::delete_corner(&ins, new).unwrap();
+    assert_eq!(del, sq);
+    assert!(ze::delete_corner(&sq, (0, 1)).is_some_and(|o| o[0].len() == 3));
+    assert!(
+        ze::delete_corner(&[vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]], (0, 0)).is_none(),
+        "the last triangle stays"
+    );
+    let two = vec![sq[0].clone(), vec![[20.0, 2.0], [25.0, 2.0], [25.0, 5.0]]];
+    assert_eq!(ze::delete_corner(&two, (1, 0)), Some(vec![sq[0].clone()]), "a spare triangle goes whole");
+
+    // Through the app: a zone, then each edit is one undo step with its refill.
+    let mut h = harness(app());
+    h.run();
+    h.state_mut().ribbon_action(crate::ribbon::Action::PcbTab);
+    h.state_mut().run("pcb.new", json!({"width": "40 mm", "height": "30 mm"})).unwrap();
+    h.state_mut().wait_idle();
+    h.state_mut()
+        .run("pcb.add_zone", json!({"outline": [[2, 2], [12, 2], [12, 12], [2, 12]], "layers": ["F.Cu"]}))
+        .unwrap();
+    h.state_mut().wait_idle();
+    let board = h.state().snapshot.pcb.clone().unwrap().board.clone();
+    let all = |_: &str| true;
+    assert_eq!(ze::zone_at(&board, [7.0, 7.0], 0.1, &all), Some(0));
+    assert_eq!(ze::zone_at(&board, [20.0, 20.0], 0.1, &all), None);
+    assert_eq!(ze::zone_at(&board, [7.0, 7.0], 0.1, &|l: &str| l != "F.Cu"), None, "its layer is hidden");
+    let mut st = pcb_view::State::default();
+    st.tool = Tool::ZoneEdit;
+    st.zone_edit = Some(ze::ZoneEdit { zone: 0, ..Default::default() });
+    let outlines = ze::outlines_of(&board, 0);
+    assert_eq!(outlines, sq);
+    let area = |h: &egui_kittest::Harness<'static, crate::app::App>| -> f64 {
+        let b = &h.state().snapshot.pcb.as_ref().unwrap().board;
+        b.zones[0]
+            .fills
+            .iter()
+            .map(|(_, p)| gusset_pcb::poly::total_area(&gusset_pcb::poly::union(std::slice::from_ref(p))))
+            .sum()
+    };
+    let before = area(&h);
+    // Drag the corner (12, 12) to (22, 12): the zone grows.
+    let cmd = ze::zone_outline_command(0, &ze::move_corner(&outlines, (0, 2), [22.0, 12.0]).unwrap());
+    h.state_mut().pcb_commands(pcb_view::Out { commands: vec![cmd], blocked: None });
+    h.state_mut().wait_idle();
+    let board = h.state().snapshot.pcb.clone().unwrap().board.clone();
+    assert_eq!(board.zones[0].outline[2], [22.0, 12.0]);
+    assert!(area(&h) > before + 20.0, "{} vs {before}", area(&h));
+    // Insert a corner in the middle of the top edge, then delete it: two more steps.
+    let o = ze::outlines_of(&board, 0);
+    let (ins, new) = ze::insert_corner(&o, (0, 0)).unwrap();
+    h.state_mut().pcb_commands(pcb_view::Out { commands: vec![ze::zone_outline_command(0, &ins)], blocked: None });
+    h.state_mut().wait_idle();
+    assert_eq!(h.state().snapshot.pcb.as_ref().unwrap().board.zones[0].outline.len(), 5);
+    let o = ze::outlines_of(&h.state().snapshot.pcb.as_ref().unwrap().board, 0);
+    let del = ze::delete_corner(&o, new).unwrap();
+    h.state_mut().pcb_commands(pcb_view::Out { commands: vec![ze::zone_outline_command(0, &del)], blocked: None });
+    h.state_mut().wait_idle();
+    assert_eq!(h.state().snapshot.pcb.as_ref().unwrap().board.zones[0].outline.len(), 4);
+    // Each undo takes one edit back, and the fill with it.
+    for want in [5, 4] {
+        h.state_mut().run("history.undo", json!({})).unwrap();
+        h.state_mut().wait_idle();
+        assert_eq!(h.state().snapshot.pcb.as_ref().unwrap().board.zones[0].outline.len(), want);
+    }
+    h.state_mut().run("history.undo", json!({})).unwrap();
+    h.state_mut().wait_idle();
+    assert!((area(&h) - before).abs() < 1e-6, "{} vs {before}", area(&h));
+    // The fill-on-edit toggle reaches the session.
+    h.state_mut().pcb_state.fill_on_edit = true;
+    h.run();
+    h.state_mut().wait_idle();
+    assert!(h.state().host().with_session(|s| s.pcb_fill_on_edit).unwrap());
+    h.run();
+}

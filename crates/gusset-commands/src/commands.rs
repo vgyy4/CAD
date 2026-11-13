@@ -78,7 +78,7 @@ pub use pcb_edit::{
     PcbSave, PcbSetOutline, PcbText,
 };
 pub use pcb_layout::{PcbAddFootprint, PcbExportDsn, PcbExportStep, PcbFillZones, PcbImportSes, PcbRoute};
-pub use pcb_nets::{PcbAddZone, PcbNetClass, PcbRenameNet, PcbSetNet, ZoneHatch};
+pub use pcb_nets::{PcbAddZone, PcbNetClass, PcbRenameNet, PcbSetNet, PcbZoneOutline, ZoneHatch};
 pub use sch::{
     PcbUpdateFromSchematic, SchAddLabel, SchAddSymbol, SchAddWire, SchAnnotate, SchDelete, SchErc, SchMove, SchNetlist,
     SchNew, SchOpen, SchSave, SchSetField,

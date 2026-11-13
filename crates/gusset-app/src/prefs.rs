@@ -35,6 +35,8 @@ pub struct Prefs {
     pub freerouting: String,
     pub freerouting_java: String,
     pub freerouting_timeout: u64,
+    /// Pour zones on edit (ADR 0053).
+    pub pcb_fill_on_edit: bool,
 }
 
 pub const MIN_SCALE: f32 = 0.75;
@@ -62,6 +64,7 @@ impl Default for Prefs {
             freerouting: String::new(),
             freerouting_java: String::new(),
             freerouting_timeout: 600,
+            pcb_fill_on_edit: false,
         }
     }
 }
@@ -129,6 +132,7 @@ pub fn load(path: &Path) -> Prefs {
             .and_then(Value::as_u64)
             .filter(|t| (5..=86_400).contains(t))
             .unwrap_or(d.freerouting_timeout),
+        pcb_fill_on_edit: v.get("pcb_fill_on_edit").and_then(Value::as_bool).unwrap_or(false),
     }
 }
 
@@ -180,6 +184,7 @@ pub fn save(path: &Path, p: &Prefs) -> Result<(), String> {
         "freerouting": p.freerouting,
         "freerouting_java": p.freerouting_java,
         "freerouting_timeout": p.freerouting_timeout,
+        "pcb_fill_on_edit": p.pcb_fill_on_edit,
     });
     let bytes = serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())?;
     let check = |b: &[u8]| serde_json::from_slice::<Value>(b).map(|_| ()).map_err(|e| e.to_string());

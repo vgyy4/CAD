@@ -625,6 +625,7 @@ fn saved_preferences_come_back_in_a_new_window() {
         freerouting: "/opt/fr/freerouting.jar".into(),
         freerouting_java: String::new(),
         freerouting_timeout: 120,
+        pcb_fill_on_edit: true,
     };
     crate::prefs::save(&crate::prefs::path(dirs.data_dir()), &want).unwrap();
     let a = App::new(std::sync::Arc::new(gusset_kernel::mock::MockKernel), Some(dirs));

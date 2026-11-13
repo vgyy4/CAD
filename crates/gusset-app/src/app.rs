@@ -306,6 +306,8 @@ pub struct App {
     /// The Freerouting setting the session last got (so agents' `pcb.autoroute` uses the
     /// user's setting too); `None` after a new session.
     freerouting_sent: Option<Option<gusset_commands::pcb_session::Freerouting>>,
+    /// The fill-on-edit option the session last got; `None` after a new session.
+    fill_on_edit_sent: Option<bool>,
     /// The Schematic tab is chosen (ADR 0047 phase 2a): the schematic editor replaces the
     /// viewport.
     pub sch_tab: bool,
@@ -476,6 +478,7 @@ impl App {
             pcb_state: crate::pcb_view::State::default(),
             autoroute_cancel: None,
             freerouting_sent: None,
+            fill_on_edit_sent: None,
             sch_tab: false,
             sch_state: crate::sch_view::State::default(),
             probed: None,
@@ -553,6 +556,7 @@ impl App {
         self.pcb_state.freerouting = prefs.freerouting;
         self.pcb_state.freerouting_java = prefs.freerouting_java;
         self.pcb_state.freerouting_timeout = prefs.freerouting_timeout;
+        self.pcb_state.fill_on_edit = prefs.pcb_fill_on_edit;
     }
 
     /// The model thread this window talks to (shared with the MCP server).
@@ -1460,6 +1464,7 @@ impl App {
             freerouting: self.pcb_state.freerouting.clone(),
             freerouting_java: self.pcb_state.freerouting_java.clone(),
             freerouting_timeout: self.pcb_state.freerouting_timeout,
+            pcb_fill_on_edit: self.pcb_state.fill_on_edit,
         }
     }
 
@@ -1873,6 +1878,7 @@ impl App {
         self.has_project = project.is_some();
         self.host = Host::spawn(session, project);
         self.freerouting_sent = None;
+        self.fill_on_edit_sent = None;
         link::spawn_listener(self.host.subscribe(), self.waker.clone());
         self.events = self.host.subscribe();
         self.agents.attach(&self.host);
@@ -2712,6 +2718,12 @@ impl App {
     /// Gives the session the user's Freerouting setting when it changed (or the session
     /// is new), so agents' `pcb.autoroute` runs the same install.
     fn sync_freerouting(&mut self) {
+        let on = self.pcb_state.fill_on_edit;
+        if self.fill_on_edit_sent != Some(on) {
+            self.fill_on_edit_sent = Some(on);
+            let _ = self.host.exec_detached(move |s, _| s.pcb_fill_on_edit = on, |_| {});
+            self.save_prefs();
+        }
         let cfg = self.freerouting_setting();
         if self.freerouting_sent.as_ref() == Some(&cfg) {
             return;

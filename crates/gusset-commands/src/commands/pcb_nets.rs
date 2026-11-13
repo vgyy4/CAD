@@ -13,7 +13,13 @@ use gusset_pcb::nets::NewZone;
 use gusset_pcb::{Board, Limits};
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<PcbSetNet>(), spec::<PcbRenameNet>(), spec::<PcbNetClass>(), spec::<PcbAddZone>()]
+    vec![
+        spec::<PcbSetNet>(),
+        spec::<PcbRenameNet>(),
+        spec::<PcbNetClass>(),
+        spec::<PcbAddZone>(),
+        spec::<PcbZoneOutline>(),
+    ]
 }
 
 fn pcb_err(e: gusset_pcb::board::Error) -> CommandError {
@@ -361,5 +367,47 @@ impl Command for PcbAddZone {
             "notes_user_text": filled.notes,
         });
         commit_board(s, ctx, "Add zone", open.file.clone(), &b, None, extra)
+    }
+}
+
+/// Replaces the outlines of a zone (corners moved, added or removed) and fills it again.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PcbZoneOutline {
+    /// Zone index (pcb_info).
+    pub zone: usize,
+    /// All the zone's polygons, mm; the first is the main one.
+    pub outlines: Vec<Vec<[f64; 2]>>,
+}
+
+impl Command for PcbZoneOutline {
+    const ID: &'static str = "pcb.zone_outline";
+    const TITLE: &'static str = "Edit zone outline";
+    const DESCRIPTION: &'static str = "Replace a zone's polygons of the open board and fill it again; one undo step.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
+        if self.zone >= open.board.zones.len() {
+            return Err(CommandError::not_found(format!("there is no zone {}", self.zone))
+                .hint(format!("the board has {} zones", open.board.zones.len())));
+        }
+        let mut b = open.board.clone();
+        b.set_zone_outlines(self.zone, &self.outlines, &limits()).map_err(pcb_err)?;
+        // Filled at once (keep-outs have no pour), so it shows and plots.
+        let pours = b.zones.get(self.zone).is_some_and(|z| !z.keepout);
+        let mut extra = json!({ "zone": self.zone });
+        if pours {
+            let filled = gusset_pcb::zones::fill(&b, &open.rules, Some(&[self.zone]));
+            b.set_zone_fills(&filled.fills, &limits()).map_err(pcb_err)?;
+            let area: f64 = filled.fills.iter().map(gusset_pcb::zones::fill_area).sum();
+            extra = json!({
+                "zone": self.zone,
+                "filled_mm2": (area * 100.0).round() / 100.0,
+                "starved_thermal": super::pcb_layout::starved_json(&b, &filled),
+                "notes_user_text": filled.notes,
+            });
+        }
+        commit_board(s, ctx, "Edit zone outline", open.file.clone(), &b, None, extra)
     }
 }

@@ -17,6 +17,7 @@
 //! which the app sends like any other command (ADR 0012), so every edit is undoable.
 
 use crate::i18n::tr;
+use crate::pcb_zone_edit;
 use crate::theme::Palette;
 use egui::{Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
 use gusset_commands::pcb_session::OpenBoard;
@@ -42,6 +43,9 @@ pub enum Tool {
     /// Clicks add outline corners; a double click, Enter or a click on the first corner
     /// replaces the board outline (`pcb.set_outline`).
     Outline,
+    /// Picks a zone; its corners drag, an edge's middle handle adds a corner, Delete
+    /// takes the picked corner away (`pcb.zone_outline`, ADR 0053).
+    ZoneEdit,
 }
 
 /// A picked board item (indices into the board's lists).
@@ -137,6 +141,10 @@ pub struct State {
     pub freerouting: String,
     pub freerouting_java: String,
     pub freerouting_timeout: u64,
+    /// The zone picked by the Edit zone tool, its picked corner and a corner in drag.
+    pub zone_edit: Option<crate::pcb_zone_edit::ZoneEdit>,
+    /// Pour the zones an edit touched in the same undo step (a session option, ADR 0053).
+    pub fill_on_edit: bool,
 }
 
 /// The picked text as edited: (board hash, index, words, height mm, angle, mirrored).
@@ -219,6 +227,8 @@ impl Default for State {
             freerouting: String::new(),
             freerouting_java: String::new(),
             freerouting_timeout: 600,
+            zone_edit: None,
+            fill_on_edit: false,
         }
     }
 }
@@ -950,11 +960,13 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
             (Tool::Place, "pcb.place", "pcb.tip_place"),
             (Tool::Zone, "pcb.zone", "pcb.tip_zone"),
             (Tool::Outline, "pcb.outline", "pcb.tip_outline"),
+            (Tool::ZoneEdit, "pcb.edit_zone", "pcb.tip_edit_zone"),
         ] {
             if ui.selectable_label(st.tool == t, tr(key)).on_hover_text(tr(tip)).clicked() {
                 st.tool = t;
                 st.track_from = None;
                 st.outline_pts.clear();
+                st.zone_edit = None;
             }
         }
     });
@@ -1120,6 +1132,10 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
     if ui.button(tr("pcb.fill_zones")).clicked() {
         out.commands.push(("pcb.fill_zones", json!({})));
     }
+    ui.checkbox(&mut st.fill_on_edit, tr("pcb.fill_on_edit")).on_hover_text(tr("pcb.tip_fill_on_edit"));
+    if st.tool == Tool::ZoneEdit {
+        out.commands.extend(zone_edit_panel(ui, b, st));
+    }
     if ui.button(tr("pcb.run_drc")).clicked() {
         out.commands.push(("pcb.drc", json!({})));
     }
@@ -1135,6 +1151,51 @@ pub fn controls(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut S
         }
     }
     out
+}
+
+/// A click of the Edit zone tool: a corner of the picked zone picks it, the middle handle
+/// of an edge adds a corner there, anything else picks the zone under it (or none).
+fn zone_click(b: &Board, st: &mut State, p: Pt, tol: f64, shown: &dyn Fn(&str) -> bool, out: &mut Out) {
+    if let Some(ze) = st.zone_edit.as_mut() {
+        let outlines = pcb_zone_edit::outlines_of(b, ze.zone);
+        if let Some(c) = pcb_zone_edit::corner_at(&outlines, p, tol * 1.5) {
+            ze.corner = Some(c);
+            return;
+        }
+        if let Some(e) = pcb_zone_edit::edge_at(&outlines, p, tol * 1.5)
+            && let Some((o, new)) = pcb_zone_edit::insert_corner(&outlines, e)
+        {
+            out.commands.push(pcb_zone_edit::zone_outline_command(ze.zone, &o));
+            ze.corner = Some(new);
+            return;
+        }
+    }
+    st.zone_edit =
+        pcb_zone_edit::zone_at(b, p, tol, shown).map(|zone| pcb_zone_edit::ZoneEdit { zone, ..Default::default() });
+}
+
+/// The Edit zone tool's panel part: what is picked, and a button that deletes the picked
+/// corner.
+fn zone_edit_panel(ui: &mut Ui, b: &Board, st: &mut State) -> Option<(&'static str, Value)> {
+    let Some(ze) = st.zone_edit.clone() else {
+        ui.weak(tr("pcb.tip_edit_zone"));
+        return None;
+    };
+    let outlines = pcb_zone_edit::outlines_of(b, ze.zone);
+    ui.weak(format!(
+        "{} {} · {} {}",
+        tr("pcb.zone"),
+        ze.zone,
+        outlines.iter().map(Vec::len).sum::<usize>(),
+        tr("pcb.zone_corners")
+    ));
+    let can = ze.corner.and_then(|c| pcb_zone_edit::delete_corner(&outlines, c));
+    let clicked = ui.add_enabled(can.is_some(), egui::Button::new(tr("pcb.delete_corner"))).clicked();
+    if clicked && let Some(o) = can {
+        st.zone_edit = Some(pcb_zone_edit::ZoneEdit { corner: None, ..ze.clone() });
+        return Some(pcb_zone_edit::zone_outline_command(ze.zone, &o));
+    }
+    None
 }
 
 /// The panel's net editing: the picked footprint's pad nets, renaming the highlighted
@@ -1383,6 +1444,18 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         Sel::Via(i) => i < b.vias.len(),
         Sel::Text(i) => i < b.texts.len(),
     });
+    // A picked zone or corner past the board's lists (after an undo) is dropped.
+    if let Some(ze) = st.zone_edit.as_mut() {
+        let n = b.zones.len();
+        let corners = pcb_zone_edit::outlines_of(b, ze.zone);
+        if ze.zone >= n {
+            st.zone_edit = None;
+        } else {
+            let there = |c: pcb_zone_edit::Corner| corners.get(c.0).is_some_and(|o| c.1 < o.len());
+            ze.corner = ze.corner.filter(|c| there(*c));
+            ze.drag = ze.drag.filter(|(c, _)| there(*c));
+        }
+    }
     if resp.double_clicked() && st.tool == Tool::Select || st.auto_fit.is_some_and(|s| s != rect.size()) {
         st.fit(rect, b);
     }
@@ -1415,6 +1488,16 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
     {
         st.boxing = Some(p);
     }
+    if resp.drag_started()
+        && st.tool == Tool::ZoneEdit
+        && !middle
+        && let Some(p) = ui.input(|i| i.pointer.press_origin()).map(|p| map.from(p))
+        && let Some(ze) = st.zone_edit.as_mut()
+        && let Some(c) = pcb_zone_edit::corner_at(&pcb_zone_edit::outlines_of(b, ze.zone), p, tol * 1.5)
+    {
+        ze.corner = Some(c);
+        ze.drag = Some((c, p));
+    }
     if st.boxing.is_some() && resp.drag_stopped() {
         if let (Some(a), Some(b2)) = (st.boxing.take(), pointer) {
             for x in in_box(b, a, b2, &shown) {
@@ -1446,7 +1529,16 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         }
         st.drag = Some(Drag { footprint: fp, item, moved: Vec2::ZERO });
     }
-    if resp.dragged() && st.boxing.is_none() {
+    if resp.dragged()
+        && let Some((c, _)) = st.zone_edit.as_ref().and_then(|z| z.drag)
+    {
+        // A corner of the picked zone follows the pointer, on the grid.
+        if let Some(p) = pointer
+            && let Some(ze) = st.zone_edit.as_mut()
+        {
+            ze.drag = Some((c, snap(p, st.grid)));
+        }
+    } else if resp.dragged() && st.boxing.is_none() {
         let d = resp.drag_delta();
         match st.drag.as_mut() {
             Some(Drag { footprint: Some(_), moved, .. } | Drag { item: Some(_), moved, .. }) => *moved += d / st.zoom,
@@ -1456,7 +1548,19 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
             }
         }
     }
-    if resp.drag_stopped() {
+    if resp.drag_stopped()
+        && let Some(ze) = st.zone_edit.as_mut()
+        && let Some((c, to)) = ze.drag.take()
+    {
+        let outlines = pcb_zone_edit::outlines_of(b, ze.zone);
+        let from = outlines.get(c.0).and_then(|o| o.get(c.1)).copied();
+        if from.is_some_and(|f| libm::hypot(f[0] - to[0], f[1] - to[1]) > 1e-6)
+            && let Some(o) = pcb_zone_edit::move_corner(&outlines, c, to)
+        {
+            out.commands.push(pcb_zone_edit::zone_outline_command(ze.zone, &o));
+        }
+        st.drag = None;
+    } else if resp.drag_stopped() {
         if let Some(Drag { item: Some(x), moved, .. }) = st.drag.clone()
             && moved.length() > 1e-3
             && let Some(by) = item_drop_delta(b, x, [f64::from(moved.x), f64::from(moved.y)], st.grid)
@@ -1509,6 +1613,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                 }
             }
             Tool::Via => out.commands.push(via_command(snap(p, st.grid))),
+            Tool::ZoneEdit => zone_click(b, st, p, tol, &shown, &mut out),
             Tool::Text => match hit(b, p, tol, &shown) {
                 Some(x @ Sel::Text(_)) => st.selected = Some(x),
                 _ if st.text_words.trim().is_empty() => {}
@@ -1599,6 +1704,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         });
         let (v, slash) = ui.input(|i| (i.key_pressed(egui::Key::V), i.key_pressed(egui::Key::Slash)));
         if esc {
+            st.zone_edit = None;
             end_route(st);
             st.selected = None;
             st.multi.clear();
@@ -1619,7 +1725,15 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                 out.blocked = Some(a);
             }
         }
-        if del && let Some(c) = delete_picked(st) {
+        if del
+            && st.tool == Tool::ZoneEdit
+            && let Some(ze) = st.zone_edit.as_mut()
+            && let Some(c) = ze.corner
+            && let Some(o) = pcb_zone_edit::delete_corner(&pcb_zone_edit::outlines_of(b, ze.zone), c)
+        {
+            out.commands.push(pcb_zone_edit::zone_outline_command(ze.zone, &o));
+            ze.corner = None;
+        } else if del && let Some(c) = delete_picked(st) {
             out.commands.push(c);
             st.selected = None;
             st.multi.clear();
@@ -1674,6 +1788,34 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         painter.add(Shape::line(pts, Stroke::new(1.5, c)));
         for q in &st.zone_pts {
             painter.circle_filled(map.to(*q), 3.0, c);
+        }
+    }
+    if st.tool == Tool::ZoneEdit
+        && let Some(ze) = &st.zone_edit
+    {
+        let mut outlines = pcb_zone_edit::outlines_of(b, ze.zone);
+        if let Some((c, to)) = ze.drag
+            && let Some(o) = pcb_zone_edit::move_corner(&outlines, c, to)
+        {
+            outlines = o;
+        }
+        let c = Color32::from_rgb(120, 200, 255);
+        for (oi, pts) in outlines.iter().enumerate() {
+            let mut line: Vec<Pos2> = pts.iter().map(|x| map.to(*x)).collect();
+            if let Some(f) = line.first().copied() {
+                line.push(f);
+            }
+            painter.add(Shape::line(line, Stroke::new(1.5, c)));
+            for k in 0..pts.len() {
+                if let Some(q) = pts.get(k) {
+                    let r = Rect::from_center_size(map.to(*q), Vec2::splat(7.0));
+                    let on = ze.corner == Some((oi, k));
+                    painter.rect_filled(r, 0.0, if on { Color32::from_rgb(255, 200, 60) } else { c });
+                }
+                if let Some(m) = pcb_zone_edit::edge_mid(&outlines, (oi, k)) {
+                    painter.circle_stroke(map.to(m), 3.5, Stroke::new(1.0, c));
+                }
+            }
         }
     }
     if st.tool == Tool::Outline && !st.outline_pts.is_empty() {

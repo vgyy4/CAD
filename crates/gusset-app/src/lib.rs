@@ -14,6 +14,7 @@ pub mod icons;
 pub mod link;
 pub mod palette;
 pub mod pcb_view;
+pub mod pcb_zone_edit;
 pub mod photo_preview;
 pub mod prefs;
 pub mod quick_menus;

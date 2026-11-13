@@ -446,9 +446,8 @@ it nets and rules, route, pour, check and write every fabrication file without K
   buried vias, routing across layers in one search; a larger walkaround window for dense
   boards (video: 8 of 30 pad pairs). Freerouting runs from the user's setting (phase 3);
   finding it on the PATH is not done on purpose (the user names the install).
-* **Zones**: zones over several outlines, KiCad's exact thermal spoke rules (minimum spoke
-  count), hatch smoothing and border options, filling on edit, a zone outline editor
-  (moving corners).
+* **Zones**: several outlines, spoke rules with `starved_thermal`, filling on edit and a
+  zone outline editor: done, see ADR 0053. Still open: hatch smoothing and border options.
 * **Schematic, after phase 2b**: wires dragged orthogonally with symbols, multi-select and
   box select, annotation options: done, see ADR 0052. Still open: bus aliases and
   KiCad's naming of bus member nets in every case (25 of 2046 video pads differ in the name
