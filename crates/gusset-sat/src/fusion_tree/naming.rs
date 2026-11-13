@@ -710,17 +710,25 @@ impl Ctx<'_> {
             }
             self.named_planes = Some(out);
         }
+        let trims = |o: i32| {
+            self.opmap.get(&u64::from(o.unsigned_abs())).is_some_and(|fid| TRIMMING.iter().any(|c| self.d.is(*fid, c)))
+        };
+        // A negative entry is an operation that changed the face's bounds (2354's `Extrude6`
+        // joins a slab across the boxes `R-Pattern2` made: `Fillet1` names a box's end
+        // `6 [376, 377, 380, -381]`, the stored states hold `6 [376, 377, 380]`); one of the
+        // trimming kinds leaves the plane where it was, on either name.
+        let core = |ops: &[i32]| -> Vec<i32> { ops.iter().copied().filter(|o| *o > 0 || !trims(*o)).collect() };
+        let want = core(ops);
+        if want.is_empty() {
+            return None;
+        }
         let mut found: Option<(V3, V3)> = None;
         for f in self.named_planes.as_deref().unwrap_or(&[]) {
             let hit = f.name.iter().any(|(g2, ops2)| {
+                let have = core(ops2);
                 g2 == g
-                    && ops2.get(..ops.len()) == Some(ops)
-                    && ops2.iter().skip(ops.len()).all(|o| {
-                        u64::try_from(*o)
-                            .ok()
-                            .and_then(|o| self.opmap.get(&o))
-                            .is_some_and(|fid| TRIMMING.iter().any(|c| self.d.is(*fid, c)))
-                    })
+                    && have.get(..want.len()) == Some(want.as_slice())
+                    && have.iter().skip(want.len()).all(|o| *o > 0 && trims(*o))
             });
             if !hit {
                 continue;
@@ -1941,7 +1949,26 @@ impl Ctx<'_> {
     }
 
     fn modelled_edge(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
-        let fs: Vec<Option<FaceG>> = faces.iter().map(|f| f.first().and_then(|(g, ops)| self.face(g, ops))).collect();
+        let mut fs: Vec<Option<FaceG>> =
+            faces.iter().map(|f| f.first().and_then(|(g, ops)| self.face(g, ops))).collect();
+        // A face of the edge whose name the stored states hold on several planes: the plane of
+        // those faces that meet a stored face of every name at the edge's ends (2354's
+        // `Fillet2`: the end `6 [310, 326, 359]` of one tab of `R-Pattern1` at x = 60 mm, which
+        // later states also give to a face across the tab at y = 54.5 mm; the edge's other face,
+        // the top the blend rounds, no longer meets it there).
+        for k in 0..2 {
+            if fs.get(k).is_some_and(Option::is_none)
+                && let Some((g, ops)) = faces.get(k).and_then(|f| f.first())
+            {
+                let beside: Vec<FaceName> = faces.iter().skip(2).cloned().collect();
+                if let Some(Surface::Plane { origin, normal }) =
+                    self.stored_face_beside(g, ops, &beside).map(|p| p.surface)
+                    && let (Some(n), Some(slot)) = (unit(normal), fs.get_mut(k))
+                {
+                    *slot = Some(FaceG::Plane { n, p: origin, cap: true, mid: origin });
+                }
+            }
+        }
         let is_fillet = |f: &Option<FaceG>| matches!(f, Some(FaceG::Fillet { .. }));
         if fs.iter().any(is_fillet) {
             if let Some((m, arc)) = fillet_edge(&fs) {
