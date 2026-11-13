@@ -121,3 +121,63 @@ fn via_minimums_come_from_the_board_setup() {
     assert_eq!((d.len(), s.len()), (1, 1), "{d:?} {s:?}");
     assert_eq!((d[0].items.clone(), s[0].items.clone()), (vec![ItemRef::Via(0)], vec![ItemRef::Via(0)]));
 }
+
+/// A footprint at (x, y) with a 4 x 4 mm courtyard drawn as `style` (`rect` or `lines`) on
+/// the `side` ("F" or "B").
+fn part(reference: &str, x: f64, y: f64, side: &str, style: &str) -> String {
+    let layer = format!("{side}.CrtYd");
+    let shape = if style == "rect" {
+        format!(r#"(fp_rect (start -2 -2) (end 2 2) (stroke (width 0.05) (type solid)) (fill none) (layer "{layer}"))"#)
+    } else {
+        [((-2, -2), (2, -2)), ((2, -2), (2, 2)), ((2, 2), (-2, 2)), ((-2, 2), (-2, -2))]
+            .iter()
+            .map(|((a, b), (c, d))| {
+                format!(
+                    r#"(fp_line (start {a} {b}) (end {c} {d}) (stroke (width 0.05) (type solid)) (layer "{layer}"))"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    format!(
+        r#"(footprint "P:{reference}" (layer "{side}.Cu") (at {x} {y})
+    (property "Reference" "{reference}" (at 0 -3) (layer "{side}.SilkS"))
+    {shape}
+  )"#
+    )
+}
+
+#[test]
+fn courtyards_of_one_side_that_overlap_are_reported() {
+    let rules = Rules::default();
+    // 1 mm overlap of two 4 x 4 courtyards: 4 mm2.
+    let b = board("", &format!("{} {}", part("U1", 10.0, 10.0, "F", "rect"), part("U2", 13.0, 10.0, "F", "rect")));
+    let v = only(&b, &rules, "courtyard_overlap");
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert_eq!(v[0].items, [ItemRef::Footprint(0), ItemRef::Footprint(1)]);
+    assert_eq!(v[0].layer.as_deref(), Some("F.CrtYd"));
+    assert!((v[0].at[0] - 11.5).abs() < 1e-6 && (v[0].at[1] - 10.0).abs() < 1e-6, "{v:?}");
+    assert!(v[0].message.contains("U1") && v[0].message.contains("U2") && v[0].message.contains("4.00"), "{v:?}");
+    // Courtyards drawn as four lines count the same.
+    let b = board("", &format!("{} {}", part("U1", 10.0, 10.0, "F", "lines"), part("U2", 13.0, 12.0, "F", "lines")));
+    assert_eq!(only(&b, &rules, "courtyard_overlap").len(), 1);
+}
+
+#[test]
+fn courtyards_that_touch_or_sit_on_other_sides_are_fine() {
+    let rules = Rules::default();
+    // Sharing an edge (4 mm pitch).
+    let b = board("", &format!("{} {}", part("U1", 10.0, 10.0, "F", "rect"), part("U2", 14.0, 10.0, "F", "rect")));
+    assert!(only(&b, &rules, "courtyard_overlap").is_empty());
+    // One front, one back, right on top of each other.
+    let b = board("", &format!("{} {}", part("U1", 10.0, 10.0, "F", "rect"), part("U2", 10.0, 10.0, "B", "rect")));
+    assert!(only(&b, &rules, "courtyard_overlap").is_empty());
+    // Two backs overlap.
+    let b = board("", &format!("{} {}", part("U1", 10.0, 10.0, "B", "rect"), part("U2", 11.0, 10.0, "B", "rect")));
+    let v = only(&b, &rules, "courtyard_overlap");
+    assert_eq!((v.len(), v[0].layer.as_deref()), (1, Some("B.CrtYd")));
+    // A footprint without a courtyard is never reported.
+    let bare = r#"(footprint "P:X" (layer "F.Cu") (at 10 10) (property "Reference" "X1" (at 0 0) (layer "F.SilkS")))"#;
+    let b = board("", &format!("{} {bare}", part("U1", 10.0, 10.0, "F", "rect")));
+    assert!(only(&b, &rules, "courtyard_overlap").is_empty());
+}

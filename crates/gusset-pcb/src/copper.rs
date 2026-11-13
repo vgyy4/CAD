@@ -20,6 +20,12 @@ pub enum ItemRef {
     Via(usize),
     /// A zone's fill.
     Zone(usize),
+    /// A footprint as a whole (courtyard checks, ADR 0048).
+    Footprint(usize),
+    /// A drawing in `Board::graphics` (silkscreen checks).
+    Graphic(usize),
+    /// A text in `Board::texts` (silkscreen checks).
+    Text(usize),
 }
 
 /// One copper item: its pieces, copper layers (indices into [`Copper::layers`]) and net.

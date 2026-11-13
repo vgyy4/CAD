@@ -44,6 +44,15 @@ pub fn describe(board: &Board, it: ItemRef) -> String {
         }
         ItemRef::Track(i) => format!("track {i}"),
         ItemRef::Via(i) => format!("via {i}"),
+        ItemRef::Footprint(i) => match board.footprints.get(i) {
+            Some(f) => format!("footprint {}", f.reference),
+            None => format!("footprint {i}"),
+        },
+        ItemRef::Graphic(i) => format!("silkscreen line {i}"),
+        ItemRef::Text(i) => match board.texts.get(i) {
+            Some(t) => format!("text \"{}\"", t.text.chars().take(30).collect::<String>()),
+            None => format!("text {i}"),
+        },
         ItemRef::Zone(i) => match board.zones.get(i).and_then(|z| board.net_name(&z.net)) {
             Some(n) => format!("zone {i} ({n})"),
             None => format!("zone {i}"),
@@ -98,6 +107,7 @@ pub fn check(board: &Board, rules: &Rules, max: usize) -> Vec<Violation> {
     annular_rings(board, rules, max, &mut out);
     edges(board, rules, &copper, max, &mut out);
     crate::drc_more::holes(board, rules, max, &mut out);
+    crate::drc_more::drawings(board, rules, max, &mut out);
     out.truncate(max);
     out
 }
