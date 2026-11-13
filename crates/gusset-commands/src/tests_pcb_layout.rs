@@ -1,5 +1,6 @@
 //! Board layout commands (ADR 0047 phase 2b): zone fills, routing, STEP export and the
 //! Specctra hand-off.
+#![allow(clippy::float_cmp)] // fills computed twice from the same board are identical
 
 use crate::tests_pcb::{run, session};
 use crate::*;
