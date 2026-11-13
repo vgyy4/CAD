@@ -510,11 +510,21 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
 fn op_target(j: &mut Map<String, Value>, g: &Graph, d: &Design, fid: u64, names: &HashMap<u64, String>) -> usize {
     let links = g.body_links(d, fid, 2);
     let made = links.iter().filter(|l| g.creator.get(l) == Some(&fid)).count();
+    // A body pattern's copies are bodies of their own, `<pattern>[i]` (the copy count less one):
+    // a feature that takes every copy (2354's Extrude4 joins the 39 strips R-Pattern1 made) names
+    // each. One that takes some of them names the pattern, as before.
+    let copies_of = |c: u64| -> Option<Vec<String>> {
+        let pattern = d.is(c, "AE12AD3F") || d.is(c, "11F1A5CE");
+        let theirs = g.creator.iter().filter(|(_, v)| **v == c).map(|(l, _)| *l).collect::<Vec<_>>();
+        let all = theirs.len() > 1 && theirs.iter().all(|l| links.contains(l));
+        let name = names.get(&c)?;
+        (pattern && all).then(|| (1..=theirs.len()).map(|i| format!("{name}[{i}]")).collect())
+    };
     let mut acted: Vec<String> = links
         .iter()
         .filter_map(|l| g.creator.get(l).copied())
         .filter(|c| *c != fid)
-        .map(|c| names.get(&c).cloned().unwrap_or_else(|| c.to_string()))
+        .flat_map(|c| copies_of(c).unwrap_or_else(|| vec![names.get(&c).cloned().unwrap_or_else(|| c.to_string())]))
         .collect();
     acted.sort();
     acted.dedup();
@@ -527,7 +537,7 @@ fn op_target(j: &mut Map<String, Value>, g: &Graph, d: &Design, fid: u64, names:
         .iter()
         .filter_map(|l| g.creator.get(l).copied())
         .filter(|c| *c != fid)
-        .map(|c| names.get(&c).cloned().unwrap_or_else(|| c.to_string()))
+        .flat_map(|c| copies_of(c).unwrap_or_else(|| vec![names.get(&c).cloned().unwrap_or_else(|| c.to_string())]))
         .collect();
     selected.sort();
     selected.dedup();
