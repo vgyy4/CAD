@@ -381,3 +381,69 @@ Coverage stays 25 of 47 as history; the three thicken parts now get further (ver
   That tab is a concave slot end (`Fillet12_4_sketch` at (-59, -49) mm): the slot-end rounds are emitted as a sketch and a join of two
   slivers, whose edges are split differently from Inventor's, so the pick midpoints do not meet one edge. OPEN: either unify the faces
   after the slot-end join (kernel side) or pick the split edges; not done.
+
+# Round ipt1 (2026-11-13): a second corpus, newer file versions
+
+New corpus: 1639 `.ipt` (and 326 `.iam`) from 57 openly licensed sources (GitHub repositories and Zenodo records, list
+kept with the samples, not in the repository). Measured with the corpus test, one part per process
+(`GUSSET_IPT_SAMPLES` pointing at a folder with the one part, `GUSSET_IPT_VERBOSE`, `GUSSET_IPT_RAW`). Layout facts
+below come from these bytes only; Gusset's import of each part's own result body is the ground truth.
+
+## K. Zstandard streams (confirmed, 239 files)
+* Newer files write the B stream header as the 16 constant bytes and `04 02` (older `04 01`), followed by a
+  **Zstandard frame** (`28 b5 2f fd`) instead of zlib. The meta streams' packed bodies are Zstandard too, at a varying
+  offset after the segment name (found like the zlib start, by the magic). The unpacked data has the old layout
+  (meta: `u32 nrec+1, u16, u32, u32, u32 nrec`, sizes, class table; records framed as in section 1).
+* Before this, the result body was not found at all ("no result body"): 203 of these parts failed to import.
+
+## L. The newer common header (confirmed, 457 files; version words 2803, 2908, 3005, 3104)
+* `u32 0, u16, ref name (6), 4 flag bytes (10), **u32 0 (14, new)**, ref owner (18), u32 id (22), [ffffffff], u32 version`.
+  Everything after offset 14 moves by 4 bytes.
+* A file has this layout when its first part feature has a zero at 14 and a reference at 18 (the older layout has the
+  owner reference at 14 and the id, never a reference, at 18). Per class, the records that all have that shape are read
+  with the word removed; ~80 classes have no common header at all in either layout (`f645595c` history blob, `cc0f7521`,
+  `797737b1`, `cce92042`, `f8a779fd`, ...) and are left as they are. 467 classes were seen with the header, 3 classes
+  mixed (headerless ones whose bytes happen to match; not read here).
+
+## M. Solid body records (confirmed)
+* A `90874d91` record whose name reference (offset 6) points at a `656dd01e` record is a **solid body**, not a feature:
+  `656dd01e` refers to the body record (14) and, at 22, to a Name record whose type GUID is `0ca9112d` and whose text is
+  the body's name ("Solid1", or e.g. "metal frame" in a multi-body part). Its slot list has 3 items (two `90874d47`).
+  When the name was never set the reference at 22 is null. A body record may also be named directly by a `0ca9112d`
+  Name. 432 parts were refused as "unknown feature" for this; they are skipped now. Parts made only of such records
+  (imported STEP bodies) have no features.
+
+## N. Blocks between records (confirmed on the 77 files where framing broke)
+* After a record's `u32 size` the byte is not always 0: when it is 1, a block follows before the next class word.
+  Two shapes seen (113 each): `u32 1, str "RDxSweepTwistAngle", u32 7, u32 0, list 0x30000006 (1 item: str + ref)`
+  (sweep features) and `u32 2, str GUID-text, u32 11, 10 bytes, str GUID-text, u32 8, 6 bytes, empty list 0x30000006`.
+  The grammar of the entries is not decoded; the reader skips to the first offset where the next class word, the
+  record content of the meta's size and its size line up (and the record after it starts as a record does), bounded to
+  4 KiB; a block that never lines up is an error.
+
+## O. Naming attributes as ATTRIB_CUSTOM (confirmed)
+* Newer ShapeManager data (attribute version 44 instead of 42/43) writes Inventor's naming attributes as
+  `ATTRIB_CUSTOM-attrib` records whose first string token (0x07) names them: `INV_NMX_BLEND_TAG`,
+  `INV_NMX_EDGE_BLEND_TAG`, `INV_NMX_FEATURE_TAG`, `INV_NMX_GEN_TAG`, `INV_NMX_HOLE_TAG`, `INV_NMX_THICKEN_TAG`, ...
+  (40 names in the corpus). Their ints have one more `1` before the version: `-1, 1, 44, 1, feature id, -1, ...`
+  against `-1, 43, 1, feature id, -1, ...`. Checked for the blend tags: `INV_NMX_BLEND_TAG` ints after dropping that
+  int are `-1, 44, 1, fid, -1, 1, 1, tag`, as `NMx_blend_tag`; `INV_NMX_EDGE_BLEND_TAG` as `NMx_edge_blend_tag`. Only
+  those two are mapped to the older names; `NMx_Brep_Feature_tag` (thicken) has no `INV_` twin of that name in the
+  corpus (`INV_NMX_THICKEN_TAG` is not checked).
+
+## P. Fillets with several edge sets
+* Slot 0 lists one `aad64116` edge set per radius. The edges of a set are not taken from the naming records; instead
+  each blend face's radius (cylinder radius, torus minor radius) assigns its edge to the set with that radius parameter.
+  One tree fillet per radius (`Name`, `Name_2`, ...). A face without a radius (spline blends) refuses the feature.
+
+## Q. Not decoded yet (counts from the new corpus after this round)
+* Extrude extents 4 (to next, 34 parts), 7 (to a face, 24) and 12 (from a face, 3): the face is named through the naming
+  records, not stored as geometry.
+* Feature kinds: derived/base bodies `8e29cbee` ("Solid::X.ipt", 186 parts; nothing to rebuild from), sheet metal
+  (`55585fc6` plate, `9a78add3` flanges, `4c37ffe8` fold, `4cf758f2` bend), shell `b83c9612`, coil `b41914da`, emboss
+  `285e398c`, split `8371a8ba`, loft `2f54efe0`, combine `c0236733`, delete face `d3166e68`, face draft `f4fa0900`,
+  sweep (the block of section N), circular pattern and mirror.
+* Rectangular patterns of version 3104 (`spec__pt_rect`): one feature carries both directions: two `bb1dd5df` counts,
+  two spacing parameters and two `ce52df40` directions (unit vectors, the last three of five doubles), no `a244457b`.
+  Not read (the direction sign is not known).
+* Parts that start from an imported base body (a cut as the first feature: "a cut or join before any body").

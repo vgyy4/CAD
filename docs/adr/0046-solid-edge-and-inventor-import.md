@@ -286,3 +286,36 @@ Addendum (same day): a cylinder blend between a plane and a convex cylinder that
 Fillet11) is emitted as a join of the blend's arc and a circumscribed polyline lying in the existing body (`Acis::bridged_round`,
 `bridged_rounds`); the rebuild check is the only authority. `Top motor plate` Chamfer6 builds. The three thicken parts now stop at an
 84-edge blend on the bottom tab ends whose picks do not match the edges split by the slot-end joins (notes J.2); coverage stays 25 of 47.
+
+## Amendment (2026-11-13, 8): Inventor round ipt1 - a second corpus and the newer file versions
+
+A second corpus of 1639 `.ipt` from 57 openly licensed sources (GitHub repositories, Zenodo records; kept with the
+samples, never committed) was measured part by part with the corpus test. Most of it is newer than the first corpus,
+and the blockers were layout changes of the newer versions, not missing features (notes K to Q of
+`docs/formats/inventor-feature-tree.md`):
+
+- **Zstandard** (K): newer files pack the B and meta streams as Zstandard (`04 02` in the B header). Unpacked under the
+  same stream/ratio limits, decoder window at most 2^27. `gusset-ole` now depends on `zstd` (already a workspace crate).
+- **Header word at 14** (L): version 2803 and later insert a zero `u32` at offset 14 of the common record header; such
+  records are read with it removed, per class, when the file's first part feature shows it.
+- **Solid body records** (M): part-feature records named through `656dd01e` (or by a `0ca9112d` name) are bodies, not
+  features, and are skipped instead of making the history "unknown".
+- **Blocks between records** (N): a separator byte 1 after a record's size is followed by a block; the walk resynchronises
+  on the next record that frames (bounded), else it refuses as before.
+- **ATTRIB_CUSTOM naming attributes** (O): `INV_NMX_BLEND_TAG` / `INV_NMX_EDGE_BLEND_TAG` read as `NMx_blend_tag` /
+  `NMx_edge_blend_tag`.
+- **Fillets with several edge sets** (P): one tree fillet per radius, each edge by its blend face's radius.
+
+The rebuild check is unchanged. Results (parts as history; OCCT corpus test, one part per process):
+
+| corpus | parts | before | after | import failures before | after |
+|---|---|---|---|---|---|
+| first (Zenodo, `GUSSET_IPT_MIN_HISTORY=25`) | 47 | 25 | 25 | 0 | 0 |
+| second (57 sources) | 1639 | 263 | 367 | 219 | 46 |
+
+No part of either corpus went from history to body. No run crashed or timed out (the two screw-rotor parts take 7-10
+minutes in a debug build, in the body import). The 46 remaining import failures are 44 parts whose result body has no faces (the sketch-,
+work-geometry- and surface-only fixtures among them) and two whose ShapeManager integer width is not read. In the second corpus, 412 parts have no
+features (imported bodies) and 201 are derived parts (`8e29cbee`); the largest blockers left among the rest are extrude
+extents 4/7/12 (to next / to a face / from a face, 79 parts), volume differences (68), picks the kernel does not find
+(43), feature `90bada05` (33), sheet metal (30), shell (30) and chamfer types other than 0 and 1 (30).
