@@ -1298,6 +1298,8 @@ struct Rep {
     ext: bool,
     /// Followed by two extra words, the first not -1 (sides have -1, 0): also a cap face.
     ext2: bool,
+    /// A face of a mirror's copy: the mirror's feature id (the reference names the seed face).
+    via: Option<u32>,
 }
 
 /// An edge record's header at `i` (`edges.HDR`): `01 00*7 n`, then either `00{4,6} kind(1..4)
@@ -1334,6 +1336,19 @@ fn edge_header(d: &[u8], i: usize) -> Option<(usize, usize)> {
 /// Edge records in `[a, b)` (`edges.edge_records`). Each reference is a 20-byte core followed
 /// by 0 to 2 extra words, depending on its class.
 fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, String> {
+    Ok(edge_records_to(d, a, b, &HashSet::new())?.into_iter().map(|(s, _, r)| (s, r)).collect())
+}
+
+/// [`edge_records`] with the end of each record (after its last reference). A face of a
+/// mirror's copy is written as a 16-byte reference to the mirror (`<tag> 00 00 <class> u16
+/// <u32 mirror id> <u32 stamp>`, no face number) followed by the seed face's own reference
+/// (the bearings' Chamfer1: Mirror1, then Cut-Extrude2 face 3); `mirrors` are the ids read so.
+fn edge_records_to(
+    d: &[u8],
+    a: usize,
+    b: usize,
+    mirrors: &HashSet<u32>,
+) -> Result<Vec<(usize, usize, Vec<Rep>)>, String> {
     let mut out = Vec::new();
     let mut i = a;
     let end = b.min(d.len());
@@ -1348,6 +1363,18 @@ fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, 
         for k in 0..n {
             if p + 20 > d.len() {
                 break;
+            }
+            let mut via = None;
+            let outer = need(u32_at(d, p + 8), "an edge record")?;
+            if mirrors.contains(&outer)
+                && u16_at(d, p).is_some_and(|t| t & 0x8000 != 0)
+                && u16_at(d, p + 2) == Some(0)
+                && u16_at(d, p + 16).is_some_and(|t| t & 0x8000 != 0)
+                && u16_at(d, p + 18) == Some(0)
+                && p + 36 <= d.len()
+            {
+                via = Some(outer);
+                p += 16;
             }
             let t = need(u16_at(d, p), "an edge record")?;
             let z = need(u16_at(d, p + 2), "an edge record")?;
@@ -1383,7 +1410,7 @@ fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, 
                 }
             }
             let ext2 = extra == 2 && !last && idx <= 1 && first_extra.is_some_and(|w| w != 0xffff_ffff);
-            reps.push(Rep { tag: t & 0x7fff, fid, idx, ext: extra == 1 && !last, ext2 });
+            reps.push(Rep { tag: t & 0x7fff, fid, idx, ext: extra == 1 && !last, ext2, via });
         }
         // Face lists (mirror planes) hold n - 1 references.
         if reps.len() + 1 == n {
@@ -1393,7 +1420,7 @@ fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, 
             }
         }
         if reps.len() == n || (reps.len() + 1 == n && !reps.is_empty()) {
-            out.push((start, reps));
+            out.push((start, p, reps));
             if out.len() > MAX_MATCHES {
                 return Err("too many edge records".into());
             }
@@ -1403,12 +1430,19 @@ fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, 
 }
 
 /// The edges the user picked: the first run of records one record apart.
-fn selection(recs: Vec<(usize, Vec<Rep>)>) -> Vec<(usize, Vec<Rep>)> {
+/// A record also continues the run when it starts right after the previous one ends (its class
+/// tag and eight zero bytes between them): records of four references with their extra words
+/// are longer than 0xa0 bytes (the bearings' Chamfer1 picks eight edges 150 to 200 bytes apart).
+fn selection(recs: Vec<(usize, usize, Vec<Rep>)>) -> Vec<(usize, Vec<Rep>)> {
     let mut run: Vec<(usize, Vec<Rep>)> = Vec::new();
-    for r in recs {
+    let mut last_end = 0usize;
+    for (start, end, reps) in recs {
         match run.last() {
-            Some(last) if r.0 - last.0 > 0xa0 => break,
-            _ => run.push(r),
+            Some(last) if start - last.0 > 0xa0 && start.saturating_sub(last_end) > 16 => break,
+            _ => {
+                run.push((start, reps));
+                last_end = end;
+            }
         }
     }
     run
@@ -1709,7 +1743,7 @@ fn end_face_ref(d: &[u8], a: usize, b: usize) -> Option<Rep> {
     if t & 0x8000 == 0 || u16_at(d, c + 2)? != 0 {
         return None;
     }
-    Some(Rep { tag: t & 0x7fff, fid: u32_at(d, c + 8)?, idx: u32_at(d, c + 16)?, ext: false, ext2: false })
+    Some(Rep { tag: t & 0x7fff, fid: u32_at(d, c + 8)?, idx: u32_at(d, c + 16)?, ext: false, ext2: false, via: None })
 }
 
 /// Whether `(u, v)` lies inside the profile (even-odd over its drawn segments; m).
@@ -2668,6 +2702,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut from_config = (empty_sketches > 0 && in_config.len() == empty_sketches).then(|| in_config.into_iter());
     // The archive index of each node (patterns name their seeds by it), read when needed.
     let mut node_index: Option<HashMap<u32, usize>> = None;
+    // Mirror id -> its plane (origin mm, unit normal), for edges on the mirrored copy.
+    let mut mirror_planes: HashMap<u32, (V3, V3)> = HashMap::new();
     for (ni, n) in nodes.iter().enumerate() {
         let mut cls = n.cls.clone();
         let (a, b) = span(n);
@@ -3173,6 +3209,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     mirrored.clear();
                 }
             }
+            if let Some(pl) = plane {
+                mirror_planes.insert(n.id, pl);
+            }
             let mut js = Map::new();
             js.insert("type".into(), json!("mirror"));
             js.insert("name".into(), json!(n.name));
@@ -3191,7 +3230,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         } else if matches!(cls.as_deref(), Some("Fillet_c" | "Chamfer_c")) {
             let fillet = cls.as_deref() == Some("Fillet_c");
             let ps = params(rf, a, b, nt)?;
-            let sel = selection(edge_records(rf, a, b)?);
+            let mirror_ids: HashSet<u32> = mirror_planes.keys().copied().collect();
+            let sel = selection(edge_records_to(rf, a, b, &mirror_ids)?);
             let mut edges = Vec::new();
             let mut mids: Vec<Option<V3>> = Vec::new();
             let mut stale = 0usize;
@@ -3226,7 +3266,11 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     _ => None,
                 };
                 let reps = own.as_deref().unwrap_or(reps);
-                let m = midpoint(reps, &swept, &rounds, &sketches, &cap_tags, &mut work)?;
+                let m = match mirrored_edge(reps, &swept, &mirror_planes) {
+                    Some((plane, reps, swept)) => midpoint(&reps, &swept, &rounds, &sketches, &cap_tags, &mut work)?
+                        .map(|m| reflect(m, plane).map(|c| round_to(c, 6) + 0.0)),
+                    None => midpoint(reps, &swept, &rounds, &sketches, &cap_tags, &mut work)?,
+                };
                 mids.push(m);
                 made.push(ps.first().filter(|_| fillet).and_then(|r| round_of(reps, &swept, &sketches, &cap_tags, *r)));
                 match m {
@@ -3344,6 +3388,48 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         "source": {"app": "solidworks", "file": file},
         "features": expand_holes(feats),
     }))
+}
+
+/// `p` reflected in the plane `(origin, unit normal)`.
+fn reflect(p: V3, (o, n): (V3, V3)) -> V3 {
+    let k = 2.0 * dot(sub(p, o), n);
+    comb(p, 1.0, n, -k)
+}
+
+/// An extrusion reflected in a plane: its plane's origin and axes reflected and its depth
+/// negated (the normal is the cross product of the axes, which a reflection turns over).
+fn reflect_swept(f: &Swept, plane: (V3, V3)) -> Swept {
+    let dir = |v: V3| comb(v, 1.0, plane.1, -2.0 * dot(v, plane.1));
+    let jp = JsonPlane { origin: reflect(f.plane.origin, plane), x: dir(f.plane.x), y: dir(f.plane.y) };
+    Swept { plane: jp, distance: -f.distance, ..*f }
+}
+
+/// A mirror's plane, an edge's references reflected back and the extrusions they name.
+type Reflected = ((V3, V3), Vec<Rep>, HashMap<u32, Swept>);
+
+/// Fake ids of reflected extrusions (feature ids are far below).
+const REFLECTED: u32 = 0x8000_0000;
+
+/// An edge of a mirror's copy (every reference through the same mirror, or to an extrusion):
+/// the same edge problem reflected back, where the copy's faces are the seed faces and the
+/// other faces are reflected extrusions under fake ids; its midpoint is reflected again.
+fn mirrored_edge(reps: &[Rep], swept: &HashMap<u32, Swept>, planes: &HashMap<u32, (V3, V3)>) -> Option<Reflected> {
+    let m = reps.iter().find_map(|r| r.via)?;
+    let plane = *planes.get(&m)?;
+    let mut sw = swept.clone();
+    let mut out = Vec::with_capacity(reps.len());
+    for r in reps {
+        match r.via {
+            Some(v) if v == m => out.push(Rep { via: None, ..*r }),
+            Some(_) => return None,
+            None => {
+                let f = swept.get(&r.fid)?;
+                sw.insert(r.fid | REFLECTED, reflect_swept(f, plane));
+                out.push(Rep { fid: r.fid | REFLECTED, ..*r });
+            }
+        }
+    }
+    Some((plane, out, sw))
 }
 
 /// Whether a feature of that name was read (not a sketch, not unsupported).
@@ -3586,9 +3672,53 @@ mod end_face_tests {
     }
 
     #[test]
+    fn an_edge_of_a_mirrored_copy_is_solved_reflected_back() {
+        let (swept, _) = plate();
+        // The plate reflected in x = 30: its corners land at x 40..60 and its far cap stays at
+        // z = 5.
+        let plane = ([30.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        let r = reflect_swept(swept.get(&32).unwrap(), plane);
+        assert_eq!(lift(&r, 20.0, 10.0, cap_height(&r, 1)), [40.0, 10.0, 5.0]);
+        assert_eq!(lift(&r, 0.0, 0.0, cap_height(&r, 0)), [60.0, 0.0, 0.0]);
+        // A face of Mirror1's copy (seed face 3) and a face of the plate: the copy's face is the
+        // seed's, the plate's is the reflected plate's.
+        let rep = |idx, via| Rep { tag: 9, fid: 32, idx, ext: false, ext2: false, via };
+        let planes = HashMap::from([(40, plane)]);
+        let (p, reps, sw) = mirrored_edge(&[rep(3, Some(40)), rep(1, None)], &swept, &planes).unwrap();
+        assert_eq!(p, plane);
+        assert_eq!((reps[0].fid, reps[0].via, reps[1].fid), (32, None, 32 | REFLECTED));
+        assert!(sw.contains_key(&(32 | REFLECTED)));
+        assert_eq!(reflect([35.0, 1.0, 2.0], plane), [25.0, 1.0, 2.0]);
+        // Through a mirror whose plane is not known: nothing.
+        assert!(mirrored_edge(&[rep(3, Some(41))], &swept, &planes).is_none());
+    }
+
+    #[test]
+    fn a_face_of_a_mirrored_copy_nests_the_seed_reference() {
+        let word = [0x7d, 0xc3, 0x94, 0x25, 0xad, 0x49, 0xb2, 0x54];
+        let mut d = vec![0u8; 4];
+        d.extend([1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        d.extend(word);
+        d.extend(word);
+        d.extend([0, 0]);
+        // Mirror1 (id 59), then Cut-Extrude2 (id 55) face 3, then a cap of Boss-Extrude1 (id 30).
+        d.extend([0x8a, 0x80, 0, 0, 0x8c, 0x80, 0x8e, 0, 59, 0, 0, 0, 0x0c, 0x97, 0xfe, 0x52]);
+        d.extend([0x94, 0x80, 0, 0, 0x8c, 0x80, 0x8e, 0, 55, 0, 0, 0, 0xda, 0x96, 0xfe, 0x52, 3, 0, 0, 0]);
+        d.extend([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]);
+        d.extend([0xa4, 0x80, 0, 0, 0x8c, 0x80, 0x8e, 0, 30, 0, 0, 0, 0x1e, 0x96, 0xfe, 0x52, 0, 0, 0, 0]);
+        d.extend([0u8; 12]);
+        let recs = edge_records_to(&d, 0, d.len(), &HashSet::from([59])).unwrap();
+        let reps = &recs[0].2;
+        assert_eq!((reps[0].fid, reps[0].idx, reps[0].via), (55, 3, Some(59)));
+        assert_eq!((reps[1].fid, reps[1].via), (30, None));
+        // Unless the mirror is known, the record is not read so.
+        assert!(edge_records_to(&d, 0, d.len(), &HashSet::new()).unwrap().iter().all(|r| r.2.len() != 2));
+    }
+
+    #[test]
     fn a_cap_or_a_side_of_an_extruded_profile_is_picked_with_its_outward_normal() {
         let (swept, sketches) = plate();
-        let rep = |idx| Rep { tag: 9, fid: 32, idx, ext: false, ext2: false };
+        let rep = |idx| Rep { tag: 9, fid: 32, idx, ext: false, ext2: false, via: None };
         let none = HashSet::new();
         // Face 1 (no side has that key): the far cap; face 0: the near one.
         let (p, n, _) = face_pick(&rep(1), &swept, &sketches, &none).unwrap();
@@ -3617,8 +3747,8 @@ mod end_face_tests {
         // later one is coplanar with them.)
         let (swept, sketches) = plate();
         let caps = HashSet::from([9u16]);
-        let side = |idx| Rep { tag: 4, fid: 32, idx, ext: false, ext2: false };
-        let cap = Rep { tag: 9, fid: 32, idx: 1, ext: false, ext2: false };
+        let side = |idx| Rep { tag: 4, fid: 32, idx, ext: false, ext2: false, via: None };
+        let cap = Rep { tag: 9, fid: 32, idx: 1, ext: false, ext2: false, via: None };
         let faces: Vec<_> = [side(3), cap, side(2), side(4)]
             .iter()
             .map(|r| face_of(r, &swept, &HashMap::new(), &sketches, &caps))
@@ -3726,6 +3856,15 @@ mod pattern_tests {
         let none = |_: u32| None;
         let out = feature_pattern("LPattern1", false, seeds(&[0x33d]), &lines, (ints, reals), none, &feats);
         assert_eq!(out[0]["unresolved"], json!(true));
+    }
+
+    #[test]
+    fn a_selection_runs_on_while_records_follow_each_other() {
+        // Records 162 bytes apart, each 14 bytes after the previous one's end, then one far off.
+        let recs = vec![(361, 509, vec![]), (523, 669, vec![]), (683, 830, vec![]), (1773, 1900, vec![])];
+        assert_eq!(selection(recs).len(), 3);
+        // Short records keep the 0xa0 rule.
+        assert_eq!(selection(vec![(0, 60, vec![]), (150, 210, vec![]), (400, 460, vec![])]).len(), 2);
     }
 
     #[test]
