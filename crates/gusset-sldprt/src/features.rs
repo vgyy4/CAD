@@ -1359,11 +1359,39 @@ fn direction_agrees(n: V3, dist: f64, v: V3) -> Option<bool> {
     Some(written * n.get(axis)? * dist > 0.0)
 }
 
-/// A full revolve an edge can name: the sketch (and its plane) and the index of the axis line.
+/// The line a feature names by a line reference (`moLineRef_w`: a reference axis, a sketch
+/// line or an edge): `c7 cf ff ff c7 cf ff ff 00 00 00 00 70 17 00 00`, 8 or 16 zero bytes, then
+/// `f64 length`, the start point and the unit direction in model coordinates (m). Returns the
+/// start in mm and the direction. Dual V-Wheel's Revolve1 turns about Axis1, the z axis.
+fn line_ref(d: &[u8], a: usize, b: usize) -> Option<(V3, V3)> {
+    const MARK: [u8; 16] = [0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0, 0x70, 0x17, 0, 0];
+    let mut from = a;
+    while let Some(i) = find(d, &MARK, from, b) {
+        from = i + 1;
+        // Eight zero bytes before the length, sixteen in newer parts (Solid V-Wheel Xtreme).
+        for at in [i + 24, i + 32] {
+            let (Some(len), Some(o), Some(dir)) = (f64_at(d, at), f64s_at::<3>(d, at + 8), f64s_at::<3>(d, at + 32))
+            else {
+                continue;
+            };
+            if len.is_finite()
+                && len > 0.0
+                && o.iter().all(|c| c.is_finite() && c.abs() < 100.0)
+                && (dot(dir, dir) - 1.0).abs() < 1e-9
+            {
+                return Some((o.map(mm), dir.map(|c| round_to(c, 12) + 0.0)));
+            }
+        }
+    }
+    None
+}
+
+/// A full revolve an edge can name: the sketch (and its plane) and two points of the axis in
+/// sketch coordinates (m).
 #[derive(Debug, Clone, Copy)]
 struct Revolved {
     on: Swept,
-    axis: usize,
+    axis: [Pt; 2],
 }
 
 /// Chamfers whose bevel stands square on the reference face (a 90-degree distance-angle
@@ -1395,8 +1423,7 @@ fn square_chamfer(
         let (s0, s1) = (line(r0.idx)?, line(r1.idx)?);
         let shared = [s0.s, s0.e].into_iter().find(|v| *v == s1.s || *v == s1.e)?;
         let v = point(&g.pts, shared)?;
-        let ax = g.segs.get(rv.axis)?;
-        let (a0, a1) = (point(&g.pts, ax.s)?, point(&g.pts, ax.e)?);
+        let [a0, a1] = rv.axis;
         let al = libm::hypot(a1.x - a0.x, a1.y - a0.y);
         if al < 1e-12 {
             return None;
@@ -1476,8 +1503,7 @@ fn revolve_circle(reps: &[Rep], revolved: &HashMap<u32, Revolved>, sketches: &[G
     common.dedup();
     let [shared] = common.as_slice() else { return None };
     let v = point(&g.pts, *shared)?;
-    let ax = g.segs.get(rv.axis)?;
-    let (a0, a1) = (point(&g.pts, ax.s)?, point(&g.pts, ax.e)?);
+    let [a0, a1] = rv.axis;
     let (dx, dy) = (a1.x - a0.x, a1.y - a0.y);
     let len = libm::hypot(dx, dy);
     if len < 1e-12 {
@@ -2866,7 +2892,29 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     let (Some(a), Some(b)) = (point(&g.pts, s.s), point(&g.pts, s.e)) else { return false };
                     (a.x.abs() < 1e-9 && b.x.abs() < 1e-9) || (a.y.abs() < 1e-9 && b.y.abs() < 1e-9)
                 };
-                let axis = if first.is_some_and(one_sided) {
+                // The axis the revolve names, when it is a line reference (a reference axis or
+                // an edge): written in model coordinates. A sketch line on it is the axis;
+                // without one the axis goes in as a line through a point.
+                let named = line_ref(rf, a, b);
+                let on_named = |k: usize| -> bool {
+                    let (Some((o, dir)), Some(&(_, jp))) =
+                        (named, sketch_by_name.get(last_sketch.as_deref().unwrap_or("")))
+                    else {
+                        return false;
+                    };
+                    let Some(s) = g.segs.get(k).filter(|s| line(s)) else { return false };
+                    let model =
+                        |q: Pt| -> V3 { comb(comb(jp.origin, 1.0, jp.x, q.x * 1000.0), 1.0, jp.y, q.y * 1000.0) };
+                    let off = |q: Pt| {
+                        let w = sub(model(q), o);
+                        let c = cross(w, dir);
+                        dot(c, c) < 1e-12
+                    };
+                    matches!((point(&g.pts, s.s), point(&g.pts, s.e)), (Some(p), Some(q)) if off(p) && off(q))
+                };
+                let axis = if named.is_some() {
+                    (0..g.segs.len()).find(|&k| on_named(k))
+                } else if first.is_some_and(one_sided) {
                     first
                 } else {
                     (0..g.segs.len())
@@ -2881,13 +2929,31 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         })
                         .or(first)
                 };
-                js.insert("axis".into(), axis.map_or(Value::Null, |k| json!({"line": format!("c{k}")})));
+                let axis_json = match (axis, named) {
+                    (Some(k), _) => json!({"line": format!("c{k}")}),
+                    (None, Some((o, dir))) => json!({"origin": json_v3(round3(o)), "direction": json_v3(dir)}),
+                    (None, None) => Value::Null,
+                };
+                js.insert("axis".into(), axis_json);
                 // A full revolve's circles can be named by edge records.
-                if let (Some(k), Some(&(_, plane))) = (axis, last_sketch.as_ref().and_then(|s| sketch_by_name.get(s)))
+                if let Some(&(_, plane)) = last_sketch.as_ref().and_then(|s| sketch_by_name.get(s))
                     && ang.is_none_or(|v| (v.abs() - TAU).abs() < 1e-9)
                 {
-                    let on = Swept { sketch: i, plane, distance: 0.0, symmetric: false, through: false };
-                    revolved.insert(n.id, Revolved { on, axis: k });
+                    // The axis in sketch coordinates (m): its line, or the named line taken
+                    // onto the sketch plane.
+                    let in_sketch = |p: V3| -> Pt {
+                        let w = sub(p, plane.origin);
+                        Pt { x: dot(w, plane.x) / 1000.0, y: dot(w, plane.y) / 1000.0, ext: false, id: 0, alone: 0 }
+                    };
+                    let ends = match (axis.and_then(|k| g.segs.get(k)), named) {
+                        (Some(s), _) => point(&g.pts, s.s).zip(point(&g.pts, s.e)),
+                        (None, Some((o, dir))) => Some((in_sketch(o), in_sketch(comb(o, 1.0, dir, 1.0)))),
+                        (None, None) => None,
+                    };
+                    if let Some((p, q)) = ends {
+                        let on = Swept { sketch: i, plane, distance: 0.0, symmetric: false, through: false };
+                        revolved.insert(n.id, Revolved { on, axis: [p, q] });
+                    }
                 }
             }
             feats.push(Value::Object(js));
@@ -3277,5 +3343,24 @@ mod end_face_tests {
             .map(|r| face_of(r, &swept, &HashMap::new(), &sketches, &caps))
             .collect();
         assert_eq!(plane_edge(&faces, &sketches), None);
+    }
+
+    /// A line reference (Dual V-Wheel's Axis1, the z axis from z = 5.115 mm down): length,
+    /// start and unit direction after the marker, 8 or 16 zero bytes on.
+    #[test]
+    fn a_line_reference_gives_the_axis() {
+        for gap in [8usize, 16] {
+            let mut d = vec![7u8; 5];
+            d.extend([0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0, 0x70, 0x17, 0, 0]);
+            d.extend(vec![0u8; gap]);
+            for v in [0.01023, 0.0, 0.0, 0.005115, 0.0, 0.0, -1.0] {
+                d.extend(f64::to_le_bytes(v));
+            }
+            d.extend([0u8; 8]);
+            let (o, dir) = line_ref(&d, 0, d.len()).unwrap();
+            assert_eq!(o, [0.0, 0.0, 5.115]);
+            assert_eq!(dir, [0.0, 0.0, -1.0]);
+        }
+        assert_eq!(line_ref(&[0u8; 100], 0, 100), None);
     }
 }
