@@ -61,6 +61,7 @@ pub(crate) enum Request {
     Mass(Shape),
     BBox(Shape),
     Tessellate(Shape, TessellationParams),
+    TessellateFace(Shape, u32, TessellationParams),
     ExportStep(Vec<(Shape, String)>),
     ImportStep(Vec<u8>),
     ExportIges(Vec<(Shape, String)>),
@@ -282,6 +283,12 @@ impl Request {
                 put_shape(&mut w, s, x)?;
                 params.put(&mut w, s)?;
             }
+            Request::TessellateFace(x, face, params) => {
+                w.u8(38);
+                put_shape(&mut w, s, x)?;
+                w.u32(*face);
+                params.put(&mut w, s)?;
+            }
             Request::ExportStep(bodies) | Request::ExportIges(bodies) => {
                 w.u8(if matches!(self, Request::ExportStep(_)) { 18 } else { 19 });
                 put_named(&mut w, s, bodies)?;
@@ -345,6 +352,7 @@ impl Request {
             15 => Request::BBox(get_shape(&mut r, s)?),
             16 => Request::WriteNative(get_shape(&mut r, s)?),
             17 => Request::Tessellate(get_shape(&mut r, s)?, TessellationParams::get(&mut r, s)?),
+            38 => Request::TessellateFace(get_shape(&mut r, s)?, r.u32()?, TessellationParams::get(&mut r, s)?),
             18 => Request::ExportStep(get_named(&mut r, s)?),
             19 => Request::ExportIges(get_named(&mut r, s)?),
             20 => Request::ImportStep(r.bytes()?.to_vec()),

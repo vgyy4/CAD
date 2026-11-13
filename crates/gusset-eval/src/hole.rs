@@ -15,6 +15,16 @@ pub const DEFAULT_POINT_ANGLE: f64 = 118.0 * PI / 180.0;
 const POINT_ANGLE_RANGE: (f64, f64) = (30.0 * PI / 180.0, PI);
 /// How far past the body a through hole's tool reaches (mm).
 const THROUGH_OVERSHOOT: f64 = 1.0;
+/// The chord tolerance of the face outline a hole's mouth is checked against (mm): 0.01 mm, or
+/// this share of the body's bounding-box diagonal on a body larger than 400 mm, up to 0.1 mm.
+const OUTLINE_DEFLECTION: (f64, f64, f64) = (0.01, 2.5e-5, 0.1);
+
+/// The chord tolerance of the face outline for a body with bounding box `b` (mm).
+fn outline_deflection(b: &gusset_kernel::BBox) -> f64 {
+    let (least, share, most) = OUTLINE_DEFLECTION;
+    let diag = dist(b.min, b.max);
+    if diag.is_finite() { (diag * share).clamp(least, most) } else { most }
+}
 
 /// The cosmetic thread of a tapped hole.
 #[derive(Debug, Clone, PartialEq)]
@@ -166,12 +176,20 @@ impl Evaluator {
             }
         }
 
-        // Every hole's mouth must lie within the face.
+        // Every hole's mouth must lie within the face: the face alone is meshed (meshing the
+        // whole body at this tolerance ran away on a large imported body), at a tolerance that
+        // grows with the body.
         let mouth = dims.mouth_radius();
+        let bbox = k.bbox(&body.shape).map_err(|ke| kernel_err(name, "bounding box", ke))?;
+        let deflection = outline_deflection(&bbox);
         let mesh = k
-            .tessellate(&body.shape, &TessellationParams { linear_deflection: 0.01, angular_deflection: 0.5 })
+            .tessellate_face(
+                &body.shape,
+                fi,
+                &TessellationParams { linear_deflection: deflection, angular_deflection: 0.5 },
+            )
             .map_err(|ke| kernel_err(name, "face check", ke))?;
-        let outline = FaceOutline::new(&mesh, fi, &frame);
+        let outline = FaceOutline::new(&mesh, fi, &frame, deflection);
         for (id, pos) in &sites {
             if !outline.holds_disc(frame_uv(&frame, *pos), mouth) {
                 let at = frame_uv(&frame, *pos);
@@ -195,7 +213,6 @@ impl Evaluator {
         self.charge(s, name, "the holes", sites.len(), body.topology.faces.len() as u64 + tool_faces)?;
 
         // Build every tool, then cut them all at once.
-        let bbox = k.bbox(&body.shape).map_err(|ke| kernel_err(name, "bounding box", ke))?;
         let mut tools = Vec::with_capacity(sites.len());
         let mut infos = Vec::with_capacity(sites.len());
         for (id, pos) in &sites {
@@ -508,10 +525,12 @@ struct FaceOutline {
     /// The triangle edges that only one triangle of the face has: the face's outer and
     /// inner boundary loops (edges of existing holes and slots included).
     boundary: Vec<[[f64; 2]; 2]>,
+    /// The chord tolerance the face was meshed to (mm).
+    deflection: f64,
 }
 
 impl FaceOutline {
-    fn new(mesh: &Mesh, fi: u32, frame: &Frame) -> Self {
+    fn new(mesh: &Mesh, fi: u32, frame: &Frame, deflection: f64) -> Self {
         let mut tris = Vec::new();
         // Each edge by its end positions (as bits, unordered) -> how many triangles have it.
         let mut uses: BTreeMap<(MeshPoint, MeshPoint), EdgeUse> = BTreeMap::new();
@@ -541,14 +560,14 @@ impl FaceOutline {
             }
         }
         let boundary = uses.into_values().filter(|(n, _)| *n == 1).map(|(_, seg)| seg).collect();
-        FaceOutline { tris, boundary }
+        FaceOutline { tris, boundary, deflection }
     }
 
     /// Whether the disc of radius `radius` around `c` lies on the face: the centre is on
     /// one of its triangles and no boundary edge comes closer than the radius (less a
     /// little, for the chord error of curved edges and single-precision mesh coordinates).
     fn holds_disc(&self, c: [f64; 2], radius: f64) -> bool {
-        let margin = (0.01_f64).min(radius * 0.2);
+        let margin = self.deflection.min(radius * 0.2);
         let r = radius - margin;
         self.tris.iter().any(|t| in_triangle(c, t)) && self.boundary.iter().all(|[a, b]| point_seg_dist(c, *a, *b) >= r)
     }

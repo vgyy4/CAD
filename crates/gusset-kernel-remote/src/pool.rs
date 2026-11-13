@@ -280,6 +280,11 @@ impl Kernel for PoolKernel {
         k.tessellate(&s, params)
     }
 
+    fn tessellate_face(&self, shape: &Shape, face: u32, params: &TessellationParams) -> KResult<Mesh> {
+        let (k, s) = self.on_one(shape)?;
+        k.tessellate_face(&s, face, params)
+    }
+
     fn hidden_lines(&self, shape: &Shape, view: &gusset_kernel::HlrView) -> KResult<Vec<gusset_kernel::HlrCurve>> {
         let (k, s) = self.on_one(shape)?;
         k.hidden_lines(&s, view)

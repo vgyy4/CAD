@@ -195,3 +195,15 @@ Uncertain (sources disagree or only one source found); the values stay as they a
   Fractory also lists M3 medium 3.35 and M6 medium 6.5, against 3.4 and 6.6 everywhere else.
 - **ISO 273 M18 and M22** (19, 20, 21 and 23, 24, 26): only Optimas found; the sources
   consulted do not list these sizes. M14 fine/medium/coarse is covered by AmesWeb only.
+
+## Amendment (2026-11-13): Fit check meshes the face alone
+
+§2's fit check tessellated the whole body at 0.01 mm. On large bodies with curved faces that
+was the cost of the feature (a dome 2 m across: 60 s), and on an imported KUKA iiwa link
+(`Link_2.SLDPRT`, a hole wizard on an exact body whose planar face has a broken outline) BRepMesh's
+Delaunay grew past 8 GB in a minute. The check now meshes only the face the holes start on
+(`Kernel::tessellate_face`, remote request 38: the face is copied and meshed alone, so the body's
+own mesh is untouched; the OCCT kernel refuses a face that takes more than 10 s). The
+tolerance grows with the body: 0.01 mm up to a 400 mm bounding-box diagonal, then 1/40000 of
+the diagonal, at most 0.1 mm; the margin a mouth may come over a curved edge is the same
+tolerance (still 0.01 mm on parts below 400 mm). The dome's hole now takes 0.02 s.

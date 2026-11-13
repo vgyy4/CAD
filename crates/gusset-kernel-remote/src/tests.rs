@@ -72,6 +72,10 @@ fn operations_match_the_kernel_they_wrap() {
         k.tessellate(&a.shape, &params).unwrap().positions,
         local.tessellate(&b.shape, &params).unwrap().positions
     );
+    assert_eq!(
+        k.tessellate_face(&a.shape, 1, &params).unwrap().face_ranges,
+        local.tessellate_face(&b.shape, 1, &params).unwrap().face_ranges
+    );
     // Hidden lines cross the wire unchanged (ADR 0032).
     let view = gusset_kernel::HlrView { toward: [0.0, -1.0, 0.0], x: [1.0, 0.0, 0.0], exact: true, deflection: 0.1 };
     let hl = k.hidden_lines(&a.shape, &view).unwrap();

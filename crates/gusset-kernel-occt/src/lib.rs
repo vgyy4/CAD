@@ -447,6 +447,26 @@ mod imp {
         op_result(ffi::boolean_many(boolean_code(op), raw(target)?, &raws, refine)?)
     }
 
+    /// A shim mesh as the kernel's.
+    fn mesh_of(m: gusset_occt_sys::safe::RawMesh) -> Mesh {
+        let v3 = |v: &[f32]| {
+            v.chunks_exact(3)
+                .filter_map(|c| if let &[x, y, z] = c { Some([x, y, z]) } else { None })
+                .collect::<Vec<_>>()
+        };
+        let face_ranges =
+            m.face_ranges.chunks_exact(2).filter_map(|c| if let &[a, b] = c { Some(a..b) } else { None }).collect();
+        let pts = v3(&m.edge_points);
+        let edges = m
+            .edge_offsets
+            .windows(2)
+            .filter_map(|w| {
+                if let &[a, b] = w { Some(pts.get(a as usize..b as usize).unwrap_or_default().to_vec()) } else { None }
+            })
+            .collect();
+        Mesh { positions: v3(&m.positions), normals: v3(&m.normals), indices: m.indices, face_ranges, edges }
+    }
+
     impl Kernel for OcctKernel {
         fn name(&self) -> &'static str {
             "occt"
@@ -734,27 +754,11 @@ mod imp {
         }
 
         fn tessellate(&self, shape: &Shape, params: &TessellationParams) -> KResult<Mesh> {
-            let m = ffi::tessellate(raw(shape)?, params.linear_deflection, params.angular_deflection)?;
-            let v3 = |v: &[f32]| {
-                v.chunks_exact(3)
-                    .filter_map(|c| if let &[x, y, z] = c { Some([x, y, z]) } else { None })
-                    .collect::<Vec<_>>()
-            };
-            let face_ranges =
-                m.face_ranges.chunks_exact(2).filter_map(|c| if let &[a, b] = c { Some(a..b) } else { None }).collect();
-            let pts = v3(&m.edge_points);
-            let edges = m
-                .edge_offsets
-                .windows(2)
-                .filter_map(|w| {
-                    if let &[a, b] = w {
-                        Some(pts.get(a as usize..b as usize).unwrap_or_default().to_vec())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            Ok(Mesh { positions: v3(&m.positions), normals: v3(&m.normals), indices: m.indices, face_ranges, edges })
+            Ok(mesh_of(ffi::tessellate(raw(shape)?, params.linear_deflection, params.angular_deflection)?))
+        }
+
+        fn tessellate_face(&self, shape: &Shape, face: u32, params: &TessellationParams) -> KResult<Mesh> {
+            Ok(mesh_of(ffi::tessellate_face(raw(shape)?, face, params.linear_deflection, params.angular_deflection)?))
         }
 
         fn export_step(&self, bodies: &[(&Shape, &str)]) -> KResult<Vec<u8>> {

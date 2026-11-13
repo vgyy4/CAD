@@ -2764,3 +2764,23 @@ END-ISO-10303-21;
     let e = k().mass_properties(&bodies[0].0).unwrap_err();
     assert!(e.to_string().contains("unbounded"), "{e}");
 }
+
+/// One face meshed alone: every face keeps its range, only that face has triangles, as many
+/// as in the whole body's mesh.
+#[test]
+fn tessellate_face_meshes_one_face() {
+    let a = k().extrude(&boxp(40.0, 20.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let faces = k().topology(&a.shape).unwrap().faces.len();
+    let p = TessellationParams { linear_deflection: 0.01, angular_deflection: 0.5 };
+    let whole = k().tessellate(&a.shape, &p).unwrap();
+    for fi in 0..faces {
+        let m = k().tessellate_face(&a.shape, fi as u32, &p).unwrap();
+        assert_eq!(m.face_ranges.len(), faces);
+        for (i, r) in m.face_ranges.iter().enumerate() {
+            assert_eq!(r.is_empty(), i != fi, "face {i} of the mesh of face {fi}: {r:?}");
+        }
+        assert_eq!(m.indices.len() / 3, m.face_ranges[fi].len());
+        assert_eq!(whole.face_ranges[fi].len(), m.face_ranges[fi].len());
+    }
+    assert!(k().tessellate_face(&a.shape, faces as u32, &p).is_err());
+}

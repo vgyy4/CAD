@@ -161,6 +161,10 @@ pub(crate) fn tessellate(s: &RawShape, lin: f64, ang: f64) -> KResult<safe::RawM
     safe::tessellate(s, lin, ang).map_err(err(KernelErrorKind::Internal))
 }
 
+pub(crate) fn tessellate_face(s: &RawShape, face: u32, lin: f64, ang: f64) -> KResult<safe::RawMesh> {
+    safe::tessellate_face(s, face, lin, ang).map_err(err(KernelErrorKind::OperationFailed))
+}
+
 pub(crate) fn step_write(shapes: &[&RawShape], names: &[&str]) -> KResult<Vec<u8>> {
     safe::step_write(shapes, names).map_err(err(KernelErrorKind::Io))
 }

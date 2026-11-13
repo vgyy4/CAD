@@ -196,6 +196,11 @@ int gs_hlr(const GsShape* s, const double view[6], int exact, double deflection,
 int gs_tessellate(const GsShape* s, double lin_defl, double ang_defl, GsBuf* positions, GsBuf* normals,
                   GsBuf* indices, GsBuf* face_ranges, GsBuf* edge_offsets, GsBuf* edge_points);
 
+/* Mesh of one face (0-based, gs_topology order) as gs_tessellate: a range for every face, only
+ * `face` triangulated, meshed alone on a copy within a time limit; no edge polylines. */
+int gs_tessellate_face(const GsShape* s, uint32_t face, double lin_defl, double ang_defl, GsBuf* positions,
+                       GsBuf* normals, GsBuf* indices, GsBuf* face_ranges);
+
 /* Exchange. Output bytes as GsBuf of uint8. names are UTF-8, one per shape. */
 int gs_step_write(const GsShape* const* shapes, const char* const* names, size_t n, GsBuf* out);
 int gs_iges_write(const GsShape* const* shapes, size_t n, GsBuf* out);

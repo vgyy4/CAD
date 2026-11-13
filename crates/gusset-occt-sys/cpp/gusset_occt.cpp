@@ -6,6 +6,7 @@
 
 #include "gusset_occt.h"
 
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstdlib>
@@ -116,6 +117,9 @@
 #include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepLProp_SLProps.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <IMeshTools_Parameters.hxx>
+#include <Message_ProgressIndicator.hxx>
+#include <Message_ProgressScope.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeHalfSpace.hxx>
@@ -6100,6 +6104,92 @@ int gs_hlr(const GsShape* s, const double view[6], int exact, double deflection,
   GS_GUARD_END
 }
 
+namespace {
+
+// The triangulation of `f`, if it has one, appended to a mesh's positions, normals and
+// indices (outward normals, counter-clockwise triangles).
+void append_face_mesh(const TopoDS_Face& f, std::vector<float>& pos, std::vector<float>& nrm,
+                      std::vector<uint32_t>& idx) {
+  TopLoc_Location loc;
+  const occ::handle<Poly_Triangulation>& tri = BRep_Tool::Triangulation(f, loc);
+  if (tri.IsNull()) return;
+  if (!tri->HasNormals()) BRepLib_ToolTriangulatedShape::ComputeNormals(f, tri);
+  bool rev = f.Orientation() == TopAbs_REVERSED;
+  gp_Trsf t = loc.Transformation();
+  uint32_t base = uint32_t(pos.size() / 3);
+  for (int k = 1; k <= tri->NbNodes(); ++k) {
+    gp_Pnt p = tri->Node(k).Transformed(t);
+    pos.insert(pos.end(), {float(p.X()), float(p.Y()), float(p.Z())});
+    gp_Dir n = tri->Normal(k);
+    gp_Vec nv(n);
+    nv.Transform(t);
+    if (rev) nv.Reverse();
+    nrm.insert(nrm.end(), {float(nv.X()), float(nv.Y()), float(nv.Z())});
+  }
+  for (int k = 1; k <= tri->NbTriangles(); ++k) {
+    int a, b, c;
+    tri->Triangle(k).Get(a, b, c);
+    if (rev) std::swap(b, c);
+    idx.insert(idx.end(), {base + uint32_t(a - 1), base + uint32_t(b - 1), base + uint32_t(c - 1)});
+  }
+}
+
+// How long meshing one face (`gs_tessellate_face`) may take. A face meshes in milliseconds;
+// BRepMesh's Delaunay can run away on a face whose boundary is broken (an imported KUKA link's
+// plane grew past 8 GB in a minute when its body was meshed at 0.01 mm).
+const double kFaceMeshSeconds = 10.0;
+
+// Stops an algorithm that checks its progress range once a time is past.
+class Deadline : public Message_ProgressIndicator {
+ public:
+  explicit Deadline(double seconds)
+      : end_(std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                                     std::chrono::duration<double>(seconds))) {}
+  bool UserBreak() override { return std::chrono::steady_clock::now() > end_; }
+  void Show(const Message_ProgressScope&, const bool) override {}
+
+ private:
+  std::chrono::steady_clock::time_point end_;
+};
+
+}  // namespace
+
+/* Mesh of one face: as gs_tessellate, with a range for every face of `s` but only face
+ * `face` (0-based, in gs_topology order) triangulated, and no edge polylines. The face is
+ * meshed on a copy, alone, within kFaceMeshSeconds. */
+int gs_tessellate_face(const GsShape* s, uint32_t face, double lin_defl, double ang_defl, GsBuf* positions,
+                       GsBuf* normals, GsBuf* indices, GsBuf* face_ranges) {
+  GS_GUARD_BEGIN
+  if (!s || !positions || !normals || !indices || !face_ranges) return fail("null argument");
+  if (!(lin_defl > 0) || !(ang_defl > 0)) return fail("tessellation tolerances must be positive");
+  ShapeMap fm;
+  TopExp::MapShapes(s->s, TopAbs_FACE, fm);
+  if (face >= uint32_t(fm.Extent())) return fail("the face does not exist");
+  // A copy without the body's triangulation: the face is meshed alone, and the body keeps
+  // its own mesh.
+  const TopoDS_Face f = TopoDS::Face(BRepBuilderAPI_Copy(fm(int(face) + 1), true, false).Shape());
+  IMeshTools_Parameters prm;
+  prm.Deflection = lin_defl;
+  prm.Angle = ang_defl;
+  occ::handle<Deadline> deadline = new Deadline(kFaceMeshSeconds);
+  BRepMesh_IncrementalMesh mesher(f, prm, deadline->Start());
+  if (deadline->UserBreak()) return fail("meshing the face took too long (its outline may be broken)");
+  std::vector<float> pos, nrm;
+  std::vector<uint32_t> idx, ranges;
+  for (int i = 1; i <= fm.Extent(); ++i) {
+    uint32_t start = uint32_t(idx.size() / 3);
+    if (i == int(face) + 1) append_face_mesh(f, pos, nrm, idx);
+    ranges.push_back(start);
+    ranges.push_back(uint32_t(idx.size() / 3));
+  }
+  to_buf(pos, positions);
+  to_buf(nrm, normals);
+  to_buf(idx, indices);
+  to_buf(ranges, face_ranges);
+  return GS_OK;
+  GS_GUARD_END
+}
+
 int gs_tessellate(const GsShape* s, double lin_defl, double ang_defl, GsBuf* positions, GsBuf* normals,
                   GsBuf* indices, GsBuf* face_ranges, GsBuf* edge_offsets, GsBuf* edge_points) {
   GS_GUARD_BEGIN
@@ -6113,31 +6203,8 @@ int gs_tessellate(const GsShape* s, double lin_defl, double ang_defl, GsBuf* pos
   std::vector<float> pos, nrm;
   std::vector<uint32_t> idx, ranges;
   for (int i = 1; i <= fm.Extent(); ++i) {
-    TopoDS_Face f = TopoDS::Face(fm(i));
     uint32_t start = uint32_t(idx.size() / 3);
-    TopLoc_Location loc;
-    const occ::handle<Poly_Triangulation>& tri = BRep_Tool::Triangulation(f, loc);
-    if (!tri.IsNull()) {
-      if (!tri->HasNormals()) BRepLib_ToolTriangulatedShape::ComputeNormals(f, tri);
-      bool rev = f.Orientation() == TopAbs_REVERSED;
-      gp_Trsf t = loc.Transformation();
-      uint32_t base = uint32_t(pos.size() / 3);
-      for (int k = 1; k <= tri->NbNodes(); ++k) {
-        gp_Pnt p = tri->Node(k).Transformed(t);
-        pos.insert(pos.end(), {float(p.X()), float(p.Y()), float(p.Z())});
-        gp_Dir n = tri->Normal(k);
-        gp_Vec nv(n);
-        nv.Transform(t);
-        if (rev) nv.Reverse();
-        nrm.insert(nrm.end(), {float(nv.X()), float(nv.Y()), float(nv.Z())});
-      }
-      for (int k = 1; k <= tri->NbTriangles(); ++k) {
-        int a, b, c;
-        tri->Triangle(k).Get(a, b, c);
-        if (rev) std::swap(b, c);
-        idx.insert(idx.end(), {base + uint32_t(a - 1), base + uint32_t(b - 1), base + uint32_t(c - 1)});
-      }
-    }
+    append_face_mesh(TopoDS::Face(fm(i)), pos, nrm, idx);
     ranges.push_back(start);
     ranges.push_back(uint32_t(idx.size() / 3));
   }

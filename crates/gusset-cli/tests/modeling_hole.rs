@@ -613,3 +613,49 @@ pattern_circular Ring (axis: Z, through: [30 mm, 20 mm, 0 mm], count: 4, angle: 
     let boss = PI * 9.0 * 5.0;
     assert!(close(volume(&ev, &r) - PLATE_VOLUME, 4.0 * boss, 1e-6), "{}", volume(&ev, &r) - PLATE_VOLUME);
 }
+
+/// The mouth check meshes the face the hole starts on, not the whole body: on a dome 2 m
+/// across, meshing the sphere at the check's tolerance took seconds (and on an imported
+/// KUKA link with a broken face, gigabytes), while the base is one flat disc.
+#[test]
+fn a_hole_on_a_large_curved_body_checks_only_its_face() {
+    let text = "gusset 1
+units mm
+
+sketch Dome (plane: XZ, next_id: 7) {
+  p1 = point(0, 0)
+  p2 = point(1000, 0)
+  p3 = point(0, 1000)
+  l4 = line(p1, p2)
+  a5 = arc(p1, p2, p3)
+  l6 = line(p3, p1)
+}
+
+revolve R (profile: Dome, axis: Dome.l6, angle: 360 deg, op: new)
+";
+    let doc = Document::from_text(text).unwrap_or_else(|e| panic!("{e}"));
+    let mut ev = Evaluator::new(kernel());
+    let r = ev.evaluate(&doc, None, &());
+    ok(&r);
+    let b = r.body("R").unwrap();
+    let base = b
+        .names
+        .faces
+        .iter()
+        .zip(&b.topology.faces)
+        .find(|(_, f)| f.kind == gusset_kernel::SurfaceKind::Plane)
+        .map(|(n, _)| n.to_string())
+        .unwrap_or_else(|| panic!("no flat face in {:?}", b.names.faces));
+    let before = ev.kernel().mass_properties(&b.shape).unwrap().volume;
+    let doc = Document::from_text(&format!(
+        "{text}\nhole H (face: {base}, at: [[300 mm, 200 mm]], diameter: 10 mm, depth: 20 mm, point_angle: 180 deg)\n"
+    ))
+    .unwrap_or_else(|e| panic!("{e}"));
+    let t = std::time::Instant::now();
+    let r = ev.evaluate(&doc, None, &());
+    let took = t.elapsed();
+    ok(&r);
+    let after = ev.kernel().mass_properties(&r.body("R").unwrap().shape).unwrap().volume;
+    assert!(close(before - after, PI * 25.0 * 20.0, 1e-6), "{}", before - after);
+    assert!(took < std::time::Duration::from_secs(20), "the hole took {took:?}");
+}

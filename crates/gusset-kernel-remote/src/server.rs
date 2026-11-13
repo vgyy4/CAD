@@ -124,6 +124,7 @@ impl<K: Kernel> Server<K> {
             Request::Mass(s) => Reply::Mass(k.mass_properties(&s)?),
             Request::BBox(s) => Reply::BBox(k.bbox(&s)?),
             Request::Tessellate(s, params) => Reply::Mesh(k.tessellate(&s, &params)?),
+            Request::TessellateFace(s, face, params) => Reply::Mesh(k.tessellate_face(&s, face, &params)?),
             Request::HiddenLines(s, view) => Reply::Curves(k.hidden_lines(&s, &view)?),
             Request::ExportStep(bodies) => {
                 let refs: Vec<(&Shape, &str)> = bodies.iter().map(|(s, n)| (s, n.as_str())).collect();

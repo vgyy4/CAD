@@ -381,6 +381,15 @@ pub trait Kernel: Send + Sync + Debug {
     fn bbox(&self, shape: &Shape) -> KResult<BBox>;
     fn tessellate(&self, shape: &Shape, params: &TessellationParams) -> KResult<Mesh>;
 
+    /// A mesh in which face `face` (an index into [`Topology::faces`]) is triangulated as
+    /// [`Kernel::tessellate`] would, meshed alone so that no other face costs anything: every
+    /// face has its range, the others may be empty, and `edges` may be empty. A kernel may
+    /// refuse a face that takes too long to mesh. The default meshes the whole shape.
+    fn tessellate_face(&self, shape: &Shape, face: u32, params: &TessellationParams) -> KResult<Mesh> {
+        let _ = face;
+        self.tessellate(shape, params)
+    }
+
     /// Writes STEP (the kernel's default schema: AP214 for OCCT) with one named body per entry.
     fn export_step(&self, bodies: &[(&Shape, &str)]) -> KResult<Vec<u8>> {
         let _ = bodies;

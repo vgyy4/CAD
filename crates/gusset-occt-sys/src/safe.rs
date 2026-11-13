@@ -569,6 +569,28 @@ pub fn tessellate(s: &RawShape, lin: f64, ang: f64) -> ShimResult<RawMesh> {
     Ok(m)
 }
 
+/// Mesh of face `face` alone (see `gs_tessellate_face`): every face has a range, only `face`
+/// triangles; no edge polylines.
+pub fn tessellate_face(s: &RawShape, face: u32, lin: f64, ang: f64) -> ShimResult<RawMesh> {
+    let mut b: [GsBuf; 4] = Default::default();
+    let rc = s.with(|p| {
+        let [pos, nrm, idx, fr] = &mut b;
+        // SAFETY: shape locked; out-params are distinct valid GsBufs.
+        unsafe { sys::gs_tessellate_face(p, face, lin, ang, pos, nrm, idx, fr) }
+    });
+    let [pos, nrm, idx, fr] = b;
+    let m = RawMesh {
+        positions: take(pos),
+        normals: take(nrm),
+        indices: take(idx),
+        face_ranges: take(fr),
+        edge_offsets: vec![0],
+        edge_points: Vec::new(),
+    };
+    check(rc)?;
+    Ok(m)
+}
+
 /// Hidden-line projection: (curves, f64 x 10 each; points, f64 x 2 each); see `gs_hlr`.
 pub fn hlr(s: &RawShape, view: &[f64; 6], exact: bool, deflection: f64) -> ShimResult<(Vec<f64>, Vec<f64>)> {
     let mut b: [GsBuf; 2] = Default::default();

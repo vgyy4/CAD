@@ -626,6 +626,13 @@ impl Kernel for RemoteKernel {
         }
     }
 
+    fn tessellate_face(&self, shape: &Shape, face: u32, params: &TessellationParams) -> KResult<Mesh> {
+        match self.call(&Request::TessellateFace(shape.clone(), face, *params))? {
+            Reply::Mesh(m) => check_mesh(m),
+            _ => Err(unexpected()),
+        }
+    }
+
     fn hidden_lines(&self, shape: &Shape, view: &gusset_kernel::HlrView) -> KResult<Vec<gusset_kernel::HlrCurve>> {
         match self.call(&Request::HiddenLines(shape.clone(), *view))? {
             Reply::Curves(c) => Ok(c),

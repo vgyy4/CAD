@@ -329,6 +329,16 @@ mod raw {
             edge_offsets: *mut GsBuf,
             edge_points: *mut GsBuf,
         ) -> i32;
+        pub(crate) fn gs_tessellate_face(
+            s: *const GsShape,
+            face: u32,
+            lin_defl: f64,
+            ang_defl: f64,
+            positions: *mut GsBuf,
+            normals: *mut GsBuf,
+            indices: *mut GsBuf,
+            face_ranges: *mut GsBuf,
+        ) -> i32;
         pub(crate) fn gs_step_write(
             shapes: *const *const GsShape,
             names: *const *const core::ffi::c_char,
