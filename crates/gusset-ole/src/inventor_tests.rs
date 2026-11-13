@@ -428,6 +428,16 @@ fn a_hole_before_any_body_has_no_fallback() {
 }
 
 #[test]
+fn a_fillet_with_several_radii_splits_by_the_blend_faces_radius() {
+    use crate::inventor_features::radius_groups;
+    let g = radius_groups(&[1.0, 2.5, 4.0], &[Some(2.5), Some(1.0), Some(2.5)]).unwrap();
+    assert_eq!(g, [(1.0, vec![1]), (2.5, vec![0, 2])]);
+    // An edge whose face has no radius, or a radius of no set, refuses the whole feature.
+    assert!(radius_groups(&[1.0, 2.5], &[Some(1.0), None]).is_none());
+    assert!(radius_groups(&[1.0, 2.5], &[Some(1.0), Some(3.0)]).is_none());
+}
+
+#[test]
 fn fillets_and_chamfers_need_the_result_body() {
     let mut r = base_records();
     r.push((NAME, name_rec("Fillet1", Some(T_FILLET)))); // 19

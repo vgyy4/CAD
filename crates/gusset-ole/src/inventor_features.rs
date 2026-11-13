@@ -1000,7 +1000,9 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let faces = b.blend_faces(fid);
     // A pick: the midpoint of the pre-fillet edge (mm) and, unless the edge is a whole circle,
     // two points 0.1 mm either side of it along the edge.
-    let mut mids: Vec<(V3, Option<[V3; 2]>)> = Vec::new();
+    // With the blend face's radius (mm; cylinders and tori), to tell the edge sets of a fillet
+    // with several radii apart.
+    let mut mids: Vec<(V3, Option<[V3; 2]>, Option<f64>)> = Vec::new();
     let mut why: Vec<String> = Vec::new();
     let mut radii: Vec<f64> = Vec::new();
     let mut rounds: Vec<(V3, V3)> = Vec::new();
@@ -1055,12 +1057,13 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                 {
                     continue;
                 }
-                mids.push((mm(m), local_path(m, &info, PATH_EPS).map(|[a, b]| [mm(a), mm(b)])));
-                match k {
-                    Surf::Cyl { r, .. } => radii.push(rnd_to(r * CM, 1e6)),
-                    Surf::Torus { minor, .. } => radii.push(rnd_to(minor * CM, 1e6)),
-                    _ => {}
-                }
+                let rad = match k {
+                    Surf::Cyl { r, .. } => Some(rnd_to(r * CM, 1e6)),
+                    Surf::Torus { minor, .. } => Some(rnd_to(minor * CM, 1e6)),
+                    _ => None,
+                };
+                radii.extend(rad);
+                mids.push((mm(m), local_path(m, &info, PATH_EPS).map(|[a, b]| [mm(a), mm(b)]), rad));
             }
         }
     }
@@ -1103,23 +1106,21 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         st.out.push(unsupported(name, &label, Some(why.join("; "))));
         return Ok(());
     }
-    let mut uniq: Vec<(V3, Option<[V3; 2]>)> = Vec::new();
-    for (m, p) in mids {
-        if uniq.iter().all(|q| crate::acis::dist(m, q.0) > 1e-6) {
-            uniq.push((m, p));
+    let mut uniq: Vec<(V3, Option<[V3; 2]>, Option<f64>)> = Vec::new();
+    for (m, p, q) in mids {
+        if uniq.iter().all(|u| crate::acis::dist(m, u.0) > 1e-6) {
+            uniq.push((m, p, q));
         }
     }
     if uniq.is_empty() {
         st.out.push(unsupported(name, &label, Some("no edge of the blend faces".into())));
         return Ok(());
     }
-    let edges: Vec<Value> = uniq
-        .iter()
-        .map(|(m, p)| match p {
-            Some([a, b]) => json!({"midpoint": m, "path": [a, b]}),
-            None => json!({"midpoint": m}),
-        })
-        .collect();
+    let pick = |(m, p, _): &(V3, Option<[V3; 2]>, Option<f64>)| match p {
+        Some([a, b]) => json!({"midpoint": m, "path": [a, b]}),
+        None => json!({"midpoint": m}),
+    };
+    let edges: Vec<Value> = uniq.iter().map(pick).collect();
     if typ == FeatType::Fillet {
         let mut rad = None;
         let (sets, _) = r.dc.first_list(s.need(0)?, None).ok_or("the fillet has no edge sets")?;
@@ -1144,7 +1145,28 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
             return Ok(());
         };
         if sets.len() > 1 || radii.iter().any(|q| (q - rad).abs() > 1e-6) {
-            st.out.push(unsupported(name, "fillet with several radii", None));
+            // Several edge sets: one fillet per radius, each edge going to the set whose radius
+            // its blend face has (a face without a radius, or a radius no set has, refuses).
+            let mut set_radii: Vec<f64> = Vec::new();
+            for x in sets.iter().flatten() {
+                let q = r.dc.refs(*x).into_iter().find(|&(_, y)| r.dc.role(y) == Role::Param);
+                if let Some(v) = q.and_then(|(_, y)| r.dc.param(y)).map(|p| rnd_to(p.1 * CM, 1e6))
+                    && v > 0.0
+                    && set_radii.iter().all(|w| (w - v).abs() > 1e-6)
+                {
+                    set_radii.push(v);
+                }
+            }
+            let face_radii: Vec<Option<f64>> = uniq.iter().map(|u| u.2).collect();
+            let Some(groups) = radius_groups(&set_radii, &face_radii) else {
+                st.out.push(unsupported(name, "fillet with several radii", None));
+                return Ok(());
+            };
+            for (k, (rad, idx)) in groups.into_iter().enumerate() {
+                let nm = if k == 0 { name.to_string() } else { format!("{name}_{}", k + 1) };
+                let edges: Vec<Value> = idx.iter().filter_map(|&i| uniq.get(i)).map(pick).collect();
+                st.out.push(json!({"type": "fillet", "name": nm, "edges": edges, "radius": rnd(rad)}));
+            }
             return Ok(());
         }
         st.out.push(json!({"type": "fillet", "name": name, "edges": edges, "radius": rnd(rad)}));
@@ -1165,6 +1187,19 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         st.out.push(ch);
     }
     Ok(())
+}
+
+/// The edges of a fillet with several edge sets, by radius: for each set radius (mm, in set
+/// order) that some edge has, the indices of the edges whose blend face has it. `None` when an
+/// edge has no radius (a spline blend) or one no set has.
+pub(crate) fn radius_groups(set_radii: &[f64], face_radii: &[Option<f64>]) -> Option<Vec<(f64, Vec<usize>)>> {
+    let mut groups: Vec<(f64, Vec<usize>)> = set_radii.iter().map(|&r| (r, Vec::new())).collect();
+    for (i, q) in face_radii.iter().enumerate() {
+        let q = (*q)?;
+        groups.iter_mut().find(|g| (g.0 - q).abs() <= 1e-6)?.1.push(i);
+    }
+    groups.retain(|g| !g.1.is_empty());
+    Some(groups)
 }
 
 /// The chamfer type (slot 4, `7daa0032`: `u16 2, u16 type, u32 0` at the end; 0 equal
