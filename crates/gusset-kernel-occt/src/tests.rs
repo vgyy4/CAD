@@ -2311,6 +2311,76 @@ fn a_helical_sweep_of_an_axial_line_is_a_cylinder_face() {
     assert!(k().chamfer(&joined, &edges, 1.99).is_ok());
 }
 
+/// 3722's coil on its globe's base, the rod turned by `turn` about its axis: the joined body,
+/// and its edges at the coil's start (the upper side) and at its end's foot.
+fn coil_on_rod(turn: f64) -> (Shape, [u32; 2]) {
+    let h = 2.0 / 3f64.sqrt();
+    let (r, z0) = (33.5, 4.0);
+    let tri = Profile {
+        frame: Frame::XZ,
+        regions: vec![Region2 {
+            outer: Loop2 {
+                edges: [[r, z0 - h], [r, z0 + h], [r + 2.0, z0]]
+                    .iter()
+                    .zip([[r, z0 + h], [r + 2.0, z0], [r, z0 - h]])
+                    .enumerate()
+                    .map(|(i, (a, b))| ProfileEdge { seg: Seg2::Line { a: *a, b }, tag: 30 + i as u64 })
+                    .collect(),
+            },
+            holes: vec![],
+        }],
+    };
+    let path = SweepPath::Helix {
+        origin: [0.0, 0.0, z0],
+        axis: [0.0, 0.0, 1.0],
+        x: [1.0, 0.0, 0.0],
+        radius: r,
+        pitch: 13.0 / 3.0,
+        height: 6.5,
+    };
+    let spec = SweepSpec { orientation: SweepOrientation::Frenet, twist: 0.0 };
+    let coil = k().sweep(&tri, &path, &spec).unwrap();
+    let rod = Profile { frame: Frame::XY, regions: vec![Region2 { outer: circle_loop(r, 1), holes: vec![] }] };
+    let rod = k().extrude(&rod, &ExtrudeSpec { distance: 20.0, symmetric: false }).unwrap().shape;
+    let rod =
+        k().transform(&rod, &Transform::Rotate { origin: [0.0; 3], axis: [0.0, 0.0, 1.0], angle: turn }).unwrap().shape;
+    let joined = k().boolean(BoolOp::Union, &rod, &coil.shape).unwrap().shape;
+    let t = k().topology(&joined).unwrap();
+    let near = |p: [f64; 3]| {
+        t.edges
+            .iter()
+            .position(|e| e.midpoint.iter().zip(p).all(|(a, b)| (a - b).abs() < 1e-3))
+            .unwrap_or_else(|| panic!("no edge at {p:?}"))
+    };
+    let edges = [near([r + 1.0, 0.0, z0 + h / 2.0]) as u32, near([-r, 0.0, z0 + 6.5]) as u32];
+    (joined, edges)
+}
+
+#[test]
+fn a_chamfer_that_ends_on_a_seam_is_made_with_the_seam_moved() {
+    // The coil starts on the rod's seam (3722): OCCT's chamfer of the start's upper side, which
+    // ends there, fails; it is made on a copy whose seam is cut away and set at the angle
+    // farthest from the edges' ends. Same volumes as with the rod turned half a radian, to
+    // OCCT's own spread: the start's chamfer on the rod turned by -1.5 to 0.5 rad ranges over
+    // 0.0043 mm3 (6e-8 of the body).
+    let v = |s: &Shape| k().mass_properties(s).unwrap().volume;
+    let (on_seam, e0) = coil_on_rod(0.0);
+    let (turned, e1) = coil_on_rod(0.5);
+    assert!(close(v(&on_seam), v(&turned), 1e-9), "{} vs {}", v(&on_seam), v(&turned));
+    for pick in [0..1, 1..2, 0..2] {
+        let a = k().chamfer(&on_seam, &e0[pick.clone()], 1.99).unwrap();
+        let b = k().chamfer(&turned, &e1[pick.clone()], 1.99).unwrap();
+        assert!(close(v(&a.shape), v(&b.shape), 1e-7), "{pick:?}: {} vs {}", v(&a.shape), v(&b.shape));
+        // Every face has an origin: a chamfer face its picked edge, the others the body's faces.
+        assert!(a.face_origins.iter().all(|o| !o.is_empty()), "{pick:?}: {:?}", a.face_origins);
+        for e in &e0[pick.clone()] {
+            let from_edge =
+                a.face_origins.iter().flatten().filter(|o| **o == FaceOrigin::FromEdge { input: 0, edge: *e });
+            assert_eq!(from_edge.count(), 1, "{pick:?}: {:?}", a.face_origins);
+        }
+    }
+}
+
 #[test]
 fn a_shell_of_a_spindle_dome_is_its_section_offset_and_revolved() {
     // 3722's globe: a base cylinder r 33.5 mm, 19 mm tall, under a dome of r 54 mm about a

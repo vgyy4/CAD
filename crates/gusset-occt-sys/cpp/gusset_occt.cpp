@@ -39,6 +39,8 @@
 #include <BRepOffsetAPI_MakeOffset.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepAlgoAPI_Section.hxx>
+#include <BRepFeat_SplitShape.hxx>
+#include <gp_Vec2d.hxx>
 #include <BRepClass_FaceClassifier.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp_Face.hxx>
@@ -821,6 +823,10 @@ int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const s
 template <typename Mk>
 int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
                    GsShape** out, GsBuf* origins);
+// Defined below: the blend made on a copy of the shape whose seams near the edges are moved.
+template <typename Mk>
+int seam_moved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
+                     GsShape** out, GsBuf* origins);
 
 // Blends the edges at once; where OCCT fails, independent edges one after another; failing
 // that, the corners of convex edges between perpendicular faces cut away by tools whose
@@ -891,6 +897,10 @@ int blend_edges(const GsShape* s, const std::vector<BlendEdge>& es, const std::v
   }
   try {
     if (revolved_blend<Mk>(s, es, idx, fillet, out, origins) == GS_OK) return GS_OK;
+  } catch (const Standard_Failure&) {
+  }
+  try {
+    if (seam_moved_blend<Mk>(s, es, idx, fillet, out, origins) == GS_OK) return GS_OK;
   } catch (const Standard_Failure&) {
   }
   return fail(first_error);
@@ -3055,6 +3065,540 @@ int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std
     }
   }
   return fail(why);
+}
+
+// The axis of a face of revolution (its u is the angle about the axis), else false.
+bool revolution_axis(const BRepAdaptor_Surface& sa, gp_Ax1& ax) {
+  switch (sa.GetType()) {
+    case GeomAbs_Cylinder: ax = sa.Cylinder().Axis(); return true;
+    case GeomAbs_Cone: ax = sa.Cone().Axis(); return true;
+    case GeomAbs_Sphere: ax = sa.Sphere().Position().Axis(); return true;
+    case GeomAbs_Torus: ax = sa.Torus().Axis(); return true;
+    case GeomAbs_SurfaceOfRevolution: ax = sa.AxeOfRevolution(); return true;
+    default: return false;
+  }
+}
+
+// Do two surfaces have the same points at the same parameters (within 1e-9 mm at a grid of
+// parameters over `face`'s bounds)? Pieces of faces on such surfaces share their curves on them.
+bool same_parametrization(const occ::handle<Geom_Surface>& a, const occ::handle<Geom_Surface>& b,
+                          const TopoDS_Face& face) {
+  if (a == b) return true;
+  if (a.IsNull() || b.IsNull() || a->DynamicType() != b->DynamicType()) return false;
+  double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+  BRepTools::UVBounds(face, u0, u1, v0, v1);
+  for (int i = 0; i <= 4; ++i)
+    for (int j = 0; j <= 4; ++j) {
+      const double u = u0 + (u1 - u0) * i / 4.0, v = v0 + (v1 - v0) * j / 4.0;
+      if (a->Value(u, v).Distance(b->Value(u, v)) > 1e-9) return false;
+    }
+  return true;
+}
+
+// The angle of `p` about `ax`, from the direction `x0` (across the axis).
+double angle_about(const gp_Ax1& ax, const gp_Dir& x0, const gp_Pnt& p) {
+  const gp_Vec z(ax.Direction());
+  gp_Vec v(ax.Location(), p);
+  v -= z * v.Dot(z);
+  if (v.Magnitude() < 1e-12) return 0;
+  return gp_Vec(x0).AngleWithRef(v, z);
+}
+
+// The faces of revolution, made one by one or together, that pieces of one closed face make on
+// its surface turned by `alpha` about its axis, so that the seam lies where the pieces were cut
+// apart (the line at `alpha`): the edges two pieces share off that line are dropped (the old
+// seam), those on it are the new seam. One face per region of the parameter plane (a strip that
+// winds once round the surface cuts it in two). `from[k]` lists the pieces each face holds.
+bool merge_pieces(const std::vector<TopoDS_Face>& pieces, const gp_Ax1& ax, double alpha, std::vector<TopoDS_Face>& out,
+                  std::vector<std::vector<size_t>>& from) {
+  TopLoc_Location loc;
+  occ::handle<Geom_Surface> S = BRep_Tool::Surface(pieces.front(), loc);
+  if (S.IsNull() || !loc.IsIdentity()) return false;
+  for (const auto& p : pieces) {
+    TopLoc_Location l2;
+    if (!same_parametrization(BRep_Tool::Surface(p, l2), S, p) || !l2.IsIdentity()) return false;
+  }
+  occ::handle<Geom_Surface> S2 = occ::handle<Geom_Surface>::DownCast(S->Rotated(ax, alpha));
+  if (S2.IsNull()) return false;
+  const double tol = BRep_Tool::Tolerance(pieces.front());
+  // How often each edge bounds the pieces.
+  ShapeMap em;
+  std::vector<int> count;
+  for (const auto& p : pieces)
+    for (TopExp_Explorer ex(p.Oriented(TopAbs_FORWARD), TopAbs_EDGE); ex.More(); ex.Next()) {
+      const int i = em.Add(ex.Current());
+      if (int(count.size()) < i) count.resize(size_t(i), 0);
+      count[size_t(i) - 1] += 1;
+    }
+  const gp_Vec z(ax.Direction());
+  double pu0 = 0, pu1 = 0, pv0 = 0, pv1 = 0;
+  BRepTools::UVBounds(pieces.front(), pu0, pu1, pv0, pv1);
+  gp_Vec r0(ax.Location(), S2->Value(0, 0.5 * (pv0 + pv1)));
+  r0 -= z * r0.Dot(z);
+  if (r0.Magnitude() < 1e-9) return false;
+  const gp_Dir seam_dir(r0);
+  // Where the turned surface's parameter origin lies on the old one: u there is `shift` (the
+  // surface may wind either way about the axis).
+  GeomAPI_ProjectPointOnSurf on_old(S2->Value(0, 0.5 * (pv0 + pv1)), S);
+  if (!on_old.IsDone() || on_old.NbPoints() < 1 || on_old.LowerDistance() > 1e-7) return false;
+  double shift = 0, sv = 0;
+  on_old.LowerDistanceParameters(shift, sv);
+  auto on_line = [&](const TopoDS_Edge& e) {
+    if (BRep_Tool::Degenerated(e)) return false;
+    BRepAdaptor_Curve c(e);
+    for (double t : {0.0, 0.5, 1.0}) {
+      gp_Vec v(ax.Location(), c.Value(c.FirstParameter() + t * (c.LastParameter() - c.FirstParameter())));
+      v -= z * v.Dot(z);
+      if (v.Magnitude() < 1e-9 || std::fabs(gp_Vec(seam_dir).AngleWithRef(v, z)) > 1e-7) return false;
+    }
+    return true;
+  };
+  struct Use {
+    TopoDS_Edge e;
+    occ::handle<Geom2d_Curve> c;
+    double f, l;
+    gp_Pnt2d a, b;
+    size_t piece;
+  };
+  std::vector<Use> uses;
+  for (size_t pi = 0; pi < pieces.size(); ++pi) {
+    const TopoDS_Face pf = TopoDS::Face(pieces[pi].Oriented(TopAbs_FORWARD));
+    for (TopExp_Explorer ex(pf, TopAbs_EDGE); ex.More(); ex.Next()) {
+      const TopoDS_Edge e = TopoDS::Edge(ex.Current());
+      const bool seam = on_line(e);
+      if (count[size_t(em.FindIndex(e)) - 1] == 2 && !seam) continue;
+      double f = 0, l = 0;
+      occ::handle<Geom2d_Curve> c = BRep_Tool::CurveOnSurface(e, pf, f, l);
+      if (c.IsNull()) return false;
+      occ::handle<Geom2d_Curve> c2 = occ::handle<Geom2d_Curve>::DownCast(c->Copy());
+      double um = c2->Value(0.5 * (f + l)).X() - shift, du = -shift;
+      if (!seam) {
+        // Into one period of the turned surface, by the edge's middle.
+        const double k = std::floor(um / (2 * M_PI));
+        du -= k * 2 * M_PI;
+      } else {
+        // The material lies left of an edge: going up the line, the piece ends at 2 pi.
+        gp_Pnt2d pp;
+        gp_Vec2d d;
+        c2->D1(0.5 * (f + l), pp, d);
+        if (e.Orientation() == TopAbs_REVERSED) d.Reverse();
+        du += (d.Y() > 0 ? 2 * M_PI : 0.0) - um;
+      }
+      c2->Translate(gp_Vec2d(du, 0));
+      gp_Pnt2d a = c2->Value(f), b = c2->Value(l);
+      if (e.Orientation() == TopAbs_REVERSED) std::swap(a, b);
+      uses.push_back(Use{e, c2, f, l, a, b, pi});
+    }
+  }
+  // The edges' curves on the turned surface (the seam's two, by orientation).
+  BRep_Builder bb;
+  std::vector<std::vector<size_t>> by_edge(size_t(em.Extent()));
+  for (size_t i = 0; i < uses.size(); ++i) by_edge[size_t(em.FindIndex(uses[i].e)) - 1].push_back(i);
+  for (int i = 1; i <= em.Extent(); ++i) {
+    const auto& v = by_edge[size_t(i) - 1];
+    if (v.empty()) continue;
+    TopoDS_Edge e = TopoDS::Edge(em(i));
+    const double et = BRep_Tool::Tolerance(e);
+    if (v.size() == 1) {
+      bb.UpdateEdge(e, uses[v[0]].c, S2, TopLoc_Location(), et);
+    } else if (v.size() == 2) {
+      const Use& u0 = uses[v[0]];
+      const Use& u1 = uses[v[1]];
+      if (u0.e.Orientation() == u1.e.Orientation()) return false;
+      const Use& fw = u0.e.Orientation() == TopAbs_FORWARD ? u0 : u1;
+      const Use& rv = u0.e.Orientation() == TopAbs_FORWARD ? u1 : u0;
+      bb.UpdateEdge(e, fw.c, rv.c, S2, TopLoc_Location(), et);
+    } else {
+      return false;
+    }
+  }
+  // The loops, edge after edge where one ends (the same vertex and point of the plane).
+  struct Loop {
+    TopoDS_Wire w;
+    std::vector<gp_Pnt2d> poly;
+    std::vector<size_t> pieces;
+  };
+  std::vector<Loop> loops;
+  std::vector<bool> used(uses.size(), false);
+  const double ut = 1e-6;
+  for (size_t s0 = 0; s0 < uses.size(); ++s0) {
+    if (used[s0]) continue;
+    Loop lp;
+    bb.MakeWire(lp.w);
+    size_t cur = s0;
+    used[cur] = true;
+    std::vector<size_t> chain{cur};
+    for (size_t guard = 0; uses[cur].b.Distance(uses[s0].a) > ut; ++guard) {
+      if (guard > uses.size()) return false;
+      const TopoDS_Vertex ve = TopExp::LastVertex(uses[cur].e, true);
+      size_t best = uses.size();
+      double bd = ut;
+      for (size_t j = 0; j < uses.size(); ++j) {
+        if (used[j] || !TopExp::FirstVertex(uses[j].e, true).IsSame(ve)) continue;
+        const double d = uses[j].a.Distance(uses[cur].b);
+        if (d <= bd) {
+          bd = d;
+          best = j;
+        }
+      }
+      if (best == uses.size()) return false;
+      used[best] = true;
+      chain.push_back(best);
+      cur = best;
+    }
+    for (size_t k : chain) {
+      const Use& u = uses[k];
+      bb.Add(lp.w, u.e);
+      lp.pieces.push_back(u.piece);
+      for (int j = 0; j < 16; ++j) {
+        const double s = (u.l - u.f) * j / 16.0;
+        const double t = u.e.Orientation() == TopAbs_REVERSED ? u.l - s : u.f + s;
+        lp.poly.push_back(u.c->Value(t));
+      }
+    }
+    lp.w.Closed(true);
+    loops.push_back(lp);
+  }
+  auto area = [](const std::vector<gp_Pnt2d>& p) {
+    double a = 0;
+    for (size_t i = 0; i < p.size(); ++i) {
+      const gp_Pnt2d& u = p[i];
+      const gp_Pnt2d& v = p[(i + 1) % p.size()];
+      a += u.X() * v.Y() - v.X() * u.Y();
+    }
+    return 0.5 * a;
+  };
+  auto inside = [](const std::vector<gp_Pnt2d>& p, const gp_Pnt2d& q) {
+    bool in = false;
+    for (size_t i = 0, j = p.size() - 1; i < p.size(); j = i++) {
+      if ((p[i].Y() > q.Y()) != (p[j].Y() > q.Y()) &&
+          q.X() < (p[j].X() - p[i].X()) * (q.Y() - p[i].Y()) / (p[j].Y() - p[i].Y()) + p[i].X())
+        in = !in;
+    }
+    return in;
+  };
+  // A region's outer loop runs anticlockwise; a hole goes in the outer loop around it.
+  std::vector<size_t> outer;
+  for (size_t i = 0; i < loops.size(); ++i) {
+    if (area(loops[i].poly) > 0) outer.push_back(i);
+  }
+  if (outer.empty()) return false;
+  out.clear();
+  from.clear();
+  for (size_t i : outer) {
+    TopoDS_Face nf;
+    bb.MakeFace(nf, S2, TopLoc_Location(), tol);
+    bb.Add(nf, loops[i].w);
+    out.push_back(nf);
+    from.push_back(loops[i].pieces);
+  }
+  for (size_t i = 0; i < loops.size(); ++i) {
+    if (area(loops[i].poly) > 0) continue;
+    size_t host = outer.size();
+    for (size_t k = 0; k < outer.size(); ++k)
+      if (inside(loops[outer[k]].poly, loops[i].poly.front())) host = k;
+    if (host == outer.size()) return false;
+    bb.Add(out[host], loops[i].w);
+    from[host].insert(from[host].end(), loops[i].pieces.begin(), loops[i].pieces.end());
+  }
+  for (auto& f : out) BRepLib::SameParameter(f, 1e-7);
+  for (auto& v : from) {
+    std::sort(v.begin(), v.end());
+    v.erase(std::unique(v.begin(), v.end()), v.end());
+  }
+  return true;
+}
+
+// A blend whose edges end at, or next to, the seam of a closed face of revolution, made on a
+// copy of the shape with that seam turned away about the face's axis (3722's coils start on
+// the seam of the globe's base and of the cap: OCCT's chamfer does not end on a seam). Each
+// such face is cut along the line at the angle farthest from the edges' ends
+// (`BRepFeat_SplitShape`, which splits the edges it crosses in the neighbouring faces too)
+// and its pieces made again into faces on the surface turned to that angle
+// (`merge_pieces`). The copy must be valid and of the same volume (to 1e-5: the integration of
+// the faces cut anew differs by some 1e-6 on 3722's coil). The faces of the copy keep
+// the origins of the faces they came from (a face of the copy can hold pieces of two: a coil
+// that winds a whole turn round the face cut it into two at the old seam and does at the new).
+template <typename Mk>
+int seam_moved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
+                     GsShape** out, GsBuf* origins) {
+  (void)idx;
+  BRepBuilderAPI_Copy copy(s->s);
+  if (!copy.IsDone()) return fail("no copy");
+  const TopoDS_Shape c0 = copy.Shape();
+  ShapeMap in_faces, in_edges, in_verts, c_faces, c_edges, c_verts;
+  TopExp::MapShapes(s->s, TopAbs_FACE, in_faces);
+  TopExp::MapShapes(s->s, TopAbs_EDGE, in_edges);
+  TopExp::MapShapes(s->s, TopAbs_VERTEX, in_verts);
+  TopExp::MapShapes(c0, TopAbs_FACE, c_faces);
+  TopExp::MapShapes(c0, TopAbs_EDGE, c_edges);
+  TopExp::MapShapes(c0, TopAbs_VERTEX, c_verts);
+  if (in_faces.Extent() != c_faces.Extent() || in_edges.Extent() != c_edges.Extent() ||
+      in_verts.Extent() != c_verts.Extent())
+    return fail("the copy differs");
+  for (auto [im, cm] :
+       {std::pair<ShapeMap*, ShapeMap*>{&in_faces, &c_faces}, {&in_edges, &c_edges}, {&in_verts, &c_verts}})
+    for (int i = 1; i <= im->Extent(); ++i)
+      if (!copy.ModifiedShape((*im)(i)).IsSame((*cm)(i))) return fail("the copy differs");
+  // The blend's edges on the copy.
+  std::vector<BlendEdge> ces = es;
+  double reach = 0;
+  for (auto& x : ces) {
+    const int i = in_edges.FindIndex(x.e);
+    if (i <= 0) return fail("an edge is not on the shape");
+    x.e = TopoDS::Edge(c_edges(i).Oriented(x.e.Orientation()));
+    if (!x.ref.IsNull()) {
+      const int f = in_faces.FindIndex(x.ref);
+      if (f <= 0) return fail("a face is not on the shape");
+      x.ref = TopoDS::Face(c_faces(f));
+    }
+    reach = std::max(reach, 2 * std::max(x.a, x.mode == 1 ? x.b : x.a));
+  }
+  // The faces of revolution at an edge's end that wrap round their axis (an edge of them lies
+  // on their parameter origin twice) and whose parameter origin passes within the blend's reach
+  // of that end: the seam line, wherever the seam's own edges were cut off by the rest.
+  AncMap vf;
+  TopExp::MapShapesAndAncestors(c0, TopAbs_VERTEX, TopAbs_FACE, vf);
+  ShapeMap closed;
+  std::vector<gp_Pnt> ends;
+  for (const auto& x : ces) {
+    TopoDS_Vertex v0, v1;
+    TopExp::Vertices(x.e, v0, v1);
+    for (const TopoDS_Vertex& v : {v0, v1}) {
+      if (v.IsNull()) continue;
+      const gp_Pnt p = BRep_Tool::Pnt(v);
+      ends.push_back(p);
+      const int k = vf.FindIndex(v);
+      if (k <= 0) continue;
+      for (ShapeList::Iterator it(vf(k)); it.More(); it.Next()) {
+        const TopoDS_Face f = TopoDS::Face(it.Value());
+        BRepAdaptor_Surface sa(f, false);
+        gp_Ax1 ax;
+        if (!revolution_axis(sa, ax) || !sa.IsUPeriodic()) continue;
+        bool wraps = false;
+        for (TopExp_Explorer ex(f, TopAbs_EDGE); ex.More() && !wraps; ex.Next()) {
+          const TopoDS_Edge& g = TopoDS::Edge(ex.Current());
+          wraps = BRep_Tool::IsClosed(g, f) && !BRep_Tool::Degenerated(g);
+        }
+        if (!wraps) continue;
+        GeomAPI_ProjectPointOnSurf pr(p, BRep_Tool::Surface(f));
+        if (!pr.IsDone() || pr.NbPoints() < 1) continue;
+        double u = 0, w = 0;
+        pr.LowerDistanceParameters(u, w);
+        // The point of the parameter origin level with the end.
+        const gp_Pnt q = sa.Value(sa.FirstUParameter(), w);
+        if (q.Distance(p) < reach) closed.Add(f.Oriented(TopAbs_FORWARD));
+      }
+    }
+  }
+  if (closed.IsEmpty()) return fail("no seam near the edges");
+  // The new seam keeps away from the faces' corners too (the line must not run through one).
+  for (int i = 1; i <= closed.Extent(); ++i)
+    for (TopExp_Explorer ex(closed(i), TopAbs_VERTEX); ex.More(); ex.Next())
+      ends.push_back(BRep_Tool::Pnt(TopoDS::Vertex(ex.Current())));
+  // One axis; the angle about it farthest from the edges' ends.
+  gp_Ax1 axis;
+  for (int i = 1; i <= closed.Extent(); ++i) {
+    gp_Ax1 ax;
+    revolution_axis(BRepAdaptor_Surface(TopoDS::Face(closed(i)), false), ax);
+    if (i == 1) axis = ax;
+    else if (!ax.IsParallel(axis, 1e-9) || gp_Lin(axis).Distance(ax.Location()) > 1e-7)
+      return fail("the seams are about different axes");
+  }
+  const gp_Dir x0 = gp_Ax2(axis.Location(), axis.Direction()).XDirection();
+  double best = 0, gap = -1;
+  for (int k = 0; k < 72; ++k) {
+    const double th = k * (2 * M_PI / 72);
+    double g = M_PI;
+    for (const auto& p : ends) {
+      const double d = std::remainder(angle_about(axis, x0, p) - th, 2 * M_PI);
+      g = std::min(g, std::fabs(d));
+    }
+    if (g > gap + 1e-12) {
+      gap = g;
+      best = th;
+    }
+  }
+  if (gap < 0.1) return fail("no angle away from the edges");
+  // The faces cut along the line at that angle.
+  Bnd_Box bx;
+  BRepBndLib::Add(c0, bx);
+  const double big = 2 * std::sqrt(bx.SquareExtent()) + 10;
+  gp_Vec rad(x0);
+  rad.Rotate(axis, best);
+  const gp_Vec zd(axis.Direction());
+  const gp_Pnt p1 = axis.Location().Translated(zd * -big), p2 = axis.Location().Translated(zd * big);
+  BRepBuilderAPI_MakePolygon poly(p1, p1.Translated(rad * big), p2.Translated(rad * big), p2, true);
+  if (!poly.IsDone()) return fail("no cutting plane");
+  const TopoDS_Face half = BRepBuilderAPI_MakeFace(poly.Wire(), true).Face();
+  BRepFeat_SplitShape sp(c0);
+  for (int i = 1; i <= closed.Extent(); ++i) {
+    const TopoDS_Face f = TopoDS::Face(closed(i));
+    BRepAlgoAPI_Section sec(f, half, false);
+    sec.ComputePCurveOn1(true);
+    sec.Approximation(false);
+    sec.SetRunParallel(false);
+    sec.Build();
+    if (!sec.IsDone()) return fail("the seam's line does not cut the face");
+    int n = 0;
+    for (TopExp_Explorer ex(sec.Shape(), TopAbs_EDGE); ex.More(); ex.Next(), ++n) sp.Add(TopoDS::Edge(ex.Current()), f);
+    if (n == 0) return fail("the seam's line does not cut the face");
+  }
+  sp.Build();
+  if (!sp.IsDone()) return fail("the face was not cut");
+  const TopoDS_Shape cut = sp.Shape();
+  // The pieces of faces on one surface made again into faces together.
+  ShapeBuild_ReShape rs;
+  std::vector<std::vector<int>> moved_from;  // per new face, the copy's faces (1-based)
+  std::vector<TopoDS_Face> moved_faces;
+  std::vector<bool> grouped(size_t(closed.Extent()) + 1, false);
+  for (int i = 1; i <= closed.Extent(); ++i) {
+    if (grouped[size_t(i)]) continue;
+    TopLoc_Location l;
+    const occ::handle<Geom_Surface> surf = BRep_Tool::Surface(TopoDS::Face(closed(i)), l);
+    std::vector<TopoDS_Face> pieces;
+    std::vector<int> piece_from;
+    for (int j = i; j <= closed.Extent(); ++j) {
+      if (grouped[size_t(j)]) continue;
+      TopLoc_Location lj;
+      const occ::handle<Geom_Surface> sj = BRep_Tool::Surface(TopoDS::Face(closed(j)), lj);
+      if (!lj.IsIdentity() || !same_parametrization(sj, surf, TopoDS::Face(closed(j)))) continue;
+      grouped[size_t(j)] = true;
+      const ShapeList& m = sp.Modified(closed(j));
+      if (m.IsEmpty()) return fail("a face was not cut");
+      for (ShapeList::Iterator it(m); it.More(); it.Next()) {
+        pieces.push_back(TopoDS::Face(it.Value()));
+        piece_from.push_back(c_faces.FindIndex(closed(j)));
+      }
+    }
+    std::vector<TopoDS_Face> made;
+    std::vector<std::vector<size_t>> from;
+    gp_Ax1 ax;
+    revolution_axis(BRepAdaptor_Surface(pieces.front(), false), ax);
+    // The surface turned so that its parameter origin lies at the chosen angle.
+    BRepAdaptor_Surface sa(pieces.front(), false);
+    const double alpha = angle_about(ax, x0, sa.Value(0, 0.5 * (sa.FirstVParameter() + sa.LastVParameter())));
+    if (!merge_pieces(pieces, ax, best - alpha, made, from)) return fail("the pieces do not make a face");
+    TopoDS_Compound cc;
+    BRep_Builder b;
+    b.MakeCompound(cc);
+    for (size_t k = 0; k < made.size(); ++k) {
+      b.Add(cc, made[k]);
+      std::vector<int> src;
+      for (size_t p : from[k]) src.push_back(piece_from[p]);
+      std::sort(src.begin(), src.end());
+      src.erase(std::unique(src.begin(), src.end()), src.end());
+      moved_faces.push_back(made[k]);
+      moved_from.push_back(src);
+    }
+    // The made faces lie as the pieces do (their own orientation); the shape's orientation of
+    // the pieces is applied to them.
+    rs.Replace(pieces.front().Oriented(TopAbs_FORWARD), cc);
+    for (size_t k = 1; k < pieces.size(); ++k) rs.Remove(pieces[k]);
+  }
+  const TopoDS_Shape moved = rs.Apply(cut);
+  if (!BRepCheck_Analyzer(moved, true, true).IsValid()) return fail("the shape with its seams moved is invalid");
+  const double v0 = std::fabs(measured_volume(s->s)), v1 = std::fabs(measured_volume(moved));
+  if (std::fabs(v1 - v0) > 1e-5 * std::max(1.0, v0)) return fail("moving the seams changed the volume");
+  // The blend on it.
+  // Each edge is one edge of it (cut along the edges it crosses, the faces only re-bound them).
+  auto image = [&](const TopoDS_Shape& x) {
+    const ShapeList& m = sp.Modified(x);
+    if (m.Extent() > 1) return TopoDS_Shape();
+    return rs.Value(m.IsEmpty() ? x : m.First());
+  };
+  for (auto& x : ces) {
+    const TopoDS_Shape e = image(x.e);
+    if (e.IsNull() || e.ShapeType() != TopAbs_EDGE) return fail("an edge was cut");
+    x.e = TopoDS::Edge(e);
+    if (!x.ref.IsNull()) {
+      const TopoDS_Shape r = image(x.ref);
+      if (r.IsNull() || r.ShapeType() != TopAbs_FACE) return fail("a reference face was cut");
+      x.ref = TopoDS::Face(r);
+    }
+  }
+  Mk mk(moved);
+  for (const auto& x : ces) add_blend(mk, x);
+  mk.Build();
+  if (!mk.IsDone()) return fail("the blend fails with the seams moved");
+  Handle(ShapeBuild_ReShape) ctx;
+  TopoDS_Shape result = valid_blend(mk.Shape(), fillet, ctx, moved);
+  // The origins on the moved shape, then each face and edge of it named as the copy's (so as
+  // the shape's) it came from.
+  std::vector<int64_t> mo;
+  blend_origins(mk, moved, result, ctx, mo);
+  ShapeMap m_faces, m_edges, m_verts;
+  TopExp::MapShapes(moved, TopAbs_FACE, m_faces);
+  TopExp::MapShapes(moved, TopAbs_EDGE, m_edges);
+  TopExp::MapShapes(moved, TopAbs_VERTEX, m_verts);
+  // A face of the moved shape: a new one (its copy faces), else a copy face or a piece of one.
+  auto face_sources = [&](int mi) {
+    std::vector<int> src;
+    const TopoDS_Shape& f = m_faces(mi);
+    for (size_t k = 0; k < moved_faces.size(); ++k)
+      if (moved_faces[k].IsSame(f)) return moved_from[k];
+    for (int ci = 1; ci <= c_faces.Extent(); ++ci) {
+      const ShapeList& m = sp.Modified(c_faces(ci));
+      bool hit = m.IsEmpty() ? c_faces(ci).IsSame(f) : false;
+      for (ShapeList::Iterator it(m); it.More() && !hit; it.Next()) hit = it.Value().IsSame(f);
+      if (hit) src.push_back(ci);
+    }
+    return src;
+  };
+  auto sub_source = [&](const ShapeMap& mm, const ShapeMap& cm, int mi) {
+    const TopoDS_Shape& x = mm(mi);
+    const int direct = cm.FindIndex(x);
+    if (direct > 0) return direct;
+    for (int ci = 1; ci <= cm.Extent(); ++ci) {
+      const ShapeList& m = sp.Modified(cm(ci));
+      for (ShapeList::Iterator it(m); it.More(); it.Next())
+        if (it.Value().IsSame(x)) return ci;
+    }
+    return 0;
+  };
+  std::vector<int64_t> o;
+  for (size_t k = 0; k + 3 < mo.size(); k += 4) {
+    const int64_t kind = mo[k + 1], b = mo[k + 3];
+    if (kind == GS_ORIGIN_INPUT) {
+      for (int ci : face_sources(int(b) + 1)) push_origin(o, mo[k], kind, mo[k + 2], ci - 1);
+    } else if (kind == GS_ORIGIN_FROM_EDGE || kind == GS_ORIGIN_FROM_VERTEX) {
+      const bool edge = kind == GS_ORIGIN_FROM_EDGE;
+      const int ci = sub_source(edge ? m_edges : m_verts, edge ? c_edges : c_verts, int(b) + 1);
+      if (ci > 0) push_origin(o, mo[k], kind, mo[k + 2], ci - 1);
+    } else {
+      push_origin(o, mo[k], kind, mo[k + 2], b);
+    }
+  }
+  // ShapeFix's repair of the blend can rebuild a face so that its context no longer leads to
+  // it: such a face takes the origins of the face of the moved shape it lies on.
+  ShapeMap rf;
+  TopExp::MapShapes(result, TopAbs_FACE, rf);
+  std::vector<bool> named(size_t(rf.Extent()), false);
+  for (size_t k = 0; k + 3 < o.size(); k += 4) named[size_t(o[k])] = true;
+  for (int k = 1; k <= rf.Extent(); ++k) {
+    if (named[size_t(k) - 1]) continue;
+    const TopoDS_Face f = TopoDS::Face(rf(k));
+    double u0 = 0, u1 = 0, w0 = 0, w1 = 0;
+    BRepTools::UVBounds(f, u0, u1, w0, w1);
+    BRepAdaptor_Surface sf(f, false);
+    bool found = false;
+    for (int i = 1; i < 8 && !found; ++i)
+      for (int j = 1; j < 8 && !found; ++j) {
+        const gp_Pnt2d uv(u0 + (u1 - u0) * i / 8.0, w0 + (w1 - w0) * j / 8.0);
+        BRepClass_FaceClassifier fc(f, uv, 1e-9);
+        if (fc.State() != TopAbs_IN) continue;
+        const TopoDS_Vertex pv = BRepBuilderAPI_MakeVertex(sf.Value(uv.X(), uv.Y())).Vertex();
+        for (int mi = 1; mi <= m_faces.Extent() && !found; ++mi) {
+          BRepExtrema_DistShapeShape d(pv, m_faces(mi));
+          if (!d.IsDone() || d.Value() > 1e-7) continue;
+          for (int ci : face_sources(mi)) push_origin(o, k - 1, GS_ORIGIN_INPUT, 0, ci - 1);
+          found = true;
+        }
+      }
+  }
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
 }
 }  // namespace
 }  // extern "C++"
