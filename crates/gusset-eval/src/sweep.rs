@@ -40,6 +40,8 @@ impl Evaluator {
                 axis_in_frame(name, &profile.frame, origin, dir)?
             }
         };
+        // A negative angle turns the other way: about the reversed axis.
+        let (axis_dir, angle) = if angle < 0.0 { ([-axis_dir[0], -axis_dir[1]], -angle) } else { (axis_dir, angle) };
         let res = k
             .revolve(&profile, &RevolveSpec { axis_origin, axis_dir, angle })
             .map_err(|ke| kernel_err(name, "revolve", ke))?;

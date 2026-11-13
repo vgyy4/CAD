@@ -333,6 +333,8 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
   body. With a face profile `X`, `Y` and `Z` are the world axes. An axis that is not a sketch
   axis must lie in the profile's plane: `revolve R (profile: Box/cap(end), axis:
   edge(Box/cap(end), Box/side(S/l1)), angle: 90 deg, op: new)` turns the box's top about its edge.
+  A revolve turns right-handed about its axis: `X`, `Y`, `Z` and a sketch line point the way
+  they are drawn, an edge towards +X (else +Y, else +Z). A negative `angle` turns the other way.
 - `fillet` and `chamfer` take persistent edge names (copy them from `query_body` with
   `names: true`; never guess them).
 - `full_round` replaces `edges` and `radius`: each named face must be planar and lie between two
