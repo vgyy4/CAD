@@ -45,6 +45,14 @@ fn sweep(c: Pt, start: Pt, mid: Pt, end: Pt) -> f64 {
     s
 }
 
+/// The length of the arc start → mid → end (a straight line when the points are collinear).
+pub fn arc_length(start: Pt, mid: Pt, end: Pt) -> f64 {
+    match circle_through(start, mid, end) {
+        Some((c, r)) => r * sweep(c, start, mid, end).abs(),
+        None => libm::hypot(end[0] - start[0], end[1] - start[1]),
+    }
+}
+
 /// Points along an arc (start and end included), with chords at most `tol` from it.
 pub fn arc_points(start: Pt, mid: Pt, end: Pt, tol: f64) -> Vec<Pt> {
     let Some((c, r)) = circle_through(start, mid, end) else { return vec![start, end] };

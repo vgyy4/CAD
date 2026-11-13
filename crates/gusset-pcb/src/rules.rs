@@ -23,7 +23,7 @@ pub struct NetClass {
     pub min_track_width: Option<f64>,
     pub min_via_diameter: Option<f64>,
     pub min_via_drill: Option<f64>,
-    /// Differential pair width and gap, kept for later routing (not used yet).
+    /// Differential pair track width and gap (edge to edge) for `pair::route_pair` (ADR 0055).
     pub diff_pair_width: Option<f64>,
     pub diff_pair_gap: Option<f64>,
     /// Nets named in the class itself (KiCad 5 `add_net`, KiCad 6 `nets`).
@@ -187,6 +187,15 @@ impl Rules {
     /// The width a new track of this net gets.
     pub fn track_width_of(&self, net: Option<&str>) -> f64 {
         net.and_then(|n| self.class_of(n)).and_then(|c| c.track_width).unwrap_or(self.track_width)
+    }
+
+    /// The track width and gap a differential pair routes at: the class of either net
+    /// (`diff_pair_width`, `diff_pair_gap`), else the board's track width and clearance.
+    pub fn diff_pair_of(&self, p: &str, n: &str) -> (f64, f64) {
+        let c = [p, n].into_iter().filter_map(|x| self.class_of(x));
+        let width = c.clone().find_map(|c| c.diff_pair_width).unwrap_or_else(|| self.track_width_of(Some(p)));
+        let gap = c.clone().find_map(|c| c.diff_pair_gap).unwrap_or_else(|| self.clearance_of(Some(p)));
+        (width, gap)
     }
 
     /// The size and drill of a new via of this net.

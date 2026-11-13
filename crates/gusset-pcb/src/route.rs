@@ -74,12 +74,27 @@ impl Obstacles {
         net: Option<&str>,
         width: f64,
     ) -> Obstacles {
+        let skip: Vec<&str> = net.into_iter().collect();
+        Obstacles::skipping(board, copper, rules, layer, net, &skip, width)
+    }
+
+    /// As [`Obstacles::with_copper`] for a track that may cross the copper of every net in
+    /// `skip` (a differential pair's two nets); `net` still names the clearance class.
+    pub fn skipping(
+        board: &Board,
+        copper: &Copper,
+        rules: &Rules,
+        layer: &str,
+        net: Option<&str>,
+        skip: &[&str],
+        width: f64,
+    ) -> Obstacles {
         let half = width / 2.0;
         let mine = rules.clearance_of(net);
         let mut prims: Vec<(Prim, f64)> = Vec::new();
         if let Some(li) = copper.layers.iter().position(|l| l == layer) {
             for it in copper.items.iter().filter(|it| it.layers.contains(&li)) {
-                if net.is_some() && it.net.as_deref() == net {
+                if it.net.as_deref().is_some_and(|n| skip.contains(&n)) {
                     continue;
                 }
                 let need = mine.max(rules.clearance_of(it.net.as_deref())) + half;
@@ -557,18 +572,8 @@ pub fn via_clear(board: &Board, rules: &Rules, at: Pt, net: Option<&str>, size: 
 pub fn length(segs: &[Seg]) -> f64 {
     segs.iter()
         .map(|s| match s.mid {
-            Some(m) => {
-                let p = geom::arc_points(s.start, m, s.end, 1e-4);
-                p.windows(2).map(seg_len).sum::<f64>()
-            }
+            Some(m) => geom::arc_length(s.start, m, s.end),
             None => libm::hypot(s.end[0] - s.start[0], s.end[1] - s.start[1]),
         })
         .sum()
-}
-
-fn seg_len(w: &[Pt]) -> f64 {
-    match w {
-        [a, b] => libm::hypot(b[0] - a[0], b[1] - a[1]),
-        _ => 0.0,
-    }
 }

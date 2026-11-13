@@ -5,13 +5,16 @@ use super::pcb::{PcbImport, board_source, no_board, write_outputs};
 use super::pcb_edit::commit_board;
 use super::*;
 use crate::pcb_session;
-use gusset_pcb::{Limits, route, shove, specctra, zones};
+use gusset_pcb::{Limits, length, pair, route, shove, specctra, tune, zones};
 use std::sync::atomic::AtomicBool;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
     vec![
         spec::<PcbFillZones>(),
         spec::<PcbRoute>(),
+        spec::<PcbRoutePair>(),
+        spec::<PcbLengths>(),
+        spec::<PcbTune>(),
         spec::<PcbAddFootprint>(),
         spec::<PcbExportStep>(),
         spec::<PcbExportDsn>(),
@@ -174,6 +177,198 @@ impl Command for PcbRoute {
             "shoved_tracks": shoved,
         });
         commit_board(s, ctx, "Route track", open.file.clone(), &nb, None, extra)
+    }
+}
+
+fn r3(v: f64) -> f64 {
+    (v * 1000.0).round() / 1000.0
+}
+
+/// Routes a differential pair coupled (ADR 0055).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PcbRoutePair {
+    /// Either net (USB_P, CLK-) or the shared name (USB).
+    pub pair: String,
+    /// Centre line: start, waypoints, end (mm).
+    pub points: Vec<[f64; 2]>,
+    /// Default F.Cu.
+    #[serde(default)]
+    pub layer: Option<String>,
+    /// Track width (default: the class's diff_pair_width).
+    #[serde(default)]
+    pub width: Option<f64>,
+    /// Edge gap (default: diff_pair_gap).
+    #[serde(default)]
+    pub gap: Option<f64>,
+}
+
+impl Command for PcbRoutePair {
+    const ID: &'static str = "pcb.route_pair";
+    const TITLE: &'static str = "Route pair";
+    const DESCRIPTION: &'static str =
+        "Lay a differential pair (X_P/X_N, X+/X-) coupled along a 45° centre line, fanning out to the pads.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if !(2..=1000).contains(&self.points.len()) {
+            return Err(CommandError::args("a route has 2 to 1000 points"));
+        }
+        if self.points.iter().flatten().any(|v| !v.is_finite() || v.abs() > 10_000.0) {
+            return Err(CommandError::args("points must be within 10 m"));
+        }
+        let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
+        let b = &open.board;
+        let layer = self.layer.clone().unwrap_or_else(|| "F.Cu".into());
+        if !b.copper_layers().contains(&layer) {
+            return Err(CommandError::args("the layer is not a copper layer of this board"));
+        }
+        let pr = pair::find(b, &self.pair).ok_or_else(|| {
+            CommandError::not_found("that is not a differential pair on this board")
+                .hint("both nets must exist, named X_P/X_N or X+/X-")
+        })?;
+        let (cw, cg) = open.rules.diff_pair_of(&pr.p, &pr.n);
+        let (width, gap) = (self.width.unwrap_or(cw), self.gap.unwrap_or(cg));
+        if !(width.is_finite() && width > 0.0 && width <= 100.0 && gap.is_finite() && (0.0..=100.0).contains(&gap)) {
+            return Err(CommandError::args("the width is above 0 and the gap 0 or more, both at most 100 mm"));
+        }
+        let r = pair::route_pair(b, &open.rules, &layer, &pr, &self.points, width, gap)
+            .map_err(|m| CommandError::not_found(m).hint("move the points, or route on another layer"))?;
+        let mut nb = b.clone();
+        let first = nb.add_route(&r.p, r.width, &layer, Some(&pr.p), &Limits::default()).map_err(pcb_err)?;
+        nb.add_route(&r.n, r.width, &layer, Some(&pr.n), &Limits::default()).map_err(pcb_err)?;
+        let (lp, ln) = (route::length(&r.p), route::length(&r.n));
+        let extra = json!({
+            "tracks": nb.tracks.len() - first,
+            "first_track": first,
+            "width": r.width,
+            "gap": r3(r.gap),
+            "p_user_text": pr.p,
+            "n_user_text": pr.n,
+            "p_length_mm": r3(lp),
+            "n_length_mm": r3(ln),
+            "skew_mm": r3((lp - ln).abs()),
+        });
+        commit_board(s, ctx, "Route pair", open.file.clone(), &nb, None, extra)
+    }
+}
+
+/// Routed length per net and the skew of differential pairs (ADR 0055).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PcbLengths {
+    /// One net or pair (default: all with routing).
+    #[serde(default)]
+    pub net: Option<String>,
+}
+
+impl Command for PcbLengths {
+    const ID: &'static str = "pcb.lengths";
+    const TITLE: &'static str = "Net lengths";
+    const DESCRIPTION: &'static str =
+        "Routed length of each net (tracks, arcs, vias at board thickness) and each differential pair's skew.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
+        let b = &open.board;
+        let keep: Option<Vec<String>> = self.net.as_ref().map(|n| match pair::find(b, n) {
+            Some(p) => vec![p.p, p.n],
+            None => vec![n.clone()],
+        });
+        let mut nets = length::net_lengths(b);
+        nets.retain(|l| keep.as_ref().is_none_or(|k| k.contains(&l.net)));
+        nets.sort_by(|a, c| c.total().total_cmp(&a.total()));
+        let shown: Vec<Value> = nets
+            .iter()
+            .take(200)
+            .map(|l| {
+                json!({ "net_user_text": l.net, "tracks": l.tracks, "vias": l.vias,
+                        "track_mm": r3(l.track_mm), "via_mm": r3(l.via_mm), "length_mm": r3(l.total()) })
+            })
+            .collect();
+        let pairs: Vec<Value> = length::skews(b)
+            .iter()
+            .filter(|k| keep.as_ref().is_none_or(|n| n.contains(&k.pair.p)))
+            .map(|k| {
+                json!({ "pair_user_text": k.pair.base, "p_mm": r3(k.p.total()), "n_mm": r3(k.n.total()),
+                        "skew_mm": r3(k.skew()), "shorter_user_text": k.shorter() })
+            })
+            .collect();
+        Ok(json!({ "nets": shown, "pairs": pairs, "thickness_mm": r3(b.thickness) }))
+    }
+}
+
+/// Adds a meander to a net's straight track to reach a length (ADR 0055).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PcbTune {
+    /// The net; for a pair without target, the shorter of its two is tuned.
+    pub net: String,
+    /// Total length wanted, mm (default: the partner's length).
+    #[serde(default)]
+    pub target: Option<f64>,
+    /// mm (default 0.05).
+    #[serde(default)]
+    pub tolerance: Option<f64>,
+    /// Tallest bump, mm (default 1).
+    #[serde(default)]
+    pub amplitude: Option<f64>,
+    /// Gap between legs, mm (default: clearance).
+    #[serde(default)]
+    pub spacing: Option<f64>,
+    /// Track index (default: the longest straight one that fits).
+    #[serde(default)]
+    pub track: Option<usize>,
+}
+
+impl Command for PcbTune {
+    const ID: &'static str = "pcb.tune";
+    const TITLE: &'static str = "Tune length";
+    const DESCRIPTION: &'static str =
+        "Meander a straight track of a net to a target length within clearances; refuses when there is no room.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
+        let b = &open.board;
+        let mut net = self.net.clone();
+        let mut target = self.target;
+        if target.is_none() {
+            let k = pair::find(b, &self.net)
+                .and_then(|p| length::skews(b).into_iter().find(|k| k.pair == p))
+                .ok_or_else(|| CommandError::args("without a target the net must belong to a differential pair"))?;
+            net = k.shorter().to_string();
+            target = Some(k.p.total().max(k.n.total()));
+        }
+        let o = tune::TuneOpts {
+            target: target.unwrap_or_default(),
+            tolerance: self.tolerance.unwrap_or(0.05),
+            amplitude: self.amplitude.unwrap_or(1.0),
+            spacing: self.spacing.unwrap_or_else(|| open.rules.clearance_of(Some(&net))),
+        };
+        if !(o.target > 0.0 && o.target <= 100_000.0) {
+            return Err(CommandError::args("the target is above 0 and at most 100000 mm"));
+        }
+        let before = length::length_of(b, &net).total();
+        let t = tune::tune(b, &open.rules, &net, self.track, &o).map_err(CommandError::not_found)?;
+        let old = b.tracks.get(t.track).ok_or_else(|| CommandError::not_found("the track vanished"))?;
+        let (width, layer) = (old.width, old.layer.clone());
+        let mut nb = b.clone();
+        nb.delete_items(&[t.track], &[], &Limits::default()).map_err(pcb_err)?;
+        let first = nb.add_route(&t.pieces, width, &layer, Some(&net), &Limits::default()).map_err(pcb_err)?;
+        let after = length::length_of(&nb, &net).total();
+        let extra = json!({
+            "net_user_text": net,
+            "replaced_track": t.track,
+            "first_track": first,
+            "pieces": t.pieces.len(),
+            "bumps": t.bumps,
+            "before_mm": r3(before),
+            "after_mm": r3(after),
+            "target_mm": r3(o.target),
+        });
+        commit_board(s, ctx, "Tune length", open.file.clone(), &nb, None, extra)
     }
 }
 

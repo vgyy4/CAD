@@ -42,8 +42,10 @@ pub mod geom;
 pub mod gerber;
 #[cfg(test)]
 mod gerber_read;
+pub mod length;
 pub mod netlist;
 pub mod nets;
+pub mod pair;
 pub mod poly;
 pub mod ratsnest;
 pub mod refill;
@@ -56,6 +58,7 @@ pub mod shove;
 pub mod specctra;
 pub mod sync;
 pub mod text_edit;
+pub mod tune;
 pub mod zones;
 
 pub use board::{Board, Limits};
@@ -76,6 +79,8 @@ mod tests_edit;
 mod tests_gerber;
 #[cfg(test)]
 mod tests_local;
+#[cfg(test)]
+mod tests_pair;
 #[cfg(test)]
 mod tests_phase3;
 #[cfg(test)]

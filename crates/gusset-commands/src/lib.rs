@@ -60,6 +60,8 @@ mod tests_pcb_flow;
 #[cfg(test)]
 mod tests_pcb_layout;
 #[cfg(test)]
+mod tests_pcb_pair;
+#[cfg(test)]
 mod tests_pcb_rules;
 #[cfg(test)]
 mod tests_sch;
