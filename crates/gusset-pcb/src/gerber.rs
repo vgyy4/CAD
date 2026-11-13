@@ -10,8 +10,8 @@ use gerber_types::{
     Aperture, ApertureAttribute, ApertureDefinition, ApertureFunction, AttributeDeletionCriterion, Circle, Command,
     CommentContent, CoordinateFormat, CoordinateMode, CoordinateNumber, CoordinateOffset, Coordinates, DCode,
     ExtendedCode, ExtendedPosition, FileAttribute, FileFunction, FilePolarity, FunctionCode, GCode, GenerationSoftware,
-    GerberCode, InterpolationMode, MCode, Operation, Polarity, Position, Profile, QuadrantMode, Rectangular,
-    SmdPadType, Unit, ZeroOmission,
+    GerberCode, InterpolationMode, MCode, ObjectAttribute, Operation, Polarity, Position, Profile, QuadrantMode,
+    Rectangular, SmdPadType, Unit, ZeroOmission,
 };
 use std::fmt;
 
@@ -134,8 +134,37 @@ fn nm(v: f64) -> i64 {
     (v * 1e6).round() as i64
 }
 
+/// The X2 object attributes in force (`.N` net, `.P` pad, `.C` component).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Attrs {
+    net: Option<String>,
+    /// Reference designator and pad number.
+    pin: Option<(String, String)>,
+    comp: Option<String>,
+}
+
+/// A field of an attribute value, escaped as the Gerber specification asks: the
+/// delimiters `%` `*` `,` `\`, control characters and non-ASCII become `\uXXXX` (UTF-16
+/// units, so characters past U+FFFF are a surrogate pair).
+pub(crate) fn escape_field(t: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for c in t.chars() {
+        if (c == ' ' || c.is_ascii_graphic()) && !matches!(c, '%' | '*' | ',' | '\\') {
+            out.push(c);
+        } else {
+            let mut buf = [0u16; 2];
+            for u in c.encode_utf16(&mut buf) {
+                let _ = write!(out, "\\u{u:04X}");
+            }
+        }
+    }
+    out
+}
+
 struct Writer {
     fmt: CoordinateFormat,
+    attrs: Attrs,
     apertures: Vec<(Key, Func, i32)>,
     body: Vec<Command>,
     current: Option<i32>,
@@ -146,11 +175,45 @@ impl Writer {
     fn new() -> Self {
         Writer {
             fmt: CoordinateFormat::new(ZeroOmission::Leading, CoordinateMode::Absolute, 4, 6),
+            attrs: Attrs::default(),
             apertures: Vec::new(),
             body: Vec::new(),
             current: None,
             mode: None,
         }
+    }
+
+    /// Makes `new` the object attributes in force: `%TO` for those that changed, `%TD`
+    /// for those that no longer apply. Objects made afterwards carry them.
+    fn set_attrs(&mut self, new: Attrs) {
+        if new == self.attrs {
+            return;
+        }
+        let mut one = |name: &str, old: bool, values: Option<Vec<String>>, changed: bool| {
+            if !changed {
+                return;
+            }
+            match values {
+                Some(values) => self.body.push(
+                    ExtendedCode::ObjectAttribute(ObjectAttribute::UserDefined { name: name.into(), values }).into(),
+                ),
+                None if old => self.body.push(
+                    ExtendedCode::DeleteAttribute(AttributeDeletionCriterion::SingleObjectAttribute(name.into()))
+                        .into(),
+                ),
+                None => {}
+            }
+        };
+        let old = std::mem::take(&mut self.attrs);
+        one(".N", old.net.is_some(), new.net.as_deref().map(|n| vec![escape_field(n)]), old.net != new.net);
+        one(
+            ".P",
+            old.pin.is_some(),
+            new.pin.as_ref().map(|(r, n)| vec![escape_field(r), escape_field(n)]),
+            old.pin != new.pin,
+        );
+        one(".C", old.comp.is_some(), new.comp.as_deref().map(|c| vec![escape_field(c)]), old.comp != new.comp);
+        self.attrs = new;
     }
 
     fn xy(&self, p: Pt) -> Result<Coordinates, Error> {
@@ -439,11 +502,16 @@ pub fn write_layer(board: &Board, layer: &str) -> Result<String, Error> {
     let mut w = Writer::new();
     let copper = board.copper_layers().iter().any(|l| l == layer);
     let kind = layer.split_once('.').map_or("", |x| x.1);
+    let comp_of = |fp: Option<usize>| {
+        fp.and_then(|i| board.footprints.get(i)).map(|f| f.reference.clone()).filter(|r| !r.is_empty())
+    };
+    let net_of = |r: &crate::board::NetRef| board.net_name(r);
     // Zone fills first (pads and tracks are drawn over them).
     if copper {
         for z in board.zones.iter().filter(|z| !z.keepout) {
             for (l, poly) in &z.fills {
                 if l == layer {
+                    w.set_attrs(Attrs { net: net_of(&z.net), ..Attrs::default() });
                     w.polygon_region(poly, Func::Conductor)?;
                 }
             }
@@ -457,12 +525,14 @@ pub fn write_layer(board: &Board, layer: &str) -> Result<String, Error> {
         Func::None
     };
     for g in board.graphics.iter().filter(|g| g.layer == layer) {
+        w.set_attrs(Attrs { comp: comp_of(g.footprint), ..Attrs::default() });
         w.graphic(g, gfunc)?;
     }
     // Texts in our stroke font.
     for t in board.texts.iter().filter(|t| t.layer == layer && !t.hidden) {
         let fp = t.footprint.and_then(|i| board.footprints.get(i));
         let text = crate::font::shown(&t.text, fp.map_or("", |f| &f.reference), fp.map_or("", |f| &f.value));
+        w.set_attrs(Attrs { comp: comp_of(t.footprint), ..Attrs::default() });
         let pen = crate::font::thickness(t);
         for line in crate::font::strokes(t, &text) {
             let Some(first) = line.first() else { continue };
@@ -479,6 +549,7 @@ pub fn write_layer(board: &Board, layer: &str) -> Result<String, Error> {
     }
     if copper {
         for t in board.tracks.iter().filter(|t| t.layer == layer && t.width > 0.0) {
+            w.set_attrs(Attrs { net: net_of(&t.net), ..Attrs::default() });
             match t.mid {
                 Some(m) => w.stroke_arc(t.start, m, t.end, t.width, Func::Conductor)?,
                 None => w.stroke(t.start, t.end, t.width, Func::Conductor)?,
@@ -486,15 +557,36 @@ pub fn write_layer(board: &Board, layer: &str) -> Result<String, Error> {
         }
         for v in &board.vias {
             if v.size > 0.0 && board.span(&v.layers[0], &v.layers[1]).iter().any(|l| l == layer) {
+                w.set_attrs(Attrs { net: net_of(&v.net), ..Attrs::default() });
                 w.select(Key::Circle(nm(v.size)), Func::ViaPad);
                 w.flash(v.at)?;
             }
         }
     }
-    for pad in &board.pads {
+    let mut pad_fp: Vec<Option<usize>> = vec![None; board.pads.len()];
+    for (fi, f) in board.footprints.iter().enumerate() {
+        for &pi in &f.pads {
+            if let Some(slot) = pad_fp.get_mut(pi) {
+                *slot = Some(fi);
+            }
+        }
+    }
+    for (pi, pad) in board.pads.iter().enumerate() {
         if !board.on_layer(&pad.layers, layer) {
             continue;
         }
+        let fp = pad_fp.get(pi).copied().flatten();
+        let comp = comp_of(fp);
+        let mut attrs = Attrs { comp: comp.clone(), ..Attrs::default() };
+        if copper {
+            attrs.net = Some(net_of(&pad.net).unwrap_or_else(|| "N/C".to_string()));
+            if let Some(r) = &comp
+                && !pad.number.is_empty()
+            {
+                attrs.pin = Some((r.clone(), pad.number.clone()));
+            }
+        }
+        w.set_attrs(attrs);
         if copper {
             // A non-plated hole's "pad" is only copper when it is larger than its hole.
             if pad.kind == PadKind::Npth && pad.drill.is_some_and(|d| d.size[0] >= pad.size[0] - 1e-9) {
@@ -512,5 +604,11 @@ pub fn write_layer(board: &Board, layer: &str) -> Result<String, Error> {
             w.pad(pad, 0.0, Func::None)?;
         }
     }
-    w.finish(function(board, layer), layer)
+    let text = w.finish(function(board, layer), layer)?;
+    // Every file the tests write is re-read and checked against the board.
+    #[cfg(test)]
+    if let Err(e) = crate::gerber_read::verify(board, layer, &text) {
+        panic!("Gerber check of {layer}: {e}\n{text}");
+    }
+    Ok(text)
 }

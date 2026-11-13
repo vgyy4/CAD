@@ -38,6 +38,8 @@ pub mod fab;
 pub mod font;
 pub mod geom;
 pub mod gerber;
+#[cfg(test)]
+mod gerber_read;
 pub mod netlist;
 pub mod nets;
 pub mod poly;
@@ -63,6 +65,8 @@ mod tests_drc_more;
 mod tests_dsn;
 #[cfg(test)]
 mod tests_edit;
+#[cfg(test)]
+mod tests_gerber;
 #[cfg(test)]
 mod tests_local;
 #[cfg(test)]
