@@ -830,6 +830,9 @@ int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std
 template <typename Mk>
 int seam_moved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
                      GsShape** out, GsBuf* origins);
+// Defined below: a chamfer of a whole loop of a plane's edges as the cut of the loop tapered.
+int chamfer_by_taper(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx,
+                     GsShape** out, GsBuf* origins);
 
 // Blends the edges at once; where OCCT fails, independent edges one after another; failing
 // that, the corners of convex edges between perpendicular faces cut away by tools whose
@@ -904,6 +907,10 @@ int blend_edges(const GsShape* s, const std::vector<BlendEdge>& es, const std::v
   }
   try {
     if (seam_moved_blend<Mk>(s, es, idx, fillet, out, origins) == GS_OK) return GS_OK;
+  } catch (const Standard_Failure&) {
+  }
+  try {
+    if (!fillet && chamfer_by_taper(s, es, idx, out, origins) == GS_OK) return GS_OK;
   } catch (const Standard_Failure&) {
   }
   return fail(first_error);
@@ -2871,6 +2878,152 @@ int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const s
   }
   to_buf(cut.o, origins);
   *out = new GsShape{cut.result};
+  return GS_OK;
+}
+
+// The area of a closed planar wire, or -1.
+double planar_wire_area(const TopoDS_Wire& w) {
+  BRepBuilderAPI_MakeFace mf(w, true);
+  if (!mf.IsDone()) return -1;
+  GProp_GProps g;
+  BRepGProp::SurfaceProperties(mf.Face(), g);
+  return std::fabs(g.Mass());
+}
+
+// The closed planar wire `w` offset by `t` in its plane, outward (`grow`) or inward: of the
+// offsets by +t and -t (intersection joins), the one wire whose area is larger or smaller.
+bool offset_loop(const TopoDS_Wire& w, double t, bool grow, TopoDS_Wire& out, double& area) {
+  const double a0 = planar_wire_area(w);
+  bool found = false;
+  for (double sg : {1.0, -1.0}) {
+    BRepOffsetAPI_MakeOffset mo(w, GeomAbs_Intersection, false);
+    mo.Perform(sg * t);
+    if (!mo.IsDone()) continue;
+    TopoDS_Wire ow;
+    int n = 0;
+    for (TopExp_Explorer ex(mo.Shape(), TopAbs_WIRE); ex.More(); ex.Next(), ++n) ow = TopoDS::Wire(ex.Current());
+    if (n != 1) continue;
+    const double a = planar_wire_area(ow);
+    if (a < 0 || (grow ? a <= a0 : a >= a0)) continue;
+    if (found) return false;
+    found = true;
+    out = ow;
+    area = a;
+  }
+  return found;
+}
+
+// A chamfer of one size along a whole loop of a planar face's edges, all convex, where each
+// edge's other face stands square to the face (a plane across it or a cylinder along its
+// normal): the cut of the loop tapered at 45 degrees, from the loop the chamfer's size down
+// the sides to its offset by twice the size above the face. 5998's Chamfer3 rims a slot cut
+// 0.6 mm deep with a 0.6 mm chamfer, which uses up the slot's sides; ChFi3d does not end a
+// chamfer on the far edge of the face it uses up. The material removed must be exactly the
+// chamfer's: the ring between the loop and its offset integrated over the depth (the
+// prismatoid rule, exact as the offset's area is quadratic in its distance), so every side
+// reached the depth and nothing else lay in the tool. The chamfer faces are the tool's sides.
+int chamfer_by_taper(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx,
+                     GsShape** out, GsBuf* origins) {
+  if (es.empty() || es.size() != idx.size()) return fail("no edges");
+  const double d = es[0].a;
+  for (const auto& x : es)
+    if (x.mode != 0 || !x.ref.IsNull() || x.a != d) return fail("not one size");
+  if (!(d > 0)) return fail("no size");
+  AncMap anc;
+  TopExp::MapShapesAndAncestors(s->s, TopAbs_EDGE, TopAbs_FACE, anc);
+  const int i0 = anc.FindIndex(es[0].e);
+  if (i0 <= 0) return fail("an edge is not of the shape");
+  TopoDS_Face face;
+  TopoDS_Wire loop;
+  for (ShapeList::Iterator it(anc(i0)); it.More() && face.IsNull(); it.Next()) {
+    const TopoDS_Face f = TopoDS::Face(it.Value());
+    if (BRepAdaptor_Surface(f, false).GetType() != GeomAbs_Plane) continue;
+    for (TopExp_Explorer wx(f, TopAbs_WIRE); wx.More() && face.IsNull(); wx.Next()) {
+      ShapeMap we;
+      TopExp::MapShapes(wx.Current(), TopAbs_EDGE, we);
+      if (!we.Contains(es[0].e) || we.Extent() != int(es.size())) continue;
+      bool all = true;
+      for (const auto& x : es) all = all && we.Contains(x.e);
+      if (!all) continue;
+      face = f;
+      loop = TopoDS::Wire(wx.Current());
+    }
+  }
+  if (face.IsNull()) return fail("the edges are not one whole loop of a plane");
+  gp_Dir n = BRepAdaptor_Surface(face, false).Plane().Axis().Direction();
+  if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
+  for (const auto& x : es) {
+    const GeomAbs_CurveType ct = BRepAdaptor_Curve(x.e).GetType();
+    if (ct != GeomAbs_Line && ct != GeomAbs_Circle) return fail("an edge is not a line or an arc");
+    const int k = anc.FindIndex(x.e);
+    if (k <= 0 || anc(k).Extent() != 2) return fail("an edge does not join two faces");
+    TopoDS_Face g;
+    for (ShapeList::Iterator jt(anc(k)); jt.More(); jt.Next())
+      if (!jt.Value().IsSame(face)) g = TopoDS::Face(jt.Value());
+    if (g.IsNull()) return fail("an edge does not join two faces");
+    if (ChFi3d::DefineConnectType(x.e, face, g, 1e-6, false) != ChFiDS_Convex) return fail("an edge is not convex");
+    BRepAdaptor_Surface gs(g, false);
+    const bool square = (gs.GetType() == GeomAbs_Plane && std::fabs(gs.Plane().Axis().Direction().Dot(n)) < 1e-9) ||
+                        (gs.GetType() == GeomAbs_Cylinder && gs.Cylinder().Axis().Direction().IsParallel(n, 1e-9));
+    if (!square) return fail("a side is not square to the face");
+  }
+  // A hole's loop grows into the face, the outer loop shrinks.
+  const bool grow = !BRepTools::OuterWire(face).IsSame(loop);
+  TopoDS_Wire half, full, top;
+  double a_half = 0, a_full = 0, a_top = 0;
+  const double a0 = planar_wire_area(loop);
+  if (a0 <= 0 || !offset_loop(loop, d / 2, grow, half, a_half) || !offset_loop(loop, d, grow, full, a_full) ||
+      !offset_loop(loop, 2 * d, grow, top, a_top))
+    return fail("the loop has no offset");
+  const double ideal = std::fabs(d / 6 * (a0 + 4 * a_half + a_full) - a0 * d);
+  gp_Trsf down, up;
+  down.SetTranslation(gp_Vec(n) * -d);
+  up.SetTranslation(gp_Vec(n) * d);
+  BRepBuilderAPI_Transform bottom(loop, down, true);
+  BRepBuilderAPI_Transform upper(top, up, true);
+  BRepOffsetAPI_ThruSections loft(true, true);
+  loft.AddWire(TopoDS::Wire(bottom.Shape()));
+  loft.AddWire(TopoDS::Wire(upper.Shape()));
+  loft.Build();
+  if (!loft.IsDone()) return fail("no tapered tool");
+  std::vector<TopoDS_Shape> sides;
+  for (const auto& x : es) {
+    const TopoDS_Shape side = loft.GeneratedFace(bottom.ModifiedShape(x.e));
+    if (side.IsNull() || side.ShapeType() != TopAbs_FACE) return fail("no side of the tool for an edge");
+    sides.push_back(side);
+  }
+  ShapeList args, tools;
+  args.Append(s->s);
+  tools.Append(loft.Shape());
+  auto b = run_boolean_checked(GS_BOOL_CUT, args, tools);
+  const TopoDS_Shape result = b->Shape();
+  if (result.IsNull()) return fail("no result");
+  const double before = std::fabs(measured_volume(s->s)), after = std::fabs(measured_volume(result));
+  if (std::fabs(before - after - ideal) > 1e-7 * std::max(1.0, before)) return fail("the tapered cut is not the chamfer");
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  record_input_faces(*b, s->s, 0, out_faces, o);
+  for (size_t i = 0; i < sides.size(); ++i) {
+    bool found = false;
+    std::vector<TopoDS_Shape> images;
+    for (ShapeList::Iterator it(b->Modified(sides[i])); it.More(); it.Next()) images.push_back(it.Value());
+    if (images.empty() && !b->IsDeleted(sides[i])) images.push_back(sides[i]);
+    for (const auto& g : images) {
+      const int k = out_faces.FindIndex(g);
+      if (k <= 0) continue;
+      found = true;
+      push_origin(o, k - 1, GS_ORIGIN_FROM_EDGE, 0, idx[i]);
+    }
+    if (!found) return fail("an edge left no chamfer face");
+  }
+  std::vector<bool> has(size_t(out_faces.Extent()), false);
+  for (size_t k = 0; k + 3 < o.size(); k += 4)
+    if (o[k] >= 0 && o[k] < int64_t(has.size())) has[size_t(o[k])] = true;
+  for (bool h : has)
+    if (!h) return fail("a face of the tapered cut has no origin");
+  to_buf(o, origins);
+  *out = new GsShape{result};
   return GS_OK;
 }
 

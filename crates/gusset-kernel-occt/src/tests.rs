@@ -625,6 +625,53 @@ fn a_pocket_wall_offset_carries_its_round() {
     assert_eq!(rt.faces.iter().filter(|x| x.kind == SurfaceKind::Torus).count(), 2);
 }
 
+/// 5998's `Chamfer3`: a plate 1.6 thick with a slot 3 wide (straight sides 8 long, round ends)
+/// pocketed 0.6 deep, its rim chamfered by 0.6, which uses up the slot's sides (ChFi3d does
+/// not end a chamfer on the far edge of the face it uses up). The chamfer is the cut of the
+/// slot tapered at 45 degrees: it removes the ring between the rim and its offset by t over
+/// the depth, P d^2 / 2 + pi d^3 / 3 (P the rim's length, the round ends' offset growing by
+/// pi t^2). Each rim edge names its chamfer face, a plane or a cone.
+#[test]
+fn a_chamfer_that_uses_up_a_pockets_sides_is_its_rim_tapered() {
+    let plate = plain_box(20.0, 20.0, 1.6);
+    let side = |x: f64, y0: f64, y1: f64| Seg2::Line { a: [x, y0], b: [x, y1] };
+    let end = |y: f64, from: f64, to: f64| Seg2::Arc { center: [10.0, y], start: [from, y], end: [to, y], ccw: true };
+    let slot = Loop2 {
+        edges: [side(11.5, 6.0, 14.0), end(14.0, 11.5, 8.5), side(8.5, 14.0, 6.0), end(6.0, 8.5, 11.5)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, seg)| ProfileEdge { seg, tag: 50 + i as u64 })
+            .collect(),
+    };
+    let frame = Frame { origin: [0.0, 0.0, 1.0], ..Frame::XY };
+    let p = Profile { frame, regions: vec![Region2 { outer: slot, holes: vec![] }] };
+    let pocket = k().extrude(&p, &ExtrudeSpec { distance: 0.6, symmetric: false }).unwrap();
+    let b = k().boolean(BoolOp::Cut, &plate.shape, &pocket.shape).unwrap();
+    let t = k().topology(&b.shape).unwrap();
+    let rim: Vec<u32> = (0..t.edges.len() as u32)
+        .filter(|i| {
+            let m = t.edges[*i as usize].midpoint;
+            (m[2] - 1.6).abs() < 1e-9 && (m[0] - 10.0).abs() < 2.0 && (m[1] - 10.0).abs() < 6.0
+        })
+        .collect();
+    assert_eq!(rim.len(), 4);
+    let before = k().mass_properties(&b.shape).unwrap().volume;
+    let c = k().chamfer(&b.shape, &rim, 0.6).unwrap();
+    let removed = before - k().mass_properties(&c.shape).unwrap().volume;
+    let (d, perimeter) = (0.6f64, 16.0 + 3.0 * std::f64::consts::PI);
+    let want = perimeter * d * d / 2.0 + std::f64::consts::PI * d.powi(3) / 3.0;
+    assert!(close(removed, want, 1e-9), "{removed} vs {want}");
+    assert!(c.face_origins.iter().all(|o| !o.is_empty()));
+    let ct = k().topology(&c.shape).unwrap();
+    for e in &rim {
+        let faces: Vec<usize> = (0..c.face_origins.len())
+            .filter(|f| c.face_origins[*f].contains(&FaceOrigin::FromEdge { input: 0, edge: *e }))
+            .collect();
+        assert_eq!(faces.len(), 1, "edge {e}");
+        assert!(matches!(ct.faces[faces[0]].kind, SurfaceKind::Plane | SurfaceKind::Cone), "edge {e}");
+    }
+}
+
 fn plate_with_hole(cx: f64, cy: f64) -> OpResult {
     let mut region = Region2 { outer: rect(40.0, 40.0, 1), holes: vec![] };
     region
