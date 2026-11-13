@@ -3658,3 +3658,80 @@ Reader: `fusion_tree/acis.rs` (`NamedEdge::body_ops`), `fusion_tree/naming.rs` (
   10th of adafruit-next, every 4th of adafruit) all come in as history, as before.
 * Tests: `gusset-sat` (134, new `a_stored_edge_knows_the_operations_its_body_has_been_through`), `gusset-commands`,
   `modeling_tree_import`, `modeling_chamfer` pass; clippy and fmt clean.
+
+## 60. Round 32 K: Combine "Keep Tools": no Combine of the samples keeps its tools (2026-11-13)
+Reader: `fusion_tree/combine.rs` (`used_up`), `parse.rs` (`Sat::tags`), `lib.rs` (`body_tags`); importer:
+`import.rs` (`fusion_end_bodies`, `fusion_used_up`).
+
+### The question
+Section 58 read 3722's two extra stored bodies (the coil after `Move1`, 743.66 mm3; the cap's `Extrude1`, 10551.04)
+as Combine tools Fusion kept, and 3900's header part as a design whose tools are used up, with the same record layout.
+Every Combine `2A94257F` of the three sets (35 records in 18 distinct design streams; the copies in other sets are
+the same streams) was compared field by field, then with the records around it.
+
+### The record: no field tells
+* Body, now read in full: `u32 operation`, `u32 n` + n `4A782808` (RemoveBody) references, `u8 a`, `u8 0`, `u32 1`
+  + one `2E3AC990` reference or a null (`00`), `u64` (a counter: 0x13a, 0x156, 0x227 ... rising through a file),
+  `u32 ntools` + the tool selections, `u32 0` (two in the layouts with a `2E3AC990`), `u32 m` + the tools' body links,
+  `u32 1` + the target selection, a null UUID string, the (selection, `9716F783`) pairs, `u32`, `Combine`, the name's
+  index, zeros, `B7F34D7B`, a double, `5FBE538E`, `6CCF41D5`, then the `261`/`258`/`265` section.
+* The "one more `u32 1`" of 3722's 690 against 1980 (section 58) is the record header's attribute flag with an empty
+  attribute list (`01` + `u32 0`, 4 bytes longer); 3093's Combine1 and the Crickit Assembly's have it too.
+* `a` is 1 only in 324 NEMA-17 (whose Combine stops behind a Thread); 0 in the other 34. The padding of references
+  (1 or 2 zero bytes) follows the file's version, not the Combine. Apart from the ids, the counter and the tool counts,
+  3722's 690 and 1980 are byte for byte 3900's 8368, 8543, 4200's, 4242's, 4400's, 4300's, 4128's, 3651's Combines.
+
+### What the file does say: the component's body list
+* A body record `D3937028` names its component's body list `CD57BC48`: `u32` (the next body index), `u32 n` + n
+  body records (the component's current bodies), a `E55D0457`, the blob's body map `74CA4562`, a `372234A0`, the same
+  n bodies again and the component `E03784ED`. The map is `u32 n` + n pairs (`u64` tag, `u64` body record id), then
+  the blob's file name `BREP.<id>.smbh`. The tag is the integer an ACIS version 7 record writes after its attribute
+  pointer: 3722's cap blob holds two bodies tagged 0x6de (the cap's `Extrude1`, record 1507) and 0x6dd (the cap, 1687),
+  as its map pairs them.
+* A body record's index (`u64` after `u32 2`) counts the component's bodies: 3722's base Revolve2 2, coil 3.
+* Every one of the 103 tools of the 35 Combines (3722 included) is missing from its component's body list after the
+  Combine, while its blob's map still names it and the blob still holds its last shape. The targets stay listed
+  (18), but where a later Combine takes the target as its tool (the header parts' Combine3, 17).
+
+| design (component) | Combines | tools | tools in the body list | tools in the blob |
+|---|---|---|---|---|
+| 3722 Snowglobe (base, cap) | 2 | 2 | 0 | 2 (blob ends 3 and 2: tool, target, a body without faces) |
+| 3900, 4200, 4242, 4400 (adafruit-more), 4128, 4300 (adafruit-next): header part | 3 each | 7 each | 0 | 7 (blob 8 of 9: Extrude1, Mirror1, 5 copies, Mirror2, one without faces) |
+| 3651 FeatherWing header part | 3 | 7 | 0 | 7 |
+| 4862, 4863 CyberDeck | 1 | 19 | 0 | 19 (blob 20 of 20) |
+| 3093 Crickit CPX, Crickit CPX Assembly | 2 | 4 | 0 | 4 (blob 36) |
+| 4431 STEMMA Buttons | 1 | 1 | 0 | 1 (list 4 of map 5) |
+| 6114 Solar Charger Case | 1 | 1 | 0 | 1 (list 1 of map 2) |
+| 6124, 6126 BQ25185, 5981 TRRS (tool removed by RemoveBody) | 1 | 1 | 0 | 1 (the tool's own blob) |
+| 324 NEMA-17 | 1 | 1 | 0 | 1 (the list holds a `3A8E00DC`, no body record) |
+
+* So 3722's tools are used up as 3900's are; the stored coil and `Extrude1` are the history blob's record of the tools'
+  last shape (3900's header blob holds solids of 291.69, 24.31 and five of 48.62 mm3 beside the finished 583.39: the
+  part's tools as they were combined). Nothing in the samples keeps a tool: no Keep Tools to read, and no `keep_tools`
+  option is added to the document's `combine`.
+* The body list is not the visible bodies: of the body records whose byte after the index and stamp reads (`01 00`
+  or `01 01`), 222 are listed with 0 (the tools' value), and none with 1 is missing from a list. Bodies a list leaves out otherwise: RemoveBody
+  (2530's thickened sheets), a body joined into another (1313, 3221), bodies moved to another component (5358, 5360,
+  2831: the root's list is empty, its blob's bodies are the moved ones, which `fusion_end_blobs_kept` handles).
+
+### The importer: used-up tools are no end bodies
+* The tree's `combine` lists the tools it used up that a history blob still holds: `used_up: [{blob, tag}]` (a tool
+  whose body record its component still lists gets none). `fusion_end_bodies` passes over a blob body whose tag
+  (`gusset_sat::body_tags`, in `body_count` order) is listed for that blob; an entry not read, or a blob whose tags do
+  not read, keeps all of its bodies. Every other stored body must still be a finished body, volume for volume.
+* 3722 comes in as history: "the finished bodies are the end bodies of the file's history blob, volume for volume"
+  (73895.1078 against 73895.0597, 7352.1969 against 7352.2430 mm3).
+
+### Result
+* 3722 Snowglobe gains history (its tree's two Combines: `used_up` tags 2406 = 0x966 in the base's blob, 1758 = 0x6de
+  in the cap's).
+* No loss: every design with a Combine (the 22 files of the three sets that hold one) imports as before but 3722
+  (3900, 3651, 4200, 4242, 4400, 4128, 4300, 4862, 4863 history, word for word; 3093, the Crickit Assembly, 6124,
+  6126, 324, 4431, 5981, 6114 the same refusals). The tree changes only by the `used_up` key of combines; the parser
+  keeps the fields it read before (the tag is set apart, not read as a field).
+* Not done: Keep Tools itself. A Combine that keeps its tools would leave the tool's body record in its component's
+  body list; the importer would then find the tool among the end bodies, and the document's `combine` would need to
+  keep a copy (as `thicken` keeps its sheet). No sample has one, so neither the flag nor the copy is written.
+* Tests: `gusset-sat` (136, new `a_bodys_tag_is_the_integer_after_its_attribute_pointer`,
+  `a_combines_tool_left_out_of_its_components_body_list_is_used_up`), `gusset-commands` (277, new
+  `the_tools_a_combine_used_up_are_read_from_the_tree`) pass; clippy and fmt clean.
