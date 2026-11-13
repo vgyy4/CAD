@@ -3316,3 +3316,95 @@ Kernel: `gusset_occt.cpp` (`revolved_blend`, `seam_moved_blend`, `merge_pieces`)
   check's 2e-5 of the change. Next for 3722: the integration of the coil's B-spline flanks.
 * The 55 designs of the three sets that came in as history with fillets or chamfers (21 adafruit-next, 33
   adafruit-more, 1 adafruit) all still do; the new fallbacks run only where every earlier way has failed.
+
+## 55. Round 29 D: next blockers: a draft's cap by its neighbours, blends on mirrored copies, a logo, coincident points (2026-11-13)
+Reader: `fusion_tree/bodyops.rs` (`draft_json`), `fusion_tree/naming.rs` (`stored_face_beside`, `mirrored_face`,
+`fillet_crossings`, `on_stored_round`), `fusion_tree/geom.rs` (`piece_at`, `bridged_chains`), `fusion_tree/sketch.rs`
+(`Ellipse`), `fusion_tree/combine.rs`; importer: `tree_import.rs` (`shared_points`), `tree_import/v2.rs`
+(`combine`, `remove_body`); kernel: `gusset_occt.cpp` (`offset_plane_by_prism`).
+
+### 5998 Draft1: which of two caps of one name
+* `Extrude5` joins two rails (one sketch, two rectangles 20 x 0.9 mm at y = +-8.25): both end caps carry the name
+  `2 [Extrude5]`, and `Draft1` and `Draft2` each name "the" cap. The face is a bounded-face recipe (`7ACC2A03` with
+  `bounded_face_recipe_data`) whose face list is the face itself, then the faces round it: `Draft1`'s cap
+  `2 [328] | 3 [328] | 6 [328] | 4 [328] | 5 [305, 309]`, `Draft2`'s `2 [328] | 7 [328] | 10 [328] | 9 [328] | ...`.
+  The drafts' own side faces (x = +-10, y = 8.25 and y = -8.25) and neutral planes (y = 8.7, y = -8.7) agree.
+* Rule: of the stored faces carrying the cap's name, keep those that share an edge point (1e-7 cm) with a stored face
+  of every name round it. Nothing is guessed: where that does not narrow the faces down, the pick is as before.
+* 5998 then builds `Draft1` and `Draft2` and stops at `Chamfer3` (OCCT: "chamfer failed"): the 0.6 mm chamfer of the
+  rim of `Extrude6`'s slot, cut 0.6 mm deep into the 1.6 mm floor (z 1.0 to 1.6), uses up the slot's wall. ChFi3d does
+  not end a chamfer on the face's far edge; Fusion does. Not attempted (a kernel fallback: the cut of the slot's outline
+  tapered at 45 degrees from the floor to the rim).
+
+### 6124 and 6299: blend edges on mirrored copies and across a round
+* 6124 `Fillet4` rounds the bottom rim of the case: the box (`Extrude2`, corners rounded by `Fillet1`) joined with a tab
+  (`Extrude9`) and its mirror copy (`Mirror2`), their joins rounded by `Fillet3`. Four edges were unresolved:
+  - **Mirrored faces.** A face named `(g, [op, mirror, copy])` (the mirror `D1728651`, its copy `AD719C1A`) was read
+    as the face `(g, [op])`, not reflected: `6 [374, 376, 377]` gave the tab's own side at y > 0. It is now the
+    original's face reflected in the mirror's plane (planes and fillet rounds; a face pick likewise); `Fillet3`'s
+    rounds of the copy follow.
+  - **A line that runs into a round.** The tab's side meets the box at `Fillet1`'s corner round, which rounds two
+    other planes. The edge ends where its line enters that round: the crossing (in the quarter between the round's
+    tangent lines) nearest the edge's other ends.
+* 6299 `Fillet4 (2)`: the side `11` of the thin cut `Extrude7 (2)` is known only from the stored bodies, and the plane
+  faces that carry it among other entries disagree. A face is now also read as the plane every stored face carrying
+  exactly its name lies on. 6299 then stops at `Loft2` ("loop does not close": a loop of a circle's two halves and a
+  whole line across it; not looked into).
+
+### 4632 Fillet7: the round of an edge of a cut
+* `Fillet6` rounds three vertical corners of a notch `Extrude7` cut into the box's wall; `Fillet7` runs along the top
+  rim, over those rounds. A fillet face was always read as the round of a convex edge, each side's normal into the
+  material as the extrude's profile gives it, which is the wrong side for a cut's face (it faces into the cut). The
+  rim's arcs came out 0.117 mm off the model's. Where the round as read lies on no stored round of the fillet (a
+  cylinder of its radius, 1e-7 cm, about its axis, 1e-6 cm), the one way of turning the two sides that does is taken
+  (the stored round `1 [480]` about x = 1.2, z = 17.3 mm: the cut's side turned).
+* 4632 now builds every feature and is refused by the step check ("a stored solid of 24.9678 mm3 is neither a state of
+  the model nor the cut tool of a feature"), as section 49 expected: the file's fan is the plain hub, the blades never
+  joined it in Fusion; the rebuild joins them. Not loosened.
+
+### 6124's logo: a cut at a spline's start, a hole on a bridge, ellipses, Combine 1
+* `Extrude16` (the Adafruit logo, `Sketch4 (3)`: five closed petal splines and a pentagon of lines) was "outer loops 3".
+  - A line crosses the petal `c5942` 3e-8 cm from its first point (both rounded): the cut came out as a cut just after
+    the start, numbering the closed curve's pieces one off (pieces 3 and 4 of 6 were the wrong two). A cut within
+    1e-6 of a closed curve's start is now at its start.
+  - The loop then walks the petals' outline, a piece of the line x = 0 from the outline to a corner of the pentagon
+    (once, not there and back) and the pentagon. Such a loop now falls into the outline's ring and the hole's: the
+    one piece without which the others close in rings, each hole inside the outline.
+* `Extrude17` cuts five ellipses (`FF23079A`) 10 mm into the logo. The record: after the curve ids, 13 doubles (cm):
+  the centre, the major axis's unit direction, the minor axis's (in the sketch plane), the two semi-axes, the parameter
+  range (0 to 2 pi in all five), then the centre point's reference. Whole ellipses are read (tree `ellipse`; the
+  regions take the curve from the major axis's end round); arcs of ellipses are not decoded.
+* `Combine1`'s operation is 1, in all five such records a logo body taken out of a case: the API's numbering (join 0,
+  cut 1), now read as a cut. Fusion keeps the tool and removes it with `RemoveBody-Body51`; the document's combine has
+  used it up, so a later removal of a combine's tool is a no-op.
+* 6124 (both copies, adafruit and adafruit-more) now reads and builds in full and is refused by the step check:
+  "Extrude17 changes the volume by 3428.0243 mm3, not 5 copies of a stored cut tool" (five ellipses of 68.56 mm2,
+  10 mm deep, after the last stored state; the file stores no tool of that cut). Not loosened.
+
+### 858: points on one spot, a shaft's end pushed out
+* `Extrude13`'s sketch has two points in one place (the arc `c4225` starts on `p4220`, the line `c4003` on `p3998`,
+  both at (-7.3, 11.946129) mm); the file has no constraints between them. The arc's ends disagree on its radius by
+  4e-7 mm (7 digits), the document's solver moved `p4220` by 1.7e-7 mm to make them agree and left `p3998`, and the
+  profile's arc ended off its circle: OCCT's `BRepBuilderAPI_MakeEdge` failed ("could not build an arc of the
+  profile"). In a sketch without constraints (the Fusion trees), a curve end exactly where an earlier point lies is now
+  written as that point, unless a curve would use one point twice; poles and construction points stay apart.
+* `OffsetFaces2` (+0.4 mm) pushes the shaft's lower end (`Extrude4`, a rod r 2.5 mm from z 1.6 to 4, joined by
+  `Extrude5` to the same rod with two flats up to z 10, its circle drawn twice so its right arc is in two at the seam)
+  out. The kernel's move of the face refuses (a neighbour would change shape) and BRepOffset gives no shape. New last
+  fallback of `gs_offset_faces` (`offset_plane_by_prism`): one planar face whose neighbours all stand along its
+  outward normal (planes across it, cylinders along it) is joined with, or cut by, the prism it sweeps; the volume
+  must change by its area times the distance (1e-7); the prism's far cap stands for the face, a piece of its side the
+  unification leaves apart from the neighbour it continues takes that neighbour's origin. Golden test
+  `a_shafts_end_between_flats_is_pushed_out_by_its_prism` (fails without the fallback).
+* 858 comes in as history (13 stored solids states of the model, 7 its cut tools).
+
+### Not attempted
+* 2354 `Revolve1` and `Revolve2`: the profile is a face (a bounded-face recipe `1 [318]`, a box primitive's face) and
+  the axis an edge (`5 [310] | 1 [310]`); the document's revolve takes a sketch profile and a sketch line or base axis
+  only.
+
+### Result
+* Gained: 858 (adafruit-more) comes in as history. 6124 (two copies) and 4632 now build every feature and are refused
+  by the state checks (above); 5998 stops at `Chamfer3` (OCCT), 6299 at `Loft2` (reader), 2354 at `Revolve1`.
+* No loss on a sample of 35 designs that came in as history (every 6th of adafruit-more, every 10th of
+  adafruit-next) and on the designs with offsets of faces (3027, 3464, 3350, 1054, 3692).
