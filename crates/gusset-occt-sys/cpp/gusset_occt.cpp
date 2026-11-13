@@ -3110,10 +3110,7 @@ int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std
     if (c.GetType() != GeomAbs_Circle || std::fabs(c.LastParameter() - c.FirstParameter() - 2 * M_PI) > 1e-9)
       return fail("not a whole circle");
     const gp_Circ ci = c.Circle();
-    if (i == 0) {
-      axis = ci.Axis();
-      if (gp_Vec(axis.Direction()).Dot(gp_Vec(0.31, 0.47, 0.83)) < 0) axis.Reverse();
-    }
+    if (i == 0) axis = ci.Axis();
     if (!ci.Axis().IsParallel(axis, 1e-9) || gp_Lin(axis).Distance(ci.Location()) > 1e-7)
       return fail("not about one axis");
     const double z = gp_Vec(axis.Location(), ci.Location()).Dot(gp_Vec(axis.Direction()));
@@ -3127,14 +3124,20 @@ int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std
   const double m = 3.1 * size;
   const double w_r0 = std::max(0.0, rlo - m), w_r1 = rhi + m, w_z0 = zlo - m, w_z1 = zhi + m;
   const gp_Dir zd = axis.Direction();
+  // Two frames for the section's angle: the circles' own (gp_Ax2's X direction, the first
+  // tried, so a result that came from it stays the same), and world X (Y on an axis near X)
+  // about the axis turned to a fixed side, which does not jump with a 1e-17 tilt of the axis.
+  const gp_Dir x_own = gp_Ax2(axis.Location(), zd).XDirection();
+  gp_Ax1 axis_fixed = axis;
+  if (gp_Vec(zd).Dot(gp_Vec(0.31, 0.47, 0.83)) < 0) axis_fixed.Reverse();
   gp_Vec xv(1, 0, 0);
   if (std::fabs(xv.Dot(gp_Vec(zd))) > 0.9) xv = gp_Vec(0, 1, 0);
   xv -= gp_Vec(zd) * xv.Dot(gp_Vec(zd));
-  const gp_Dir x0(xv);
-  // A point at radius r and height z of the half plane at angle `th`.
-  auto at = [&](double th, double r, double z) {
+  const gp_Dir x_world(xv);
+  // A point at radius r and height z of the half plane at angle `th` from `x0` about `about`.
+  auto at = [&](const gp_Dir& x0, const gp_Ax1& about, double th, double r, double z) {
     gp_Vec x(x0);
-    x.Rotate(axis, th);
+    x.Rotate(about, th);
     return axis.Location().Translated(x * r + gp_Vec(zd) * z);
   };
   // Is a point of a tool strictly inside the window (or on the axis, where the window starts at it)?
@@ -3161,31 +3164,29 @@ int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std
     return l;
   };
   std::string why = "no section";
-  // The sections at 24 angles, each with the distances of its other corners from the circles'
-  // corners, nearest first.
   struct Section {
     TopoDS_Face face;
     std::vector<double> dist;
   };
-  std::vector<Section> secs;
-  for (int k = 0; k < 24; ++k) {
-    const double th = 0.3 + k * (2 * M_PI / 24);
+  // The window's section at angle `th` of a frame, with the distances of its other corners
+  // from the circles' corners, nearest first.
+  auto section = [&](const gp_Dir& x0, const gp_Ax1& about, double th, Section& out) {
     try {
-      BRepBuilderAPI_MakePolygon poly(at(th, w_r0, w_z0), at(th, w_r1, w_z0), at(th, w_r1, w_z1), at(th, w_r0, w_z1),
-                                      true);
-      if (!poly.IsDone()) continue;
+      BRepBuilderAPI_MakePolygon poly(at(x0, about, th, w_r0, w_z0), at(x0, about, th, w_r1, w_z0),
+                                      at(x0, about, th, w_r1, w_z1), at(x0, about, th, w_r0, w_z1), true);
+      if (!poly.IsDone()) return false;
       BRepBuilderAPI_MakeFace wf(poly.Wire(), true);
-      if (!wf.IsDone()) continue;
+      if (!wf.IsDone()) return false;
       BRepAlgoAPI_Common sec(s->s, wf.Face());
       sec.SetRunParallel(false);
       sec.Build();
-      if (!sec.IsDone() || sec.HasErrors()) continue;
+      if (!sec.IsDone() || sec.HasErrors()) return false;
       TopoDS_Face sf;
       int nf = 0;
       for (TopExp_Explorer ex(sec.Shape(), TopAbs_FACE); ex.More(); ex.Next(), ++nf) sf = TopoDS::Face(ex.Current());
       if (nf != 1) {
         why = "the section is not one face";
-        continue;
+        return false;
       }
       ShapeMap vs;
       TopExp::MapShapes(sf, TopAbs_VERTEX, vs);
@@ -3198,11 +3199,13 @@ int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std
         if (d > 1e-7) dist.push_back(d);
       }
       std::sort(dist.begin(), dist.end());
-      secs.push_back(Section{sf, dist});
+      out = Section{sf, dist};
+      return true;
     } catch (const Standard_Failure&) {
       why = "geometry kernel error";
+      return false;
     }
-  }
+  };
   // Is section a's nearest corner farther from the circles than b's (the first that differs
   // by more than 1e-7; no corner left is farthest)?
   auto farther = [](const Section& a, const Section& b) {
@@ -3213,15 +3216,32 @@ int revolved_blend(const GsShape* s, const std::vector<BlendEdge>& es, const std
     }
     return false;
   };
-  std::vector<bool> tried(secs.size(), false);
-  for (int attempt = 0; attempt < 6; ++attempt) {
-    // The farthest section not yet tried (the first of equals).
+  // The sections to try, in order: six at 60 degree steps in the circles' own frame (as
+  // before), then the six whose other corners lie farthest from the circles of 24 in the
+  // world frame (where the shape is not axisymmetric, a thread, the section changes with the
+  // angle and OCCT's blend fails where a corner of it lies at the blend's tangent line: 916's
+  // groove end, 1.7 um above the round's tangent line, in all but a tenth of a turn or so).
+  std::vector<TopoDS_Face> order;
+  for (int k = 0; k < 6; ++k) {
+    Section x;
+    if (section(x_own, axis, 0.3 + k * (2 * M_PI / 6), x)) order.push_back(x.face);
+  }
+  std::vector<Section> secs;
+  for (int k = 0; k < 24; ++k) {
+    Section x;
+    if (section(x_world, axis_fixed, 0.3 + k * (2 * M_PI / 24), x)) secs.push_back(x);
+  }
+  std::vector<bool> taken(secs.size(), false);
+  for (int n = 0; n < 6; ++n) {
+    // The farthest section not yet taken (the first of equals).
     size_t best = secs.size();
     for (size_t j = 0; j < secs.size(); ++j)
-      if (!tried[j] && (best == secs.size() || farther(secs[j], secs[best]))) best = j;
+      if (!taken[j] && (best == secs.size() || farther(secs[j], secs[best]))) best = j;
     if (best == secs.size()) break;
-    tried[best] = true;
-    const TopoDS_Face sf = secs[best].face;
+    taken[best] = true;
+    order.push_back(secs[best].face);
+  }
+  for (const TopoDS_Face& sf : order) {
     try {
       // The section revolved.
       BRepPrimAPI_MakeRevol rv(sf, axis, 2 * M_PI);
