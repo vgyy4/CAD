@@ -10,11 +10,15 @@ pub(super) fn specs() -> Vec<CommandSpec> {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Sweep {
-    /// Profile sketch.
+    /// Profile sketch (omit when `face` is given).
+    #[serde(default)]
     pub sketch: String,
     /// Region ids; empty = all, holes left open.
     #[serde(default)]
     pub regions: Vec<String>,
+    /// Or a planar body face as the profile, e.g. `Base/cap(end)`.
+    #[serde(default)]
+    pub face: Option<String>,
     /// Path sketch `S`, its curves `S.curves(l1, a2)`, or edges `[edge(..)]`; an end lies in the profile plane.
     pub path: String,
     /// frenet (default, follows the path) or fixed.
@@ -54,7 +58,8 @@ impl Command for Sweep {
             return Err(CommandError::args("a twist needs orientation frenet")
                 .hint("remove the twist or the fixed orientation"));
         }
-        let (sketch_name, all_regions) = (self.sketch.clone(), self.regions.is_empty());
+        let profile = super::profile_of(self.sketch, self.regions, self.face)?;
+        let (sketch_name, all_regions) = (profile.sketch.clone(), profile.regions.is_empty());
         let seen = std::cell::RefCell::new((String::new(), None::<String>));
         edit_post(
             s,
@@ -69,7 +74,7 @@ impl Command for Sweep {
                 let f = Feature::new(
                     name.clone(),
                     FeatureKind::Sweep(SweepDef {
-                        profile: ProfileRef { sketch: self.sketch, regions: self.regions, face: None },
+                        profile,
                         path,
                         orientation,
                         twist,

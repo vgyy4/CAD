@@ -8,7 +8,14 @@ use gusset_units::expr::Expr;
 use std::sync::Arc;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<ContourFlange>(), spec::<Tab>(), spec::<EdgeFlange>(), spec::<FlatPatternQuery>(), spec::<ExportFlat>()]
+    vec![
+        spec::<ContourFlange>(),
+        spec::<Tab>(),
+        spec::<EdgeFlange>(),
+        spec::<Bend>(),
+        spec::<FlatPatternQuery>(),
+        spec::<ExportFlat>(),
+    ]
 }
 
 fn sheet(name: String, op: SheetOp, thickness: Option<Expr>, flip: bool) -> Feature {
@@ -177,6 +184,95 @@ impl Command for EdgeFlange {
                 k_factor: Box::new(k_factor),
                 close: self.close || self.mitre,
                 mitre: self.mitre,
+            };
+            insert_feature(doc, rb, sheet(name.clone(), op, None, self.flip));
+            Ok(json!({ "feature": name }))
+        })
+    }
+}
+
+/// Bends a flat stretch of a sheet-metal body along a sketch line.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Bend {
+    /// The sheet-metal feature to bend (a tab, flange, or imported sheet).
+    pub body: String,
+    /// The bend line, `Sketch3.l2`.
+    pub line: String,
+    pub angle: String,
+    /// Inside bend radius (default: the thickness, when the body is a tab or flange).
+    #[serde(default)]
+    pub bend_radius: Option<String>,
+    /// Default 0.44.
+    #[serde(default)]
+    pub k_factor: Option<String>,
+    /// Which side of the line moves, seen from the sketch normal: left (default) or right.
+    #[serde(default)]
+    pub side: Option<String>,
+    /// Where the bend zone lies against the line: center (default), start or end.
+    #[serde(default)]
+    pub position: Option<String>,
+    /// Bend down instead of up.
+    #[serde(default)]
+    pub flip: bool,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for Bend {
+    const ID: &'static str = "feature.bend";
+    const TITLE: &'static str = "Bend";
+    const DESCRIPTION: &'static str = "Bend a flat stretch of a sheet-metal body along a sketch line.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let angle = parse_expr("angle", &self.angle)?;
+        let k_factor = parse_expr("k_factor", self.k_factor.as_deref().unwrap_or("0.44"))?;
+        let ident = |v: &str| {
+            v.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && v.len() <= 64
+        };
+        let (sketch, line) = match self.line.split_once('.') {
+            Some((a, b)) if ident(a) && ident(b) => (a.to_string(), b.to_string()),
+            _ => return Err(CommandError::args("line must be a sketch line such as Sketch3.l2")),
+        };
+        if !ident(&self.body) {
+            return Err(CommandError::args("body must be a feature name such as Tab1"));
+        }
+        let right = match self.side.as_deref() {
+            None | Some("left") => false,
+            Some("right") => true,
+            Some(o) => return Err(CommandError::args(format!("unknown side '{o}' (left, right)"))),
+        };
+        let position = match self.position.as_deref() {
+            None => gusset_doc::BendPosition::Center,
+            Some(p) => gusset_doc::BendPosition::from_keyword(p)
+                .ok_or_else(|| CommandError::args(format!("unknown position '{p}' (center, start, end)")))?,
+        };
+        edit(s, ctx, "Bend", |doc, rb| {
+            let thickness = doc.features.iter().find(|f| f.name == self.body).and_then(|f| match &f.kind {
+                FeatureKind::Sheet(d) => d.thickness.clone(),
+                _ => None,
+            });
+            let bend_radius = match (&self.bend_radius, thickness) {
+                (Some(r), _) => parse_expr("bend_radius", r)?,
+                (None, Some(t)) => t,
+                (None, None) => {
+                    return Err(CommandError::args("bend_radius is needed for this body")
+                        .hint("give bend_radius, e.g. \"2 mm\""));
+                }
+            };
+            let name = feature_name(doc, self.name, "Bend")?;
+            let op = SheetOp::Bend {
+                body: self.body,
+                sketch,
+                line,
+                angle: Box::new(angle),
+                bend_radius: Box::new(bend_radius),
+                k_factor: Box::new(k_factor),
+                right,
+                position,
             };
             insert_feature(doc, rb, sheet(name.clone(), op, None, self.flip));
             Ok(json!({ "feature": name }))

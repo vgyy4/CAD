@@ -64,7 +64,7 @@ pub use feature_edit::{FeatureAdd, FeatureEdit, FeatureReplaceReference};
 pub use generate::{
     GenerateGear, GenerateNut, GenerateRack, GenerateSpring, GenerateThread, GenerateWorm, QueryGearPair,
 };
-pub use hole::Hole;
+pub use hole::{Hole, Thread};
 pub use joint::{JointCommand, QueryJoints};
 pub use lettering::Text;
 pub use measure::QueryMeasure;
@@ -79,7 +79,7 @@ pub use sch::{
     PcbUpdateFromSchematic, SchAddLabel, SchAddSymbol, SchAddWire, SchDelete, SchErc, SchMove, SchNetlist, SchNew,
     SchOpen, SchSave, SchSetField,
 };
-pub use sheet::{ContourFlange, EdgeFlange, ExportFlat, FlatPatternQuery, Tab};
+pub use sheet::{Bend, ContourFlange, EdgeFlange, ExportFlat, FlatPatternQuery, Tab};
 pub use sim::{FaceLoad, ModalQuery, OptimizeQuery, StaticQuery};
 pub use sketch_ops::{SketchExplodePattern, SketchPattern, SketchTrim};
 pub use surface::{Patch, Stitch, SurfaceExtrude, Thicken};
@@ -2152,10 +2152,14 @@ fn feature_name(doc: &Document, name: Option<String>, base: &str) -> Result<Stri
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Extrude {
+    #[serde(default)]
     pub sketch: String,
     /// Region ids (query_sketch) or an entity bounding one; empty = all, holes left open.
     #[serde(default)]
     pub regions: Vec<String>,
+    /// Instead of sketch: a planar body face, `Base/cap(end)`.
+    #[serde(default)]
+    pub face: Option<String>,
     /// `10 mm`, `depth`; negative flips.
     pub distance: String,
     #[serde(default)]
@@ -2176,18 +2180,18 @@ pub struct Extrude {
 impl Command for Extrude {
     const ID: &'static str = "feature.extrude";
     const TITLE: &'static str = "Extrude";
-    const DESCRIPTION: &'static str = "Extrude closed sketch regions (new body, or add/cut/intersect). A sketch on a face extrudes along its outward normal (a cut needs a negative distance). Result: body_changes; warns when an add/cut changed nothing.";
+    const DESCRIPTION: &'static str = "Extrude sketch regions or a planar face (new body, or add/cut/intersect), along its outward normal (a cut needs a negative distance). Result: body_changes; warns when an add/cut changed nothing.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("E");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let end = ExtrudeEnd::Distance(parse_expr("distance", &self.distance)?);
+        let profile = profile_of(self.sketch, self.regions, self.face)?;
         extrude_feature(
             s,
             ctx,
             ExtrudeParts {
-                sketch: self.sketch,
-                regions: self.regions,
+                profile,
                 end,
                 symmetric: self.symmetric,
                 op: self.op,
@@ -2201,8 +2205,7 @@ impl Command for Extrude {
 
 /// What `feature.extrude` and `feature.up_to_face` share.
 struct ExtrudeParts {
-    sketch: String,
-    regions: Vec<String>,
+    profile: ProfileRef,
     end: ExtrudeEnd,
     symmetric: bool,
     op: Option<String>,
@@ -2211,9 +2214,33 @@ struct ExtrudeParts {
     name: Option<String>,
 }
 
+/// The profile of an extrude or sweep: sketch regions, or a planar body face (`face`).
+pub(crate) fn profile_of(
+    sketch: String,
+    regions: Vec<String>,
+    face: Option<String>,
+) -> Result<ProfileRef, CommandError> {
+    match face {
+        Some(f) => {
+            if !sketch.is_empty() || !regions.is_empty() {
+                return Err(CommandError::args(
+                    "give either a sketch (with regions) or a face as the profile, not both",
+                ));
+            }
+            let face = FaceRef::parse(&f).map_err(|e| CommandError::args(format!("face '{f}': {e}")))?;
+            Ok(ProfileRef::face(face))
+        }
+        None if sketch.is_empty() => {
+            Err(CommandError::args("the profile needs a sketch or a face")
+                .hint("sketch: Sketch1, or face: Base/cap(end)"))
+        }
+        None => Ok(ProfileRef { sketch, regions, face: None }),
+    }
+}
+
 fn extrude_feature(s: &mut Session, ctx: &CmdCtx, a: ExtrudeParts) -> Result<Value, CommandError> {
     let op = op_of(&a.op)?;
-    let (sketch_name, all_regions) = (a.sketch.clone(), a.regions.is_empty());
+    let (sketch_name, all_regions) = (a.profile.sketch.clone(), a.profile.regions.is_empty());
     let seen = std::cell::RefCell::new((String::new(), None::<String>));
     edit_post(
         s,
@@ -2228,7 +2255,7 @@ fn extrude_feature(s: &mut Session, ctx: &CmdCtx, a: ExtrudeParts) -> Result<Val
             let f = Feature::new(
                 name.clone(),
                 FeatureKind::Extrude(ExtrudeDef {
-                    profile: ProfileRef { sketch: a.sketch, regions: a.regions, face: None },
+                    profile: a.profile,
                     end: a.end,
                     symmetric: a.symmetric,
                     op,
@@ -2291,8 +2318,7 @@ impl Command for ExtrudeToFace {
             s,
             ctx,
             ExtrudeParts {
-                sketch: self.sketch,
-                regions: self.regions,
+                profile: profile_of(self.sketch, self.regions, None)?,
                 end,
                 symmetric: false,
                 op: self.op,

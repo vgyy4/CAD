@@ -12,7 +12,7 @@ use gusset_eval::{ErrorCode, HoleInfo};
 use std::collections::BTreeMap;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<Hole>()]
+    vec![spec::<Hole>(), spec::<Thread>()]
 }
 
 /// Renames references to feature `from` inside a hole feature.
@@ -501,4 +501,92 @@ fn lengths_or_numbers<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<V
         _ => Err(D::Error::custom("a site is [u, v] with lengths (\"10 mm\") or numbers in mm")),
     };
     v.map(|list| list.iter().map(|[a, b]| Ok([one(a)?, one(b)?])).collect()).transpose()
+}
+
+/// A thread on a cylindrical face: cosmetic (recorded only) or modeled (the groove is cut).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Thread {
+    /// The cylindrical face, e.g. `Extrude1/side(c3)`; its material decides external or internal.
+    pub face: String,
+    /// Distance between turns.
+    pub pitch: String,
+    /// Designation such as `M16x1`.
+    #[serde(default)]
+    pub designation: Option<String>,
+    /// Cut the groove (default: cosmetic, the body is unchanged).
+    #[serde(default)]
+    pub modeled: bool,
+    #[serde(default)]
+    pub major: Option<String>,
+    #[serde(default)]
+    pub minor: Option<String>,
+    /// Full flank angle (default 60 deg).
+    #[serde(default)]
+    pub angle: Option<String>,
+    /// Threaded length (default: to the face's far end).
+    #[serde(default)]
+    pub length: Option<String>,
+    /// From the face's start to the thread's start (default 0).
+    #[serde(default)]
+    pub offset: Option<String>,
+    /// X, Y, Z or [x, y, z]: the direction the thread runs along the axis.
+    #[serde(default)]
+    pub along: Option<String>,
+    #[serde(default)]
+    pub left: bool,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for Thread {
+    const ID: &'static str = "feature.thread";
+    const TITLE: &'static str = "Thread";
+    const DESCRIPTION: &'static str =
+        "Thread a cylindrical face: cosmetic by default, or modeled (helical groove cut; OCCT only).";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let face = FaceRef::parse(&self.face).map_err(|e| {
+            CommandError::args(format!("face: {e}"))
+                .hint("name a cylindrical face like Extrude1/side(c3); query_body with names: true lists them")
+        })?;
+        let pitch = parse_expr("pitch", &self.pitch)?;
+        let opt = |what: &str, v: &Option<String>| v.as_deref().map(|t| parse_expr(what, t)).transpose();
+        let (major, minor, angle) =
+            (opt("major", &self.major)?, opt("minor", &self.minor)?, opt("angle", &self.angle)?);
+        let (length, offset) = (opt("length", &self.length)?, opt("offset", &self.offset)?);
+        let along = self
+            .along
+            .as_deref()
+            .map(|a| text::parse_direction(a).map_err(|e| CommandError::args(format!("along '{a}': {e}"))))
+            .transpose()?;
+        if let Some(d) = &self.designation
+            && (d.is_empty()
+                || d.chars().count() > MAX_THREAD_DESIGNATION
+                || d.chars().any(|c| c.is_control() || c == '"'))
+        {
+            return Err(CommandError::args("the thread designation must be 1 to 32 printable characters")
+                .hint("write it like \"M16x1\""));
+        }
+        check_face_resolves(s, ctx, &face)?;
+        edit(s, ctx, "Thread", |doc, rb| {
+            let name = feature_name(doc, self.name, "Thread")?;
+            let def = FaceThreadDef {
+                face,
+                designation: self.designation,
+                pitch,
+                modeled: self.modeled,
+                major,
+                minor,
+                angle,
+                length,
+                offset,
+                along,
+                left: self.left,
+            };
+            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Thread(Box::new(def))));
+            Ok(json!({ "feature": name, "modeled": self.modeled }))
+        })
+    }
 }
