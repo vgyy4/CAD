@@ -385,3 +385,13 @@ The `thread` feature (section 50), the thread record's side byte, blend edges mo
 adafruit-next gains 3692 and 1054 (checked one by one, with every design that has a thread or an offset of faces:
 none lost; 3350 and 3000, which `wall`'s half-turn split of helical bands had lost, come in again). 916 stops at
 `Fillet1` (OCCT, section 50).
+
+## Re-run after round 27 Y (2026-11-13)
+
+Round 27 Y (a planar body face as the profile of an extrude, sweep or loft in the document; Fusion surface
+extrudes, Thicken, face profiles, loft face sections, sweeps along body edges; the shim's thicken turned right
+way out): adafruit-more 133 of 150, adafruit-next 123 of 150, adafruit 13 of 18 against the round 26 runs on the
+same tree (wall): none gained, none lost. 4632 now builds its blades and stops at `Fillet6` on `Split1` (and its
+file stores the fan hub without blades); 3221 reads and builds in full and is refused by the stored-body check
+(Base Feature copies moved); 6002 reads its edge-path sweep and stops at a thin extrude; 6299 reads its face
+extrude and stops at `Fillet4 (2)`; 2530 stops at `Fillet1` on its thickened bodies (section 49).

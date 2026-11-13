@@ -8,9 +8,9 @@
 //! then `u32 n` and `n` selections (`2CA5A1CD`, the sheets), two flag bytes (`01 01` in every
 //! record of the corpus: 4632 and 2530), the parameter holder (`Thickness`), and a second list:
 //! for a join the one selection of the body joined to (4632: `Extrude10`'s hub), for a new body
-//! the body links made (2530: two). The flags are not decoded; both records' stored solids are
-//! the sheets thickened half to each side (the rebuild's volumes match those of the file), so
-//! they are read as symmetric.
+//! the body links made (2530: two). The flags are not decoded (Fusion's thicken input has
+//! `isSymmetric` and `isChainSelection`); the thicken is read as symmetric, which no rebuild has
+//! confirmed yet (4632's file stores no thickened blade; 2530 stops before its checks).
 
 use super::bodyops::Edit;
 use super::stream::{Design, parse_header, ref_ids, ref_lists, u32_at};
@@ -127,6 +127,6 @@ impl Edit<'_> {
         Ok(json!({"type": "thicken", "name": name, "source_id": fid, "sheets": sheets,
             "thickness": super::geom::round6(super::geom::mm(t)), "symmetric": true, "operation": op,
             "target": target,
-            "note": "symmetric: the flag bytes are not decoded; the stored solids are thickened to both sides"}))
+            "note": "symmetric: the flag bytes are not decoded and no rebuild has confirmed the side"}))
     }
 }

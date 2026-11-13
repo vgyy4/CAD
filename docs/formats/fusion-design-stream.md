@@ -2935,6 +2935,74 @@ Readers: `fusion_tree/loft.rs` (`loft_json`, `pipe_json`, `profile_of_a_loft_cap
 * adafruit-next: 124 of 150 as history (64 gained; none lost against round 25 T and V); adafruit-more: 133 of 150
   (unchanged, none lost); adafruit: 13 of 18 (unchanged, none lost).
 
+## 49. Round 27 Y: face profiles, surface extrudes and Thicken, sweeps along edges (2026-11-12)
+Readers: `fusion_tree/surface.rs` (`surface_curves`, `Edit::thicken`), `fusion_tree/json.rs` (`profile_of_a_face`,
+`face_pick`, `sweep_path_edges`), `fusion_tree/loft.rs` (face sections). Document: `profile: <face>` (a planar body
+face as the profile of an extrude, sweep or loft; grammar.md), lateral faces `<feature>/along(<edge>)`. Kernel: a
+face's boundary as a profile (`face_profile`, from the topology: lines, circles, arcs); the shim's thicken turns
+an inside-out solid the right way out. Tree format: ADR 0042 amendment of 2026-11-12.
+
+### Surface extrudes
+* An extrude record (`DD405BC2`) whose profile selection `2CA5A1CD` names sketch curves (`5A1BF548` ->
+  `E2CEFD18`, read as a sweep path's: the last 16 bytes are `u64 sketch`, `u64 crv_primary_id`) instead of a
+  `4BD53E5A` profile sweeps those curves into a sheet. Lines, arcs and splines are looked up (4632's
+  `Extrude11`: the open degree-5 B-spline `c5017` of `Sketch5`). Only a new body (op 4) is read so: 5998's
+  `Extrude11 (2)`, a cut whose selection names the curves of a sketch text, is not a surface.
+* The enum block does not tell a surface from a solid: kind (the `u32` after the extent) is 2 for 4632's
+  `Extrude11` and for its solid `Extrude10`, 2 or 1 or 0 for other solids. The start (from an object: 4632's
+  starts on the face 0.2 mm off `Sketch5`) is read as a solid extrude's, by a moved copy of the sketch.
+* The tree writes `curves` on the extrude; the importer writes `surface_extrude`.
+
+### Thicken (`BCE0AD0E`)
+* Two records in the corpus: 4632 `Thicken1` and 2530 `Thicken1`. Body: `u32 1`, `u8 0`, the operation as a
+  `u32` (as an extrude's: 1 join in 4632, 4 new in 2530), then `u32 n` and `n` selections `2CA5A1CD` -> `9716F783`
+  (the sheets: 4632 `Extrude11`'s, 2530 `Extrude2`'s and `Extrude3`'s), two flag bytes (`01 01` in both), the
+  parameter holder (`Thickness`), then a second list: for 4632's join the one selection of the body joined to
+  (`Extrude10`'s hub), for 2530's new bodies its two body links `D26351F0` (the bodies made). The flags are not
+  decoded; the tree reads the thicken as symmetric (Fusion's thicken input has `isSymmetric` and
+  `isChainSelection`), which no rebuild has confirmed yet (below).
+* The importer writes a join as `thicken` of each sheet in place and a `combine` into the target; a feature
+  pattern of the sheet and the thicken (4632's `C-Pattern1`: both, 12 times about the hub's axis) repeats the
+  combine. A new body thickens a `move` copy of its one sheet (the sheet stays, as Fusion keeps it: 2530 removes
+  its sheets later with `RemoveBody`); several sheets into new bodies are refused.
+* The shim's thicken (`BRepOffsetAPI_MakeThickSolid::MakeThickSolidBySimple`) returned 4632's blade inside out
+  (volume -13.169 mm3 for a 26.338 mm2 sheet 0.5 mm thick, either side): it did not unite with the hub. Now
+  reversed when its volume is negative. An L-shaped sheet of two plane faces still thickens wrong by the simple
+  algorithm (487.8 mm3 where 580 is right): the corner is not joined; not needed here.
+
+### Face profiles
+* An extrude whose profile selection names one face (`2CA5A1CD` -> `5662F619` -> a face recipe) and that no
+  earlier reading turns into sketch regions (an exposed cap, a loft's end) is written with `profile_face`, a pick
+  of the face (a cap by its stored face's points, another plane by a point of it): blind, one-sided and straight.
+  Its distance counts along the face's outward normal (3221 `Extrude7`: -0.5 mm, a cut into the tilted end of
+  `Pipe1`; 6299 `Extrude17`: -1 mm into `Extrude1`).
+* A loft section that names a face (3221 `Loft1`: the end cap of `Extrude1` at z 8.8 mm and the cut end of
+  `Pipe1`) is written as `{"face": <pick>}`. `Loft1` joins both bodies: written as a join of the one and a
+  `combine` of the other, as extrudes and sweeps of several bodies already are.
+
+### Sweeps along body edges
+* 6002 `Sweep1`: its path selection (`2CA5A1CD`, named twice in the record) holds three `5662F619`, each an edge
+  recipe (`7ACC2A03`, `edge_recipe_data`), resolved to the edges' middles as a fillet's are. The tree writes
+  `path_edges`; the importer finds the model's edges and writes `path: [edge(...), ...]`.
+
+### Result
+* 4632 now reads and builds `Extrude11`, `Thicken1` and `C-Pattern1` (the hub with 12 blades) and stops at
+  `Fillet6` and `Fillet7` on `Split1`: their edges (the corners of an L-shaped wall, middles at y 2.6 mm, and its
+  top rim) are not on the rebuilt `Split1`, whose nearest edges are 0.5 and 0.75 mm away (not looked into: the
+  split and fillet readers). It would not pass the state checks either way: the file's only fan body is the plain
+  hub (565.487 mm3 = pi 6^2 5, stored), no stored solid has a blade (the 98 sheets left out are the sheets), so in
+  the source the blades never joined the hub (the Thicken most likely failed in Fusion; the record has no flag we
+  know of that says so). The rebuild adds them, and the checks refuse it, rightly.
+* 2530: `Extrude2`, `Extrude3` read as surface extrudes and `Thicken1` as a thicken of two sheets into new bodies
+  (refused: the file stores two thickened bodies, 0.892 mm3 each, and which sheet makes which is not decoded);
+  then `Fillet1` (four edges on the thickened bodies not resolved), `Mirror1` (one body making two) and `Move1`
+  (four bodies) are still in the way.
+* 3221 now reads in full and builds (`Extrude7` and `Loft1` included) and is refused by the state check "a
+  feature changes a stored body that already is a finished body of the file": `Move1` and `Move2` move the
+  Base Feature copies (section 48), which the file stores as they end. Not loosened.
+* 6002 reads `Sweep1` and stops at a thin extrude (`Extrude10` and others) whose wall side (location 1) no rebuild has
+  confirmed. 6299 reads `Extrude17` and stops at `Fillet4 (2)` (one edge not resolved); its `Extrude18` (one face,
+  -0.6 mm) is not read yet. 5998's `Extrude11 (2)` is a cut of a sketch text, not a face.
 ## 50. Round 27: Fusion's Thread as a document thread, its side byte, blends beside threads and offsets (2026-11-12)
 Document: `thread` (`gusset-doc`, `gusset-eval/src/thread.rs`, ADR 0034 amendment); reader: `fusion_tree/thread.rs`;
 importer: `tree_import/v2.rs` (`thread`, `offset_face`), `tree_import.rs` (`moved_picks`).
@@ -3000,3 +3068,4 @@ importer: `tree_import/v2.rs` (`thread`, `offset_face`), `tree_import.rs` (`move
   3429 (Fillet2, unresolved) as before. adafruit-more: 1145, 3350 history; 324 at Thread2 ("it is not on one face":
   a patterned thread on holes off the origin). Designs with offsets of faces (3027, 3464 history; 858, 6299, 5998,
   6002, 3093, 6126, the Crickit assembly at their earlier blockers) unchanged; 3000 history again (above).
+
