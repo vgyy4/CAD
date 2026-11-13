@@ -1900,6 +1900,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             in_own_component(&mut j, "sketch", comp, &mut feats, nbefore, format!("{nm} sketch"));
             let made = op_target(&mut j, &g, d, fid, &names);
             j.insert("creates_bodies".into(), made.into());
+            made_body_box(cx, &g, fid, made, &mut j);
             // An extrude of sketch text (section 51).
             match super::text::extrude_texts(d, fid) {
                 None => feats.extend(super::thin::with_other_walls(j)),
@@ -2481,7 +2482,9 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                         if let Some(j) = f.as_object_mut().filter(|j| j.get("type") == Some(&json!("extrude")))
                             && j.get("operation").and_then(Value::as_str) != Some("new")
                         {
-                            op_target(j, &g, d, fid, &names);
+                            let made = op_target(j, &g, d, fid, &names);
+                            j.insert("creates_bodies".into(), made.into());
+                            made_body_box(cx, &g, fid, made, j);
                         }
                     }
                     Some(made)
@@ -2545,6 +2548,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         tag_feats(&mut feats, nbefore, comp.map(|c| (c, comp_name.as_deref())), extra.contains(&fid));
     }
     joins_that_make_bodies(&mut feats);
+    cuts_that_split_off_bodies(&mut feats);
     joins_of_several_bodies(&mut feats);
     super::thread::moved_edges(&mut feats);
     let comp_json: Vec<Value> = comps.iter().map(|(c, n, b)| json!({"name": n, "source_id": c, "bodies": b})).collect();
@@ -2556,6 +2560,175 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         "single_component": distinct.len() <= 1 && with_bodies <= 1,
         "component_records": d.ids.iter().filter(|i| d.is(**i, "E03784ED")).count(),
     })
+}
+
+/// The box (mm) of the last shape the history blob stores of the one body a cut made, as
+/// `_made_box`: a cut that leaves its body in pieces makes the pieces but one bodies of their
+/// own (2354's BoxPrimitive5, a slit across the ribbon that cuts a strip off it). The body's
+/// record names its component's body lists, whose blob map pairs the record with the tag of
+/// its body in the blob (section 60).
+fn made_body_box(cx: &Ctx, g: &Graph, fid: u64, made: usize, j: &mut Map<String, Value>) {
+    let d = cx.d;
+    if made != 1 || j.get("operation").and_then(Value::as_str) != Some("cut") {
+        return;
+    }
+    let links: Vec<u64> = g.body_links(d, fid, 2).into_iter().filter(|l| g.creator.get(l) == Some(&fid)).collect();
+    let [link] = links.as_slice() else { return };
+    let Some(body) = ref_ids(d, d.rec(*link)).into_iter().find(|q| d.is(*q, "D3937028")) else { return };
+    let mut found: Option<(String, u64)> = None;
+    for list in ref_ids(d, d.rec(body)).into_iter().filter(|q| d.is(*q, "CD57BC48")) {
+        for map in ref_ids(d, d.rec(list)).into_iter().filter(|q| d.is(*q, "74CA4562")) {
+            let rec = d.rec(map);
+            let Some(blob) = stream::wstrings_all(rec)
+                .into_iter()
+                .map(|w| w.2)
+                .find(|w| w.starts_with("BREP.") && w.ends_with(".smbh"))
+            else {
+                continue;
+            };
+            let Some(h) = stream::parse_header(rec) else { continue };
+            let n = stream::u32_at(rec, h.body).and_then(|n| usize::try_from(n).ok()).unwrap_or(0);
+            for k in 0..n.min(rec.len() / 16) {
+                let at = h.body + 4 + 16 * k;
+                if stream::u64_at(rec, at + 8) == Some(body)
+                    && let Some(tag) = stream::u64_at(rec, at)
+                {
+                    found.get_or_insert((blob.clone(), tag));
+                }
+            }
+        }
+    }
+    let Some((blob, tag)) = found else { return };
+    let Some((_, bytes)) = cx.acis.iter().find(|(n, _)| n.rsplit('/').next() == Some(blob.as_str())) else { return };
+    let (Ok(tags), Some(shapes)) =
+        (crate::body_tags(bytes, &crate::Limits::default()), super::acis::body_shapes(bytes))
+    else {
+        return;
+    };
+    // The blob's own bodies come first; a history stream after them holds bodies of earlier
+    // states (2354's ribbon blob: 48 bodies, then 116 in its history), which the tags do not
+    // count.
+    let Some(shapes) = shapes.get(..tags.len()) else { return };
+    let mine: Vec<&super::acis::BodyShape> = tags
+        .iter()
+        .zip(shapes)
+        .filter(|(t, _)| u64::try_from(t.unwrap_or(-1)).ok() == Some(tag))
+        .map(|x| x.1)
+        .collect();
+    if let [one] = mine.as_slice()
+        && !one.transformed
+        && let Some((lo, hi)) = one.vertex_box
+    {
+        j.insert("_made_box".into(), json!([[mm(lo[0]), mm(lo[1]), mm(lo[2])], [mm(hi[0]), mm(hi[1]), mm(hi[2])]]));
+    }
+}
+
+/// A cut that makes a body (`_made_box`, from [`made_body_box`]) leaves its target in pieces; the
+/// piece the file stores as the new body is told apart by a plane, as `split_off`: the plane
+/// through the middle of the cut's tool across its thinnest extent along a world axis (a
+/// slit's width), its normal towards the stored body's box (moved back by the moves of that
+/// body that follow).
+/// The importer splits the target by it after the cut, and checks the plane meets no material.
+/// Only a blind cut straight from its sketch or face, whose tool is thinnest along one world
+/// axis, and a body only moved after it, are read; any other keeps no `split_off`.
+pub(super) fn cuts_that_split_off_bodies(feats: &mut [Value]) {
+    for i in 0..feats.len() {
+        let Some(bx) = feats.get_mut(i).and_then(Value::as_object_mut).and_then(|o| o.remove("_made_box")) else {
+            continue;
+        };
+        let Some(f) = feats.get(i) else { continue };
+        let (Some(lo), Some(hi)) = (get3(bx.get(0)), get3(bx.get(1))) else { continue };
+        let Some(tool) = tool_box(feats, f) else { continue };
+        let name = f.get("name").and_then(Value::as_str).unwrap_or("");
+        // The stored shape where the cut left it: the moves of the body after it taken back.
+        let mut shift = [0.0; 3];
+        let mut plain = true;
+        for g in feats.iter().skip(i + 1) {
+            let ty = g.get("type").and_then(Value::as_str).unwrap_or("");
+            if g.get("target").and_then(Value::as_str) != Some(name) {
+                continue;
+            }
+            match ty {
+                "move_body" if g.get("copy").and_then(Value::as_bool) != Some(true) => {
+                    match (get3(g.get("translate")), g.get("axis").is_none() && g.get("angle").is_none()) {
+                        (Some(t), true) => shift.iter_mut().zip(t).for_each(|(s, v)| *s += v),
+                        _ => plain = false,
+                    }
+                }
+                "scale_body" | "mirror" | "move_body" => plain = false,
+                _ => {}
+            }
+        }
+        if !plain {
+            continue;
+        }
+        let (tlo, thi) = tool;
+        // Per axis: the stored body's middle, the tool's middle and its extent.
+        let axes: Vec<(f64, f64, f64)> = (0..3)
+            .filter_map(|k| {
+                let c = |a: &V3, b: &V3| Some(0.5 * (a.get(k)? + b.get(k)?));
+                Some((c(&lo, &hi)? - shift.get(k)?, c(&tlo, &thi)?, thi.get(k)? - tlo.get(k)?))
+            })
+            .collect();
+        let thinnest =
+            axes.iter().enumerate().find(|(k, a)| axes.iter().enumerate().all(|(m, b)| m == *k || a.2 + 1e-6 < b.2));
+        let Some((axis, (at, mid, width))) = thinnest else { continue };
+        let side = at - mid;
+        if side.abs() <= 0.5 * width {
+            continue;
+        }
+        let normal: V3 = std::array::from_fn(|k| if k == axis { side.signum() } else { 0.0 });
+        let mid: Vec<f64> = axes.iter().map(|a| round6(a.1)).collect();
+        if let Some(o) = feats.get_mut(i).and_then(Value::as_object_mut) {
+            o.insert("split_off".into(), json!({"origin": mid, "normal": normal}));
+        }
+    }
+}
+
+/// The box (mm) of a plain blind extrude's tool: its sketch's points or its profile face's,
+/// and the same moved by the distance along the sketch's or face's normal.
+fn tool_box(feats: &[Value], f: &Value) -> Option<(V3, V3)> {
+    let plain = ["symmetric", "two_sided"].iter().all(|k| f.get(*k).and_then(Value::as_bool) != Some(true))
+        && ["extent_from", "distance2", "taper_deg", "end_condition", "to_face"].iter().all(|k| f.get(*k).is_none());
+    let dist = f.get("distance").and_then(Value::as_f64)?;
+    if !plain || !dist.is_finite() {
+        return None;
+    }
+    let (pts, n): (Vec<V3>, V3) = if let Some(pf) = f.get("profile_face") {
+        let n = get3(pf.get("surface").and_then(|s| s.get("normal")))?;
+        (pf.get("points")?.as_array()?.iter().filter_map(|p| get3(Some(p))).collect(), n)
+    } else {
+        let sk = f.get("sketch").and_then(Value::as_str)?;
+        let s = feats.iter().find(|g| {
+            g.get("type").and_then(Value::as_str) == Some("sketch") && g.get("name").and_then(Value::as_str) == Some(sk)
+        })?;
+        let pl = s.get("plane")?;
+        let (o, x, y) = (get3(pl.get("origin"))?, get3(pl.get("x_axis"))?, get3(pl.get("y_axis"))?);
+        let pts = s
+            .get("points")?
+            .as_array()?
+            .iter()
+            .filter_map(|p| {
+                let (u, v) = (p.get("x")?.as_f64()?, p.get("y")?.as_f64()?);
+                Some(geom::add(o, geom::add(geom::mul(x, u), geom::mul(y, v))))
+            })
+            .collect();
+        (pts, geom::cross(x, y))
+    };
+    if pts.is_empty() {
+        return None;
+    }
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for p in &pts {
+        for q in [*p, geom::add(*p, geom::mul(n, dist))] {
+            for ((l, h), c) in lo.iter_mut().zip(hi.iter_mut()).zip(q) {
+                *l = l.min(c);
+                *h = h.max(c);
+            }
+        }
+    }
+    lo.iter().chain(&hi).all(|v| v.is_finite()).then_some((lo, hi))
 }
 
 /// A join whose tool has parts that touch no body of its target makes those parts new bodies in
@@ -3612,6 +3785,14 @@ pub(super) fn move_feature(f: &mut Value, pl: &crate::fusion::Placement) {
         "extrude" => {
             if let Some(fc) = f.get_mut("profile_face").and_then(Value::as_object_mut) {
                 move_pick(fc, &pl);
+            }
+            if let Some(so) = f.get_mut("split_off").and_then(Value::as_object_mut) {
+                let (o, n) = (pt(so.get("origin")), dir(so.get("normal")));
+                for (k, v) in [("origin", o), ("normal", n)] {
+                    if let Some(v) = v {
+                        so.insert(k.into(), v);
+                    }
+                }
             }
         }
         "sweep" => {

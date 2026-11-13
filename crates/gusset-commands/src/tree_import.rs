@@ -241,6 +241,10 @@ struct SolidF {
     /// `false` keeps the boolean's split faces (FreeCAD's `Refine = false`, ADR 0042).
     #[serde(default = "refine_default")]
     refine: bool,
+    /// A cut that leaves its body in pieces, one of them a body of its own: the plane that
+    /// parts it from the rest, its normal towards it.
+    #[serde(default)]
+    split_off: Option<v2::SplitOff>,
     /// Extrude: `"blind"` (default, `distance`) or `"to_face"` (the sweep ends on `face`).
     #[serde(default)]
     end_condition: Option<String>,
@@ -1671,6 +1675,13 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
     }
     // The tree's name stands for the first; the others are only made.
     g.made.extend(made);
+    if let Some(so) = &d.split_off {
+        let [t] = targets.as_slice() else { return Err("a cut that splits off a body cuts one body".into()) };
+        let tn = g.body_named(t, "target")?;
+        let piece = v2::split_off(g, s, &d.name, &tn, so)?;
+        g.features.insert(d.name.clone(), piece);
+        return Ok(());
+    }
     g.features.insert(d.name.clone(), name);
     Ok(())
 }
@@ -1695,27 +1706,47 @@ fn face_extrude(g: &mut Gen, s: &Session, d: &SolidF, pick: &v2::FacePick) -> Re
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     let (on, face) = v2::pick_face_name(g, s, &ev, pick)?;
     let name = g.fresh(&d.name, "Extrude");
-    let mut args = vec![
+    let args = [
         format!("profile: {face}"),
         format!("distance: {}", g.value(dist, "mm", d.distance_parameter.as_ref(), false)),
         format!("op: {op}"),
     ];
-    if op != "new" {
-        let t = match &d.target {
-            Some(t) => g.body_named(t.one()?, "target")?,
-            None => on,
-        };
-        args.push(format!("body: {t}"));
-        if !d.refine {
-            args.push("refine: false".into());
+    let unrefined = if !d.refine && op != "new" { ", refine: false" } else { "" };
+    // A cut through several bodies is one cut per body, as from a sketch; the body of the
+    // profile's face last, so the face is the same for every cut.
+    let mut targets: Vec<String> = match &d.target {
+        _ if op == "new" => Vec::new(),
+        Some(Target::Many(v)) if op == "cut" && v.len() > 1 => {
+            v.iter().map(|t| g.body_named(t, "target")).collect::<Result<_, _>>()?
         }
+        Some(t) => vec![g.body_named(t.one()?, "target")?],
+        None => vec![on.clone()],
+    };
+    targets.sort_by_key(|t| *t == on);
+    let body = targets.first().cloned();
+    let mut made = Vec::new();
+    if targets.is_empty() {
+        let _ = writeln!(g.text, "\nextrude {name} ({})", args.join(", "));
+        made.push(name.clone());
     }
-    let _ = writeln!(g.text, "\nextrude {name} ({})", args.join(", "));
+    for (k, t) in targets.iter().enumerate() {
+        let this = if k == 0 { name.clone() } else { g.fresh(&d.name, "Extrude") };
+        let _ = writeln!(g.text, "\nextrude {this} ({}, body: {t}{unrefined})", args.join(", "));
+        made.push(this);
+    }
     let ev = g.evaluate(s).map_err(|e| e.message)?;
-    if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {
+    if let Some(e) = ev.errors().iter().find(|e| made.contains(&e.feature)) {
         return Err(format!("it does not build here: {}", e.message));
     }
-    g.made.push(name.clone());
+    g.made.extend(made);
+    if let Some(so) = &d.split_off {
+        let (Some(t), "cut", 1) = (body, op, targets.len()) else {
+            return Err("a cut that splits off a body cuts one body".into());
+        };
+        let piece = v2::split_off(g, s, &d.name, &t, so)?;
+        g.features.insert(d.name.clone(), piece);
+        return Ok(());
+    }
     g.features.insert(d.name.clone(), name);
     Ok(())
 }

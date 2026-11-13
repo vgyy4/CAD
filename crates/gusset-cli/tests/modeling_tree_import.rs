@@ -1712,3 +1712,37 @@ fn a_bend_keeps_the_side_its_point_names_and_turns_against_a_negative_angle() {
         "{text}"
     );
 }
+
+#[test]
+fn a_cut_that_cuts_a_piece_off_makes_it_a_body_of_its_own() {
+    // A slit through the plate at x = 29 to 31 leaves two pieces; the file makes the one at
+    // x > 31 the slit's body, and a later join names it so.
+    let slit = |at: f64| {
+        let mut f = extrude("Slit", "Sketch2", -10.0, "cut");
+        f["target"] = json!("Plate");
+        f["split_off"] = json!({"origin": [at, 10, 5], "normal": [1, 0, 0]});
+        f
+    };
+    let (mut s, _) = import_v2_session(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 40.0, 20.0),
+        extrude("Plate", "Sketch1", 10.0, "new"),
+        rect("Sketch2", plane_at(10.0), 29.0, 0.0, 2.0, 20.0),
+        slit(30.0),
+        rect("Sketch3", plane_at(10.0), 33.0, 5.0, 5.0, 10.0),
+        json!({"type": "extrude", "name": "Boss", "sketch": "Sketch3", "profiles": "all", "distance": 5,
+               "operation": "join", "target": "Slit"}),
+    ]);
+    assert_vol(volume_of(&mut s, "Slit_piece"), 9.0 * 20.0 * 10.0 + 5.0 * 10.0 * 5.0);
+    assert_vol(volume_of(&mut s, "Plate"), 29.0 * 20.0 * 10.0);
+    // A plane through material does not part the pieces: the cut is refused.
+    let tree = json!({"format": "gusset-feature-tree", "version": 2, "source": {"app": "test"}, "features": [
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 40.0, 20.0),
+        extrude("Plate", "Sketch1", 10.0, "new"),
+        rect("Sketch2", plane_at(10.0), 29.0, 0.0, 2.0, 20.0),
+        slit(20.0),
+    ]});
+    let mut s = session();
+    std::fs::write(s.project_dir.clone().unwrap().join("t.gtree.json"), serde_json::to_vec(&tree).unwrap()).unwrap();
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap();
+    assert!(r["skipped_user_text"].to_string().contains("runs through the body"), "{r}");
+}

@@ -2639,3 +2639,28 @@ fn a_removed_instance_names_its_component_where_it_stands_once() {
     ];
     assert_eq!(component_bodies_so_far(&feats, 40), Ok(vec!["E".to_string()]));
 }
+
+#[test]
+fn a_cut_that_makes_a_body_parts_it_by_the_middle_of_its_slit() {
+    // A slit 0.3 mm wide (x), 22 long (y), 0.5 deep (z): the plane x = 56.05; the stored body
+    // lies at x > 56.2 once the move that follows it is taken back.
+    let mut feats = vec![
+        json!({"type": "sketch", "name": "S", "plane": {"origin": [55.9, 55.0, 5.5], "x_axis": [0.0, -1.0, 0.0],
+               "y_axis": [1.0, 0.0, 0.0]}, "points": [{"id": "a", "x": 0.0, "y": 0.0}, {"id": "b", "x": 22.0, "y": 0.0},
+               {"id": "c", "x": 22.0, "y": 0.3}, {"id": "d", "x": 0.0, "y": 0.3}]}),
+        json!({"type": "extrude", "name": "Cut", "sketch": "S", "distance": -0.5, "operation": "cut",
+               "target": "Ribbon", "creates_bodies": 1, "_made_box": [[50.7, 33.0, 5.0], [54.5, 34.0, 5.5]]}),
+        json!({"type": "move_body", "name": "M", "target": "Cut", "copy": false, "translate": [-5.5, 0.0, 0.0]}),
+    ];
+    json::cuts_that_split_off_bodies(&mut feats);
+    assert!(feats[1].get("_made_box").is_none());
+    let so = &feats[1]["split_off"];
+    assert_eq!(so["normal"], json!([1.0, 0.0, 0.0]), "{so}");
+    assert!((so["origin"][0].as_f64().unwrap() - 56.05).abs() < 1e-9, "{so}");
+    // Turned after the cut: not read.
+    feats[1]["_made_box"] = json!([[50.7, 33.0, 5.0], [54.5, 34.0, 5.5]]);
+    feats[1].as_object_mut().unwrap().remove("split_off");
+    feats[2]["axis"] = json!([0.0, 0.0, 1.0]);
+    json::cuts_that_split_off_bodies(&mut feats);
+    assert!(feats[1].get("split_off").is_none());
+}

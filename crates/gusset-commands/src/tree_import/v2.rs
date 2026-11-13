@@ -1611,6 +1611,38 @@ pub(super) fn remove_body(g: &mut Gen, s: &Session, d: &RemoveBodyF) -> Result<(
     Ok(())
 }
 
+/// The plane that parts the piece a cut leaves as a body of its own from the rest of its body:
+/// a point (mm) and the normal towards the piece.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct SplitOff {
+    origin: V3,
+    normal: V3,
+}
+
+/// After a cut that leaves body `body` in pieces, one of which the file makes a body of its own
+/// (2354's BoxPrimitive5 cuts a strip off the ribbon): a split of the body by the plane, the
+/// piece on the side the normal points to becoming the new body. The plane must run between
+/// the pieces, through no material: the split leaves every face of the body as it was (a plane
+/// through material adds a face to each side). Returns the new body's feature.
+pub(super) fn split_off(g: &mut Gen, s: &Session, src: &str, body: &str, d: &SplitOff) -> Result<String, String> {
+    let o = finite3(d.origin, "the plane origin")?;
+    let n = unit(finite3(d.normal, "the plane normal")?).ok_or("the plane normal is zero")?;
+    let faces = |g: &mut Gen, of: &[&str]| -> Result<usize, String> {
+        let ev = g.evaluate(s).map_err(|e| e.message)?;
+        Ok(ev.bodies.iter().filter(|b| of.contains(&b.feature.as_str())).map(|b| b.topology.faces.len()).sum())
+    };
+    let before = faces(g, &[body])?;
+    let name = g.fresh(&format!("{src} piece"), "Split");
+    let plane = facing_plane(g, &name, o, n)?;
+    let _ = writeln!(g.text, "\nsplit {name} (body: {body}, plane: {plane})");
+    builds(g, s, &name)?;
+    if faces(g, &[body, &name])? != before {
+        return Err("the plane between the pieces the cut leaves runs through the body".into());
+    }
+    g.made.push(name.clone());
+    Ok(name)
+}
+
 /// A split of a body by a plane into two bodies (ADR 0004 amendment): the part on the side the
 /// written plane's normal points to becomes a body named after the split, the rest stays the
 /// body. The plane must cross the body.
