@@ -1426,6 +1426,19 @@ fn a_sat_dome_on_a_spindle_torus_imports_with_its_volume() {
     assert_eq!(k().topology(&shapes[0].0).unwrap().solids, 1);
 }
 
+/// An elliptical cylinder (6126's logo petals, an ACIS cone of ratio 0.5) imports as a solid
+/// of its volume, pi a b h.
+#[test]
+fn a_sat_elliptical_cylinder_imports_with_its_volume() {
+    let (sat, volume) = gusset_sat::fixtures::elliptic_cylinder_sat();
+    let c = gusset_sat::to_step(sat.as_bytes(), "petal", &gusset_sat::Limits::default()).unwrap();
+    let shapes = k().import_step(c.step.as_bytes()).unwrap();
+    assert_eq!(shapes.len(), 1);
+    let m = k().mass_properties(&shapes[0].0).unwrap();
+    assert!((m.volume - volume).abs() <= 1e-9 * volume, "{} against {volume}", m.volume);
+    assert_eq!(k().topology(&shapes[0].0).unwrap().solids, 1);
+}
+
 /// ACIS SAT against Spatial's own STEP translations of the same files (NIST, CMU
 /// spectrometer): the same volume. Runs when `GUSSET_SAT_SAMPLES` names
 /// usnistgov/engineering-design-models/models.

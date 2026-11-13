@@ -1345,9 +1345,6 @@ impl<'a> Writer<'a> {
                 let n = r.vec3(4).ok_or_else(bad)?;
                 let major = r.vec3(7).ok_or_else(bad)?;
                 let ratio = r.num(10).ok_or_else(bad)?;
-                if (ratio - 1.0).abs() > 1e-9 {
-                    return Err(SatError::Unsupported("elliptical ACIS cones are not read yet".into()));
-                }
                 // The interval: two ends, each `I` or `F <value>`.
                 let mut k = 11;
                 // Version 1.05 cones have no interval; 1.06 and later do.
@@ -1360,7 +1357,20 @@ impl<'a> Writer<'a> {
                 let cos = r.num(k + 1).ok_or_else(bad)?;
                 let radius = self.xf.length(len(major));
                 let flipped = cos < 0.0;
-                if sin.abs() < 1e-12 {
+                if (ratio - 1.0).abs() > 1e-9 {
+                    if sin.abs() >= 1e-12 {
+                        return Err(SatError::Unsupported("elliptical ACIS cones are not read yet".into()));
+                    }
+                    // An elliptical cylinder (6126's logo petals): its ellipse (the major vector's
+                    // length and `ratio` times it, as an ellipse curve's) swept along the axis.
+                    // The ellipse runs about the axis, so the sweep's normal points out, as a
+                    // cylinder's does.
+                    let pl = self.placement(c, n, major)?;
+                    let e = self.add(&format!("ELLIPSE('',#{pl},{},{})", real(radius), real(radius * ratio.abs())));
+                    let d = self.direction(n)?;
+                    let v = self.add(&format!("VECTOR('',#{d},1.)"));
+                    (self.add(&format!("SURFACE_OF_LINEAR_EXTRUSION('',#{e},#{v})")), flipped)
+                } else if sin.abs() < 1e-12 {
                     let pl = self.placement(c, n, major)?;
                     (self.add(&format!("CYLINDRICAL_SURFACE('',#{pl},{})", real(radius))), flipped)
                 } else {

@@ -395,3 +395,16 @@ fn a_spindle_torus_face_ends_at_the_axis_by_a_seam() {
     let lp = step.lines().rfind(|l| l.contains("EDGE_LOOP")).unwrap();
     assert_eq!(lp.matches('#').count(), 4, "{lp}");
 }
+
+/// An elliptical cylinder (an ACIS cone of ratio 0.5 without slope) is its ellipse swept along
+/// the axis.
+#[test]
+fn an_elliptical_cylinder_is_its_ellipse_swept_along_the_axis() {
+    let (text, _) = crate::fixtures::elliptic_cylinder_sat();
+    let step = to_step(text.as_bytes(), "petal", &Limits::default()).unwrap().step;
+    let sweep = step.lines().find(|l| l.contains("SURFACE_OF_LINEAR_EXTRUSION")).unwrap();
+    let ellipse = sweep.split("#").nth(2).unwrap().split(',').next().unwrap();
+    let e = step.lines().find(|l| l.starts_with(&format!("#{ellipse}="))).unwrap();
+    assert!(e.contains("ELLIPSE('',") && e.ends_with(",2.0,1.0);"), "{e}");
+    assert!(!step.contains("CYLINDRICAL_SURFACE"), "{step}");
+}

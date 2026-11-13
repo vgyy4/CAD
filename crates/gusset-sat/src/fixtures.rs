@@ -196,6 +196,50 @@ pub fn spindle_dome_sat() -> (String, f64) {
     (text, volume)
 }
 
+/// An elliptical cylinder (semi-axes 2 and 1 mm along x and y, 3 mm high from z = 0) as ACIS
+/// writes it: a cone surface of ratio 0.5 without slope between two planes (6126's logo petals),
+/// and its volume (pi a b h).
+pub fn elliptic_cylinder_sat() -> (String, f64) {
+    let (a, ratio, h) = (2.0f64, 0.5f64, 3.0f64);
+    let x = " -1 $-1";
+    let tau = 2.0 * std::f64::consts::PI;
+    let recs = [
+        format!("body $-1{x} $1 $-1 $-1 #"),
+        format!("lump $-1{x} $-1 $2 $0 #"),
+        format!("shell $-1{x} $-1 $-1 $3 $-1 $1 #"),
+        // Faces 3 (bottom), 4 (side), 5 (top).
+        format!("face $-1{x} $4 $6 $2 $-1 $10 forward single #"),
+        format!("face $-1{x} $5 $7 $2 $-1 $11 forward single #"),
+        format!("face $-1{x} $-1 $9 $2 $-1 $12 forward single #"),
+        // Loops 6 (bottom), 7 and 8 (side), 9 (top).
+        format!("loop $-1{x} $-1 $13 $3 #"),
+        format!("loop $-1{x} $8 $14 $4 #"),
+        format!("loop $-1{x} $-1 $15 $4 #"),
+        format!("loop $-1{x} $-1 $16 $5 #"),
+        // Surfaces 10 (bottom plane), 11 (the elliptical cylinder), 12 (top plane).
+        format!("plane-surface $-1{x} 0 0 0 0 0 -1 1 0 0 forward_v I I I I #"),
+        format!("cone-surface $-1{x} 0 0 0 0 0 1 {a} 0 0 {ratio} I I 0 1 {a} forward I I I I #"),
+        format!("plane-surface $-1{x} 0 0 {h} 0 0 1 1 0 0 forward_v I I I I #"),
+        // Coedges 13 to 16.
+        format!("coedge $-1{x} $13 $13 $14 $17 reversed $6 $-1 #"),
+        format!("coedge $-1{x} $14 $14 $13 $17 forward $7 $-1 #"),
+        format!("coedge $-1{x} $15 $15 $16 $18 reversed $8 $-1 #"),
+        format!("coedge $-1{x} $16 $16 $15 $18 forward $9 $-1 #"),
+        // Edges 17 (bottom ellipse), 18 (top ellipse).
+        format!("edge $-1{x} $21 0 $21 {tau} $13 $19 forward @7 unknown #"),
+        format!("edge $-1{x} $22 0 $22 {tau} $15 $20 forward @7 unknown #"),
+        format!("ellipse-curve $-1{x} 0 0 0 0 0 1 {a} 0 0 {ratio} I I #"),
+        format!("ellipse-curve $-1{x} 0 0 {h} 0 0 1 {a} 0 0 {ratio} I I #"),
+        format!("vertex $-1{x} $17 $23 #"),
+        format!("vertex $-1{x} $18 $24 #"),
+        format!("point $-1{x} {a} 0 0 #"),
+        format!("point $-1{x} {a} 0 {h} #"),
+    ];
+    let text =
+        format!("700 0 1 0\n@4 test @9 ACIS 7.0 @4 date\n1 1e-06 1e-10\n{}\nEnd-of-ACIS-data\n", recs.join("\n"));
+    (text, std::f64::consts::PI * a * a * ratio * h)
+}
+
 /// The binary (SAB) form of a version 7 text file, as Fusion writes it: for tests.
 pub fn to_binary(text: &str) -> Vec<u8> {
     let mut out = b"ASM BinaryFile8".to_vec();
