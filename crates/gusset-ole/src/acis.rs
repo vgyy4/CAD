@@ -98,6 +98,8 @@ fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
     let mut cur = Rec::default();
     let mut names: Vec<String> = Vec::new();
     let mut prev_name: Option<Vec<u8>> = None;
+    // The first string of the record (the name of a custom attribute).
+    let mut text: Option<Vec<u8>> = None;
     let mut ntok = 0usize;
     while i < b.len() {
         let t = *b.get(i).ok_or("cut short")?;
@@ -118,6 +120,9 @@ fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
                 }
                 if t != 0x07 && !s.is_empty() {
                     names.push(String::from_utf8_lossy(s).into_owned());
+                }
+                if t == 0x07 && text.is_none() {
+                    text = Some(s.to_vec());
                 }
                 prev_name = (t == 0x0e).then(|| s.to_vec());
             }
@@ -151,6 +156,7 @@ fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
                 if t == 0x11 {
                     let mut r = std::mem::take(&mut cur);
                     r.ty = names.join("-");
+                    custom_attribute(&mut r, text.take().as_deref());
                     r.last = r.ty.rsplit('-').next().unwrap_or_default().to_string();
                     names.clear();
                     out.push(r);
@@ -162,6 +168,25 @@ fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
         }
     }
     Ok(out)
+}
+
+/// Newer files (ShapeManager attribute version 44) write Inventor's naming attributes as
+/// `ATTRIB_CUSTOM` records named by a string (`INV_NMX_BLEND_TAG`) instead of their own record
+/// types (`NMx_blend_tag-...-attrib`), with one more int (1) before the version: `-1, 1, 44, 1,
+/// feature id, -1, ...` against `-1, 43, 1, feature id, -1, ...`. Such a record is given the older
+/// type name in front and loses that int, so the readers below see one layout. Only the names
+/// read here are mapped.
+fn custom_attribute(r: &mut Rec, text: Option<&[u8]>) {
+    const MAP: [(&[u8], &str); 2] =
+        [(b"INV_NMX_BLEND_TAG", "NMx_blend_tag"), (b"INV_NMX_EDGE_BLEND_TAG", "NMx_edge_blend_tag")];
+    if !r.ty.starts_with("ATTRIB_CUSTOM") {
+        return;
+    }
+    let Some(&(_, name)) = MAP.iter().find(|(k, _)| Some(*k) == text) else { return };
+    if r.ints.get(1) == Some(&1) {
+        r.ints.remove(1);
+    }
+    r.ty = format!("{name}-{}", r.ty);
 }
 
 pub(crate) struct Acis {
@@ -1240,6 +1265,43 @@ pub(crate) fn local_path(m: V3, info: &EdgeInfo, eps: f64) -> Option<[V3; 2]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_naming_attributes_read_as_the_older_record_types() {
+        let tok = |t: u8, v: &[u8]| {
+            let mut x = vec![t];
+            if matches!(t, 0x07 | 0x0d | 0x0e) {
+                x.push(v.len() as u8);
+            }
+            x.extend(v);
+            x
+        };
+        let int = |v: i32| tok(0x04, &v.to_le_bytes());
+        let attr = |name: &[u8]| {
+            let mut b = tok(0x0e, b"ATTRIB_CUSTOM");
+            b.extend(tok(0x0d, b"attrib"));
+            b.extend(tok(0x0c, &(-1i32).to_le_bytes()));
+            b.extend(int(-1));
+            b.extend(tok(0x0c, &4i32.to_le_bytes()));
+            b.extend(tok(0x07, name));
+            for v in [1, 44, 1, 209, -1, 1, 1, 24] {
+                b.extend(int(v));
+            }
+            b.push(0x11);
+            b
+        };
+        let mut b = tok(0x0d, b"asmheader");
+        b.push(0x11);
+        b.extend(attr(b"INV_NMX_BLEND_TAG"));
+        b.extend(attr(b"INV_NMX_GEN_TAG"));
+        let r = records(&b).unwrap();
+        assert!(r[1].ty.starts_with("NMx_blend_tag-"), "{}", r[1].ty);
+        assert_eq!(r[1].ints, [-1, 44, 1, 209, -1, 1, 1, 24]);
+        assert_eq!(r[1].refs, [-1, 4]);
+        // A name not read here keeps its record as it is.
+        assert_eq!(r[2].ty, "ATTRIB_CUSTOM-attrib");
+        assert_eq!(r[2].ints, [-1, 1, 44, 1, 209, -1, 1, 1, 24]);
+    }
 
     #[test]
     fn an_arc_across_minus_pi_and_pi_keeps_its_midpoint() {
