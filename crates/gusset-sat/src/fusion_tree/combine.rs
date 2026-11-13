@@ -4,9 +4,15 @@
 //! 55), `u32 n` and `n` references, a flag block,
 //! then `u32 ntools` and that many `2CA5A1CD` selections (the tools), the tools' own body links
 //! and `u32 1` and one `2CA5A1CD` (the target).
+//!
+//! No field keeps the tools (Fusion's Keep Tools, section 60): in every Combine of the sample sets
+//! the tools' body records leave their component's body list (`CD57BC48`), while the component's
+//! history blob keeps each tool's last shape. Those bodies are listed (`used_up`: the blob and the
+//! body's tag in it, from the body map `74CA4562`) so that the importer does not take them for
+//! end bodies.
 
 use super::bodyops::Edit;
-use super::stream::{parse_header, ref_ids, ref_lists, u32_at};
+use super::stream::{self, parse_header, ref_ids, ref_lists, u32_at, u64_at};
 use crate::cover;
 use serde_json::{Value, json};
 
@@ -66,6 +72,42 @@ impl Edit<'_> {
         Some((m, stored.get(at)?))
     }
 
+    /// A tool body the Combine used up, where the file still stores its shape: the history blob
+    /// (`BREP.<id>.smbh`) of the tool's component and the tag of the tool's body in it, from the
+    /// component's body map `74CA4562` (`u32 n`, then `n` pairs of the blob body's tag and the
+    /// design's body record). `None` while the component's body list (`CD57BC48`, section 60)
+    /// still holds the body, or where the map does not name it.
+    fn used_up(&self, link: u64) -> Option<Value> {
+        let d = self.d;
+        let body = ref_ids(d, d.rec(link)).into_iter().find(|q| d.is(*q, "D3937028"))?;
+        for list in ref_ids(d, d.rec(body)).into_iter().filter(|q| d.is(*q, "CD57BC48")) {
+            let members = ref_ids(d, d.rec(list));
+            if members.contains(&body) {
+                return None;
+            }
+            for map in members.into_iter().filter(|q| d.is(*q, "74CA4562")) {
+                let rec = d.rec(map);
+                let Some(blob) = stream::wstrings_all(rec)
+                    .into_iter()
+                    .map(|w| w.2)
+                    .find(|w| w.starts_with("BREP.") && w.ends_with(".smbh"))
+                else {
+                    continue;
+                };
+                let Some(h) = parse_header(rec) else { continue };
+                let n = usize::try_from(u32_at(rec, h.body)?).ok()?;
+                for k in 0..n.min(rec.len() / 16) {
+                    let at = h.body + 4 + 16 * k;
+                    if u64_at(rec, at + 8) == Some(body) {
+                        cover::field(rec, h.body, 4 + 16 * n, "bodymap.entries");
+                        return Some(json!({"blob": blob, "tag": u64_at(rec, at)?}));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub(super) fn combine(&self, fid: u64, name: &str) -> Combined {
         let d = self.d;
         let rec = d.rec(fid);
@@ -106,9 +148,11 @@ impl Edit<'_> {
         };
         let mut tools: Vec<String> = Vec::new();
         let mut copies: Vec<u64> = Vec::new();
+        let mut used_up: Vec<Value> = Vec::new();
         for s in tool_sels {
             let links = self.links_of(*s);
             let [l] = links.as_slice() else { return refuse("a tool of the Combine is not one body") };
+            used_up.extend(self.used_up(*l));
             match self.maker(*l) {
                 Some((_, f)) if one_body(f) => {
                     let n = f.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -155,8 +199,13 @@ impl Edit<'_> {
         if tools.is_empty() {
             return refuse("the Combine has no tools");
         }
-        Combined::Feature(json!({"type": "combine", "name": name, "source_id": fid, "target": target,
+        let mut f = json!({"type": "combine", "name": name, "source_id": fid, "target": target,
             "tools": tools, "operation": op,
-            "note": "operation = the record's first field (0: join, 1: cut)"}))
+            "note": "operation = the record's first field (0: join, 1: cut)"});
+        if let (false, Some(o)) = (used_up.is_empty(), f.as_object_mut()) {
+            // The tools' shapes the history blobs keep after the Combine used them up.
+            o.insert("used_up".into(), Value::Array(used_up));
+        }
+        Combined::Feature(f)
     }
 }

@@ -1465,14 +1465,19 @@ fn a_symmetric_extrude_says_whether_its_distance_is_each_sides() {
 }
 
 /// A Combine of the body of feature 101 (the tool) into the body of feature 100 (the target),
-/// with the given operation value.
-fn combine_stream(op: u32) -> (Vec<u8>, Vec<u8>) {
-    const CLASSES: [&str; 5] = [
+/// with the given operation value. With `listed`, the tool's link names a body record (600) whose
+/// component body list (700) holds the target's body record (601) and, if `listed` says so, the
+/// tool's, beside the body map (800) of the history blob `BREP.ab.smbh`.
+fn combine_stream(op: u32, listed: Option<bool>) -> (Vec<u8>, Vec<u8>) {
+    const CLASSES: [&str; 8] = [
         "2A94257F-0000-0000-0000-000000000000",
         "2CA5A1CD-0000-0000-0000-000000000000",
         "9716F783-0000-0000-0000-000000000000",
         "D26351F0-0000-0000-0000-000000000000",
         "DD405BC2-0000-0000-0000-000000000000",
+        "D3937028-0000-0000-0000-000000000000",
+        "CD57BC48-0000-0000-0000-000000000000",
+        "74CA4562-0000-0000-0000-000000000000",
     ];
     let mut body = le32(op);
     body.extend(le32(0));
@@ -1483,17 +1488,33 @@ fn combine_stream(op: u32) -> (Vec<u8>, Vec<u8>) {
         body.extend(r#ref(list));
         body.extend([0; 4]);
     }
-    let recs: Vec<(u64, usize, Vec<u8>)> = vec![
+    let refs = |ids: &[u64]| ids.iter().flat_map(|i| r#ref(*i)).collect::<Vec<u8>>();
+    let mut recs: Vec<(u64, usize, Vec<u8>)> = vec![
         (100, 4, Vec::new()),
         (101, 4, Vec::new()),
         (200, 3, r#ref(100)),
-        (201, 3, r#ref(101)),
+        (201, 3, if listed.is_some() { refs(&[101, 600]) } else { r#ref(101) }),
         (300, 2, r#ref(200)),
         (301, 2, r#ref(201)),
         (400, 1, r#ref(300)),
         (401, 1, r#ref(301)),
         (500, 0, body),
     ];
+    if let Some(listed) = listed {
+        recs.push((600, 5, r#ref(700)));
+        recs.push((601, 5, r#ref(700)));
+        let mut list = le32(if listed { 2 } else { 1 });
+        list.extend(if listed { refs(&[601, 600]) } else { r#ref(601) });
+        list.extend(r#ref(800));
+        recs.push((700, 6, list));
+        let mut map = le32(2);
+        for (tag, b) in [(0x6dd_u64, 601_u64), (0x6de, 600)] {
+            map.extend(le64(tag));
+            map.extend(le64(b));
+        }
+        map.extend(ws("BREP.ab.smbh"));
+        recs.push((800, 7, map));
+    }
     let mut bulk = Vec::new();
     let mut objs = Vec::new();
     for (id, class, body) in recs {
@@ -1511,7 +1532,7 @@ fn a_combine_joins_or_cuts_its_tool_bodies_to_its_target() {
         json!({"type": "mirror", "name": "Mirror1", "source_id": 101, "creates_bodies": 1}),
     ];
     let names = std::collections::HashMap::new();
-    let (m, bulk) = combine_stream(0);
+    let (m, bulk) = combine_stream(0, None);
     let d = Design::new(&m, &bulk).unwrap();
     let g = super::Graph::new(&d);
     let ed = super::bodyops::Edit { d: &d, g: &g, names: &names, feats: &feats };
@@ -1525,17 +1546,40 @@ fn a_combine_joins_or_cuts_its_tool_bodies_to_its_target() {
     let ed = super::bodyops::Edit { d: &d, g: &g, names: &names, feats: &several };
     assert!(matches!(ed.combine(500, "Combine1"), Combined::Refused(_)));
     // Operation 1 cuts (6124's Combine1); other values are refused.
-    let (m, bulk) = combine_stream(1);
+    let (m, bulk) = combine_stream(1, None);
     let d = Design::new(&m, &bulk).unwrap();
     let g = super::Graph::new(&d);
     let ed = super::bodyops::Edit { d: &d, g: &g, names: &names, feats: &feats };
     let Combined::Feature(f) = ed.combine(500, "Combine1") else { panic!("not read") };
     assert_eq!(f["operation"], "cut");
-    let (m, bulk) = combine_stream(2);
+    let (m, bulk) = combine_stream(2, None);
     let d = Design::new(&m, &bulk).unwrap();
     let g = super::Graph::new(&d);
     let ed = super::bodyops::Edit { d: &d, g: &g, names: &names, feats: &feats };
     assert!(matches!(ed.combine(500, "Combine1"), Combined::Refused(_)));
+}
+
+#[test]
+fn a_combines_tool_left_out_of_its_components_body_list_is_used_up() {
+    // Section 60: the component's body list no longer holds the tool's body record; the history
+    // blob keeps the tool's shape under the tag the body map pairs with that record.
+    use super::combine::Combined;
+    let feats = vec![
+        json!({"type": "extrude", "name": "Extrude1", "source_id": 100, "creates_bodies": 1}),
+        json!({"type": "mirror", "name": "Mirror1", "source_id": 101, "creates_bodies": 1}),
+    ];
+    let names = std::collections::HashMap::new();
+    for (listed, want) in
+        [(Some(false), Some(json!([{"blob": "BREP.ab.smbh", "tag": 0x6de}]))), (Some(true), None), (None, None)]
+    {
+        let (m, bulk) = combine_stream(0, listed);
+        let d = Design::new(&m, &bulk).unwrap();
+        let g = super::Graph::new(&d);
+        let ed = super::bodyops::Edit { d: &d, g: &g, names: &names, feats: &feats };
+        let Combined::Feature(f) = ed.combine(500, "Combine1") else { panic!("not read") };
+        assert_eq!(f["tools"], json!(["Mirror1"]));
+        assert_eq!(f.get("used_up"), want.as_ref(), "{listed:?}");
+    }
 }
 
 /// A record with pointers, a position, vectors and doubles (a surface or a transform).
