@@ -132,6 +132,70 @@ pub fn box_sat(version: u32, size: [f64; 3]) -> String {
     format!("{version} 0 1 0\n{product}\n1 1e-06 1e-10\n{}\nEnd-of-ACIS-data\n", recs.join("\n"))
 }
 
+/// A SAT text (version 7 layout) of 3722's globe base as `Revolve2` makes it: a cylinder of
+/// radius 33.5 and height 19 under a dome, the arc of radius 54 about (0.658311, `zc`) that
+/// meets the cylinder's top edge and the axis. The dome is a face of a spindle torus (major
+/// radius less than minor) bounded by the top circle and a loop that is the point on the axis.
+/// Returns the text and the volume by Pappus.
+pub fn spindle_dome_sat() -> (String, f64) {
+    let (r, h, big, small) = (33.5f64, 19.0f64, 0.658311f64, 54.0f64);
+    let zc = h + (small * small - (r - big) * (r - big)).sqrt();
+    let apex = zc + (small * small - big * big).sqrt();
+    // Pappus: 2 pi times the first moment of the half section about the axis, in closed form.
+    // The section is the rectangle under the rim and, above it, the disc of the arc from the
+    // axis out to x = big + s (s = sqrt(small^2 - t^2), t = z - zc), less the notch above the
+    // apex where the disc starts at x = big - s: the integrals of x^2 / 2 over t.
+    let int = |t: f64, sign: f64| {
+        let s = (small * small - t * t).max(0.0).sqrt();
+        let asin = libm::asin((t / small).clamp(-1.0, 1.0));
+        (big * big * t + sign * big * (t * s + small * small * asin) + small * small * t - t * t * t / 3.0) / 2.0
+    };
+    let moment = r * r / 2.0 * h + (int(small, 1.0) - int(h - zc, 1.0)) - (int(small, -1.0) - int(apex - zc, -1.0));
+    let volume = 2.0 * std::f64::consts::PI * moment;
+    let x = " -1 $-1";
+    let tau = 2.0 * std::f64::consts::PI;
+    let recs = [
+        format!("body $-1{x} $1 $-1 $-1 #"),
+        format!("lump $-1{x} $-1 $2 $0 #"),
+        format!("shell $-1{x} $-1 $-1 $3 $-1 $1 #"),
+        // Faces 3 (bottom), 4 (side), 5 (dome).
+        format!("face $-1{x} $4 $6 $2 $-1 $11 forward single #"),
+        format!("face $-1{x} $5 $7 $2 $-1 $12 forward single #"),
+        format!("face $-1{x} $-1 $9 $2 $-1 $13 forward single #"),
+        // Loops 6 (bottom), 7 and 8 (side), 9 and 10 (dome: the top circle and the apex).
+        format!("loop $-1{x} $-1 $14 $3 #"),
+        format!("loop $-1{x} $8 $15 $4 #"),
+        format!("loop $-1{x} $-1 $16 $4 #"),
+        format!("loop $-1{x} $10 $17 $5 #"),
+        format!("loop $-1{x} $-1 $18 $5 #"),
+        // Surfaces 11 (plane), 12 (cylinder), 13 (torus).
+        format!("plane-surface $-1{x} 0 0 0 0 0 -1 1 0 0 forward_v I I I I #"),
+        format!("cone-surface $-1{x} 0 0 0 0 0 1 {r} 0 0 1 I I 0 1 {r} forward I I I I #"),
+        format!("torus-surface $-1{x} 0 0 {zc} 0 0 1 {big} {small} 1 0 0 forward_v I I I I #"),
+        // Coedges 14 to 18.
+        format!("coedge $-1{x} $14 $14 $15 $19 reversed $6 $-1 #"),
+        format!("coedge $-1{x} $15 $15 $14 $19 forward $7 $-1 #"),
+        format!("coedge $-1{x} $16 $16 $17 $20 reversed $8 $-1 #"),
+        format!("coedge $-1{x} $17 $17 $16 $20 forward $9 $-1 #"),
+        format!("coedge $-1{x} $18 $18 $18 $21 forward $10 $-1 #"),
+        // Edges 19 (bottom circle), 20 (top circle), 21 (the apex: no curve).
+        format!("edge $-1{x} $24 0 $24 {tau} $14 $22 forward @7 unknown #"),
+        format!("edge $-1{x} $25 0 $25 {tau} $16 $23 forward @7 unknown #"),
+        format!("edge $-1{x} $26 0 $26 0 $18 $-1 forward @7 unknown #"),
+        format!("ellipse-curve $-1{x} 0 0 0 0 0 1 {r} 0 0 1 I I #"),
+        format!("ellipse-curve $-1{x} 0 0 {h} 0 0 1 {r} 0 0 1 I I #"),
+        format!("vertex $-1{x} $19 $27 #"),
+        format!("vertex $-1{x} $20 $28 #"),
+        format!("vertex $-1{x} $21 $29 #"),
+        format!("point $-1{x} {r} 0 0 #"),
+        format!("point $-1{x} {r} 0 {h} #"),
+        format!("point $-1{x} 0 0 {apex} #"),
+    ];
+    let text =
+        format!("700 0 1 0\n@4 test @9 ACIS 7.0 @4 date\n1 1e-06 1e-10\n{}\nEnd-of-ACIS-data\n", recs.join("\n"));
+    (text, volume)
+}
+
 /// The binary (SAB) form of a version 7 text file, as Fusion writes it: for tests.
 pub fn to_binary(text: &str) -> Vec<u8> {
     let mut out = b"ASM BinaryFile8".to_vec();

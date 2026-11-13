@@ -360,3 +360,21 @@ fn shape_manager_files_list_surface_points_u_fastest() {
     assert_eq!(step(22300, true), acis);
     assert_ne!(step(22300, false), acis);
 }
+
+/// A torus face that reaches the axis at a point (3722's dome): the point is no vertex loop,
+/// which OCCT's reader drops on a torus, but a seam to it from the top circle, written twice in
+/// the face's one edge loop: an arc of the tube's circle from the rim up over the dome.
+#[test]
+fn a_spindle_torus_face_ends_at_the_axis_by_a_seam() {
+    let (text, _) = crate::fixtures::spindle_dome_sat();
+    let step = to_step(text.as_bytes(), "dome", &Limits::default()).unwrap().step;
+    assert!(!step.contains("VERTEX_LOOP"), "{step}");
+    let torus = step.lines().find(|l| l.contains("TOROIDAL_SURFACE")).unwrap().split('=').next().unwrap();
+    let dome = step.lines().find(|l| l.contains("ADVANCED_FACE") && l.contains(&format!("{torus},"))).unwrap();
+    // One bound: the circle, the seam there and back.
+    assert_eq!(dome.matches('#').count(), 3, "{dome}");
+    let seam = step.lines().rfind(|l| l.contains("EDGE_CURVE")).unwrap();
+    assert!(seam.ends_with(".T.);"), "the arc runs counterclockwise from the rim: {seam}");
+    let lp = step.lines().rfind(|l| l.contains("EDGE_LOOP")).unwrap();
+    assert_eq!(lp.matches('#').count(), 4, "{lp}");
+}

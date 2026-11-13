@@ -1283,6 +1283,20 @@ fn a_sat_box_imports_with_its_volume() {
     }
 }
 
+/// A dome on a spindle torus that reaches the axis at a point (3722's `Revolve2` as the file
+/// stores it): it imports as the dome, of its volume by Pappus to 1e-9, not as the bowl under
+/// it (46358 mm3, OCCT's reader having dropped the point's vertex loop).
+#[test]
+fn a_sat_dome_on_a_spindle_torus_imports_with_its_volume() {
+    let (sat, pappus) = gusset_sat::fixtures::spindle_dome_sat();
+    let c = gusset_sat::to_step(sat.as_bytes(), "dome", &gusset_sat::Limits::default()).unwrap();
+    let shapes = k().import_step(c.step.as_bytes()).unwrap();
+    assert_eq!(shapes.len(), 1);
+    let m = k().mass_properties(&shapes[0].0).unwrap();
+    assert!((m.volume - pappus).abs() <= 1e-9 * pappus, "{} against {pappus}", m.volume);
+    assert_eq!(k().topology(&shapes[0].0).unwrap().solids, 1);
+}
+
 /// ACIS SAT against Spatial's own STEP translations of the same files (NIST, CMU
 /// spectrometer): the same volume. Runs when `GUSSET_SAT_SAMPLES` names
 /// usnistgov/engineering-design-models/models.

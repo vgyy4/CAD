@@ -1475,7 +1475,9 @@ impl<'a> Writer<'a> {
         let r = self.rec_of(f, "face")?;
         let surf = r.ptr(5).ok_or_else(|| SatError::Malformed(format!("face ${f} has no surface")))?;
         let (sid, flipped) = self.surface(surf)?;
-        let mut bounds = Vec::new();
+        // Each loop: its oriented edges and the vertex it starts at, or the apex of a loop that
+        // is a point.
+        let mut loops: Vec<(Vec<usize>, Option<i64>, Option<i64>)> = Vec::new();
         for l in self.chain(r.ptr(2), 1)? {
             if !self.seen.insert(l) {
                 return Err(SatError::Malformed(format!("loop ${l} belongs to more than one face")));
@@ -1483,6 +1485,7 @@ impl<'a> Writer<'a> {
             let lr = self.rec_of(l, "loop")?;
             let mut oriented = Vec::new();
             let mut apex = None;
+            let mut start = None;
             for ce in self.chain(lr.ptr(2), 1)? {
                 if !self.seen.insert(ce) {
                     return Err(SatError::Malformed(format!("coedge ${ce} belongs to more than one loop")));
@@ -1498,8 +1501,36 @@ impl<'a> Writer<'a> {
                 let eid = self.edge(e)?;
                 *self.uses.entry(e).or_default() += 1;
                 let fwd = !reversed(cr.word(5));
+                if start.is_none() {
+                    start = if fwd { er.ptr(1) } else { er.ptr(self.lay.edge_end) };
+                }
                 oriented.push(self.add(&format!("ORIENTED_EDGE('',*,*,#{eid},{})", if fwd { ".T." } else { ".F." })));
             }
+            loops.push((oriented, start, apex));
+        }
+        // A torus face that reaches the axis at a point (a spindle torus: 3722's dome): OCCT's
+        // STEP reader drops a vertex loop on a torus, and its repair then bounds the face by
+        // the other point where the tube crosses the axis (the dome came in as the bowl under
+        // it, 46358 mm3 for 725030). The point is written as OCCT writes such faces instead:
+        // a seam from the other loop's start to the point and back, an arc of the tube's
+        // circle; the reader puts the degenerate edge at the point.
+        let edged: Vec<usize> = (0..loops.len()).filter(|k| loops.get(*k).is_some_and(|l| !l.0.is_empty())).collect();
+        let pointed: Vec<usize> =
+            (0..loops.len()).filter(|k| loops.get(*k).is_some_and(|l| l.0.is_empty() && l.2.is_some())).collect();
+        if let ([e], [p]) = (edged.as_slice(), pointed.as_slice())
+            && let Some(start) = loops.get(*e).and_then(|l| l.1)
+            && let Some(apex) = loops.get(*p).and_then(|l| l.2)
+            && let Some(seam) = self.torus_seam(surf, start, apex)?
+        {
+            let there = self.add(&format!("ORIENTED_EDGE('',*,*,#{seam},.T.)"));
+            let back = self.add(&format!("ORIENTED_EDGE('',*,*,#{seam},.F.)"));
+            if let Some(l) = loops.get_mut(*e) {
+                l.0.extend([there, back]);
+            }
+            loops.retain(|l| !l.0.is_empty());
+        }
+        let mut bounds = Vec::new();
+        for (oriented, _, apex) in loops {
             if oriented.is_empty() {
                 if let Some(v) = apex {
                     let vp = self.vertex(v)?;
@@ -1520,6 +1551,65 @@ impl<'a> Writer<'a> {
             }
         }
         Ok(id)
+    }
+
+    /// The seam of a torus face from the vertex `start` to the point `apex` where the tube
+    /// crosses the axis ([`Self::face`]): an edge on the arc of the tube's circle through
+    /// `start` that does not pass the other crossing. `None` where the surface is no spindle
+    /// torus or the points are not on it (1e-6 of its size).
+    fn torus_seam(&mut self, surf: i64, start: i64, apex: i64) -> Result<Option<usize>, SatError> {
+        let Some(r) = self.sat.rec(surf).filter(|r| r.ty == "torus-surface") else { return Ok(None) };
+        let (Some(c), Some(n), Some(major), Some(minor)) = (r.vec3(1), r.vec3(4), r.num(7), r.num(8)) else {
+            return Ok(None);
+        };
+        let (Some(v), Some(a)) = (self.vertex_xyz(start), self.vertex_xyz(apex)) else { return Ok(None) };
+        // In the STEP file's millimetres.
+        let (c, v, a) = (self.xf.point(c), self.xf.point(v), self.xf.point(a));
+        let Some(n) = self.xf.dir(n) else { return Ok(None) };
+        let (big, small) = (self.xf.length(major.abs()), self.xf.length(minor.abs()));
+        if big >= small {
+            return Ok(None);
+        }
+        let tol = 1e-6 * small.max(1.0);
+        let along = |p: V3| dot(sub(p, c), n);
+        let across = |p: V3| {
+            let h = along(p);
+            let d = sub(p, c);
+            [d[0] - h * n[0], d[1] - h * n[1], d[2] - h * n[2]]
+        };
+        // The apex lies on the axis, where the tube's circle crosses it.
+        let crossing = (small * small - big * big).sqrt();
+        if len(across(a)) > tol || (along(a).abs() - crossing).abs() > tol {
+            return Ok(None);
+        }
+        let Some(x) = unit(across(v)) else { return Ok(None) };
+        // The tube's circle through `start`: centred `big` from the axis on its side, or on the
+        // other (a lemon's part of the tube).
+        let centre = |s: f64| [c[0] + s * big * x[0], c[1] + s * big * x[1], c[2] + s * big * x[2]];
+        let Some(side) = [1.0, -1.0].into_iter().find(|s| (len(sub(v, centre(*s))) - small).abs() <= tol) else {
+            return Ok(None);
+        };
+        let m = centre(side);
+        // Angles about the circle's centre: x outward, n along the axis.
+        let angle = |p: V3| {
+            let d = sub(p, m);
+            libm::atan2(dot(d, n), dot(d, x))
+        };
+        let h = along(a);
+        let other = [c[0] - h * n[0], c[1] - h * n[1], c[2] - h * n[2]];
+        let ccw = |from: f64, to: f64| (to - from).rem_euclid(2.0 * core::f64::consts::PI);
+        let (tv, ta, to) = (angle(v), angle(a), angle(other));
+        // Counterclockwise from `start` to the apex unless the other crossing lies on the way.
+        let forward = ccw(tv, to) > ccw(tv, ta);
+        let fmt = |p: V3| format!("({},{},{})", real(p[0]), real(p[1]), real(p[2]));
+        let o = self.add(&format!("CARTESIAN_POINT('',{})", fmt(m)));
+        // The axis x cross n, so that the circle runs from x towards n.
+        let ad = self.add(&format!("DIRECTION('',{})", fmt(cross(x, n))));
+        let rd = self.add(&format!("DIRECTION('',{})", fmt(x)));
+        let pl = self.add(&format!("AXIS2_PLACEMENT_3D('',#{o},#{ad},#{rd})"));
+        let circle = self.add(&format!("CIRCLE('',#{pl},{})", real(small)));
+        let (v0, v1) = (self.vertex(start)?, self.vertex(apex)?);
+        Ok(Some(self.add(&format!("EDGE_CURVE('',#{v0},#{v1},#{circle},{})", if forward { ".T." } else { ".F." }))))
     }
 
     /// Gives the faces without a material of their own the one the history blob has for their
