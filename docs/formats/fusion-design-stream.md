@@ -3590,3 +3590,71 @@ Converter: `gusset-sat` `step.rs` (`Writer::apex_seam`, `write_seam`), `fixtures
   the three sets' history designs, and 1867) come in as before; 1867 still stops at `Fillet1` ("too large for edge").
 * Tests: `gusset-kernel-occt` (73), `gusset-sat`, `modeling_gear`, `modeling_thread`, `modeling_tree_import`,
   `modeling_sim_shell`, `modeling_chamfer`, `modeling_full_round` pass.
+
+## 58. Round 31 A: chamfer edges: a state after the blend, a line's ends, the rim at the far cap (2026-11-13)
+Reader: `fusion_tree/acis.rs` (`NamedEdge::body_ops`), `fusion_tree/naming.rs` (`stored_edge`, `line_on_cylinder`,
+`across_the_extrude`), `fusion_tree/feature.rs` (`blend_sets`); importer: `import.rs` (`fusion_end_bodies`).
+
+### 3722 Chamfer1: the start of the coil
+* The edge section 57 found, between `5 [307]` and `1 [312, 314]` with its middle at (34.5, 0, 4.577) mm, is in the
+  base's history blob (`c11e060a....smbh`): the end body, after `Chamfer1` (its faces `1 [315]`, `2 [315]` are there).
+  Fusion's chamfer of the start leaves a sliver of the coil's start cap `1 [312, 314]` (x 35.49 to 35.5 mm about
+  z 4.0) whose slanted edge to (33.5, 0, 5.155) meets the cylinder's face. No other stored body holds a face `5 [307]`
+  beside the coil's caps.
+* Rule: each stored edge carries the operations named on its body's faces; while a blend's edges are read, an edge of a
+  body that holds a face of that blend's operations is not taken (a state after the blend). The recipe then falls
+  through to `line_on_cylinder`.
+* `line_on_cylinder` took the middle of the plane face's stored points along the line: the sliver's points give
+  z 4.162 mm, 0.162 mm off the model's edge (a B-spline edge, the cap of the fitted coil, so the line test of
+  `containing_edges` does not hold it). The edge is now the piece of the line a stored face of the plane's name ends on
+  (two of its vertices on the line, the stored points' middle between them), or of the name it had as a combine's tool
+  before the combine (`2A94257F`) trimmed it: the coil's own cap `1 [312]` (`71d8f5f5....smb`, the coil alone), a
+  triangle with its base on the line from z 2.845 to 5.155 mm. The piece is given whole (`path`); the end's edge
+  (-33.5, 0, 10.5) mm comes out the same, now with its whole piece.
+* `Chamfer1` builds: the base's end volume was 73888.99 mm3, now 73895.1078 (the stored end body 73895.0597, 6.5e-7).
+
+### 3722's end bodies
+* The base's history blob holds a body without faces beside its end bodies; `fusion_end_bodies` gave up on all of
+  them for it. Such a body is now passed over, as a sheet body is.
+* The check then reads the end bodies and refuses on them: "the finished bodies (73895.1078, 7352.1969 mm3) are not the
+  end bodies the file stores (73895.0597, 743.6554, 10551.0389, 7352.2430 mm3)". The base and the cap agree (6.5e-7 and
+  6.3e-6, within 2e-5). The other two are the two Combines' tools as they were combined: the coil `CoilPrimitive1`
+  after `Move1` (743.66) and the cap's `Extrude1` after `Extrude2 (2)` (10551.04). Fusion kept them (Keep Tools); the
+  document's `combine` uses its tools up. Where the record says so is not found: both Combines (690, 1980) have no
+  RemoveBody reference (`u32 n` = 0) and list the tool's own body link, as 3900's header part's Combines do, whose
+  tools section 22 reads as used up; 690 has one more `u32 1` before the selections than 1980, both keep their tools.
+  The body links (`D26351F0`), the selections, `B7F34D7B`/`5FBE538E`/`6CCF41D5` and the component's body list
+  (`C3423E04`, `A2EDAFD4`) do not tell 3722's tools from 3900's either. Not guessed; next for 3722 (which flag is Keep
+  Tools; with it, the importer keeps a copy of each tool, as `thicken` keeps its sheet). "How many copies Chamfer1 (2)
+  makes" is no longer the reason: the end bodies are read and confirm or refuse the features after the last state.
+
+### 6299 Chamfer2: the top rim of slots cut through a plate
+* `Extrude10 (2)` (op 377, and 377, 378) cuts two slots through the plate `Extrude8` (op 353, z 13 to 14.6 mm);
+  `Chamfer2` (op 393) takes the top rims: edges between the top cap `2 [353]` and the slots' sides `10`, `11`, `12`
+  (the slot's arc end). The stored bodies hold the top rims only chamfered (faces `9` to `16 [393]` from z 14.2 to
+  14.6) and the bottom rims at z 13 under the same side names with the same faces at their ends.
+* Rule (`across_the_extrude`): an edge between a cap `1`/`2` of an extrude (one operation) and a face whose stored
+  surfaces all run straight across it (planes along the extrude's direction, cylinders about it) is the stored edge
+  between that face and the other cap, ends alike (any state; the blend does not take that edge), moved along the
+  direction onto this cap (both caps' stored planes parallel). A side that does not reach this cap leaves no model edge
+  there and the import stops.
+* `Chamfer2` 14 unresolved edges to 6: the 8 resolved include the rims at the vertical rounds `1 [392]`, `2 [392]`
+  (cylinders r 0.3 mm). The 6 left are the top rims of `Loft2`'s faces `3`, `6`, `8 [387]` (each also named with 388):
+  no stored body holds a face of those names. 6252's `Chamfer2 (2)` likewise 8 to 6 (6252 stops earlier, at an extrude).
+
+### Other chamfer blockers
+* 5981 `Chamfer6` (component Top Cover, op 410 its faces): 8 recipes of the top rim of `Extrude` op 363 name its sides
+  `-3`, `-6`, `-8 [363]` (and `[363, 364]`); the stored bodies name that extrude's sides `10`, `11`, `12 [363]` and hold
+  no face of a negative generator. Which side a negative generator is, is not read; not attempted.
+* Crickit CPX Assembly (adafruit): its chamfer reads in full now (earlier rounds); it stops at `Combine1` ("the
+  Combine's target is not the one body of a feature of the tree").
+* 471 (adafruit-next) `Chamfer`: a chamfer of two distances whose face is not planar; another reader, not attempted.
+
+### Result
+* No design gained history. 3722 builds every feature and is refused by the end bodies (the kept tools, above); 6299
+  reads two thirds of `Chamfer2`.
+* No loss: the feature trees of all designs of the three sets (27 + 156 + 155) dumped before and after: only 3722,
+  6299 and 6252 change, in the blends above. The 40-design sample (every 6th history design of adafruit-more, every
+  10th of adafruit-next, every 4th of adafruit) all come in as history, as before.
+* Tests: `gusset-sat` (134, new `a_stored_edge_knows_the_operations_its_body_has_been_through`), `gusset-commands`,
+  `modeling_tree_import`, `modeling_chamfer` pass; clippy and fmt clean.
