@@ -1,0 +1,27 @@
+diff --git a/src/ModelingAlgorithms/TKOffset/Draft/Draft_Modification_1.cxx b/src/ModelingAlgorithms/TKOffset/Draft/Draft_Modification_1.cxx
+index d9c8f502..3aa10962 100644
+--- a/src/ModelingAlgorithms/TKOffset/Draft/Draft_Modification_1.cxx
++++ b/src/ModelingAlgorithms/TKOffset/Draft/Draft_Modification_1.cxx
+@@ -1560,7 +1560,8 @@ void Draft_Modification::Perform()
+       {
+         Extrema_ExtCS extr(AC, AS, Precision::PConfusion(), Precision::PConfusion());
+ 
+-        if (!extr.IsDone() || extr.NbExt() == 0)
++        // A curve parallel to the surface has a distance but no points.
++        if (!extr.IsDone() || extr.IsParallel() || extr.NbExt() == 0)
+         {
+           errStat  = Draft_VertexRecomputation;
+           badShape = TVV;
+@@ -1581,6 +1582,12 @@ void Draft_Modification::Perform()
+             iref   = i;
+           }
+         }
++        if (iref == 0)
++        {
++          errStat  = Draft_VertexRecomputation;
++          badShape = TVV;
++          return;
++        }
+         extr.Points(iref, Pc, Ps);
+         pvt = Pc.Value();
+       }
