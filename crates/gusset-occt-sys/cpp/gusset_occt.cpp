@@ -1011,6 +1011,26 @@ gp_Pnt vertex_mean(const TopoDS_Shape& s) {
   return n > 0 ? gp_Pnt(sum / n) : gp_Pnt(0, 0, 0);
 }
 
+// A face with no edges round it on a surface without bounds (a whole plane or cylinder): it
+// encloses nothing, and integrating over its infinite domain overflows (an imported SolidWorks
+// sheet held a plane and a cylinder like that; OCCT's Gauss-Kronrod crashed on the plane).
+bool has_unbounded_face(const TopoDS_Shape& s) {
+  for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
+    const TopoDS_Face& f = TopoDS::Face(ex.Current());
+    if (f.NbChildren() != 0) continue;
+    TopLoc_Location loc;
+    const Handle(Geom_Surface)& surf = BRep_Tool::Surface(f, loc);
+    if (surf.IsNull()) continue;
+    double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+    surf->Bounds(u0, u1, v0, v1);
+    if (Precision::IsInfinite(u0) || Precision::IsInfinite(u1) || Precision::IsInfinite(v0) ||
+        Precision::IsInfinite(v1)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // The relative tolerance of the Gauss-Kronrod integration of a face (`measured_props`).
 const double kVolumeTol = 1e-9;
 
@@ -1039,7 +1059,11 @@ struct SummedProps : GProp_GProps {
 // and the centre is the default quadrature's (a moment about the point cancels out on a face
 // round it: an extruded circle's side took 3 s).
 // The area: the adaptive quadrature (the wound faces the default one). `area` may be null.
+// A shape with an unbounded face (`has_unbounded_face`) has neither.
 void measured_props(const TopoDS_Shape& s, GProp_GProps& vol, GProp_GProps* area) {
+  if (has_unbounded_face(s)) {
+    throw Standard_Failure("a face of the shape has no edges round an unbounded surface, so it has no volume or area");
+  }
   if (!has_freeform_face(s) && !has_torus_face(s)) {
     BRepGProp::VolumeProperties(s, vol);
     if (area) BRepGProp::SurfaceProperties(s, *area);

@@ -98,3 +98,12 @@ release's OCCT source archive carries the patches next to the unmodified source
   It now reports the vertex as not recomputed (`Draft_VertexRecomputation`), as it does when
   the extremum finds nothing. Results where it found a point are unchanged (OCCT goldens
   unchanged). To offer upstream.
+- `gusset-0005-kronrod-no-interval-to-split.patch`: the adaptive Gauss-Kronrod integration
+  (`math_KronrodSingleIntegration`) keeps its total error by differences; at huge magnitudes
+  the total can stay above the tolerance after cancellation while every interval's own error
+  is zero (or NaN), and it then split interval 0, which does not exist: a segmentation fault
+  (the volume of an imported SolidWorks sheet with a face on a whole plane, RJ45-LED, in
+  `BRepGProp_VinertGK`). It now reports the integration as not done, as it does when the
+  function cannot be evaluated. Every integration that found an interval to split is
+  unchanged. The shim also refuses such a face before integrating (`has_unbounded_face`).
+  To offer upstream.

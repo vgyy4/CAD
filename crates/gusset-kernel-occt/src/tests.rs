@@ -2712,3 +2712,55 @@ fn a_shell_of_a_spindle_dome_is_its_section_offset_and_revolved() {
     let offsets = shell.face_origins.iter().filter(|o| matches!(o.as_slice(), [FaceOrigin::Offset { .. }])).count();
     assert_eq!(offsets, 3, "{:?}", shell.face_origins);
 }
+
+/// A sheet whose faces have no edges: a whole torus (finite) and a whole plane (unbounded).
+/// The torus sends the volume through the per-face Gauss-Kronrod integration, which crashed
+/// the process on the plane's infinite domain (an imported SolidWorks sheet, RJ45-LED: its plane,
+/// as placed about the point the volume is integrated round); the shape has no volume, so
+/// measuring it fails cleanly.
+#[test]
+fn unbounded_face_has_no_volume() {
+    let step = "ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''),'2;1');
+FILE_NAME('','',(''),(''),'','','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));
+ENDSEC;
+DATA;
+#1=APPLICATION_CONTEXT('automotive design');
+#2=PRODUCT_CONTEXT('',#1,'mechanical');
+#3=PRODUCT('Sheet','Sheet','',(#2));
+#4=PRODUCT_DEFINITION_FORMATION('','',#3);
+#5=PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design');
+#6=PRODUCT_DEFINITION('design','',#4,#5);
+#7=PRODUCT_DEFINITION_SHAPE('','',#6);
+#8=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));
+#9=(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));
+#10=(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT());
+#11=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#8,'distance_accuracy_value','');
+#12=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#11))GLOBAL_UNIT_ASSIGNED_CONTEXT((#8,#9,#10))REPRESENTATION_CONTEXT('',''));
+#20=CARTESIAN_POINT('',(0.,0.,0.));
+#21=DIRECTION('',(0.,0.,1.));
+#22=DIRECTION('',(1.,0.,0.));
+#23=AXIS2_PLACEMENT_3D('',#20,#21,#22);
+#24=CARTESIAN_POINT('',(3.1213676516119,0.122069905615873,-1.4947664681521));
+#34=DIRECTION('',(-1.,1.1102230246251533E-16,2.9170068379752627E-16));
+#35=DIRECTION('',(2.9170068379752627E-16,0.,1.));
+#25=AXIS2_PLACEMENT_3D('',#24,#34,#35);
+#26=TOROIDAL_SURFACE('',#23,10.,2.);
+#27=PLANE('',#25);
+#28=ADVANCED_FACE('',(),#26,.T.);
+#29=ADVANCED_FACE('',(),#27,.T.);
+#30=OPEN_SHELL('',(#28,#29));
+#31=SHELL_BASED_SURFACE_MODEL('',(#30));
+#32=MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#23,#31),#12);
+#33=SHAPE_DEFINITION_REPRESENTATION(#7,#32);
+ENDSEC;
+END-ISO-10303-21;
+";
+    let bodies = k().import_step(step.as_bytes()).unwrap();
+    assert_eq!(bodies.len(), 1, "one sheet");
+    assert_eq!(k().topology(&bodies[0].0).unwrap().faces.len(), 2, "both faces read");
+    let e = k().mass_properties(&bodies[0].0).unwrap_err();
+    assert!(e.to_string().contains("unbounded"), "{e}");
+}

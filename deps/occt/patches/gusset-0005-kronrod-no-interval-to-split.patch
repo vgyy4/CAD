@@ -1,0 +1,20 @@
+diff --git a/src/FoundationClasses/TKMath/math/math_KronrodSingleIntegration.cxx b/src/FoundationClasses/TKMath/math/math_KronrodSingleIntegration.cxx
+index d9bc65d..5e8525c 100644
+--- a/src/FoundationClasses/TKMath/math/math_KronrodSingleIntegration.cxx
++++ b/src/FoundationClasses/TKMath/math/math_KronrodSingleIntegration.cxx
+@@ -239,6 +239,15 @@ void math_KronrodSingleIntegration::Perform(math_Function& theFunction,
+       }
+     }
+ 
++    // The running error total, kept by differences, can stay above the tolerance after
++    // cancellation while no interval has an error left to split (all zero or NaN): the
++    // integration cannot go on, and interval 0 does not exist.
++    if (nint == 0)
++    {
++      myIsDone = false;
++      return;
++    }
++
+     double a = anIntervals(nint);
+     double b = anIntervals(nint + 1);
+     double c = 0.5 * (a + b);
