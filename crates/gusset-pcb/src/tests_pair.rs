@@ -67,6 +67,16 @@ fn pairs_are_recognised_by_kicad_names() {
     )
     .unwrap();
     assert!(pair::pairs(&b).is_empty());
+    // Nets from a schematic carry their sheet path (`/USB_P`); the name works without it.
+    let b = Board::read(
+        r#"(kicad_pcb (version 20240108) (general (thickness 1.6)) (layers (0 "F.Cu" signal)) (net 0 "") (net 1 "/USB_P") (net 2 "/USB_N"))"#,
+        &Limits::default(),
+    )
+    .unwrap();
+    for name in ["/USB_P", "USB_N", "/USB", "USB"] {
+        assert_eq!(pair::find(&b, name).map(|p| p.n), Some("/USB_N".to_string()), "{name}");
+    }
+    assert_eq!(pair::find(&b, "SB"), None);
 }
 
 #[test]

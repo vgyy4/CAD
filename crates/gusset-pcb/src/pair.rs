@@ -56,9 +56,14 @@ pub fn pairs(board: &Board) -> Vec<Pair> {
     out
 }
 
-/// The pair a name stands for: either of its nets or its shared name.
+/// The pair a name stands for: either of its nets or its shared name, as written (`/USB_P`)
+/// or without the sheet path a netlist gives its nets (`USB_P`, `USB`).
 pub fn find(board: &Board, name: &str) -> Option<Pair> {
-    pairs(board).into_iter().find(|p| p.p == name || p.n == name || p.base == name)
+    let all = pairs(board);
+    let short = |s: &str| s.rsplit('/').next().unwrap_or(s).to_string();
+    let exact = all.iter().position(|p| p.p == name || p.n == name || p.base == name);
+    let by_short = || all.iter().position(|p| [&p.p, &p.n, &p.base].iter().any(|n| short(n) == name));
+    exact.or_else(by_short).and_then(|i| all.into_iter().nth(i))
 }
 
 /// A routed pair.

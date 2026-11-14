@@ -116,6 +116,9 @@ fn the_shorter_side_is_tuned_in_one_undo_step() {
     assert_eq!(e.code, "not_found", "{e:?}");
     let e = execute(&mut s, &u(6), "pcb.tune", json!({"net": "SIG"})).unwrap_err();
     assert_eq!(e.code, "invalid_args");
+    // A net the board does not have is said so, not "must belong to a pair".
+    let e = execute(&mut s, &u(6), "pcb.tune", json!({"net": "NOSUCH"})).unwrap_err();
+    assert_eq!((e.code.as_str(), e.message.contains("no net")), ("not_found", true), "{e:?}");
     let e = execute(&mut s, &u(6), "pcb.tune", json!({"net": "A", "target": 99.0})).unwrap_err();
     assert_eq!(e.code, "not_found");
     let e = execute(&mut s, &u(6), "pcb.tune", json!({"net": "SIG", "target": -1.0})).unwrap_err();

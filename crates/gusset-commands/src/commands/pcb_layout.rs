@@ -404,7 +404,7 @@ impl Command for PcbRoutePair {
         }
         let pr = pair::find(b, &self.pair).ok_or_else(|| {
             CommandError::not_found("that is not a differential pair on this board")
-                .hint("both nets must exist, named X_P/X_N or X+/X-")
+                .hint("both nets must exist, named X_P/X_N or X+/X-, with the sheet path a schematic gives them if any (/X_P)")
         })?;
         let (cw, cg) = open.rules.diff_pair_of(&pr.p, &pr.n);
         let (width, gap) = (self.width.unwrap_or(cw), self.gap.unwrap_or(cg));
@@ -514,6 +514,10 @@ impl Command for PcbTune {
         let mut net = self.net.clone();
         let mut target = self.target;
         if target.is_none() {
+            if !b.nets.iter().any(|n| n.name == self.net) && pair::find(b, &self.net).is_none() {
+                return Err(CommandError::not_found(format!("no net '{}' on this board", crate::paths::display_name(&self.net)))
+                    .hint("nets keep the sheet path a schematic gives them, such as /USB_P (pcb_lengths lists the routed ones)"));
+            }
             let k = pair::find(b, &self.net)
                 .and_then(|p| length::skews(b).into_iter().find(|k| k.pair == p))
                 .ok_or_else(|| CommandError::args("without a target the net must belong to a differential pair"))?;
