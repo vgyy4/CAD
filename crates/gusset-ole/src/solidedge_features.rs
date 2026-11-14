@@ -603,11 +603,12 @@ pub(crate) enum Curve2 {
 /// Most poles of one spline.
 const MAX_POLES: u32 = 10_000;
 
-/// A polynomial B-spline member: `u16 flags, u32 1, u32 0x80000001, u32 n, u32 0, n poles
-/// (x, y), u8 order, u32 k, k multiplicities, k knots`, then 20 bytes. A rational one
-/// (`u32 2` at +10) is not read.
+/// A B-spline member: `u16 flags, u32 kind, u32 flags, u32 n, u32 0, n poles (x, y), u8 order,
+/// u32 k, k multiplicities, k knots`, then `u32 0` and more. Kind 1 is drawn by its poles,
+/// kind 2 through points: then the rest holds the points' parameters (`u8 1, u8 1, u32 m, m
+/// f64`) and their order; the curve is the same poles and knots (no weights).
 pub(crate) fn spline(b: &[u8]) -> Option<Curve2> {
-    if u32_at(b, 10)? != 1 || u32_at(b, 14)? != 0x8000_0001 {
+    if !matches!(u32_at(b, 10)?, 1 | 2) || !matches!(u32_at(b, 14)?, 1 | 0x8000_0001) {
         return None;
     }
     let n = u32_at(b, 18)?;
@@ -644,7 +645,7 @@ pub(crate) fn spline(b: &[u8]) -> Option<Curve2> {
         }
         knots.extend(std::iter::repeat_n(t, m as usize));
     }
-    if knots.len() != (n + order) as usize || b.len() != q + 20 {
+    if knots.len() != (n + order) as usize || u32_at(b, q)? != 0 || b.len() < q + 20 {
         return None;
     }
     Some(Curve2::Spline(order - 1, poles, knots))
@@ -763,6 +764,11 @@ fn members(st: &Store, b: &[u8], at: usize, n: u32, plane: Option<(V3, V3, V3)>)
             backwards.push(false);
             continue;
         };
+        // A dimension or relation listed with the curves (not shaped as a curve: a curve's
+        // byte at +8 is 0).
+        if mb.get(8) != Some(&0) {
+            continue;
+        }
         match curve(mb) {
             Some(c) => {
                 // An arc drawn clockwise (u8 0 at +34) is kept counter-clockwise, from its end.
@@ -1014,6 +1020,8 @@ enum Kind {
     RevolvedCutout,
     Round,
     Chamfer,
+    SweptProtrusion,
+    SweptCutout,
     /// A cosmetic thread: no geometry.
     Thread,
     /// The start of an older part's history, before its first feature.
@@ -1028,6 +1036,8 @@ fn kind(class: &str) -> Kind {
         "JMRevolvedProtrusionFunction" => Kind::RevolvedProtrusion,
         "JMRevolvedCutoutFunction" => Kind::RevolvedCutout,
         "JMRoundFunction" => Kind::Round,
+        "JMMultiSweepProtrusionFunction" => Kind::SweptProtrusion,
+        "JMMultiSweepCutoutFunction" => Kind::SweptCutout,
         "JMChamferFunction" => Kind::Chamfer,
         "JMThreadFunction" => Kind::Thread,
         "JMBodyFeatureAssocFunc" => Kind::BaseBody,
@@ -1241,6 +1251,41 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     Ok(())
 }
 
+/// A sweep (`JMMultiSweep*Function`): slot 2 the path's profiles, slot 3 the cross
+/// sections'. One cross section swept along one path is read.
+fn sweep(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), String> {
+    let read = |slot: usize| -> Result<Vec<Profile>, String> {
+        f.list(slot).iter().filter(|&&p| p != 0).map(|&p| profile(st, p)).collect()
+    };
+    let (paths, sections) = (read(2)?, read(3)?);
+    if paths.is_empty() || sections.len() != 1 {
+        return Err(format!("a sweep of {} cross sections along {} paths", sections.len(), paths.len()));
+    }
+    let cut = k == Kind::SweptCutout;
+    let op = if cut {
+        "cut"
+    } else if s.first_body.is_none() {
+        "new"
+    } else {
+        "join"
+    };
+    let (path, section) = (format!("{name}_Path"), format!("{name}_Sketch"));
+    let pj = sketch_json(&path, &paths, None)?;
+    let sj = sketch_json(&section, &sections, None)?;
+    let mut j = json!({"type": "sweep", "name": name, "sketch": section, "path": path, "operation": op});
+    if op != "new" {
+        let fb = s.first_body.clone().ok_or("a cut before any body")?;
+        put(&mut j, "target", json!(fb));
+    }
+    s.out.push(pj);
+    s.out.push(sj);
+    s.out.push(j);
+    if s.first_body.is_none() {
+        s.first_body = Some(name.to_string());
+    }
+    Ok(())
+}
+
 /// A round (slot 2: the edge set, 3: kind, 1 constant radius; 4: the radius) or an equal
 /// chamfer (slot 2: kind, 41 equal setbacks; 4: the edge set; 5: the setback).
 fn blend(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), String> {
@@ -1308,6 +1353,15 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             Kind::Protrusion | Kind::Cutout | Kind::RevolvedProtrusion | Kind::RevolvedCutout => {
                 let before = s.out.len();
                 if let Err(why) = solid(&st, &mut s, func, &name, k) {
+                    s.out.truncate(before);
+                    s.out.push(unsupported(&name, what, &why));
+                } else {
+                    solids += 1;
+                }
+            }
+            Kind::SweptProtrusion | Kind::SweptCutout => {
+                let before = s.out.len();
+                if let Err(why) = sweep(&st, &mut s, func, &name, k) {
                     s.out.truncate(before);
                     s.out.push(unsupported(&name, what, &why));
                 } else {

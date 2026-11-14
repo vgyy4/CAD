@@ -284,11 +284,21 @@ fn a_polynomial_spline_member() {
     let Some(Curve2::Spline(3, poles, knots)) = curve(&obj(51, 9, &b)) else { panic!() };
     assert_eq!(poles.len(), 4);
     assert_eq!(knots, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
-    // Rational (2 at +10) or with a tail of another length: not read.
+    // Drawn through points (2 at +10, flags 1): the same curve, the points' data after it.
     let mut r = b.clone();
     r[2] = 2;
-    assert_eq!(curve(&obj(51, 9, &r)), None);
-    b.push(0);
+    r[6] = 1;
+    r[9] = 0;
+    r.extend([1, 1, 2, 0, 0, 0]);
+    r.extend(f64s(&[0.0, 1.0]));
+    assert!(matches!(curve(&obj(51, 9, &r)), Some(Curve2::Spline(3, ..))));
+    // Another kind, other flags, a tail not opening with a zero word, a short one: not read.
+    for (at, v) in [(2, 3), (6, 5), (111, 1)] {
+        let mut x = b.clone();
+        x[at] = v;
+        assert_eq!(curve(&obj(51, 9, &x)), None, "{at}");
+    }
+    b.pop();
     assert_eq!(curve(&obj(51, 9, &b)), None);
 }
 
@@ -515,4 +525,22 @@ fn an_open_cutout_profile_is_closed_on_its_side() {
         Curve2::Line([1.0, 0.0], [1.0, 1.0]),
     ];
     assert!(close_open(&mut three.to_vec(), &[false; 3], Some(1)).is_err());
+}
+
+#[test]
+fn a_sweep_of_one_section_along_one_path() {
+    // The rectangle swept along itself (only the layout matters here); two sections: not read.
+    let mut more = obj(38, 30, &func("JMMultiSweepProtrusionFunction", &[&[30], &[12], &[2], &[2]]));
+    more.extend(obj(38, 31, &func("JMMultiSweepCutoutFunction", &[&[31], &[30], &[2], &[2, 2]])));
+    let t = feature_tree(&part_with(1.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = t["features"].as_array().unwrap();
+    assert_eq!(f[2]["name"], "MultiSweepProtrusion_1_Path", "{t}");
+    assert_eq!(f[3]["name"], "MultiSweepProtrusion_1_Sketch");
+    assert_eq!(
+        f[4],
+        json!({"type": "sweep", "name": "MultiSweepProtrusion_1", "sketch": "MultiSweepProtrusion_1_Sketch",
+               "path": "MultiSweepProtrusion_1_Path", "operation": "join", "target": "Protrusion_1"})
+    );
+    assert_eq!(f[5]["type"], "unsupported");
+    assert!(f[5]["reason"].as_str().unwrap().contains("2 cross sections"), "{t}");
 }
