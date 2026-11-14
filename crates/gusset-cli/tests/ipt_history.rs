@@ -2,9 +2,9 @@
 //! when `GUSSET_IPT_SAMPLES` names a folder of `.ipt` files (searched recursively; not in the
 //! repository). Each part either comes in as features that rebuild to its own result body, or
 //! as the exact body with a reason; the counts and reasons are printed and no import may fail
-//! outright. `GUSSET_IPT_MIN_HISTORY` asserts a floor for the history count,
-//! `GUSSET_IPT_ONLY` keeps the files whose path contains the text, `GUSSET_IPT_VERBOSE`
-//! prints each file's outcome.
+//! outright (a part without a solid, whose error says so, is counted on its own).
+//! `GUSSET_IPT_MIN_HISTORY` asserts a floor for the history count, `GUSSET_IPT_ONLY` keeps the
+//! files whose path contains the text, `GUSSET_IPT_VERBOSE` prints each file's outcome.
 
 #![cfg(gusset_occt)]
 #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
@@ -36,7 +36,7 @@ fn inventor_parts_come_in_as_history_or_bodies() {
     }
     let worker = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(format!("../../target/debug/gusset-worker{}", std::env::consts::EXE_SUFFIX));
-    let (mut history, mut shapes, mut failed) = (0, 0, 0);
+    let (mut history, mut shapes, mut no_solid, mut failed) = (0, 0, 0, 0);
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
     for f in &files {
         let k: Arc<dyn gusset_kernel::Kernel> =
@@ -93,6 +93,12 @@ fn inventor_parts_come_in_as_history_or_bodies() {
                 }
                 *reasons.entry(why).or_default() += 1;
             }
+            Err(e) if e.message == gusset_commands::import::INVENTOR_NO_SOLID => {
+                no_solid += 1;
+                if verbose {
+                    eprintln!("{}: {}", f.display(), e.message);
+                }
+            }
             Err(e) => {
                 failed += 1;
                 eprintln!("{}: {}", f.display(), e.message);
@@ -100,7 +106,10 @@ fn inventor_parts_come_in_as_history_or_bodies() {
         }
         let _ = std::fs::remove_dir_all(&p);
     }
-    eprintln!("{} files: {history} as history, {shapes} as bodies, {failed} failed", files.len());
+    eprintln!(
+        "{} files: {history} as history, {shapes} as bodies, {no_solid} without a solid, {failed} failed",
+        files.len()
+    );
     for (why, n) in &reasons {
         eprintln!("  {n:4}  {why}");
     }

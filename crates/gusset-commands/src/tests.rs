@@ -532,6 +532,26 @@ fn inventor_and_solid_edge_parts_go_through_their_readers() {
     std::fs::write(d.join("asm.ipt"), gusset_ole::fixtures::ole(&[("Mx", b"meta")])).unwrap();
     let e = execute(&mut s, &u, "import.file", json!({"path": "asm.ipt"})).unwrap_err();
     assert!(e.message.contains("no solid geometry"), "{}", e.message);
+    // A part with no features whose result has no faces (a sketch-only part, a template): it
+    // has no solid, which the error says.
+    let empty = gusset_sat::fixtures::to_binary(
+        "700 0 1 0\n@4 test @9 ACIS 7.0 @4 date\n1 1e-06 1e-10\nbody $-1 -1 $-1 $-1 $-1 $-1 #\nEnd-of-ACIS-data\n",
+    );
+    let result = gusset_ole::fixtures::b_stream(&gusset_ole::fixtures::data_with_blob([0x1d, 3, 0, 0], &empty));
+    let note = |t: &str| {
+        let mut r = vec![0u8; 22];
+        r.extend((t.len() as u32).to_le_bytes());
+        r.extend(t.encode_utf16().flat_map(u16::to_le_bytes));
+        r
+    };
+    let part = gusset_ole::fixtures::inventor_dc_part(
+        &[0x1234_5678],
+        &[(0, note("Sketch1"))],
+        &[("Bresult00000000000", &result), ("Mresult00000000000", b"meta")],
+    );
+    std::fs::write(d.join("sketch.ipt"), part).unwrap();
+    let e = execute(&mut s, &u, "import.file", json!({"path": "sketch.ipt"})).unwrap_err();
+    assert_eq!(e.message, crate::import::INVENTOR_NO_SOLID);
     // A Solid Edge file whose transmit is not Parasolid data.
     std::fs::write(d.join("bad.par"), gusset_ole::fixtures::solid_edge_part(b"**ABC\n**END_OF_HEADER**\nrubbish"))
         .unwrap();

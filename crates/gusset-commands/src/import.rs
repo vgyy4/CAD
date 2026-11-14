@@ -637,6 +637,10 @@ fn solid_edge_part(
     Ok((with_looks(bodies, &c.looks), TIER_SOLID_EDGE, warnings))
 }
 
+/// Why an Inventor part without a solid gives nothing to import.
+pub const INVENTOR_NO_SOLID: &str =
+    "the Inventor part has no solid: its result has no faces (sketches, work geometry, parameters or a template only)";
+
 /// An Inventor part (`.ipt`): the ShapeManager body of its result, as for a Fusion `.smb`
 /// (ADR 0046).
 fn inventor_part(
@@ -647,8 +651,14 @@ fn inventor_part(
 ) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
     let part = gusset_ole::inventor::extract_sab(bytes, &gusset_ole::Limits::default())
         .map_err(|e| CommandError::new("io", format!("Inventor: {e}")))?;
-    let c = gusset_sat::to_step(&part.sab, stem, &gusset_sat::Limits::default())
-        .map_err(|e| CommandError::new("io", format!("Inventor (ShapeManager): {e}")))?;
+    let c = gusset_sat::to_step(&part.sab, stem, &gusset_sat::Limits::default()).map_err(|e| match e {
+        // The result Inventor stored has no face: the part makes no solid (sketches, work
+        // geometry, parameters, templates), which is what it is, not a damaged file.
+        gusset_sat::SatError::Unsupported(w) if w == "the file holds no body with faces" => {
+            CommandError::new("io", INVENTOR_NO_SOLID)
+        }
+        e => CommandError::new("io", format!("Inventor (ShapeManager): {e}")),
+    })?;
     let bodies = importer
         .import("step", c.step.as_bytes(), cancel)
         .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) })?;
