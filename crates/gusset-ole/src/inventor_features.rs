@@ -794,14 +794,16 @@ fn hole_fallback(name: &str, pos: &[V3], info: &HoleInfo, target: &str) -> Optio
     Some(out)
 }
 
-/// A rectangular pattern, one direction. The record's references, in order: the patterned
-/// features (part or pattern features; a second direction is a pattern of the originals and
-/// the first pattern), `a244457b` the direction (three triples at the end: start, vector, end
-/// point, cm), `bb1dd5df` the count (its last u32), the spacing parameter, and `90874d28` flags
-/// (the last one: midplane). The pattern runs against the edge vector (confirmed on two
-/// patterns by volume and hole centres).
+/// A rectangular pattern. The record's references, in order: the patterned features (part or
+/// pattern features; in older files a second direction is a pattern of its own, of the
+/// originals and the first pattern), then per direction a `bb1dd5df` count (its last u32) and
+/// a spacing parameter, the directions, and `90874d28` flags. A direction is an `a244457b`
+/// edge (see [`pattern_direction`]) or, in version 3104, a `ce52df40` unit vector (notes AC). Of the flags after the
+/// directions, the first per direction turns it round and the last per direction is midplane.
+/// Two directions are two patterns: the second copies the features and the first pattern.
 fn pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
     const G_DIR: u32 = 0xa244_457b;
+    const G_UNIT_DIR: u32 = 0xce52_df40;
     const G_COUNT: u32 = 0xbb1d_d5df;
     const G_FLAGS: u32 = 0x9087_4d28;
     let refs = r.dc.refs(f.rec);
@@ -811,31 +813,26 @@ fn pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
         let b = r.dc.r(x);
         u32_at(b, b.len().checked_sub(4)?)
     };
-    let dir = refs.iter().map(|x| x.1).find(|&x| r.dc.class(x) == G_DIR);
+    let body: Vec<(usize, usize)> = refs.iter().copied().filter(|&(k, _)| k > 14).collect();
+    let dirs: Vec<usize> =
+        body.iter().map(|x| x.1).filter(|&x| matches!(r.dc.class(x), G_DIR | G_UNIT_DIR)).take(3).collect();
+    if dirs.len() == 2 {
+        return two_way_pattern(r, st, name, &body, &dirs, &tgt);
+    }
+    let dir = dirs.first().copied();
     let cnt =
         refs.iter().map(|x| x.1).find(|&x| r.dc.class(x) == G_COUNT && count_of(x).is_some_and(|c| 1 < c && c < 1000));
     let par = refs.iter().map(|x| x.1).find(|&x| r.dc.role(x) == Role::Param);
     let (true, Some(dir), Some(cnt), Some(par)) = (!tgt.is_empty(), dir, cnt, par) else {
         return Err("direction, count or spacing not found".into());
     };
-    let rec = r.dc.r(dir);
-    let n = rec.len();
-    // Start point, vector, end point (3 doubles each), then `u8 1` and two references.
-    let o = n.checked_sub(57).ok_or("the direction is cut short")?;
-    let vec = [f64_at(rec, o), f64_at(rec, o + 8), f64_at(rec, o + 16)];
-    let [Some(x), Some(y), Some(z)] = vec else { return Err("the direction is cut short".into()) };
-    let vec: V3 = [x, y, z];
-    let ln = libm::sqrt(dot(vec, vec));
-    if ln == 0.0 || !ln.is_finite() {
-        return Err("the direction has no length".into());
-    }
+    let vec = pattern_direction(r, dir)?;
     let count = count_of(cnt).ok_or("no count")?;
     let spacing = rnd(r.dc.param(par).ok_or("the spacing is not readable")?.1 * CM);
-    let midplane = refs
-        .iter()
-        .rfind(|&&(_, x)| r.dc.class(x) == G_FLAGS)
-        .is_some_and(|&(_, x)| r.dc.r(x).last().is_some_and(|&b| b != 0));
-    let u = [rnd(-vec[0] / ln), rnd(-vec[1] / ln), rnd(-vec[2] / ln)];
+    let flags: Vec<bool> = flags_after(r, &body, dir, G_FLAGS);
+    let midplane = flags.last().copied().unwrap_or(false);
+    let vec = if flags.first().copied().unwrap_or(false) { [-vec[0], -vec[1], -vec[2]] } else { vec };
+    let u = [rnd(vec[0]), rnd(vec[1]), rnd(vec[2])];
     if midplane {
         // Gusset has no midplane pattern: move the original holes back by half the run.
         let sh: V3 = u.map(|c| -c * spacing * f64::from(count - 1) / 2.0);
@@ -878,6 +875,104 @@ fn pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
         }
     }
     st.out.push(json!({"type": "pattern_linear", "name": name, "features": tgt, "direction": u, "spacing": spacing, "count": count}));
+    Ok(())
+}
+
+/// The unit direction a rectangular pattern runs along. An `a244457b` edge holds three triples
+/// at its end (cm): its start, its vector and the end the pattern starts from; the pattern runs
+/// from that end along the edge (against the vector when it is the edge's end point, along it
+/// when it is the start). A `ce52df40` holds five doubles, the last three the unit vector.
+fn pattern_direction(r: &Reader, dir: usize) -> Result<V3, String> {
+    let rec = r.dc.r(dir);
+    let n = rec.len();
+    let at = |o: Option<usize>| -> Result<V3, String> {
+        let o = o.ok_or("the direction is cut short")?;
+        match [f64_at(rec, o), f64_at(rec, o + 8), f64_at(rec, o + 16)] {
+            [Some(x), Some(y), Some(z)] if x.is_finite() && y.is_finite() && z.is_finite() => Ok([x, y, z]),
+            _ => Err("the direction is cut short".into()),
+        }
+    };
+    let (vec, sign) = if r.dc.class(dir) == 0xa244_457b {
+        // Start point, vector, the end it starts from, then `u8 1` and two references.
+        let (start, vec, from) = (at(n.checked_sub(81))?, at(n.checked_sub(57))?, at(n.checked_sub(33))?);
+        let end = [start[0] + vec[0], start[1] + vec[1], start[2] + vec[2]];
+        let d = |a: V3, b: V3| dot(sub3(a, b), sub3(a, b));
+        (vec, if d(from, start) < d(from, end) { 1.0 } else { -1.0 })
+    } else {
+        (at(n.checked_sub(24))?, 1.0)
+    };
+    let ln = libm::sqrt(dot(vec, vec));
+    if ln == 0.0 || !ln.is_finite() {
+        return Err("the direction has no length".into());
+    }
+    Ok([sign * vec[0] / ln, sign * vec[1] / ln, sign * vec[2] / ln])
+}
+
+/// The flag records (`90874d28`, set when the last byte is not 0) after a pattern's last
+/// direction.
+fn flags_after(r: &Reader, body: &[(usize, usize)], last_dir: usize, g_flags: u32) -> Vec<bool> {
+    body.iter()
+        .skip_while(|&&(_, x)| x != last_dir)
+        .filter(|&&(_, x)| r.dc.class(x) == g_flags)
+        .map(|&(_, x)| r.dc.r(x).last().is_some_and(|&b| b != 0))
+        .collect()
+}
+
+/// A rectangular pattern in two directions (one record, both counts, spacings and
+/// directions): a pattern along the first, then one along the second of the features and the
+/// first pattern. A midplane direction is refused.
+fn two_way_pattern(
+    r: &Reader,
+    st: &mut State,
+    name: &str,
+    body: &[(usize, usize)],
+    dirs: &[usize],
+    tgt: &[String],
+) -> Result<(), String> {
+    const G_COUNT: u32 = 0xbb1d_d5df;
+    const G_FLAGS: u32 = 0x9087_4d28;
+    let (&[d1, d2], false) = (dirs, tgt.is_empty()) else { return Err("direction, count or spacing not found".into()) };
+    let counts: Vec<u32> = body
+        .iter()
+        .filter(|&&(_, x)| r.dc.class(x) == G_COUNT)
+        .filter_map(|&(_, x)| {
+            let b = r.dc.r(x);
+            u32_at(b, b.len().checked_sub(4)?)
+        })
+        .filter(|&c| (1..1000).contains(&c))
+        .collect();
+    let pars: Vec<f64> = body
+        .iter()
+        .filter(|&&(_, x)| r.dc.role(x) == Role::Param)
+        .filter_map(|&(_, x)| r.dc.param(x))
+        .map(|p| p.1)
+        .collect();
+    let (&[c1, c2], Some(&s1), Some(&s2)) = (counts.as_slice(), pars.first(), pars.get(1)) else {
+        return Err("direction, count or spacing not found".into());
+    };
+    let flags = flags_after(r, body, d2, G_FLAGS);
+    let flag = |k: usize| flags.get(k).copied().unwrap_or(false);
+    let n = flags.len();
+    if n < 4 || flag(n - 2) || flag(n - 1) {
+        return Err("a midplane pattern in two directions".into());
+    }
+    let mut made: Vec<String> = Vec::new();
+    for (k, (dir, count, spacing)) in [(d1, c1, s1), (d2, c2, s2)].into_iter().enumerate() {
+        if count < 2 {
+            continue;
+        }
+        let v = pattern_direction(r, dir)?;
+        let v = if flag(k) { [-v[0], -v[1], -v[2]] } else { v };
+        let nm = if made.is_empty() { name.to_string() } else { format!("{name}_2") };
+        let mut feats: Vec<String> = tgt.to_vec();
+        feats.extend(made.iter().cloned());
+        st.out.push(json!({"type": "pattern_linear", "name": nm, "features": feats,
+            "direction": [rnd(v[0]), rnd(v[1]), rnd(v[2])], "spacing": rnd(spacing * CM), "count": count}));
+        made.push(nm);
+    }
+    if made.is_empty() {
+        return Err("a pattern of one occurrence".into());
+    }
     Ok(())
 }
 

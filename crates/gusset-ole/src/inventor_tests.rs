@@ -998,7 +998,7 @@ fn a_chamfer_of_two_distances_names_the_face_of_the_first() {
 }
 
 /// The classes of the copy features' records, after the common ones.
-const COPY_CLASSES: [u32; 18] = [
+const COPY_CLASSES: [u32; 20] = [
     0x2b48_a42b,
     0x9087_4d18,
     0xce52_df35,
@@ -1017,6 +1017,8 @@ const COPY_CLASSES: [u32; 18] = [
     0xbb1d_d5df, // 15 count
     0x9087_4d28, // 16 flag
     0xd83e_f271, // 17 references
+    0x2067_3244, // 18 rectangular pattern
+    0xa244_457b, // 19 edge direction
 ];
 
 fn copy_tree(recs: &[(usize, Vec<u8>)]) -> Value {
@@ -1149,4 +1151,68 @@ fn a_mirror_reads_its_features_and_plane() {
     let t = copy_tree(&r);
     assert_eq!(t["features"][1]["type"], "unsupported");
     assert!(t["features"][1]["reason"].as_str().unwrap().contains("Extrusion1 is not read"), "{t}");
+}
+
+/// A rectangular pattern in two directions (one record): two patterns, the second copying the
+/// features and the first. An edge direction runs from the end the record names last: against
+/// the edge's vector from its end point, along it from its start.
+#[test]
+fn a_rectangular_pattern_in_two_directions_is_two_patterns() {
+    let edge = |start: [f64; 3], vec: [f64; 3], from: [f64; 3]| {
+        let mut v = hdr(0, 0, 0);
+        doubles(&mut v, &start);
+        doubles(&mut v, &vec);
+        doubles(&mut v, &from);
+        v.push(1);
+        v.extend([0u8; 8]);
+        v
+    };
+    let count = |n: u32| {
+        let mut v = hdr(0, 0, 0);
+        v.extend(utf16("d5"));
+        v.extend(n.to_le_bytes());
+        v.extend(n.to_le_bytes());
+        v
+    };
+    let flag = |b: u8| {
+        let mut v = hdr(0, 0, 0);
+        v.push(b);
+        v
+    };
+    let mut r = base_records();
+    r.push((NAME, name_rec("Rectangular Pattern1", Some(0x767a_c2da)))); // 19
+    r.push((PLACEMENT, hdr(0, 0, 0))); // 20
+    r.push((15, count(3))); // 21
+    r.push((15, count(2))); // 22
+    r.push((PARAM, param("d6", 0.8))); // 23
+    r.push((PARAM, param("d7", 1.0))); // 24
+    // x from its end point (against the vector: -x), y from its start (along it: +y).
+    r.push((19, edge([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 0.0]))); // 25
+    r.push((19, edge([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]))); // 26
+    for _ in 0..8 {
+        r.push((16, flag(0))); // 27..=34
+    }
+    let mut f = hdr(rf(19), 0, 6);
+    f.extend(0u32.to_le_bytes());
+    f.extend(list(&[rf(18)]));
+    for x in 20..=34 {
+        f.extend(rf(x).to_le_bytes());
+    }
+    r.push((18, f)); // 35
+    let t = copy_tree(&r);
+    assert_eq!(
+        t["features"][2],
+        json!({"type": "pattern_linear", "name": "Rectangular Pattern1", "features": ["Extrusion1"],
+               "direction": [-1.0, 0.0, 0.0], "spacing": 8.0, "count": 3})
+    );
+    assert_eq!(
+        t["features"][3],
+        json!({"type": "pattern_linear", "name": "Rectangular Pattern1_2", "features": ["Extrusion1", "Rectangular Pattern1"],
+               "direction": [0.0, 1.0, 0.0], "spacing": 10.0, "count": 2})
+    );
+    // The first flag of a direction turns it round; its last is midplane, not read for two.
+    r[28].1 = flag(1);
+    assert_eq!(copy_tree(&r)["features"][3]["direction"], json!([0.0, -1.0, 0.0]));
+    r[34].1 = flag(1);
+    assert_eq!(copy_tree(&r)["features"][2]["type"], "unsupported");
 }
