@@ -140,6 +140,16 @@ impl Obstacles {
                 }
             }
         }
+        Obstacles::build(prims, outline, half)
+    }
+
+    /// Obstacles made of the given pieces and the gaps a centre line keeps from them, with
+    /// no board outline (every point is on the board).
+    pub fn from_prims(prims: Vec<(Prim, f64)>, half_width: f64) -> Obstacles {
+        Obstacles::build(prims, Vec::new(), half_width)
+    }
+
+    fn build(prims: Vec<(Prim, f64)>, outline: Vec<Vec<Pt>>, half: f64) -> Obstacles {
         // Buckets over the obstacles' grown boxes.
         let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
         for (p, need) in &prims {
@@ -209,7 +219,7 @@ impl Obstacles {
 
     /// The smallest margin (gap minus the needed gap) of a segment's centre line, looking
     /// only at obstacles within `extra` of what they need; `f64::INFINITY` when none.
-    fn margin(&self, a: Pt, b: Pt, extra: f64) -> f64 {
+    pub fn margin(&self, a: Pt, b: Pt, extra: f64) -> f64 {
         let lo = [a[0].min(b[0]) - extra, a[1].min(b[1]) - extra];
         let hi = [a[0].max(b[0]) + extra, a[1].max(b[1]) + extra];
         let seg = Prim::Capsule { a, b, r: 0.0 };
@@ -272,13 +282,44 @@ impl PartialOrd for Open {
 /// `from` first, `to` last), or `None` when there is no way within the search window.
 /// `diagonal_first` picks the bend of a free two-segment route.
 pub fn walkaround(obs: &Obstacles, from: Pt, to: Pt, grid: f64, diagonal_first: bool) -> Option<Vec<Pt>> {
+    search(obs, None, from, to, grid, diagonal_first)
+}
+
+/// Copper a route may pass closer to than the rules ask, as it can be pushed aside
+/// (ADR 0058): `full` with the gaps the rules ask, `min` with the least gap allowed (no
+/// overlap), and the extra cost per grid step taken within `full`.
+#[derive(Debug, Clone)]
+pub struct Soft {
+    pub full: Obstacles,
+    pub min: Obstacles,
+    pub penalty: f64,
+}
+
+/// As [`walkaround`], but the copper in `soft` may be come closer to than the rules ask
+/// (never overlapped), at a cost per step; the route prefers clear ways.
+pub fn walkaround_soft(
+    obs: &Obstacles,
+    soft: &Soft,
+    from: Pt,
+    to: Pt,
+    grid: f64,
+    diagonal_first: bool,
+) -> Option<Vec<Pt>> {
+    search(obs, Some(soft), from, to, grid, diagonal_first)
+}
+
+fn search(obs: &Obstacles, soft: Option<&Soft>, from: Pt, to: Pt, grid: f64, diagonal_first: bool) -> Option<Vec<Pt>> {
     if !obs.on_board(to) || obs.margin(to, to, 0.0) < -SLACK {
         return None;
     }
+    // Clear for a laid piece: the hard obstacles, and the soft ones' least gap.
+    let clear_min = |a: Pt, b: Pt| obs.clear(a, b) && soft.is_none_or(|s| s.min.clear(a, b));
+    // Clear with every gap the rules ask.
+    let clear_full = |a: Pt, b: Pt| obs.clear(a, b) && soft.is_none_or(|s| s.full.clear(a, b));
     // The direct ways first.
     for first in [diagonal_first, !diagonal_first] {
         let p = octi(from, to, first);
-        if p.windows(2).all(|w| matches!(w, [a, b] if obs.clear(*a, *b))) {
+        if p.windows(2).all(|w| matches!(w, [a, b] if clear_full(*a, *b))) {
             return Some(p);
         }
     }
@@ -299,18 +340,30 @@ pub fn walkaround(obs: &Obstacles, from: Pt, to: Pt, grid: f64, diagonal_first: 
         y * nx + x
     };
     let spare = step * std::f64::consts::FRAC_1_SQRT_2;
-    // 0 unknown, 1 free, 2 blocked.
+    // 0 unknown, 1 free, 2 blocked, 3 free but within a soft obstacle's full gap.
     let mut state = vec![0u8; nx * ny];
+    let classify = |c: usize| -> u8 {
+        let p = pos(c);
+        if !obs.free(p, spare) {
+            return 2;
+        }
+        match soft {
+            None => 1,
+            Some(s) if !s.min.free(p, spare) => 2,
+            Some(s) if !s.full.free(p, spare) => 3,
+            Some(_) => 1,
+        }
+    };
     let mut free = |c: usize, state: &mut Vec<u8>| -> bool {
         match state.get(c) {
-            Some(1) => true,
+            Some(1 | 3) => true,
             Some(2) | None => false,
             _ => {
-                let f = obs.free(pos(c), spare);
+                let f = classify(c);
                 if let Some(s) = state.get_mut(c) {
-                    *s = if f { 1 } else { 2 };
+                    *s = f;
                 }
-                f
+                f != 2
             }
         }
     };
@@ -334,8 +387,8 @@ pub fn walkaround(obs: &Obstacles, from: Pt, to: Pt, grid: f64, diagonal_first: 
                         continue;
                     }
                     let p = pos(c);
-                    let ok = octi(end, p, true).windows(2).all(|w| matches!(w, [a, b] if obs.clear(*a, *b)))
-                        || octi(end, p, false).windows(2).all(|w| matches!(w, [a, b] if obs.clear(*a, *b)));
+                    let ok = octi(end, p, true).windows(2).all(|w| matches!(w, [a, b] if clear_min(*a, *b)))
+                        || octi(end, p, false).windows(2).all(|w| matches!(w, [a, b] if clear_min(*a, *b)));
                     let d = libm::hypot(p[0] - end[0], p[1] - end[1]);
                     if ok && best.is_none_or(|b| d < b.0) {
                         best = Some((d, c));
@@ -386,7 +439,10 @@ pub fn walkaround(obs: &Obstacles, from: Pt, to: Pt, grid: f64, diagonal_first: 
             if !free(c2, &mut state) {
                 continue;
             }
-            let cost = if dx != 0 && dy != 0 { std::f64::consts::SQRT_2 } else { 1.0 };
+            let mut cost = if dx != 0 && dy != 0 { std::f64::consts::SQRT_2 } else { 1.0 };
+            if state.get(c2) == Some(&3) {
+                cost += soft.map_or(0.0, |s| s.penalty);
+            }
             // A small charge for turning keeps runs straight.
             let back = came.get(cell).copied().unwrap_or(usize::MAX);
             let turn = if back != usize::MAX {
@@ -433,12 +489,12 @@ pub fn walkaround(obs: &Obstacles, from: Pt, to: Pt, grid: f64, diagonal_first: 
         }
     }
     pts.push(to);
-    Some(pull_tight(obs, &pts, diagonal_first))
+    Some(pull_tight(&clear_full, &pts, diagonal_first))
 }
 
 /// Shortens a clear path: from each kept point, the farthest later point reachable by one
-/// or two clear 45° segments is joined directly.
-fn pull_tight(obs: &Obstacles, pts: &[Pt], diagonal_first: bool) -> Vec<Pt> {
+/// or two 45° segments that are `clear` is joined directly.
+fn pull_tight(clear: &dyn Fn(Pt, Pt) -> bool, pts: &[Pt], diagonal_first: bool) -> Vec<Pt> {
     let n = pts.len();
     let mut out: Vec<Pt> = Vec::new();
     let mut i = 0usize;
@@ -451,7 +507,7 @@ fn pull_tight(obs: &Obstacles, pts: &[Pt], diagonal_first: bool) -> Vec<Pt> {
             let b = pts.get(j).copied().unwrap_or(a);
             for f in [diagonal_first, !diagonal_first] {
                 let p = octi(a, b, f);
-                if p.windows(2).all(|w| matches!(w, [u, v] if obs.clear(*u, *v))) {
+                if p.windows(2).all(|w| matches!(w, [u, v] if clear(*u, *v))) {
                     out.extend(p.iter().skip(1));
                     i = j;
                     done = true;
