@@ -15,7 +15,7 @@
 //! Input is untrusted: every count, list, chain and walk is bounded, and a record that is not
 //! shaped as expected gives an `unsupported` feature or an error, never a panic.
 
-use crate::acis::{Acis, BridgedRound, EdgeInfo, FullRound, Surf, V3, cross, dot, local_path};
+use crate::acis::{Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, Surf, V3, cross, dot, local_path};
 use crate::inventor_dc::{Dc, FeatType, Feature, Role, f64_at, u16_at, u32_at};
 use crate::inventor_profile::{P2, Poly, picks};
 use crate::{Limits, inventor};
@@ -494,6 +494,31 @@ impl Reader<'_> {
         }
     }
 
+    /// The face an extrude that ends on a face ran up to, as a face pick (mm): points where its
+    /// faces meet that face in the result body, and the face's surface. `None` when the result
+    /// does not show one such face of a plane, cylinder or cone.
+    fn sweep_end_pick(&self, sk: &Sketch, fid: i64) -> Option<Value> {
+        const MAX_POINTS: usize = 64;
+        let b = self.result()?;
+        let (o, x, y) = frame(&sk.m);
+        let n = unit3(cross(x, y));
+        let end = b.sweep_end(fid, [o[0] / CM, o[1] / CM, o[2] / CM], n)?;
+        let mm = |v: V3| json!([rnd(v[0] * CM), rnd(v[1] * CM), rnd(v[2] * CM)]);
+        let dir = |v: V3| json!([rnd(v[0]), rnd(v[1]), rnd(v[2])]);
+        let surface = match end.surface {
+            EndSurface::Plane { p, n } => json!({"type": "plane", "origin": mm(p), "normal": dir(n)}),
+            EndSurface::Cyl { c, ax, r } => {
+                json!({"type": "cylinder", "origin": mm(c), "axis": dir(ax), "radius": rnd(r * CM)})
+            }
+            EndSurface::Cone { c, ax, r, sin, cos } => {
+                json!({"type": "cone", "origin": mm(c), "axis": dir(ax), "radius": rnd(r * CM), "sin": rnd(sin), "cos": rnd(cos)})
+            }
+        };
+        let step = end.points.len().div_ceil(MAX_POINTS).max(1);
+        let points: Vec<Value> = end.points.iter().step_by(step).map(|&p| mm(p)).collect();
+        Some(json!({"point": points.first()?.clone(), "points": points, "surface": surface}))
+    }
+
     fn slots(&self, f: &Feature) -> Result<Slots, String> {
         self.dc.slots(f.rec).map(Slots).ok_or_else(|| "the feature has no slot list".into())
     }
@@ -585,8 +610,18 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
             Some(e @ (4 | 7)) => {
                 let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
                 let d = r.swept_distance(&sketch, fid).map_err(|w| format!("extrude extent {e}: {w}"))?;
-                put(&mut j, "distance", json!(rnd(d)));
                 put(&mut j, "symmetric", json!(false));
+                // Up to the face it ran to, as the result shows it (notes AB); the measured
+                // reach is the blind form the caller falls back to.
+                match r.sweep_end_pick(&sketch, fid) {
+                    Some(face) => {
+                        put(&mut j, "end_condition", json!("to_face"));
+                        put(&mut j, "face", face);
+                        put(&mut j, "reverse", json!(d < 0.0));
+                        put(&mut j, "_blind", json!(rnd(d)));
+                    }
+                    None => put(&mut j, "distance", json!(rnd(d))),
+                }
             }
             e => return Err(format!("extrude extent {e:?}")),
         }

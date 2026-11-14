@@ -841,6 +841,40 @@ mod sab {
         assert!(ys.iter().any(|y| (y - 2.0).abs() < 1e-12) && ys.iter().any(|y| y.abs() < 1e-12), "{ys:?}");
     }
 
+    /// An extrude up to a face: the face it did not make that meets its faces along edges off
+    /// its sketch plane, with the points of those edges. Here the cylinder face plays the
+    /// extrude's side face: from z = 0 it meets the plane x = 0 along an edge at z = 0.5 cm;
+    /// from x = 0 it meets z = 0 along an edge at x = 0.5 cm.
+    #[test]
+    fn an_extrude_up_to_a_face_finds_the_face_it_met() {
+        use crate::acis::EndSurface;
+        let custom: &[&str] = &["ATTRIB_CUSTOM", "attrib"];
+        let a = Acis::parse(&blend_with(
+            42,
+            true,
+            vec![(custom, vec![S("INV_NMX_SWEEPGENERATED_TAG"), I(-1), I(1), I(44), I(1), I(7), P(2)])],
+        ))
+        .unwrap();
+        for (n, want) in [
+            ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+            ([0.0, 0.0, -1.0], [1.0, 0.0, 0.0]),
+            ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        ] {
+            let end = a.sweep_end(7, [0.0; 3], n).unwrap();
+            let EndSurface::Plane { n: pn, .. } = end.surface else { panic!("{end:?}") };
+            assert!(crate::acis::dist(pn, want) < 1e-12, "{pn:?}");
+            assert_eq!(end.points.len(), 2, "{end:?}");
+            assert!(end.points.iter().all(|p| end.surface.distance(*p) < 1e-12));
+        }
+        // Its faces all lie in the sketch plane, or no face of it: no end.
+        assert!(a.sweep_end(7, [0.0; 3], [0.0, 1.0, 0.0]).is_none());
+        assert!(a.sweep_end(8, [0.0; 3], [0.0, 0.0, 1.0]).is_none());
+        // A cone's distance: radius 1 at h = 0, growing by tan 30 deg along the axis.
+        let cone = EndSurface::Cone { c: [0.0; 3], ax: [0.0, 0.0, 1.0], r: 1.0, sin: 0.5, cos: 0.75f64.sqrt() };
+        assert!(cone.distance([1.0 + 3.0f64.sqrt() / 3.0, 0.0, 1.0]) < 1e-12);
+        assert!((cone.distance([1.0, 0.0, 0.0])).abs() < 1e-12);
+    }
+
     /// The faces a shell opened are the planes beside its inner (shell-tagged) faces: one
     /// point per plane, a corner of the rim's inner boundary.
     #[test]

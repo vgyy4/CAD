@@ -415,6 +415,41 @@ pub(crate) struct FullRound {
     pub(crate) span: (f64, f64),
 }
 
+/// The face a sweep ran up to (file units): its surface and points of it.
+#[derive(Debug, Clone)]
+pub(crate) struct SweepEnd {
+    pub(crate) surface: EndSurface,
+    pub(crate) points: Vec<V3>,
+}
+
+/// A plane, a cylinder, or a circular cone whose radius at height `h` along `ax` from `c` is
+/// `r + h * sin / cos`.
+#[derive(Debug, Clone)]
+pub(crate) enum EndSurface {
+    Plane { p: V3, n: V3 },
+    Cyl { c: V3, ax: V3, r: f64 },
+    Cone { c: V3, ax: V3, r: f64, sin: f64, cos: f64 },
+}
+
+impl EndSurface {
+    /// Distance of `x` from the surface.
+    pub(crate) fn distance(&self, x: V3) -> f64 {
+        let along = |c: V3, ax: V3| {
+            let w = sub(x, c);
+            let h = dot(w, ax);
+            (h, libm::sqrt((dot(w, w) - h * h).max(0.0)))
+        };
+        match *self {
+            EndSurface::Plane { p, n } => dot(sub(x, p), n).abs(),
+            EndSurface::Cyl { c, ax, r } => (along(c, ax).1 - r).abs(),
+            EndSurface::Cone { c, ax, r, sin, cos } => {
+                let (h, rho) = along(c, ax);
+                ((rho - r) * cos - h * sin).abs() / libm::sqrt(sin * sin + cos * cos)
+            }
+        }
+    }
+}
+
 /// A surface as far as blend analysis needs it.
 #[derive(Debug, Clone)]
 pub(crate) enum Surf {
@@ -680,6 +715,74 @@ impl Acis {
             }
         }
         out
+    }
+
+    /// Where a sweep with id `fid` ended (extent 4 or 7, to the next face or to a face): the
+    /// faces it did not make that meet its faces along edges lying wholly off its sketch plane
+    /// (through `o`, unit normal `n`; file units) are the face it ran up to, as it is in the
+    /// result. They must lie on one plane, cylinder or circular cone; the points of the edges
+    /// along which they meet lay on that face before the sweep. `None` otherwise (another
+    /// surface, several, or none: the end merged into a face of the feature's own).
+    pub(crate) fn sweep_end(&self, fid: i64, o: V3, n: V3) -> Option<SweepEnd> {
+        let faces = self.sweep_faces(fid);
+        let t = |p: V3| dot(sub(p, o), n);
+        let reach =
+            faces.iter().flat_map(|&f| self.verts(f)).map(t).fold(0.0f64, |a, b| if b.abs() > a.abs() { b } else { a });
+        if reach.abs() < 1e-9 {
+            return None;
+        }
+        let tol = 1e-6 * reach.abs().max(1.0);
+        let mut ends: Vec<i64> = Vec::new();
+        let mut points: Vec<V3> = Vec::new();
+        for &f in &faces {
+            for (g, e) in self.neighbours(f) {
+                let Some(e) = e else { continue };
+                if faces.contains(&g) {
+                    continue;
+                }
+                let pts = self.edge_samples(e).unwrap_or_else(|| self.edge_points(e));
+                if pts.is_empty() || !pts.iter().all(|&p| t(p) * reach.signum() > tol) {
+                    continue;
+                }
+                if !ends.contains(&g) {
+                    ends.push(g);
+                }
+                for p in pts {
+                    if points.iter().all(|&q| dist(p, q) > tol) {
+                        points.push(p);
+                    }
+                }
+            }
+        }
+        let first = *ends.first()?;
+        let surface = self.end_surface(first)?;
+        let on = |p: V3| surface.distance(p) < tol;
+        let all_on = ends.iter().all(|&g| self.end_surface(g).is_some() && self.verts(g).into_iter().all(on));
+        (all_on && points.iter().all(|&p| on(p)) && !points.is_empty()).then_some(SweepEnd { surface, points })
+    }
+
+    /// The surface of a face a sweep ran up to, when it is one Gusset can name: a plane, a
+    /// cylinder or a circular cone (the cone's half-angle sign is the one its vertices fit).
+    fn end_surface(&self, f: i64) -> Option<EndSurface> {
+        match self.kind(f) {
+            Surf::Plane { p, n } => Some(EndSurface::Plane { p, n }),
+            Surf::Cyl { c, ax, r } => Some(EndSurface::Cyl { c, ax, r }),
+            Surf::Cone => {
+                let r = self.recs.get(self.surf_rec(f)?)?;
+                let (c, ax, m) = (*r.pos.first()?, unit(*r.vec.first()?), *r.vec.get(1)?);
+                let (ratio, sin, cos) = (*r.dbls.first()?, *r.dbls.get(1)?, *r.dbls.get(2)?);
+                if (ratio.abs() - 1.0).abs() > 1e-9 || cos.abs() < 1e-9 {
+                    return None;
+                }
+                let radius = libm::sqrt(dot(m, m));
+                let verts = self.verts(f);
+                [sin, -sin]
+                    .into_iter()
+                    .map(|s| EndSurface::Cone { c, ax, r: radius, sin: s, cos })
+                    .find(|cone| !verts.is_empty() && verts.iter().all(|&p| cone.distance(p) < 1e-6 * radius.max(1.0)))
+            }
+            _ => None,
+        }
     }
 
     /// The open faces of a shell with id `fid`, as they were before it: the planar faces
