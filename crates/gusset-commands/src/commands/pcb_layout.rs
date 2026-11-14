@@ -109,7 +109,7 @@ pub struct PcbRoute {
 impl Command for PcbRoute {
     const ID: &'static str = "pcb.route";
     const TITLE: &'static str = "Route track";
-    const DESCRIPTION: &'static str = "Lay a 45° track through points around other nets (may push tracks, vias aside).";
+    const DESCRIPTION: &'static str = "Lay a 45° track through points around other nets (pushes others aside).";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

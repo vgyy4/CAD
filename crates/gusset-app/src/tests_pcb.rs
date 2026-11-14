@@ -804,3 +804,64 @@ fn the_tune_tool_shows_lengths_and_tunes_through_the_registry() {
     assert_eq!(tracks_now(&h), before);
     assert!(h.state().notice.as_ref().is_some_and(|n| n.error));
 }
+
+/// A's pads in a pocket closed by C's pads, the board edge and B's track (ADR 0058): no way
+/// round, but B can be pushed up.
+fn pushing_board() -> gusset_commands::pcb_session::OpenBoard {
+    let fp = |r: &str, at: [f64; 2], d: f64, net: &str| {
+        format!(
+            "(footprint \"P\" (layer \"F.Cu\") (at {} {}) (property \"Reference\" \"{r}\") \
+             (pad \"1\" smd circle (at 0 0) (size {d} {d}) (layers \"F.Cu\") {net}))",
+            at[0], at[1]
+        )
+    };
+    let parts = [
+        fp("B1", [2.0, 5.0], 0.6, "(net 2 \"B\")"),
+        fp("B2", [28.0, 5.0], 0.6, "(net 2 \"B\")"),
+        fp("A1", [8.0, 6.0], 0.5, "(net 1 \"A\")"),
+        fp("A2", [22.0, 6.0], 0.5, "(net 1 \"A\")"),
+        fp("C1", [3.0, 6.2], 1.2, "(net 3 \"C\")"),
+        fp("C2", [27.0, 6.2], 1.2, "(net 3 \"C\")"),
+        fp("C3", [15.0, 6.325], 1.2, "(net 3 \"C\")"),
+    ]
+    .join("\n");
+    let text = format!(
+        "(kicad_pcb (version 20240108) (generator \"test\") (general (thickness 1.6))
+  (layers (0 \"F.Cu\" signal) (31 \"B.Cu\" signal) (44 \"Edge.Cuts\" user))
+  (net 0 \"\") (net 1 \"A\") (net 2 \"B\") (net 3 \"C\")
+  (gr_rect (start 0 0) (end 30 7) (stroke (width 0.05) (type default)) (fill none) (layer \"Edge.Cuts\"))
+  {parts}
+  (segment (start 2 5) (end 28 5) (width 0.25) (layer \"F.Cu\") (net 2)))"
+    );
+    let b = Board::read(&text, &Limits::default()).unwrap();
+    gusset_commands::pcb_session::OpenBoard {
+        file: "p.kicad_pcb".into(),
+        board_hash: "p1".into(),
+        project_hash: None,
+        ratsnest: gusset_pcb::ratsnest::ratsnest(&b),
+        rules: gusset_pcb::rules::Rules::for_board(&b),
+        board: b,
+    }
+}
+
+#[test]
+fn the_route_preview_shows_pushed_tracks() {
+    let open = pushing_board();
+    let mut st = pcb_view::State::default();
+    st.track_from = Some([8.0, 6.0]);
+    st.route_net = Some("A".into());
+    // No way round, so the preview shows the push: the new track and B moved up.
+    assert!(pcb_view::route_preview(&open, &mut st, [22.0, 6.0]).is_none());
+    let p = pcb_view::push_preview(&open, &mut st, [22.0, 6.0]).expect("a push");
+    assert_eq!((p.path[0], *p.path.last().unwrap()), ([8.0, 6.0], [22.0, 6.0]));
+    assert_eq!(p.lines.len(), 1);
+    assert_eq!(p.lines[0].2.as_deref(), Some("B"));
+    assert!(p.lines[0].0.iter().any(|q| q[1] < 4.9), "{:?}", p.lines[0].0);
+    // Cached while nothing changes; the click asks the router, which pushes the same way.
+    assert_eq!(pcb_view::push_preview(&open, &mut st, [22.0, 6.0]), Some(p));
+    let (id, args) = pcb_view::shove_command([8.0, 6.0], [22.0, 6.0], "F.Cu", Some("A"));
+    assert!(gusset_commands::find(id).is_some());
+    assert!(args.get("around").is_none() && args.get("shove").is_none());
+    // Into C's pad: nothing to push.
+    assert!(pcb_view::push_preview(&open, &mut st, [15.0, 6.325]).is_none());
+}

@@ -9,7 +9,8 @@
 //! and the net class's width ([`gusset_pcb::route`]); a click lays it, a click on a pad
 //! of the net finishes, V places a via and goes on on the other side, `/` turns the bend
 //! the other way; Esc, a right click or a double click ends. A click where the preview
-//! finds no way asks the router to shove one blocking track aside (phase 3). The picked item's net is
+//! finds no way asks the router to push other tracks and vias aside, previewed live
+//! (ADR 0058). The picked item's net is
 //! highlighted. Zone fills are drawn filled (triangulated). Ratsnest lines show the
 //! connections still to route; design rule markers show where `pcb.drc` found problems.
 //!
@@ -205,6 +206,8 @@ struct RouteCache {
     key: (String, String, Option<String>, u64),
     obs: gusset_pcb::route::Obstacles,
     last: Option<(Pt, Pt, bool, Option<Vec<Pt>>)>,
+    /// The last push-and-shove preview: from, to, the push.
+    pushed: Option<(Pt, Pt, Option<gusset_pcb::push::Push>)>,
 }
 
 /// Triangles of zone fill polygons, by the polygon's contents (fills an edit does not
@@ -917,9 +920,9 @@ pub fn route_command(path: &[Pt], layer: &str, net: Option<&str>, arc_radius: f6
     ("pcb.route", v)
 }
 
-/// `pcb.route` from `a` to `b` searched by the router itself, which shoves one blocking
-/// track of another net aside when there is no way round (the Route tool's click where
-/// the preview finds none).
+/// `pcb.route` from `a` to `b` searched by the router itself, which pushes other nets'
+/// tracks and vias aside when there is no way round (the Route tool's click where the
+/// preview finds none; [`push_preview`] shows the result first).
 pub fn shove_command(a: Pt, b: Pt, layer: &str, net: Option<&str>) -> (&'static str, Value) {
     let mut m = serde_json::Map::new();
     m.insert("points".into(), json!([a, b]));
@@ -980,7 +983,7 @@ pub fn route_preview(open: &OpenBoard, st: &mut State, to: Pt) -> Option<Vec<Pt>
     let key = (open.board_hash.clone(), st.active.clone(), net.clone(), width.to_bits());
     if st.route_cache.as_ref().is_none_or(|c| c.key != key) {
         let obs = gusset_pcb::route::Obstacles::new(&open.board, &open.rules, &st.active, net.as_deref(), width);
-        st.route_cache = Some(RouteCache { key, obs, last: None });
+        st.route_cache = Some(RouteCache { key, obs, last: None, pushed: None });
     }
     let cache = st.route_cache.as_mut()?;
     if let Some((f, t, d, path)) = &cache.last
@@ -994,6 +997,27 @@ pub fn route_preview(open: &OpenBoard, st: &mut State, to: Pt) -> Option<Vec<Pt>
     let path = gusset_pcb::route::walkaround(&cache.obs, from, to, grid, st.diagonal_first);
     cache.last = Some((from, to, st.diagonal_first, path.clone()));
     path
+}
+
+/// Where there is no way round: the route and what the router would push aside to lay it
+/// (ADR 0058; what a click then does), or `None` when pushing finds no way either.
+/// Cached while nothing changes.
+pub fn push_preview(open: &OpenBoard, st: &mut State, to: Pt) -> Option<gusset_pcb::push::Push> {
+    let from = st.track_from?;
+    route_preview(open, st, to);
+    let net = st.route_net.clone();
+    let width = open.rules.track_width_of(net.as_deref());
+    let cache = st.route_cache.as_mut()?;
+    if let Some((f, t, p)) = &cache.pushed
+        && same_pt(*f, from)
+        && same_pt(*t, to)
+    {
+        return p.clone();
+    }
+    let grid = (open.rules.clearance_of(net.as_deref()).min(width) / 2.0).clamp(0.05, 0.25);
+    let p = gusset_pcb::push::push(&open.board, &open.rules, &st.active, net.as_deref(), width, from, to, grid, &[]);
+    cache.pushed = Some((from, to, p.clone()));
+    p
 }
 
 fn same_pt(a: Pt, b: Pt) -> bool {
@@ -2041,8 +2065,8 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                                 }
                             }
                             None => {
-                                // No way round: the router may shove another net's track
-                                // aside; the route ends there either way.
+                                // No way round: the router may push other nets' tracks and
+                                // vias aside; the route ends there either way.
                                 out.commands.push(shove_command(a, q, &st.active, st.route_net.as_deref()));
                                 end_route(st);
                             }
@@ -2223,9 +2247,34 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                     }
                 }
             }
-            None => {
-                painter.line_segment([map.to(a), map.to(q)], Stroke::new(1.5, Color32::from_rgb(255, 60, 60)));
-            }
+            None => match push_preview(open, st, q) {
+                // The shoved tracks and vias where the click would put them.
+                Some(p) => {
+                    let moved = Color32::from_rgb(255, 200, 80);
+                    for (pts, tw, _) in &p.lines {
+                        let tw = (*tw as f32 * map.zoom).max(1.0);
+                        for s in pts.windows(2) {
+                            if let [u, v] = s {
+                                stroke_line(&painter, map.to(*u), map.to(*v), tw, moved.gamma_multiply(0.7));
+                            }
+                        }
+                    }
+                    for &(vi, d) in &p.vias {
+                        if let Some(v) = b.vias.get(vi) {
+                            let at = [v.at[0] + d[0], v.at[1] + d[1]];
+                            painter.circle_filled(map.to(at), (v.size as f32 * map.zoom / 2.0).max(2.0), moved);
+                        }
+                    }
+                    for s in p.path.windows(2) {
+                        if let [u, v] = s {
+                            stroke_line(&painter, map.to(*u), map.to(*v), w, c);
+                        }
+                    }
+                }
+                None => {
+                    painter.line_segment([map.to(a), map.to(q)], Stroke::new(1.5, Color32::from_rgb(255, 60, 60)));
+                }
+            },
         }
         painter.circle_filled(map.to(q), w / 2.0, c);
     }
