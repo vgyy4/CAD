@@ -497,6 +497,8 @@ struct HoleInfo {
     depth: f64,
     point_angle: Option<f64>,
     cbore: Option<(f64, f64)>,
+    /// Countersink diameter (mm) and angle (degrees).
+    csink: Option<(f64, f64)>,
 }
 
 /// Everything decoded so far.
@@ -612,6 +614,11 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
         let (Some(u), Some(v)) = (f64_at(rec, b + 8), f64_at(rec, b + 16)) else {
             return Err("a hole centre is cut short".into());
         };
+        // Some projected centres (flags 0x40) carry one more byte before their coordinates,
+        // not decoded: what is read there is no position.
+        if !(u.abs() < 1e5 && v.abs() < 1e5) {
+            return Err("a hole centre is not a usable number".into());
+        }
         let at = |o: f64, x: f64, y: f64| rnd(o + (u * x + v * y) * CM);
         pos.push([at(o[0], x[0], y[0]), at(o[1], x[1], y[1]), at(o[2], x[2], y[2])]);
     }
@@ -630,7 +637,18 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
         "face": {"point": arr(pos.first().copied().unwrap_or(o)), "normal": arr(nd)},
         "positions": pos.iter().map(|p| arr(*p)).collect::<Vec<_>>(), "diameter": diameter});
     let mut cb = None;
-    if typ & 0x20000 != 0 {
+    let mut cs = None;
+    if typ >> 16 == 1 {
+        // Countersink: slot 3 its diameter, slot 5 its angle.
+        let (d, a) = (rnd(r.pval(&s, 3)? * CM), rnd_to(r.pval(&s, 5)?.to_degrees(), 1e6));
+        if !(d > diameter && a > 0.0 && a < 180.0) {
+            return Err("the countersink is not wider than the hole, or its angle is not in 0..180".into());
+        }
+        put(&mut j, "variant", json!("countersink"));
+        put(&mut j, "csink_diameter", json!(d));
+        put(&mut j, "csink_angle", json!(a));
+        cs = Some((d, a));
+    } else if typ & 0x20000 != 0 {
         let (d, h) = (rnd(r.pval(&s, 3)? * CM), rnd(r.pval(&s, 4)? * CM));
         put(&mut j, "variant", json!("counterbore"));
         put(&mut j, "cbore_diameter", json!(d));
@@ -653,7 +671,7 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
             point_angle = Some(a);
         }
     }
-    let info = HoleInfo { nd, diameter, through, depth, point_angle, cbore: cb };
+    let info = HoleInfo { nd, diameter, through, depth, point_angle, cbore: cb, csink: cs };
     if let Some(target) = &st.first_body
         && let Some(fb) = hole_fallback(name, &pos, &info, target)
     {
@@ -668,7 +686,7 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
 /// sketch cut through everything, a blind one as one revolve cut per position (drill point
 /// and counterbore included).
 fn hole_fallback(name: &str, pos: &[V3], info: &HoleInfo, target: &str) -> Option<Vec<Value>> {
-    let HoleInfo { nd, diameter, through, depth, point_angle, cbore } = *info;
+    let HoleInfo { nd, diameter, through, depth, point_angle, cbore, csink } = *info;
     let ln = libm::sqrt(dot(nd, nd));
     if ln == 0.0 || !ln.is_finite() || pos.is_empty() {
         return None;
@@ -679,7 +697,7 @@ fn hole_fallback(name: &str, pos: &[V3], info: &HoleInfo, target: &str) -> Optio
     let y = cross(n, x);
     let r = diameter / 2.0;
     let mut out = Vec::new();
-    if through {
+    if through && cbore.is_none() && csink.is_none() {
         let o = *pos.first()?;
         let mut pts = Vec::new();
         let mut cur = Vec::new();
@@ -694,11 +712,14 @@ fn hole_fallback(name: &str, pos: &[V3], info: &HoleInfo, target: &str) -> Optio
                         "distance": -THROUGH, "symmetric": false, "from_hole": true}));
         return Some(out);
     }
+    // A through hole with a counterbore or countersink: as deep as a through-all cut.
+    let (depth, point_angle) = if through { (THROUGH, None) } else { (depth, point_angle) };
     let tip = point_angle.map_or(0.0, |pa| r / libm::tan(pa.to_radians() / 2.0));
     let mut prof: Vec<(f64, f64)> = vec![(0.0, 0.0)];
-    match cbore {
-        Some((d, cd)) => prof.extend([(d / 2.0, 0.0), (d / 2.0, -cd), (r, -cd)]),
-        None => prof.push((r, 0.0)),
+    match (cbore, csink) {
+        (Some((d, cd)), _) => prof.extend([(d / 2.0, 0.0), (d / 2.0, -cd), (r, -cd)]),
+        (None, Some((d, a))) => prof.extend([(d / 2.0, 0.0), (r, -(d / 2.0 - r) / libm::tan(a.to_radians() / 2.0))]),
+        (None, None) => prof.push((r, 0.0)),
     }
     prof.extend([(r, -depth), (0.0, -depth - tip)]);
     for (k, p) in pos.iter().enumerate() {

@@ -308,14 +308,19 @@ impl Dc {
     }
 
     /// The offset where the class body starts: after the common header (to 22), optional
-    /// `0xffffffff` words and the version word.
+    /// `0xffffffff` words and the version word. A record kept from an older save of the part
+    /// carries that save's version word (0x0a92 among 0x0a96 records): after `0xffffffff`, any
+    /// word of the version range (0x0800..0x1000) is one.
     pub(crate) fn body(&self, i: usize) -> usize {
         let r = self.r(i);
         let k = 22usize;
         if let Some(ver) = self.ver {
             for j in 0..3usize {
                 let q = k + 4 * j;
-                if u32_at(r, q) == Some(ver) && (0..j).all(|t| matches!(u32_at(r, k + 4 * t), Some(0 | 0xffff_ffff))) {
+                let w = u32_at(r, q);
+                let older =
+                    j > 0 && u32_at(r, q - 4) == Some(0xffff_ffff) && w.is_some_and(|w| (0x0800..0x1000).contains(&w));
+                if (w == Some(ver) || older) && (0..j).all(|t| matches!(u32_at(r, k + 4 * t), Some(0 | 0xffff_ffff))) {
                     return q + 4;
                 }
             }

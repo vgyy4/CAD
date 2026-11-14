@@ -218,6 +218,33 @@ fn the_newer_header_with_a_word_at_14_reads_like_the_older_one() {
     assert_ne!(tree(&plain).unwrap(), want);
 }
 
+/// Records carry the version word of the save that wrote them: features have it at 22, other
+/// classes after `0xffffffff`. A record kept from an older save (0x0a92 in a 0x0a96 part, the
+/// hole centres of `27in_2_125 belly pan`) has its own, and its body starts after it all the
+/// same.
+#[test]
+fn a_record_from_an_older_save_has_its_own_version_word() {
+    let base = base_records();
+    let with = |old_points: u32| -> Vec<(usize, Vec<u8>)> {
+        base.iter()
+            .map(|(c, r)| {
+                let mut v = r[..22].to_vec();
+                match *c {
+                    FEATURE => v.extend(0x0a96u32.to_le_bytes()),
+                    NAME => {}
+                    POINT => v.extend([0xff, 0xff, 0xff, 0xff].into_iter().chain(old_points.to_le_bytes())),
+                    _ => v.extend([0xff, 0xff, 0xff, 0xff].into_iter().chain(0x0a96u32.to_le_bytes())),
+                }
+                v.extend(&r[22..]);
+                (*c, v)
+            })
+            .collect()
+    };
+    let same = tree(&with(0x0a96)).unwrap();
+    assert_eq!(same["features"][0]["points"], tree(&base).unwrap()["features"][0]["points"]);
+    assert_eq!(tree(&with(0x0a92)).unwrap(), same);
+}
+
 #[test]
 fn a_solid_body_record_is_not_a_feature() {
     // A part-feature record named through a `656dd01e` record is one of the part's solid bodies.
@@ -420,6 +447,36 @@ fn a_hole_has_its_centres_and_a_plain_cut_fallback() {
     assert_eq!(t["features"][2]["point_angle"], 120.0);
     let pts = t["features"][2]["_fallback"][0]["points"].as_array().unwrap().len();
     assert_eq!(pts, 4);
+}
+
+/// Hole variant 1 (the `u16` after the type 3) is a countersink: slot 3 its diameter, slot 5
+/// its angle (`ho_csink`: 10 mm at 90 degrees round a 6 mm hole).
+#[test]
+fn a_countersunk_hole() {
+    let mut r = hole_records();
+    r[20].1 = {
+        let mut v = hdr(0, 0, 0);
+        v.extend((3u32 | 1 << 16).to_le_bytes());
+        v
+    };
+    r.push((PARAM, param("d4", 0.8))); // 29 countersink diameter
+    r.push((PARAM, param("d5", std::f64::consts::FRAC_PI_2))); // 30 countersink angle
+    let slots = [rf(20), rf(21), rf(22), rf(29), 0, rf(30), rf(23), rf(25), rf(26), rf(27)];
+    r[28].1 = feature(19, 0, 6, &slots);
+    let t = tree(&r).unwrap();
+    let h = &t["features"][2];
+    assert_eq!(h["variant"], "countersink", "{h}");
+    assert_eq!(h["csink_diameter"], 8.0);
+    assert_eq!(h["csink_angle"], 90.0);
+    // Through all with a countersink: the fallback is a revolve (cone, then the bore).
+    let fb = h["_fallback"].as_array().unwrap();
+    assert_eq!(fb[1]["type"], "revolve");
+    let ys: Vec<f64> = fb[0]["points"].as_array().unwrap().iter().map(|p| p["y"].as_f64().unwrap()).collect();
+    assert_eq!(ys[..3], [0.0, 0.0, -2.0]);
+    // A countersink no wider than the hole is refused.
+    r[29].1 = param("d4", 0.3);
+    let t = tree(&r).unwrap();
+    assert_eq!(t["features"][2]["type"], "unsupported");
 }
 
 #[test]
