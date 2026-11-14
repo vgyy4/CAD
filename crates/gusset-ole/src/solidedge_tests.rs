@@ -4,7 +4,8 @@
 use crate::fixtures::ole;
 use crate::solidedge_features::{
     Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, close_on_axis, close_open, copy_frame, curve,
-    edge_pick, edge_set, face_pick, face_set, feature_tree, history, key_point_reach, parse_func, plane, value,
+    edge_pick, edge_set, face_pick, face_set, feature_tree, history, key_point_reach, parse_func, plane, reach_in_box,
+    stored_box, value,
 };
 use serde_json::json;
 
@@ -834,4 +835,23 @@ fn ellipse_members_and_sketch_ellipses() {
     };
     assert_eq!((c2, u2, k2), ([0.0, 0.0], [2.0, 0.0], 0.5));
     assert!((t0 + core::f64::consts::FRAC_PI_2).abs() < 1e-12 && t1.abs() < 1e-12, "{t0} {t1}");
+}
+
+#[test]
+fn a_protrusion_through_all_reaches_the_stored_box() {
+    // After the slots: words, then the box of the part after the feature (a zero-extent run
+    // before it is skipped).
+    let mut b = vec![7u8; 10];
+    b.extend(f64s(&[0.0; 3]));
+    b.extend(f64s(&[-0.01, -0.02, 0.0, 0.01, 0.02, 0.1524]));
+    let bx = stored_box(&b, 10).unwrap();
+    assert_eq!(bx, [-0.01, -0.02, 0.0, 0.01, 0.02, 0.1524]);
+    assert_eq!(stored_box(&b[..40], 10), None);
+    // From the plane z = 0.1524 down (against +z): the whole height; along +z: nothing left.
+    assert!((reach_in_box(&bx, [0.0, 0.0, 0.1524], [0.0, 0.0, -1.0]).unwrap() - 0.1524).abs() < 1e-12);
+    assert_eq!(reach_in_box(&bx, [0.0, 0.0, 0.1524], [0.0, 0.0, 1.0]), None);
+    assert!((reach_in_box(&bx, [-0.01, 0.0, 0.0], [1.0, 0.0, 0.0]).unwrap() - 0.02).abs() < 1e-12);
+    // Not along a world axis: not read.
+    let d = core::f64::consts::FRAC_1_SQRT_2;
+    assert_eq!(reach_in_box(&bx, [0.0; 3], [d, d, 0.0]), None);
 }

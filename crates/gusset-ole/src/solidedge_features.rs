@@ -1723,8 +1723,29 @@ struct State {
     omitted: Vec<Value>,
 }
 
+/// The box of the part after a feature (metres, `min xyz, max xyz`): the first six `f64`
+/// within reach after the function's slots that make a box of positive extents.
+pub(crate) fn stored_box(b: &[u8], tail: usize) -> Option<[f64; 6]> {
+    (tail..tail + 400).find_map(|o| {
+        let v: Vec<f64> = (0..6).map(|i| f64_at(b, o + 8 * i)).collect::<Option<_>>()?;
+        let ok = v.iter().all(|x| x.is_finite() && x.abs() < 10.0);
+        let box6: [f64; 6] = v.try_into().ok()?;
+        (ok && box6[3] - box6[0] > 1e-9 && box6[4] - box6[1] > 1e-9 && box6[5] - box6[2] > 1e-9).then_some(box6)
+    })
+}
+
+/// How far along `d` (a unit vector along a world axis) the box reaches from `o`; `None` for
+/// another direction or a box behind `o`.
+pub(crate) fn reach_in_box(bx: &[f64; 6], o: V3, d: V3) -> Option<f64> {
+    let axis = (0..3).find(|&i| d.get(i).is_some_and(|v| (v.abs() - 1.0).abs() < 1e-9))?;
+    let (lo, hi) = (*bx.get(axis)?, *bx.get(axis + 3)?);
+    let (dv, ov) = (*d.get(axis)?, *o.get(axis)?);
+    let r = if dv > 0.0 { hi - ov } else { ov - lo };
+    (r > 1e-9).then_some(r)
+}
+
 /// One extrude or revolve.
-fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), String> {
+fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Kind) -> Result<(), String> {
     let profiles: Vec<Profile> =
         f.list(2).iter().filter(|&&p| p != 0).map(|&p| profile(st, p)).collect::<Result<_, _>>()?;
     if profiles.is_empty() {
@@ -1802,6 +1823,24 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
             }
             // Through all; through the next face (16) is swept as far, the rebuild check
             // tells whether the next face was the last one.
+            // A protrusion through all or to the next face ends where the part does: the box
+            // the feature stores (the part after it), along an axis-aligned sweep.
+            14 | 16 if k == Kind::Protrusion => {
+                let p = profiles.first().ok_or("the feature has no profile")?;
+                let sign = match side {
+                    1 => -1.0,
+                    2 => 1.0,
+                    other => return Err(format!("a protrusion through all to side {other} (not read)")),
+                };
+                let reach = st
+                    .obj(serial)
+                    .and_then(|b| stored_box(b, f.tail))
+                    .and_then(|bx| {
+                        reach_in_box(&bx, p.origin, [p.normal[0] * sign, p.normal[1] * sign, p.normal[2] * sign])
+                    })
+                    .ok_or("the reach of a protrusion through all is not readable")?;
+                (reach * MM, false)
+            }
             14 | 16 => (THROUGH, false),
             // Up to a key point: the reach the part stores with it, signed along the normal.
             72 => {
@@ -2028,7 +2067,7 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
     let mut s = State { out: Vec::new(), first_body: None, omitted: Vec::new() };
     let mut counts: HashMap<&str, usize> = HashMap::new();
     let mut solids = 0;
-    for (_, func) in &feats {
+    for (serial, func) in &feats {
         let what = label(&func.class);
         let n = counts.entry(what).or_insert(0);
         *n += 1;
@@ -2037,7 +2076,7 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
         match k {
             Kind::Protrusion | Kind::Cutout | Kind::RevolvedProtrusion | Kind::RevolvedCutout => {
                 let before = s.out.len();
-                if let Err(why) = solid(&st, &mut s, func, &name, k) {
+                if let Err(why) = solid(&st, &mut s, (*serial, func), &name, k) {
                     s.out.truncate(before);
                     s.out.push(unsupported(&name, what, &why));
                 } else {
