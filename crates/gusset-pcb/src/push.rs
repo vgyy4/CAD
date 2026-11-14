@@ -38,8 +38,9 @@ const MAX_LINE_PTS: usize = 400;
 /// Extra cost per grid step of the head taken too close to pushable copper.
 const PENALTY: f64 = 2.0;
 /// Least gap the head's centre line keeps from pushable copper's centre lines while
-/// searching (mm): it may run over that copper, which is then pushed, never across it.
-const MIN_GAP: f64 = 0.05;
+/// searching (mm, plus half a grid diagonal, so no grid step crosses one): it may run
+/// over that copper, which is then pushed, never across it.
+const MIN_GAP: f64 = 0.01;
 
 /// A push that works: the new track and what moved to make room.
 #[derive(Debug, Clone, PartialEq)]
@@ -101,6 +102,8 @@ struct Model<'a> {
     copper: Copper,
     obs: BTreeMap<(String, Option<String>, u64), Obstacles>,
     work: usize,
+    /// Why the push failed.
+    fail: &'static str,
 }
 
 /// A net and a place.
@@ -436,6 +439,7 @@ impl<'a> Model<'a> {
             copper,
             obs: BTreeMap::new(),
             work: 0,
+            fail: "",
         })
     }
 
@@ -494,12 +498,14 @@ impl<'a> Model<'a> {
     fn push_line(&mut self, l: usize, queue: &mut VecDeque<(It, usize, bool)>, depth: usize) -> Option<()> {
         self.work += 1;
         if self.work > MAX_WORK {
+            self.fail = "too much work";
             return None;
         }
         let mut tries = 0;
         loop {
             tries += 1;
             if tries > 4 {
+                self.fail = "no settled push";
                 return None;
             }
             let line = self.lines.get(l)?.clone();
@@ -550,11 +556,16 @@ impl<'a> Model<'a> {
                     }
                 }
             }
-            match result? {
+            let Some(result) = result else {
+                self.fail = "no settled push";
+                return None;
+            };
+            match result {
                 Ok(new) => {
                     let layer = self.layer.clone();
                     let obs = self.hard_obs(&layer, net, line.width);
                     if new.len() < 2 || !new.windows(2).all(|w| matches!(w, [a, b] if obs.clear(*a, *b))) {
+                        self.fail = "fixed copper in the way";
                         return None;
                     }
                     let ln = self.lines.get_mut(l)?;
@@ -564,13 +575,19 @@ impl<'a> Model<'a> {
                 }
                 // The end in the way is a via: move it, then try again.
                 Err(Block::End(e)) => {
-                    let v = (*line.ends_via.get(e)?)?;
+                    let Some(v) = line.ends_via.get(e).copied().flatten() else {
+                        self.fail = "a line end in the way";
+                        return None;
+                    };
                     if self.vias.get(v)?.moved {
                         return None;
                     }
                     self.push_via(v, queue, depth)?;
                 }
-                Err(Block::Fail) => return None,
+                Err(Block::Fail) => {
+                    self.fail = "a line across the pusher";
+                    return None;
+                }
             }
         }
     }
@@ -580,6 +597,7 @@ impl<'a> Model<'a> {
     fn push_via(&mut self, v: usize, queue: &mut VecDeque<(It, usize, bool)>, depth: usize) -> Option<()> {
         self.work += 1;
         if self.work > MAX_WORK {
+            self.fail = "too much work";
             return None;
         }
         let via = self.vias.get(v)?.clone();
@@ -609,7 +627,17 @@ impl<'a> Model<'a> {
                 m.need((half, net), (h, n)).is_none_or(|need| poly_dist(&[at], &q, need) >= need + EXTRA / 2.0)
             })
         };
+        // Hard copper on every layer the via reaches.
+        let layers = self.copper.layers.clone();
+        for layer in &layers {
+            self.hard_obs(layer, net, via.size);
+        }
+        let hard: Vec<&Obstacles> = layers
+            .iter()
+            .filter_map(|l| self.obs.get(&(l.clone(), net.map(str::to_string), via.size.to_bits())))
+            .collect();
         let mut best: Option<(f64, Pt)> = None;
+        let mut against_fixed = false;
         for d in &dirs {
             for step in 1..=300 {
                 let s = step as f64 * 0.01;
@@ -618,19 +646,18 @@ impl<'a> Model<'a> {
                 }
                 let at = [via.at[0] + d[0] * s, via.at[1] + d[1] * s];
                 if clear(self, at) {
-                    best = Some((s, at));
-                    break;
+                    if hard.iter().all(|o| o.clear(at, at)) {
+                        best = Some((s, at));
+                        break;
+                    }
+                    against_fixed = true;
                 }
             }
         }
-        let (_, at) = best?;
-        // Hard copper on every layer the via reaches.
-        let layers = self.copper.layers.clone();
-        for layer in &layers {
-            if !self.hard_obs(layer, net, via.size).clear(at, at) {
-                return None;
-            }
-        }
+        let Some((_, at)) = best else {
+            self.fail = if against_fixed { "a via against fixed copper" } else { "no room for a via" };
+            return None;
+        };
         if let Some(m) = self.vias.get_mut(v) {
             m.at = at;
             m.moved = true;
@@ -691,6 +718,7 @@ impl<'a> Model<'a> {
                     continue;
                 }
                 if d + 1 > MAX_DEPTH {
+                    self.fail = "too deep";
                     return None;
                 }
                 match y {
@@ -739,7 +767,27 @@ pub fn push_with(
     keep: &[Pt],
     before: Option<usize>,
 ) -> Option<Push> {
-    let mut m = Model::new(board, rules, layer, net, width)?;
+    push_reason(board, rules, layer, net, width, from, to, grid, keep, before).ok()
+}
+
+/// As [`push_with`], saying why when there is no push.
+///
+/// # Errors
+/// Why the track could not be laid by pushing.
+#[allow(clippy::too_many_arguments)]
+pub fn push_reason(
+    board: &Board,
+    rules: &Rules,
+    layer: &str,
+    net: Option<&str>,
+    width: f64,
+    from: Pt,
+    to: Pt,
+    grid: f64,
+    keep: &[Pt],
+    before: Option<usize>,
+) -> Result<Push, &'static str> {
+    let mut m = Model::new(board, rules, layer, net, width).ok_or("a failed edit")?;
     // The head: hard copper as walls, pushable copper soft.
     let half = width / 2.0;
     let mine = rules.clearance_of(net);
@@ -761,13 +809,18 @@ pub fn push_with(
         Soft { full: Obstacles::from_prims(full, half), min: Obstacles::from_prims(min, half), penalty: PENALTY };
     let layer_s = layer.to_string();
     let obs = m.hard_obs(&layer_s, net, width).clone();
-    let path = [true, false].into_iter().find_map(|d| route::walkaround_soft(&obs, &soft, from, to, grid, d))?;
+    let path = [true, false]
+        .into_iter()
+        .find_map(|d| route::walkaround_soft(&obs, &soft, from, to, grid, d))
+        .ok_or("no way even pushing")?;
     let path = route::simplify(&path);
     m.head.push(path.clone());
     if keep.len() >= 2 {
         m.head.push(keep.to_vec());
     }
-    m.run()?;
+    if m.run().is_none() {
+        return Err(if m.fail.is_empty() { "a failed push" } else { m.fail });
+    }
     let mut out = Push { path, tracks: Vec::new(), lines: Vec::new(), vias: Vec::new() };
     for l in m.lines.iter().filter(|l| l.moved) {
         out.tracks.extend(&l.segs);
@@ -779,15 +832,15 @@ pub fn push_with(
     // Kept only when the check finds nothing new.
     let before = before.unwrap_or_else(|| crate::drc::check(board, rules, 100_000).len());
     let mut after = board.clone();
-    after.apply_push(&out, layer, &Limits::default()).ok()?;
+    after.apply_push(&out, layer, &Limits::default()).map_err(|_| "a failed edit")?;
     let segs = lines(&out.path);
     if !segs.is_empty() {
-        after.add_route(&segs, width, layer, net, &Limits::default()).ok()?;
+        after.add_route(&segs, width, layer, net, &Limits::default()).map_err(|_| "a failed edit")?;
     }
     if crate::drc::check(&after, rules, 100_000).len() > before {
-        return None;
+        return Err("the check would be worse");
     }
-    Some(out)
+    Ok(out)
 }
 
 fn lines(pts: &[Pt]) -> Vec<Seg> {

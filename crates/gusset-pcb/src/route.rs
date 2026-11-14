@@ -349,7 +349,7 @@ fn search(obs: &Obstacles, soft: Option<&Soft>, from: Pt, to: Pt, grid: f64, dia
         }
         match soft {
             None => 1,
-            Some(s) if !s.min.free(p, 0.0) => 2,
+            Some(s) if !s.min.free(p, spare) => 2,
             Some(s) if !s.full.free(p, spare) => 3,
             Some(_) => 1,
         }

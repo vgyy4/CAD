@@ -86,8 +86,11 @@ fn local_samples_phase3() {
             t_old += t.elapsed();
             old += usize::from(old_ok);
             let t = std::time::Instant::now();
-            let p = push::push_with(&b, &rules, "F.Cu", Some(net), w, *a, *c, grid, &[], Some(before));
-            if let Some(p) = &p {
+            let p = push::push_reason(&b, &rules, "F.Cu", Some(net), w, *a, *c, grid, &[], Some(before));
+            if let Err(why) = &p {
+                eprintln!("  {name} {net}: no push: {why}");
+            }
+            if let Ok(p) = &p {
                 let mut nb = b.clone();
                 nb.apply_push(p, "F.Cu", &Limits::default()).unwrap();
                 lay(&mut nb, &p.path, net, w);
