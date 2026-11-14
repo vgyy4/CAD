@@ -287,6 +287,28 @@ fn a_blocking_track_is_shoved_through_the_registry() {
     // One undo takes the track and the shove back.
     run(&mut s, &u(9), "history.undo", json!({}));
     assert_eq!(board(&s).board.tracks.len(), 2);
+    // B through a via instead (ADR 0058): the via is pushed with its tracks, the back
+    // one stretched.
+    run(&mut s, &u(10), "pcb.delete", json!({"tracks": [0]}));
+    run(&mut s, &u(11), "pcb.route", json!({"points": [[2, 5], [15, 4.8], [28, 5]], "around": false}));
+    run(&mut s, &u(12), "pcb.add_via", json!({"at": [15, 4.8], "net": "B"}));
+    run(
+        &mut s,
+        &u(13),
+        "pcb.route",
+        json!({"points": [[15, 4.8], [15, 10]], "layer": "B.Cu", "net": "B", "around": false}),
+    );
+    let before = board(&s).board.clone();
+    let r = run(&mut s, &u(14), "pcb.route", json!({"points": [[8, 6], [22, 6]]}));
+    assert_eq!((r["shoved_vias"].as_u64(), r["unrouted"].as_u64()), (Some(1), Some(0)), "{r}");
+    assert!(r["shoved_tracks"].as_u64().unwrap() >= 1, "{r}");
+    let after = board(&s).board.clone();
+    let v = after.vias[0].at;
+    assert!(v[1] < 4.75, "{v:?}");
+    assert!(after.tracks.iter().any(|t| t.layer == "B.Cu" && t.start == v), "the back track follows");
+    assert_eq!(run(&mut s, &u(15), "pcb.drc", json!({}))["violations"], json!([]));
+    run(&mut s, &u(16), "history.undo", json!({}));
+    assert_eq!(board(&s).board.tree, before.tree, "one undo step");
 }
 
 /// A stand-in for Freerouting: a shell script in a temporary folder (nothing is

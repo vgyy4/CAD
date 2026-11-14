@@ -156,20 +156,19 @@ impl Command for PcbRoute {
                     return Err(refused());
                 }
                 // Push-and-shove (ADR 0058), else the phase 3 shove (one track re-laid).
-                let path = if let Some(p) =
-                    push::push(&nb, &open.rules, &layer, net.as_deref(), width, a, c, grid, &pts)
-                {
-                    nb.apply_push(&p, &layer, &Limits::default()).map_err(pcb_err)?;
-                    shoved += p.lines.len();
-                    shoved_vias += p.vias.len();
-                    p.path
-                } else {
-                    let sh = shove::shove(&nb, &open.rules, &layer, net.as_deref(), width, a, c, grid, &pts)
-                        .ok_or_else(refused)?;
-                    nb.apply_shove(&sh, &layer, &Limits::default()).map_err(pcb_err)?;
-                    shoved += 1;
-                    sh.path
-                };
+                let path =
+                    if let Some(p) = push::push(&nb, &open.rules, &layer, net.as_deref(), width, a, c, grid, &pts) {
+                        nb.apply_push(&p, &layer, &Limits::default()).map_err(pcb_err)?;
+                        shoved += p.lines.len();
+                        shoved_vias += p.vias.len();
+                        p.path
+                    } else {
+                        let sh = shove::shove(&nb, &open.rules, &layer, net.as_deref(), width, a, c, grid, &pts)
+                            .ok_or_else(refused)?;
+                        nb.apply_shove(&sh, &layer, &Limits::default()).map_err(pcb_err)?;
+                        shoved += 1;
+                        sh.path
+                    };
                 obs = route::Obstacles::new(&nb, &open.rules, &layer, net.as_deref(), width);
                 path
             };
