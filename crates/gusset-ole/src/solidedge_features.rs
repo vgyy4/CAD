@@ -777,20 +777,58 @@ const COPY_FRAME_END: [u8; 26] = [
     0xb1, 0x4e,
 ];
 
-/// A profile copied by a smart pattern (`JMDummyComputeFunction`): `u32 n` at +12 and the `n`
-/// member serials of the seed profile's curves (2D, in the seed's frame), the curves again,
-/// then the copy's plane laid out as a plane object's: origin, normal and x direction (9 `f64`,
-/// metres, absolute), followed by [`COPY_FRAME_END`].
+/// A profile copied by a smart pattern or a mirror (`JMDummyComputeFunction`, slot 1 the
+/// pattern or mirror): `u32 n` at +12 and the `n` member serials of the seed profile's curves
+/// (2D, in the seed's frame), then the curves again. A pattern's copy then stores its plane laid
+/// out as a plane object's: origin, normal and x direction (9 `f64`, metres, absolute), followed
+/// by [`COPY_FRAME_END`]. A mirror's copy is the seed profile reflected in the mirror's plane
+/// (its slot 2; the seed feature is slot 3): the reflected origin, normal and x direction, the
+/// curves turned over (y to -y) so the sketch keeps the reflected normal.
 fn copied_profile(st: &Store, serial: u32, f: &Func) -> Result<Profile, String> {
-    let from = f.slot(1).and_then(|p| st.func(p)).map(|p| p.class).unwrap_or_default();
-    if from != "JMSmartPatternFunction" {
-        return Err(format!("the profile is copied by a {} (not read)", label(&from)));
-    }
+    let from = f.slot(1).and_then(|p| st.func(p)).ok_or("the copied profile's pattern is missing")?;
     let b = st.obj(serial).ok_or("the profile is missing")?;
     let n = u32_at(b, 12).ok_or("the copied profile is cut short")?;
-    let curves = members(st, b, 16, n, None)?;
-    let (origin, normal, x) = copy_frame(b).ok_or("the copied profile's plane is not readable")?;
-    Ok(Profile { origin, normal, x, curves })
+    // The seed feature's profile plane, for members kept only in the sketches.
+    let seed_feature = |slot: usize| {
+        let feat = st.func(from.slot(slot)?)?;
+        let prof = st.func(*feat.list(2).first()?)?;
+        (prof.class == "JProfileRecomputeEx").then_some(())?;
+        st.obj(prof.slot(0)?).and_then(plane)
+    };
+    match from.class.as_str() {
+        "JMSmartPatternFunction" => {
+            let curves = members(st, b, 16, n, seed_feature(4))?;
+            let (origin, normal, x) = copy_frame(b).ok_or("the copied profile's plane is not readable")?;
+            Ok(Profile { origin, normal, x, curves })
+        }
+        "JMMirrorCopyFunction" => {
+            let (mo, mn, _) =
+                from.slot(2).and_then(|p| st.obj(p)).and_then(plane).ok_or("the mirror plane is not readable")?;
+            let (so, sn, sx) = seed_feature(3).ok_or("the mirrored profile's plane is not readable")?;
+            let curves = members(st, b, 16, n, Some((so, sn, sx)))?;
+            let flip = |v: V3| {
+                let k = 2.0 * dot(v, mn);
+                [v[0] - k * mn[0], v[1] - k * mn[1], v[2] - k * mn[2]]
+            };
+            let d = [so[0] - mo[0], so[1] - mo[1], so[2] - mo[2]];
+            let fd = flip(d);
+            let origin = [mo[0] + fd[0], mo[1] + fd[1], mo[2] + fd[2]];
+            let curves = curves.iter().map(turned_over).collect();
+            Ok(Profile { origin, normal: flip(sn), x: flip(sx), curves })
+        }
+        other => Err(format!("the profile is copied by a {} (not read)", label(other))),
+    }
+}
+
+/// A profile curve reflected in its x axis (y to -y): counter-clockwise arcs stay so.
+fn turned_over(c: &Curve2) -> Curve2 {
+    let f = |p: [f64; 2]| [p[0], -p[1]];
+    match c {
+        Curve2::Line(a, b) => Curve2::Line(f(*a), f(*b)),
+        Curve2::Circle(c, r) => Curve2::Circle(f(*c), *r),
+        Curve2::Arc(c, r, a0, a1) => Curve2::Arc(f(*c), *r, -a1, -a0),
+        Curve2::Spline(d, poles, knots) => Curve2::Spline(*d, poles.iter().map(|p| f(*p)).collect(), knots.clone()),
+    }
 }
 
 /// A copied profile's plane: origin, normal and x direction (see [`copied_profile`]).

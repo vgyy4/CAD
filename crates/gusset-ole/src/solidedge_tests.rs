@@ -424,15 +424,21 @@ fn a_pattern_copied_profile_lies_on_its_stored_plane() {
     assert_eq!(copy_frame(&copied(&[4], [0.0; 3], [0.0, 0.0, 2.0], [0.0, 1.0, 0.0], 31)), None);
     assert_eq!(copy_frame(&copied(&[4], [0.0; 3], [0.0, 0.0, 1.0], [0.0, 0.6, 0.8], 31)), None);
     // A cutout of the protrusion's rectangle copied by a smart pattern onto z = 10 mm, turned a
-    // quarter; then one copied by a mirror (not read).
+    // quarter; then one copied by a mirror in the plane x = 5 mm (its seed: the first cutout).
     let mut more = obj(40, 30, &copied(&[4, 5, 6, 7], [0.0, 0.0, 0.01], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], 31));
     more.extend(obj(38, 31, &func("JMSmartPatternFunction", &[&[31], &[12]])));
     more.extend(obj(36, 32, &small(14.0)));
     more.extend(obj(36, 33, &small(1.0)));
     more.extend(obj(38, 34, &func("JMCutoutFunction", &[&[34], &[12], &[30], &[32], &[33]])));
-    more.extend(obj(40, 35, &copied(&[4], [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 36)));
-    more.extend(obj(38, 36, &func("JMMirrorCopyFunction", &[&[36], &[12]])));
-    more.extend(obj(38, 37, &func("JMCutoutFunction", &[&[37], &[34], &[35], &[32], &[33]])));
+    more.extend(obj(40, 35, &copied(&[4], [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 34)));
+    more.extend(obj(6, 38, &plane_payload([0.005, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])));
+    // The seed of the mirror: a cutout of the protrusion's own profile.
+    more.extend(obj(38, 39, &func("JMCutoutFunction", &[&[39], &[0], &[2], &[32], &[33]])));
+    more.extend(obj(38, 40, &func("JMMirrorCopyFunction", &[&[40], &[12], &[38], &[39]])));
+    more.extend(obj(38, 41, &func("JMCutoutFunction", &[&[41], &[34], &[42], &[32], &[33]])));
+    more.extend(obj(40, 42, &copied(&[4], [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 40)));
+    // A copy by anything else is not read.
+    more.extend(obj(38, 43, &func("JMCutoutFunction", &[&[43], &[41], &[35], &[32], &[33]])));
     let t = feature_tree(&part_with(1.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
     let f = t["features"].as_array().unwrap();
     assert_eq!(f[2]["type"], "sketch", "{t}");
@@ -443,6 +449,14 @@ fn a_pattern_copied_profile_lies_on_its_stored_plane() {
     assert_eq!(f[2]["curves"].as_array().unwrap().len(), 4);
     assert_eq!(f[3]["type"], "extrude");
     assert_eq!(f[3]["operation"], "cut");
-    assert_eq!(f[4]["type"], "unsupported");
-    assert!(f[4]["reason"].as_str().unwrap().contains("MirrorCopy"), "{t}");
+    // The mirrored rectangle's first side, (0, 0)-(20, 0) mm on the plane z = 0, lies at x 10
+    // to -10 mm: on the reflected plane (origin x = 10 mm, x direction -x), turned over.
+    assert_eq!(
+        f[4]["plane"],
+        json!({"origin": [10.0, 0.0, 0.0], "x_axis": [-1.0, 0.0, 0.0], "y_axis": [0.0, -1.0, 0.0]})
+    );
+    assert_eq!(f[4]["points"][1], json!({"id": "p1", "x": 20.0, "y": 0.0}));
+    assert_eq!(f[5]["type"], "extrude");
+    assert_eq!(f[6]["type"], "unsupported");
+    assert!(f[6]["reason"].as_str().unwrap().contains("copied by a Cutout"), "{t}");
 }
