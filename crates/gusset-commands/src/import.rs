@@ -482,8 +482,21 @@ impl ImportJob {
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 if matches!(self.kind, Kind::SolidEdge) {
-                    history = Some(history::not_read("Solid Edge feature histories are not read yet"));
-                    solid_edge_part(&bytes, &stem, importer.as_ref(), cancel)?
+                    let (out, tier, mut warnings) = solid_edge_part(&bytes, &stem, importer.as_ref(), cancel)?;
+                    // The ordered feature history as editable features, when it rebuilds to the
+                    // part's own body (ADR 0046 amendment); else the body itself.
+                    let mut attempt = None;
+                    let r = solid_edge_history(&bytes, &out, &self.kernel, &self.file_name, &mut attempt);
+                    let h = history::classify(
+                        r,
+                        attempt,
+                        TIER_SOLID_EDGE_HISTORY,
+                        warnings.clone(),
+                        &mut warnings,
+                        "an exact body",
+                    );
+                    history = Some(h);
+                    (out, tier, warnings)
                 } else {
                     let (out, tier, mut warnings) = inventor_part(&bytes, &stem, importer.as_ref(), cancel)?;
                     // The feature history as editable features, when it rebuilds to the part's
@@ -1609,6 +1622,58 @@ fn stored_stock(
         }
     }
     Err("the mirror plane of the stock body was not found".into())
+}
+
+/// Tier note for a Solid Edge part whose ordered feature history came in as features.
+const TIER_SOLID_EDGE_HISTORY: &str = "tier 1: the Solid Edge feature history as editable features";
+
+/// A Solid Edge part's ordered feature history as a feature tree (ADR 0046 amendment), kept
+/// only when it rebuilds to the part's own body. A synchronous part keeps no history:
+/// `Err("")`, nothing to say.
+fn solid_edge_history(
+    bytes: &[u8],
+    bodies: &[PreparedBody],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    file_name: &str,
+    attempt: &mut Option<crate::tree_import::Tree>,
+) -> Result<(crate::tree_import::Tree, Option<String>), String> {
+    let tree = gusset_ole::solidedge_features::feature_tree(bytes, file_name, &gusset_ole::Limits::default())?;
+    let omitted: Vec<String> = tree
+        .pointer("/source/omitted")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|o| Some(format!("{} ({})", o.get("name")?.as_str()?, o.get("why")?.as_str()?)))
+        .take(20)
+        .collect();
+    let text = serde_json::to_vec(&tree).map_err(|e| e.to_string())?;
+    let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
+    match rebuild_check(&mut t, bodies, kernel, file_name, "the part's") {
+        Ok(note) => {
+            let mut notes: Vec<String> = note.into_iter().collect();
+            if !omitted.is_empty() {
+                notes.push(format!("left out, no effect on the body: {}", omitted.join(", ")));
+            }
+            Ok((t, (!notes.is_empty()).then(|| notes.join("; "))))
+        }
+        Err(why) => {
+            *attempt = Some(t);
+            // A feature the reader could not read says why, which the rebuild's own "not
+            // exported" does not.
+            let named = first_skipped(&why).and_then(|n| {
+                tree.get("features")?.as_array()?.iter().find_map(|f| {
+                    (f.get("name")?.as_str()? == n && f.get("type")?.as_str()? == "unsupported")
+                        .then(|| {
+                            let what = f.get("original_type")?.as_str()?;
+                            let reason = f.get("reason")?.as_str()?;
+                            Some(format!("the {what} feature {n} cannot be read: {reason}"))
+                        })
+                        .flatten()
+                })
+            });
+            Err(named.unwrap_or(why))
+        }
+    }
 }
 
 /// Tier note for an Inventor part whose feature history came in as features.
@@ -4035,6 +4100,7 @@ fn commit_prepared(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) -> Result<V
         if (p.tier == TIER_FREECAD_HISTORY
             || p.tier == TIER_SOLIDWORKS_HISTORY
             || p.tier == TIER_INVENTOR_HISTORY
+            || p.tier == TIER_SOLID_EDGE_HISTORY
             || p.tier == TIER_FUSION_HISTORY
             || p.tier == TIER_PARTIAL_HISTORY)
             && let Some(o) = out.as_object_mut()

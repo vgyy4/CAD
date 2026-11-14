@@ -20,6 +20,7 @@ mod inventor_dc;
 pub mod inventor_features;
 mod inventor_profile;
 pub mod solidedge;
+pub mod solidedge_features;
 
 pub use gusset_sldprt::Limits;
 use gusset_sldprt::SldprtError;
