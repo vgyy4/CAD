@@ -206,7 +206,7 @@ pub fn parse(bytes: &[u8], limits: &Limits) -> Result<Sat, SatError> {
 }
 
 /// Binary SAB, read from Fusion 360 `.smb` files: `ASM BinaryFile<w>` (`w` the integer
-/// width, 4 or 8), four integers (version, records, bodies, flags), then tagged values:
+/// width, 4 or 8; older `ACIS BinaryFile` data has no `w` and 4-byte integers), four integers (version, records, bodies, flags), then tagged values:
 /// 0x04 integer, 0x06 double, 0x07/0x08/0x12 string (u8/u16/u32 length), 0x0a/0x0b the
 /// second/first value of a two-valued word (`reversed`/`forward`, finite/`I`), 0x0c pointer,
 /// 0x0d identifier ending a type name whose earlier parts are 0x0e identifiers, 0x0f/0x10
@@ -215,12 +215,15 @@ pub fn parse(bytes: &[u8], limits: &Limits) -> Result<Sat, SatError> {
 /// records then read like version 7 text ones.
 fn parse_binary(b: &[u8], limits: &Limits) -> Result<Sat, SatError> {
     let bad = |m: String| SatError::Malformed(m);
-    let width = match b.first() {
-        Some(b'8') => 8,
-        Some(b'4') => 4,
+    // Older files (Inventor parts of 2004..2010, `ACIS BinaryFile` with version 21800 and
+    // lower) write no width character: the version follows the magic at once, 4 bytes wide.
+    let (width, pos) = match b.first() {
+        Some(b'8') => (8, 1),
+        Some(b'4') => (4, 1),
+        Some(_) if b.get(2..4) == Some(&[0, 0]) => (4, 0),
         _ => return Err(bad("unknown binary integer width".into())),
     };
-    let mut rd = Bin { b, pos: 1, width };
+    let mut rd = Bin { b, pos, width };
     let version = u32::try_from(rd.int()?).map_err(|_| bad("a bad version".into()))?;
     for _ in 0..3 {
         rd.int()?;

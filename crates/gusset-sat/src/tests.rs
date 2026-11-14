@@ -89,6 +89,23 @@ fn the_binary_form_converts_like_the_text() {
 }
 
 #[test]
+fn the_older_binary_form_without_a_width_reads_like_the_text() {
+    // `ACIS BinaryFile` and the version at once (two Inventor thread templates): 4-byte ints.
+    let text = box_sat(700, [10.0, 20.0, 30.0]);
+    let a = to_step(text.as_bytes(), "box", &Limits::default()).unwrap();
+    let old = crate::fixtures::to_old_binary(&text);
+    assert_eq!(old.get(15..19), Some(&22500i32.to_le_bytes()[..]));
+    let b = to_step(&old, "box", &Limits::default()).unwrap();
+    assert_eq!(a.step, b.step);
+    // A width character that is neither 4 nor 8, nor a version: refused.
+    let mut odd = old.clone();
+    if let Some(x) = odd.get_mut(17) {
+        *x = 7;
+    }
+    assert!(to_step(&odd, "x", &Limits::default()).is_err());
+}
+
+#[test]
 fn a_64_bit_integer_tag_reads_as_an_integer() {
     // Fusion's derived bodies write `17` and 8 bytes (an attribute's source entity id).
     let text = box_sat(700, [10.0, 20.0, 30.0]);

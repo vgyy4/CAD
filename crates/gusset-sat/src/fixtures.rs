@@ -242,9 +242,26 @@ pub fn elliptic_cylinder_sat() -> (String, f64) {
 
 /// The binary (SAB) form of a version 7 text file, as Fusion writes it: for tests.
 pub fn to_binary(text: &str) -> Vec<u8> {
-    let mut out = b"ASM BinaryFile8".to_vec();
+    binary_form(text, b"ASM BinaryFile8", true)
+}
+
+/// The older binary form (`ACIS BinaryFile`, no width character, 4-byte integers and
+/// pointers), as Inventor parts of 2004..2010 store their bodies: for tests.
+pub fn to_old_binary(text: &str) -> Vec<u8> {
+    binary_form(text, b"ACIS BinaryFile", false)
+}
+
+fn binary_form(text: &str, magic: &[u8], wide: bool) -> Vec<u8> {
+    let int = |out: &mut Vec<u8>, v: i64| {
+        if wide {
+            out.extend_from_slice(&v.to_le_bytes());
+        } else {
+            out.extend_from_slice(&i32::try_from(v).unwrap_or(-1).to_le_bytes());
+        }
+    };
+    let mut out = magic.to_vec();
     for v in [22500i64, 0, 1, 0] {
-        out.extend_from_slice(&v.to_le_bytes());
+        int(&mut out, v);
     }
     let s = |out: &mut Vec<u8>, tag: u8, v: &str| {
         out.push(tag);
@@ -273,13 +290,13 @@ pub fn to_binary(text: &str) -> Vec<u8> {
         while let Some(w) = it.next() {
             if let Some(p) = w.strip_prefix('$').and_then(|p| p.parse::<i64>().ok()) {
                 out.push(0x0c);
-                out.extend_from_slice(&p.to_le_bytes());
+                int(&mut out, p);
             } else if let Some(n) = w.strip_prefix('@').and_then(|n| n.parse::<usize>().ok()) {
                 let t: String = it.next().unwrap_or("").chars().take(n).collect();
                 s(&mut out, 0x07, &t);
             } else if let Ok(i) = w.parse::<i64>() {
                 out.push(0x04);
-                out.extend_from_slice(&i.to_le_bytes());
+                int(&mut out, i);
             } else if let Ok(d) = w.parse::<f64>() {
                 out.push(0x06);
                 out.extend_from_slice(&d.to_le_bytes());
