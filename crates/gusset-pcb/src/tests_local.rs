@@ -88,7 +88,18 @@ fn local_samples_phase3() {
             let t = std::time::Instant::now();
             let p = push::push_reason(&b, &rules, "F.Cu", Some(net), w, *a, *c, grid, &[], Some(before));
             if let Err(why) = &p {
-                eprintln!("  {name} {net}: no push: {why}");
+                // Whether the pads alone leave a way (the other nets' tracks and vias gone).
+                let mut bare = b.clone();
+                let tracks: Vec<usize> = (0..b.tracks.len())
+                    .filter(|&i| b.tracks[i].layer == "F.Cu" && b.net_name(&b.tracks[i].net).as_deref() != Some(net))
+                    .collect();
+                let vias: Vec<usize> =
+                    (0..b.vias.len()).filter(|&i| b.net_name(&b.vias[i].net).as_deref() != Some(net)).collect();
+                bare.delete_items(&tracks, &vias, &Limits::default()).unwrap();
+                let open =
+                    route::walkaround(&route::Obstacles::new(&bare, &rules, "F.Cu", Some(net), w), *a, *c, grid, true)
+                        .is_some();
+                eprintln!("  {name} {net}: no push: {why} (a way without other tracks: {open})");
             }
             if let Ok(p) = &p {
                 let mut nb = b.clone();

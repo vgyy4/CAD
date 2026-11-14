@@ -149,6 +149,13 @@ impl Obstacles {
         Obstacles::build(prims, Vec::new(), half_width)
     }
 
+    /// These obstacles and `extra` pieces (with the gaps a centre line keeps from them).
+    pub fn extended(&self, extra: Vec<(Prim, f64)>) -> Obstacles {
+        let mut prims = self.prims.clone();
+        prims.extend(extra);
+        Obstacles::build(prims, self.outline.clone(), self.half_width)
+    }
+
     fn build(prims: Vec<(Prim, f64)>, outline: Vec<Vec<Pt>>, half: f64) -> Obstacles {
         // Buckets over the obstacles' grown boxes.
         let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
@@ -287,12 +294,14 @@ pub fn walkaround(obs: &Obstacles, from: Pt, to: Pt, grid: f64, diagonal_first: 
 
 /// Copper a route may pass closer to than the rules ask, as it can be pushed aside
 /// (ADR 0058): `full` with the gaps the rules ask, `min` with the least gap allowed (no
-/// overlap), and the extra cost per grid step taken within `full`.
+/// overlap), and the extra cost per grid step taken within `full`. With `cross`, `min`
+/// may be crossed too, at that cost per step.
 #[derive(Debug, Clone)]
 pub struct Soft {
     pub full: Obstacles,
     pub min: Obstacles,
     pub penalty: f64,
+    pub cross: Option<f64>,
 }
 
 /// As [`walkaround`], but the copper in `soft` may be come closer to than the rules ask
@@ -313,7 +322,7 @@ fn search(obs: &Obstacles, soft: Option<&Soft>, from: Pt, to: Pt, grid: f64, dia
         return None;
     }
     // Clear for a laid piece: the hard obstacles, and the soft ones' least gap.
-    let clear_min = |a: Pt, b: Pt| obs.clear(a, b) && soft.is_none_or(|s| s.min.clear(a, b));
+    let clear_min = |a: Pt, b: Pt| obs.clear(a, b) && soft.is_none_or(|s| s.cross.is_some() || s.min.clear(a, b));
     // Clear with every gap the rules ask.
     let clear_full = |a: Pt, b: Pt| obs.clear(a, b) && soft.is_none_or(|s| s.full.clear(a, b));
     // The direct ways first.
@@ -340,7 +349,8 @@ fn search(obs: &Obstacles, soft: Option<&Soft>, from: Pt, to: Pt, grid: f64, dia
         y * nx + x
     };
     let spare = step * std::f64::consts::FRAC_1_SQRT_2;
-    // 0 unknown, 1 free, 2 blocked, 3 free but within a soft obstacle's full gap.
+    // 0 unknown, 1 free, 2 blocked, 3 free but within a soft obstacle's full gap, 4 on
+    // soft copper that may be crossed.
     let mut state = vec![0u8; nx * ny];
     let classify = |c: usize| -> u8 {
         let p = pos(c);
@@ -349,14 +359,20 @@ fn search(obs: &Obstacles, soft: Option<&Soft>, from: Pt, to: Pt, grid: f64, dia
         }
         match soft {
             None => 1,
-            Some(s) if !s.min.free(p, spare) => 2,
+            Some(s) if !s.min.free(p, spare) => {
+                if s.cross.is_some() {
+                    4
+                } else {
+                    2
+                }
+            }
             Some(s) if !s.full.free(p, spare) => 3,
             Some(_) => 1,
         }
     };
     let mut free = |c: usize, state: &mut Vec<u8>| -> bool {
         match state.get(c) {
-            Some(1 | 3) => true,
+            Some(1 | 3 | 4) => true,
             Some(2) | None => false,
             _ => {
                 let f = classify(c);
@@ -440,8 +456,10 @@ fn search(obs: &Obstacles, soft: Option<&Soft>, from: Pt, to: Pt, grid: f64, dia
                 continue;
             }
             let mut cost = if dx != 0 && dy != 0 { std::f64::consts::SQRT_2 } else { 1.0 };
-            if state.get(c2) == Some(&3) {
-                cost += soft.map_or(0.0, |s| s.penalty);
+            match state.get(c2) {
+                Some(3) => cost += soft.map_or(0.0, |s| s.penalty),
+                Some(4) => cost += soft.and_then(|s| s.cross).unwrap_or(0.0),
+                _ => {}
             }
             // A small charge for turning keeps runs straight.
             let back = came.get(cell).copied().unwrap_or(usize::MAX);

@@ -37,6 +37,10 @@ const HIT: f64 = 1e-4;
 const MAX_LINE_PTS: usize = 400;
 /// Extra cost per grid step of the head taken too close to pushable copper.
 const PENALTY: f64 = 2.0;
+/// Extra cost per grid step of the head across pushable copper, when it has to cross.
+const CROSS: f64 = 40.0;
+/// Most tracks the head may cross and lay again round itself.
+const MAX_RELAID: usize = 4;
 /// Least gap the head's centre line keeps from pushable copper's centre lines while
 /// searching (mm, plus half a grid diagonal, so no grid step crosses one): it may run
 /// over that copper, which is then pushed, never across it.
@@ -704,10 +708,71 @@ impl<'a> Model<'a> {
         Some(())
     }
 
+    /// Soft obstacles for copper of `(half width, net)`: pushable lines (when `lines`) and
+    /// vias that are not placed, not in `skip` and not of that net.
+    fn soft(&self, (half, net): (f64, Option<&str>), skip: &[usize], lines: bool) -> Soft {
+        let mine = self.rules.clearance_of(net);
+        let mut full = Vec::new();
+        let mut min = Vec::new();
+        let other = |n: &str| net != Some(n);
+        for (k, l) in self.lines.iter().enumerate() {
+            if !lines || l.moved || skip.contains(&k) || !other(&l.net) {
+                continue;
+            }
+            let need = mine.max(self.rules.clearance_of(Some(&l.net))) + half;
+            for (a, b) in pieces(&l.pts) {
+                full.push((Prim::Capsule { a, b, r: l.width / 2.0 }, need));
+                min.push((Prim::Capsule { a, b, r: 0.0 }, MIN_GAP));
+            }
+        }
+        for v in self.vias.iter().filter(|v| !v.moved && other(&v.net)) {
+            let need = mine.max(self.rules.clearance_of(Some(&v.net))) + half;
+            full.push((Prim::Capsule { a: v.at, b: v.at, r: v.size / 2.0 }, need));
+            min.push((Prim::Capsule { a: v.at, b: v.at, r: 0.0 }, MIN_GAP));
+        }
+        Soft {
+            full: Obstacles::from_prims(full, half),
+            min: Obstacles::from_prims(min, half),
+            penalty: PENALTY,
+            cross: None,
+        }
+    }
+
+    /// Lays a line the head crosses again between its ends, round the head and the copper
+    /// placed so far (other pushable copper soft).
+    fn relay(&mut self, l: usize) -> Option<()> {
+        let line = self.lines.get(l)?.clone();
+        let (half, net) = (line.width / 2.0, Some(line.net.as_str()));
+        let (&a, &b) = (line.pts.first()?, line.pts.last()?);
+        let mut extra = Vec::new();
+        for y in self.placed() {
+            let (q, h, n) = self.shape(y);
+            let Some(need) = self.need((half, net), (h, n)) else { continue };
+            for (p0, p1) in pieces(&q) {
+                extra.push((Prim::Capsule { a: p0, b: p1, r: h }, need - h + EXTRA));
+            }
+        }
+        let layer = self.layer.clone();
+        let obs = self.hard_obs(&layer, net, line.width).extended(extra);
+        let soft = self.soft((half, net), &[l], true);
+        let grid = (self.rules.clearance_of(net).min(line.width) / 2.0).clamp(0.05, 0.25);
+        let pts = [true, false].into_iter().find_map(|d| route::walkaround_soft(&obs, &soft, a, b, grid, d))?;
+        let ln = self.lines.get_mut(l)?;
+        ln.pts = route::simplify(&pts);
+        ln.moved = true;
+        Some(())
+    }
+
     /// Pushes until nothing placed is too close to anything else; `None` when a push fails
     /// or the bounds are reached.
     fn run(&mut self) -> Option<()> {
         let mut queue: VecDeque<(It, usize, bool)> = (0..self.head.len()).map(|k| (It::Head(k), 0, false)).collect();
+        // Lines laid again round the head push too.
+        queue.extend(
+            (0..self.lines.len())
+                .filter(|&l| self.lines.get(l).is_some_and(|x| x.moved))
+                .map(|l| (It::Line(l), 1, false)),
+        );
         while let Some((x, d, fix)) = queue.pop_front() {
             if fix && let It::Line(l) = x {
                 self.push_line(l, &mut queue, d)?;
@@ -789,31 +854,33 @@ pub fn push_reason(
 ) -> Result<Push, &'static str> {
     let mut m = Model::new(board, rules, layer, net, width).ok_or("a failed edit")?;
     // The head: hard copper as walls, pushable copper soft.
-    let half = width / 2.0;
-    let mine = rules.clearance_of(net);
-    let mut full = Vec::new();
-    let mut min = Vec::new();
-    for l in &m.lines {
-        let need = mine.max(rules.clearance_of(Some(&l.net))) + half;
-        for (a, b) in pieces(&l.pts) {
-            full.push((Prim::Capsule { a, b, r: l.width / 2.0 }, need));
-            min.push((Prim::Capsule { a, b, r: 0.0 }, MIN_GAP));
-        }
-    }
-    for v in &m.vias {
-        let need = mine.max(rules.clearance_of(Some(&v.net))) + half;
-        full.push((Prim::Capsule { a: v.at, b: v.at, r: v.size / 2.0 }, need));
-        min.push((Prim::Capsule { a: v.at, b: v.at, r: 0.0 }, MIN_GAP));
-    }
-    let soft =
-        Soft { full: Obstacles::from_prims(full, half), min: Obstacles::from_prims(min, half), penalty: PENALTY };
     let layer_s = layer.to_string();
     let obs = m.hard_obs(&layer_s, net, width).clone();
-    let path = [true, false]
-        .into_iter()
-        .find_map(|d| route::walkaround_soft(&obs, &soft, from, to, grid, d))
-        .ok_or("no way even pushing")?;
-    let path = route::simplify(&path);
+    let soft = m.soft((width / 2.0, net), &[], true);
+    let search =
+        |soft: &Soft| [true, false].into_iter().find_map(|d| route::walkaround_soft(&obs, soft, from, to, grid, d));
+    let path = match search(&soft) {
+        Some(p) => route::simplify(&p),
+        None => {
+            // No way without crossing other tracks: lay the head across them and lay the
+            // tracks it crosses again round it.
+            let mut crossing = m.soft((width / 2.0, net), &[], true);
+            crossing.cross = Some(CROSS);
+            let p = route::simplify(&search(&crossing).ok_or("no way even pushing")?);
+            m.head.push(p.clone());
+            let crossed: Vec<usize> = (0..m.lines.len())
+                .filter(|&l| m.lines.get(l).is_some_and(|ln| poly_dist(&p, &ln.pts, 0.0) < 1e-9))
+                .collect();
+            if crossed.len() > MAX_RELAID {
+                return Err("too many tracks crossed");
+            }
+            for &l in &crossed {
+                m.relay(l).ok_or("a crossed track has no way round")?;
+            }
+            m.head.clear();
+            p
+        }
+    };
     m.head.push(path.clone());
     if keep.len() >= 2 {
         m.head.push(keep.to_vec());
