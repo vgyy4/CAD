@@ -604,6 +604,7 @@ impl Command for PcbAddFootprint {
             })?;
         let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
         let mut b = open.board.clone();
+        super::pcb_edit::inside_outline(&b, self.at)?;
         let reference = match &self.reference {
             Some(r) => r.clone(),
             None => (1..100_000).map(|n| format!("FP{n}")).find(|r| b.footprint_index(r).is_none()).unwrap_or_default(),

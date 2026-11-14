@@ -301,6 +301,9 @@ impl Command for PcbMoveFootprint {
             if at.iter().any(|v| !v.is_finite() || v.abs() > 10_000.0) {
                 return Err(CommandError::args("the place must be within 10 m"));
             }
+            if self.at.is_some() {
+                inside_outline(b, at)?;
+            }
             let old = b.footprint_pads(i);
             let turned = angle - fp.angle;
             b.move_footprint(i, at, angle, &limits()).map_err(pcb_err)?;
@@ -351,6 +354,15 @@ impl Command for PcbAddTrack {
             let layer = self.layer.clone().unwrap_or_else(|| "F.Cu".into());
             let net = self.net.clone().or_else(|| b.net_at(self.start, &layer)).or_else(|| b.net_at(self.end, &layer));
             let width = self.width.unwrap_or_else(|| open.rules.track_width_of(net.as_deref()));
+            // A width the net's class forbids is refused, not left for the DRC (F18-18).
+            let class_min = net.as_deref().and_then(|n| open.rules.class_of(n)).and_then(|c| c.min_track_width);
+            let min = class_min.map_or(0.0, |m| m.max(open.rules.min_track_width));
+            if self.width.is_some() && width < min - 1e-9 {
+                return Err(CommandError::args(format!(
+                    "a track of {width} mm is below the class minimum of {min} mm"
+                ))
+                .hint("use a wider track, or lower min_track_width with pcb_net_class"));
+            }
             let i = match self.mid {
                 None => b.add_track(self.start, self.end, width, &layer, net.as_deref(), &limits()).map_err(pcb_err)?,
                 Some(mid) => {
@@ -365,6 +377,24 @@ impl Command for PcbAddTrack {
             Ok(json!({ "track": i, "width": width, "net_user_text": net }))
         })
     }
+}
+
+/// A place on the board: refused when the board has an outline and `at` lies outside its
+/// bounding box (a footprint placed or moved far off the board is nearly always a typo in
+/// the coordinates, F18-18). A board with no outline takes any place.
+pub(super) fn inside_outline(b: &gusset_pcb::Board, at: [f64; 2]) -> Result<(), CommandError> {
+    let (loops, _) = gusset_pcb::geom::outline_loops(b, gusset_pcb::check::OUTLINE_TOL);
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for p in loops.iter().flat_map(|l| l.polygon(0.01)) {
+        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+    }
+    if hi[0] >= lo[0] && (at[0] < lo[0] || at[0] > hi[0] || at[1] < lo[1] || at[1] > hi[1]) {
+        let r = |v: f64| (v * 1000.0).round() / 1000.0;
+        return Err(CommandError::args(format!("the place [{}, {}] is outside the board outline", r(at[0]), r(at[1])))
+            .hint(format!("the outline spans x {} to {}, y {} to {} mm", r(lo[0]), r(hi[0]), r(lo[1]), r(hi[1]))));
+    }
+    Ok(())
 }
 
 /// Adds a through via.
