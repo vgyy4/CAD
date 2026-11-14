@@ -522,3 +522,106 @@ body; 30 sheet-metal parts (`55585fc6`); 27 unknown features; 15 empty slots; 12
 3104 layout; 12 coils (`b41914da`); 11 revolve axes off the sketch origin; 9 extents whose faces lie on
 both sides of the sketch (a sketch inside the material; a two-sided reach is not read) and 7 whose faces
 are gone from the result; 6 shells whose rims do not count right; 6 unequal chamfers on several edges.
+
+# Round ipt3 (2026-11-14): copies, extrudes up to a face, two-way patterns, pulley flanges
+
+Same corpora and harness as rounds ipt1 and ipt2, plus a per-feature comparison (a scratch test, not
+committed: each feature prefix of the rebuilt history against the part's own result body, the volume
+outside and missing) to find the first feature that goes wrong. Every rule below was checked by the
+whole-part rebuild check; none is trusted otherwise.
+
+## AA. Circular patterns `06977131` and mirrors `fad9a9b5` (confirmed: 42 parts rebuild)
+* Both are feature records of their own classes (not `90874d91`), named like part features (name types
+  `b6c22694` circular pattern, `b6c226a3` mirror). The feature walk left them out without a word: the
+  history then lacked them and the rebuild check refused the part on volume. A sketch-driven pattern
+  (`a37b053c`) is now listed too (as unsupported).
+* Common to both: the copied features are the feature records referred to before the `90874d18`
+  record (work planes and axes in that range are skipped); a fillet with several radii is copied as all
+  the tree fillets it became. With no feature listed and the first `90874d28` flag after the
+  `d83ef271` record set, the whole body is copied; a list of every feature so far (the one that made the
+  body among them) is the same as the body.
+* Circular pattern: the count is the `bb1dd5df` whose last u32 is above 1 (another one, `RDxVar2`, holds
+  0), the angle the parameter (radians; 2 pi = full turn, copies spread evenly, as Gusset's), the axis a
+  `8ef06c89` work axis read as a revolve's (start, vector; cm). The first `90874d28` after the axis's
+  `8b2be62e` record turns it the other way (as read; few patterns have it).
+* Mirror: the plane is the last `ce52df42` work-plane record referred to; its last 9 doubles are a point
+  and two unit vectors in the plane (cm).
+* Extrude extent 5 (through all) with slot 7's flag set goes through all both ways (56 extrudes; the
+  timing-belt pulleys' tooth cuts).
+
+## AB. Extents 4 and 7 as extrudes up to a face (review request of round 2)
+* The end face is still not decoded from the naming records. It is found in the result body instead:
+  the faces the extrude did not make that meet its faces along edges lying wholly off its sketch plane
+  (on the reach side). They must all lie on one plane, cylinder or circular cone (the cone's half-angle
+  sign is the one its vertices fit). The tree gets `end_condition: to_face` with a face pick of those
+  edges' points and that surface; the pick names the face as it is before the extrude in the rebuild.
+* The measured reach of round 2 stays with the feature (`_blind`). The importer rebuilds with the faces
+  first and, when that does not give the part's body, with the blind reach (the tree as before), so no
+  part loses its history to the new reading; the import note says when the blind form was used.
+* Hex sockets of standard screws (`ISO 4762`, `ISO 4026`, `ISO 1207`) are joins "to the next face": six
+  slivers between the socket circle and its hexagon, ending on the drill point's cone. A blind reach
+  cannot give that end; up to the cone it rebuilds. Two kernel fixes were needed (section AD).
+
+## AC. Rectangular patterns in two directions (confirmed on the LEGO bricks and `pt_rect`)
+* One record may hold both directions: two counts, two spacing parameters, two directions, eight flags
+  after the directions (four per direction). Before, the first direction was read alone. Now two patterns:
+  the second copies the features and the first pattern. Of the flags, the first of each direction turns
+  it round, the last of each is midplane.
+* Midplane patterns of features (before: of holes only, by moving the holes): Gusset patterns run one
+  way, so a pattern each way from the originals: `(count - 1) / 2` copies each way for an odd count; for
+  an even count one more behind than ahead (count 2 on the `pt_c1`, `pt_opts`, `pt_rect_opts` fixtures:
+  the copy is behind).
+* Version 3104 writes a direction as `ce52df40` (five doubles, the last three the unit vector) instead of
+  an `a244457b` edge.
+* An `a244457b` edge holds, at its end, the start point, the vector and a third point: the end the
+  pattern starts from. The pattern runs from that end along the edge: against the vector when it is the
+  edge's end point (the old rule), along it when it is the start (the LEGO bricks' second direction, the
+  L-Bracket's midplane pattern, where the sign does not matter).
+
+## AD. Kernel: extrudes up to a cone (not layout; `gusset-occt-sys`)
+* A cone face is now extended along its generatrix (not past its apex) before it cuts the sweep, as planes
+  and cylinders already were. Bounded to the face, slivers meeting the cone along its rim left a face with
+  no origin ("face 4 has no usable origin").
+* The check that the face covers the sweep's end allows, besides 1e-6 of the end's area, a strip 1e-6 mm
+  wide along its edges: the bore of an imported screw is written with six decimals (0.866025) and the
+  socket circle with eight (0.8660254, points on circles, section S), and the slivers' arcs poke out by
+  4e-7 mm.
+
+## AE. Pulley flanges `9a78add3` (Design Accelerator; 19 parts rebuild)
+* The synchronous pulleys of the Design Accelerator end in two flanges whose records hold parameters only
+  (`Flange1:da_D0`, `da_hf`, `da_wf`, `da_BendAng`), no sketch. Their faces in the result body (the
+  generated tags, as an extrude's caps) are all of revolution about the pulley's axis: cones, a torus,
+  planes across the axis. Each gives a piece of the profile in (radius, height): a cone or cylinder the
+  line between its two rims, a torus the arc about its centre circle, a plane the span of its radii (a
+  disk from the axis). The pieces chain into the flange's section; the open chain is closed along the
+  axis, revolved a full turn and joined. Sheet-metal flanges share the type and are refused (faces not of
+  revolution).
+
+## AF. Holes: slot 17, and holes placed without sketch points
+* Slot 17's `90874d28` flag set (13 holes, none in a part that rebuilt): the hole goes the other way from
+  the direction of slot 16 (`Cover of port`: drilled from the bottom face while slot 16 and the centre
+  sketch point up).
+* Slot 7 empty (19 holes, placed concentric to an edge or on a point): the centres come from the result
+  body: the hole's faces carry `NMx_Hole_Brep_tag` (newer: `INV_NMX_HOLE_TAG`) with its id as the 4th int;
+  each axis of its cylinders along the hole's direction gives a centre where the axis leaves the hole's
+  faces on the outward side.
+
+## AG. Revolve axes off the sketch's axes
+* A work axis in the sketch plane that is not one of the sketch's own axes through its origin is added to
+  the sketch as a construction line (from the axis point, along it) and named as the revolve's axis; the
+  tree import reads axis lines, not free axes.
+
+## AH. Left after this round
+Second corpus after this round (1639 parts): 562 as history, 1031 bodies, 46 without a solid, 0 import
+failures; first corpus 28 of 47. Extrudes up to a face: of the 41 extent 4/7 extrudes in parts that now
+come in as history, 37 carry the face; in 2 parts the face form does not rebuild and the measured reach
+stands, 4 end faces are not one surface. Of the bodies: 411 without features and 201 derived parts
+(nothing to rebuild); 60 volume differences, now mostly one or two parts each: an iPart family whose
+feature parameters disagree with its result body (`47065T80x` T-slotted framing, 7: the extrusion's
+stored distance is 939.8 mm, the result 1854.2 mm long), text on the LEGO bricks' studs (4; text is not
+read), and single parts; 33 picks with no model edge (single parts, and 4 `CNS 9671` heads whose blend
+lies between a flat cone and a sphere); 31 parts that start from an imported body; 30 sheet-metal parts;
+28 unknown features (Design Accelerator sub-features named through `903f453f`, beside an unread gear
+feature `73d72559`); 12 coils (`b41914da`); 9 extents 4/7 with faces on both sides of the sketch and 9 whose
+faces are gone; 9 sweeps not read; 6 shells whose rims do not count; 6 unequal chamfers on several
+edges; 3 extents 12 (from a face).

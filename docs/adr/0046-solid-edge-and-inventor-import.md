@@ -358,3 +358,45 @@ gains nothing this round: its 22 bodies stop at blends whose edge is not recover
 blends, the thumbscrew knurl and two kernel fillet failures (notes H to J). The next target in the second
 corpus is the 111 volume differences (a per-feature comparison with the result body), then the 80 picks
 with no model edge.
+
+## Amendment (2026-11-14, 10): Inventor round ipt3 - copies, extrudes up to a face, pulley flanges
+
+Round 3 on both corpora (notes AA to AH of `docs/formats/inventor-feature-tree.md`), led by a per-feature
+comparison of the rebuilt history with the part's own result body. What the reader now does:
+
+- **Circular patterns and mirrors** (AA): their records have classes of their own (`06977131`,
+  `fad9a9b5`) and were left out of the feature walk without a word. They are read: copied features,
+  count, angle and work axis; the mirror's work plane; whole-body copies. A through-all extrude with slot
+  7 set goes both ways.
+- **Extents 4 and 7 as extrudes up to a face** (AB, the review request of round 2): the face the extrude
+  ran to is the one its faces meet off its sketch plane in the result body (plane, cylinder or cone),
+  given as a face pick. The measured reach stays as the fallback: the importer rebuilds with the face
+  first and, failing that, with the blind reach (the round 2 tree), and says so.
+- **Rectangular patterns** (AC): two directions in one record (and the 3104 unit directions) are two
+  patterns; an edge direction runs from the end the record names; midplane patterns of features are a
+  pattern each way.
+- **Pulley flanges** (AE): Design Accelerator flanges (`9a78add3`, parameters only) are revolves of the
+  section their faces of revolution in the result body show.
+- **Holes** (AF): slot 17 reverses the direction; holes without sketch-point centres take them from
+  their faces in the result body.
+- **Revolve axes** (AG) off the sketch's own axes become construction lines of the sketch.
+
+Shared code: `gusset-commands` (Inventor import only: the fallback from extrudes up to a face to their
+blind reach, and patterns of holes swapped for cuts copy the cuts); `gusset-occt-sys` (all importers and
+the modeling command `to:`): an extrude up to a cone cuts at the cone extended past its face, and the
+coverage check lets a strip under 1e-6 mm along the end's edges pass. No change in `gusset-sat`.
+
+Every new reading is a candidate only: the rebuild check (volume 2e-5, box) is unchanged and decides.
+Results (parts as history; OCCT corpus test, one part per process):
+
+| corpus | parts | history before | after | import failures before | after | without a solid |
+|---|---|---|---|---|---|---|
+| first (Zenodo, `GUSSET_IPT_MIN_HISTORY=25`) | 47 | 25 | 28 | 0 | 0 | 0 |
+| second (57 sources) | 1639 | 449 | 562 | 0 | 0 | 46 |
+
+No part of either corpus went from history to body (the round-2 results are the reference). In the
+second corpus the volume differences fell from 111 to 60 and the picks with no model edge from 75 to 33;
+the 3104 rectangular patterns (12) and the revolve axes off the sketch origin (11) are all read. Each
+blocker left is worth at most a handful of parts (note AH); the largest are an iPart family whose
+stored parameters disagree with its body (7) and parts that start from an imported body (31, not a
+rebuild).
