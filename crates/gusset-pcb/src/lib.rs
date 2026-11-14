@@ -47,6 +47,7 @@ pub mod netlist;
 pub mod nets;
 pub mod pair;
 pub mod poly;
+pub mod push;
 pub mod ratsnest;
 pub mod refill;
 pub mod route;
@@ -85,6 +86,8 @@ mod tests_local;
 mod tests_pair;
 #[cfg(test)]
 mod tests_phase3;
+#[cfg(test)]
+mod tests_push;
 #[cfg(test)]
 mod tests_refill;
 #[cfg(test)]
