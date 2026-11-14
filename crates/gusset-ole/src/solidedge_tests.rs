@@ -544,3 +544,45 @@ fn a_sweep_of_one_section_along_one_path() {
     assert_eq!(f[5]["type"], "unsupported");
     assert!(f[5]["reason"].as_str().unwrap().contains("2 cross sections"), "{t}");
 }
+
+#[test]
+fn an_edge_set_spline_is_picked_along_its_whole_length() {
+    // A cubic Bezier from (0, 0, 0) to (3, 0, 0) mm bulging to y 1.5 mm, then a line: the
+    // spline's numbers are not all f64-aligned (u32 counts, a byte tail).
+    let mut nums = Vec::new();
+    nums.extend(4u32.to_le_bytes());
+    nums.extend(f64s(&[0.0, 0.0, 0.0, 0.001, 0.002, 0.0, 0.002, 0.002, 0.0, 0.003, 0.0, 0.0]));
+    nums.extend(0u32.to_le_bytes());
+    nums.extend(8u32.to_le_bytes());
+    nums.extend(f64s(&[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]));
+    nums.extend(f64s(&[-1.0]));
+    nums.extend([0, 4, 1, 1, 0]);
+    let mut b = edge_set_bytes(&[(3, vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.001])], false);
+    // The spline goes first: rebuild the list by hand with a count-and-zero tail after it.
+    let at = b.windows(4).position(|w| w == [0x74, 0x0c, 0x54, 0x25]).unwrap();
+    let mut v = b[..at].to_vec();
+    v[at - 13 + 4] = 2;
+    v.extend([0x2e, 0x54, 0xc8, 0x71, 0x16]);
+    v.extend([0x3a, 0xce, 0x11, 0x9a, 0x5e, 0x08, 0x00, 0x36, 0x9b, 0x41, 0x02]);
+    v.push(27);
+    v.extend(&nums);
+    v.extend(1u32.to_le_bytes());
+    v.extend(0u32.to_le_bytes());
+    v.extend(b.split_off(at));
+    let set = edge_set(&v).unwrap();
+    assert_eq!(set.len(), 2);
+    let SetCurve::Spline(4, poles, knots) = &set[0] else { panic!("{set:?}") };
+    assert_eq!((poles.len(), knots.len()), (4, 8));
+    let p = edge_pick(&set[0]).unwrap();
+    // The middle (t = 0.5): (1.5, 1.5, 0) mm; the path runs from one end to the other.
+    assert_eq!(p["midpoint"], json!([1.5, 1.5, 0.0]));
+    let path = p["path"].as_array().unwrap();
+    assert!(path.len() > 2);
+    assert_eq!((&path[0], path.last().unwrap()), (&json!([0.0, 0.0, 0.0]), &json!([3.0, 0.0, 0.0])));
+    assert!(matches!(set[1], SetCurve::Line(..)));
+    // Weights: not read.
+    let w = v.windows(4).position(|w| w == 8u32.to_le_bytes()).unwrap() - 4;
+    let mut r = v.clone();
+    r[w] = 1;
+    assert!(edge_set(&r).unwrap_err().contains("rational"));
+}

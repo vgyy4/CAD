@@ -456,13 +456,15 @@ pub(crate) fn key_point_reach(b: &[u8]) -> Option<(f64, V3)> {
 
 /// A curve of a round's or chamfer's edge set, as the part stored it when the feature was
 /// made (metres, absolute).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SetCurve {
     /// Point, unit direction and the parameter range (the edge runs from `p + t0 d` to `p + t1 d`).
     Line(V3, V3, f64, f64),
     /// Centre, unit normal, major axis (its length is the radius), minor to major ratio and,
     /// for an arc, its angle range, counter-clockwise about the normal from the major axis.
     Conic(V3, V3, V3, f64, Option<(f64, f64)>),
+    /// A polynomial B-spline: order, poles, knots (each repeated by its multiplicity).
+    Spline(usize, Vec<V3>, Vec<f64>),
 }
 
 /// The class id that opens an edge set's curve list ends in these bytes.
@@ -473,9 +475,11 @@ const SET_CURVE: [u8; 11] = [0x3a, 0xce, 0x11, 0x9a, 0x5e, 0x08, 0x00, 0x36, 0x9
 /// The edges a round or chamfer works on, from the edge set it refers to (a
 /// `JMTransmigrateAssocFunction` naming them by `SEGetRoundableEdgeSeq`): after the names,
 /// `ff`, a class id ending in [`SET_LIST`], `u32 1, u32 n, u32 0, u8 2`, then `n` curves, each a
-/// class id ending in [`SET_CURVE`], a type byte and its numbers (`f64`), then one or two
-/// `u32 0`: type 3 a line (point, direction, t0, t1), 15 a circle or ellipse (centre, normal,
-/// major axis, ratio), 16 an arc of one (the same and the angles from, to).
+/// class id ending in [`SET_CURVE`], a type byte and its numbers (`f64`), then a few words:
+/// type 3 a line (point, direction, t0, t1), 15 a circle or ellipse (centre, normal, major
+/// axis, ratio), 16 an arc of one (the same and the angles from, to), 27 a B-spline
+/// (`u32 n`, `n` poles, `u32 w` weights (0 here), `u32 k`, `k` knots, `f64`, `u8 0`, `u8 order`
+/// and 3 bytes).
 pub(crate) fn edge_set(b: &[u8]) -> Result<Vec<SetCurve>, String> {
     let at = b
         .windows(17)
@@ -499,42 +503,105 @@ pub(crate) fn edge_set(b: &[u8]) -> Result<Vec<SetCurve>, String> {
         let at = q + 17;
         let f = |i: usize| f64_at(b, at + 8 * i).filter(|v| v.is_finite() && v.abs() < 1e6);
         let v3 = |i: usize| Some([f(i)?, f(i + 1)?, f(i + 2)?]);
-        let (c, len) = match t {
-            3 => {
-                let (p, d, t0, t1) = (v3(0), v3(3).and_then(unit), f(6), f(7));
-                let (Some(p), Some(d), Some(t0), Some(t1)) = (p, d, t0, t1) else {
-                    return Err("an edge line of the set is not readable".into());
-                };
-                (SetCurve::Line(p, d, t0, t1), 8)
-            }
-            15 | 16 => {
-                let (Some(c), Some(nrm), Some(m), Some(r)) = (v3(0), v3(3).and_then(unit), v3(6), f(9)) else {
-                    return Err("an edge circle of the set is not readable".into());
-                };
-                let range = if t == 16 {
-                    let (Some(a0), Some(a1)) = (f(10), f(11)) else {
-                        return Err("an edge arc of the set is not readable".into());
+        if t == 27 {
+            let (c, end) = set_spline(b, at)?;
+            out.push(c);
+            q = end;
+        } else {
+            let (c, len) = match t {
+                3 => {
+                    let (p, d, t0, t1) = (v3(0), v3(3).and_then(unit), f(6), f(7));
+                    let (Some(p), Some(d), Some(t0), Some(t1)) = (p, d, t0, t1) else {
+                        return Err("an edge line of the set is not readable".into());
                     };
-                    Some((a0, a1))
-                } else {
-                    None
-                };
-                (SetCurve::Conic(c, nrm, m, r, range), if t == 16 { 12 } else { 10 })
-            }
-            _ => return Err(format!("an edge of the set is a curve of type {t} (not read)")),
-        };
-        out.push(c);
-        q = at + 8 * len;
-        if u32_at(b, q) != Some(0) {
-            return Err("an edge of the set is not readable".into());
+                    (SetCurve::Line(p, d, t0, t1), 8)
+                }
+                15 | 16 => {
+                    let (Some(c), Some(nrm), Some(m), Some(r)) = (v3(0), v3(3).and_then(unit), v3(6), f(9)) else {
+                        return Err("an edge circle of the set is not readable".into());
+                    };
+                    let range = if t == 16 {
+                        let (Some(a0), Some(a1)) = (f(10), f(11)) else {
+                            return Err("an edge arc of the set is not readable".into());
+                        };
+                        Some((a0, a1))
+                    } else {
+                        None
+                    };
+                    (SetCurve::Conic(c, nrm, m, r, range), if t == 16 { 12 } else { 10 })
+                }
+                _ => return Err(format!("an edge of the set is a curve of type {t} (not read)")),
+            };
+            out.push(c);
+            q = at + 8 * len;
         }
-        q += 4;
-        // Newer parts put a second zero word between curves.
-        if k + 1 < n && b.get(q + 5..q + 16) != Some(&SET_CURVE[..]) && u32_at(b, q) == Some(0) {
-            q += 4;
+        // A few words follow each curve (zero, or a count and a zero after a spline): the next
+        // curve is the next class id within reach.
+        if k + 1 < n {
+            q = (q..=q + 64)
+                .find(|&o| b.get(o + 5..o + 16) == Some(&SET_CURVE[..]))
+                .ok_or("an edge of the set is not readable")?;
         }
     }
     Ok(out)
+}
+
+/// A B-spline of an edge set from `at` (see [`edge_set`]) and where it ends.
+fn set_spline(b: &[u8], at: usize) -> Result<(SetCurve, usize), String> {
+    let bad = || "an edge spline of the set is not readable".to_string();
+    let n = u32_at(b, at).ok_or_else(bad)? as usize;
+    if !(2..=MAX_POLES as usize).contains(&n) {
+        return Err(bad());
+    }
+    let mut q = at + 4;
+    let mut poles = Vec::with_capacity(n);
+    for _ in 0..n {
+        let p = v3_at(b, q).filter(|p| finite3(*p) && p.iter().all(|v| v.abs() < 1e6)).ok_or_else(bad)?;
+        poles.push(p);
+        q += 24;
+    }
+    if u32_at(b, q).ok_or_else(bad)? != 0 {
+        return Err("an edge of the set is a rational spline (not read)".into());
+    }
+    let k = u32_at(b, q + 4).ok_or_else(bad)? as usize;
+    q += 8;
+    if k > n + 26 {
+        return Err(bad());
+    }
+    let mut knots = Vec::with_capacity(k);
+    for _ in 0..k {
+        let t = f64_at(b, q).filter(|t| t.is_finite()).ok_or_else(bad)?;
+        if knots.last().is_some_and(|&l| t < l) {
+            return Err(bad());
+        }
+        knots.push(t);
+        q += 8;
+    }
+    let order = usize::from(*b.get(q + 9).ok_or_else(bad)?);
+    if b.get(q + 8) != Some(&0) || !(2..=26).contains(&order) || k != n + order {
+        return Err(bad());
+    }
+    Ok((SetCurve::Spline(order, poles, knots), q + 13))
+}
+
+/// A point of a B-spline (order, poles, flat knots) at `t` (de Boor).
+fn spline_at(order: usize, poles: &[V3], knots: &[f64], t: f64) -> Option<V3> {
+    let n = poles.len();
+    let (lo, hi) = (*knots.get(order - 1)?, *knots.get(n)?);
+    let t = t.clamp(lo, hi);
+    // The span: knots[s] <= t < knots[s + 1], order - 1 <= s < n.
+    let s = (order - 1..n).rev().find(|&i| knots.get(i).is_some_and(|&k| k <= t))?;
+    let mut d: Vec<V3> = poles.get(s + 1 - order..=s)?.to_vec();
+    for r in 1..order {
+        for j in (r..order).rev() {
+            let i = s + 1 - order + j;
+            let (a, b) = (*knots.get(i)?, *knots.get(i + order - r)?);
+            let w = if b > a { (t - a) / (b - a) } else { 0.0 };
+            let (p, q) = (*d.get(j - 1)?, *d.get(j)?);
+            *d.get_mut(j)? = [p[0] + w * (q[0] - p[0]), p[1] + w * (q[1] - p[1]), p[2] + w * (q[2] - p[2])];
+        }
+    }
+    d.last().copied()
 }
 
 /// The tree's pick of a stored edge: its middle and a short piece of it around the middle
@@ -543,6 +610,37 @@ pub(crate) fn edge_pick(c: &SetCurve) -> Result<Value, String> {
     // Half the length of the piece (mm).
     const PIECE: f64 = 0.1;
     let at = |p: V3, d: V3, s: f64| [p[0] + d[0] * s, p[1] + d[1] * s, p[2] + d[2] * s];
+    let mm = |p: V3| json!([rnd(p[0] * MM), rnd(p[1] * MM), rnd(p[2] * MM)]);
+    if let SetCurve::Spline(order, poles, knots) = c {
+        // The whole edge as a polyline close to it (within 2 um), the importer matching the
+        // model's edges that lie along it.
+        let (lo, hi) = (
+            *knots.get(order - 1).ok_or("an edge spline is empty")?,
+            *knots.get(poles.len()).ok_or("an edge spline is empty")?,
+        );
+        if hi <= lo {
+            return Err("an edge spline of the set is empty".into());
+        }
+        let ev = |t: f64| spline_at(*order, poles, knots, t).ok_or("an edge spline of the set is not readable");
+        let mut n = 16;
+        let pts = loop {
+            let pts: Vec<V3> = (0..=n).map(|i| ev(lo + (hi - lo) * i as f64 / n as f64)).collect::<Result<_, _>>()?;
+            let mut worst = 0.0f64;
+            for (i, w) in pts.windows(2).enumerate() {
+                let m = ev(lo + (hi - lo) * (i as f64 + 0.5) / n as f64)?;
+                if let [p, q] = w {
+                    let c = [(p[0] + q[0]) / 2.0 - m[0], (p[1] + q[1]) / 2.0 - m[1], (p[2] + q[2]) / 2.0 - m[2]];
+                    worst = worst.max(dot(c, c).sqrt());
+                }
+            }
+            if worst * MM < 0.002 || n >= 256 {
+                break pts;
+            }
+            n *= 2;
+        };
+        let path: Vec<Value> = pts.iter().map(|p| mm(*p)).collect();
+        return Ok(json!({"midpoint": mm(ev((lo + hi) / 2.0)?), "path": path}));
+    }
     let (mid, a, b) = match *c {
         SetCurve::Line(p, d, t0, t1) => {
             let len = (t1 - t0) * MM;
@@ -584,8 +682,8 @@ pub(crate) fn edge_pick(c: &SetCurve) -> Result<Value, String> {
             let h = (PIECE / MM / r).min(sweep / 4.0);
             (p(m), p(m - h), p(m + h))
         }
+        SetCurve::Spline(..) => return Err("an edge spline of the set".into()),
     };
-    let mm = |p: V3| json!([rnd(p[0] * MM), rnd(p[1] * MM), rnd(p[2] * MM)]);
     Ok(json!({"midpoint": mm(mid), "path": [mm(a), mm(b)]}))
 }
 
@@ -725,6 +823,9 @@ fn profile(st: &Store, serial: u32) -> Result<Profile, String> {
     if f.class == "JMDummyComputeFunction" {
         return copied_profile(st, serial, &f);
     }
+    if f.class == "JMTransmigrateAssocFunction" {
+        return edge_profile(st.obj(serial).ok_or("the profile is missing")?);
+    }
     if f.class != "JProfileRecomputeEx" {
         return Err(format!("the profile is a {} (not a sketch profile)", label(&f.class)));
     }
@@ -789,6 +890,20 @@ fn members(st: &Store, b: &[u8], at: usize, n: u32, plane: Option<(V3, V3, V3)>)
 
 /// A profile's curves and, for each, whether it was drawn from its end to its start.
 type Curves = (Vec<Curve2>, Vec<bool>);
+
+/// A profile made of edges of the model (an edge set, see [`edge_set`]): one whole circle,
+/// on the plane through its centre square to its normal, x along its major axis.
+fn edge_profile(b: &[u8]) -> Result<Profile, String> {
+    match edge_set(b)?.as_slice() {
+        [SetCurve::Conic(c, n, m, ratio, None)] if (ratio - 1.0).abs() < 1e-9 => {
+            let r = dot(*m, *m).sqrt();
+            let x = unit(*m).ok_or("an edge circle of the set has no radius")?;
+            let curves = vec![Curve2::Circle([0.0, 0.0], r)];
+            Ok(Profile { origin: *c, normal: *n, x, curves, turned: false, backwards: vec![false] })
+        }
+        _ => Err("a profile of model edges other than one circle".into()),
+    }
+}
 
 /// The bytes after a copied profile's frame: five zero bytes, `01 01 00 00 00` and a class id.
 const COPY_FRAME_END: [u8; 26] = [
