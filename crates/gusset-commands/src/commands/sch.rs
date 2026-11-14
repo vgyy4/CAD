@@ -86,6 +86,11 @@ fn safe_sheet_name(f: &str) -> bool {
         && !f.chars().any(char::is_control)
 }
 
+/// A name from a file for a hint: control characters dropped, at most 40 characters.
+fn plain(name: &str) -> String {
+    name.chars().filter(|c| !c.is_control()).take(40).collect()
+}
+
 /// The open schematic, a sheet of it (`None`: the root) edited by `f`, committed.
 fn sheet_edit(
     s: &mut Session,
@@ -117,10 +122,13 @@ fn sheet_edit_ex(
 ) -> Result<Value, CommandError> {
     let open = sch_session::open_schematic(s, &ctx.actor)?.ok_or_else(no_schematic)?;
     let (i, sch) = open.sheet(sheet).ok_or_else(|| {
+        let files: Vec<String> = open.design.sheets.iter().map(|(f, _)| plain(f)).collect();
         CommandError::not_found(format!(
             "the schematic has no sheet '{}'",
             crate::paths::display_name(sheet.unwrap_or(""))
         ))
+        .hint("sheet is a sheet file name such as led.kicad_sch (omit it for the root sheet)")
+        .details(json!({ "sheets_user_text": files }))
     })?;
     let mut edited = sch.clone();
     let mut files = Files::default();
@@ -430,8 +438,10 @@ impl Command for SchAddSymbol {
         let stem = stem.get(..stem.len().saturating_sub(".kicad_sym".len())).unwrap_or("lib").to_string();
         let lib_id = format!("{stem}:{}", self.symbol);
         let node = lib.embedded_node(&self.symbol, &lib_id).ok_or_else(|| {
+            let names: Vec<String> = lib.symbols.iter().take(12).map(|x| plain(&x.name)).collect();
             CommandError::not_found(format!("the library has no symbol '{}'", crate::paths::display_name(&self.symbol)))
-                .hint("sch.netlist lists placed parts; the library's symbols are its (symbol \"...\") entries")
+                .hint("symbols_user_text in details lists the library's first symbols")
+                .details(json!({ "symbols_user_text": names, "symbols": lib.symbols.len() }))
         })?;
         let label = format!("Add {}", crate::paths::display_name(&self.symbol));
         let mirror = mirror_of(self.mirror.as_deref(), Mirror::None)?;

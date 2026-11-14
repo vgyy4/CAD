@@ -212,3 +212,22 @@ fn a_symbol_on_a_sub_sheet_has_the_sub_sheets_instance_path() {
     let r1 = root.symbols.first().unwrap();
     assert_eq!(r1.instances.iter().map(|i| i.path.clone()).collect::<Vec<_>>(), [uses[0].path.clone()]);
 }
+
+#[test]
+fn a_wrong_sheet_or_symbol_name_says_what_exists() {
+    let mut s = setup();
+    two_sheets(&mut s);
+    // A sheet is named by its file, not by the sheet's name.
+    let on_power = json!({"library": "hand.kicad_sym", "symbol": "R", "at": [1, 1], "sheet": "Power"});
+    let e = execute(&mut s, &u(9), "sch.add_symbol", on_power).unwrap_err();
+    assert_eq!(e.code, "not_found", "{e:?}");
+    assert!(e.hint.as_deref().unwrap_or("").contains(".kicad_sch"), "{e:?}");
+    let files = e.details.as_ref().unwrap()["sheets_user_text"].to_string();
+    assert!(files.contains("power.kicad_sch"), "{files}");
+    // An unknown symbol lists the library's.
+    let unknown = json!({"library": "hand.kicad_sym", "symbol": "Rr", "at": [1, 1]});
+    let e = execute(&mut s, &u(10), "sch.add_symbol", unknown).unwrap_err();
+    assert_eq!(e.code, "not_found", "{e:?}");
+    assert_eq!(e.details.as_ref().unwrap()["symbols_user_text"], json!(["R"]), "{e:?}");
+    assert!(!e.hint.as_deref().unwrap_or("").contains("netlist"), "{e:?}");
+}
