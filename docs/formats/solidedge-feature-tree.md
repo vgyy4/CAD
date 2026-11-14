@@ -102,3 +102,45 @@ angle 360 is a default (no angle field found); extrude directions come from bbox
   Truth shows a pocket whose floor is at z 13.4-14 and wider (x +-26.3) than the cutout sketch (+-25.3) -> other features (fillets/holes/Protrusion_2399) contribute; not decoded.
 * 12 sync parts: not reconstructible. Profile (sketch) geometry is decoded for those that have SKETCH.P_B.
 * Open: direction flag meaning (flag5), revolve axis and angle, profile region selection, hole placement, Protrusion 2399 (profile slot [9] points to a hole serial), thread feature.
+
+## F10: round se1 (2026-11-14), the second corpus and the Rust reader
+Corpus: 184 ordered `.par` (182 from 11 openly licensed GitHub sources in `samples/se-more`, plus schraube and
+halter). Schema keys seen: SCH_*_28002/28101/30000/30100/31100/32001/34001/36001/37102. Reader:
+`crates/gusset-ole/src/solidedge_features.rs`; corpus test `crates/gusset-cli/tests/par_history.rs`.
+
+* **Objects (corrects F3).** Serials rise through the store but may jump far (31333 after 8143 in one part): the objects
+  are the longest strictly rising run of `QQ kind serial` candidates (kind < 4096). A `QQ` inside a payload breaks the rise
+  and drops out. Object kinds name typetable classes for most objects, but NOT for the 2D curves (a line's kind maps to an
+  unrelated class name, e.g. "Name Manager object"); constraint, key-point and dimension kinds do map right, so profile
+  members are filtered by class name and the rest is recognised by layout.
+* **Typetable record:** `class id(16), u32 index, 01 00 ff ff, u32 instance count, u16 n, name(n incl NUL), u16 m, dll`.
+* **Function:** first type signature in the object: `u32 n, sig (n-1 chars of %<>#rn), NUL, u32 m, class (m-1 chars),
+  NUL, u32 slot count`, slots: `0x10, u32 flags (0x80000000 in, 0x40000000 out), u32 serial, class id(16)` or
+  `0x80000010, u32 count[, u32 flags, count x (u32 serial, class id(16))]`. Same slot layout for protrusion and cutout
+  in every version seen (21 slots), revolves 20.
+* **History:** feature = function whose class is `JM*Function` (minus Transmigrate/DummyCompute/KeyPoint bookkeeping);
+  slot 1 = previous feature; the history is the longest chain.
+* **Extrude slots:** 2 = list of profiles (`JProfileRecomputeEx` attribute sets), 3 = extent kind, 4 = side,
+  6 = depth, 12/13/14 = the second extent (kind, side, depth), all value objects except 6 and 14 which may also be
+  dimension relations. Value objects (<= 64 bytes): f64 at +8. Relations (450-466 bytes): `u32 1, u32 k` at +0x88/+0x90,
+  `k` again later (+0xbe/+0xc6), then the f64. Extent kinds: 13 finite, 14 through all, 16 through next, 72 to a key point
+  (slot 6 is then a `JMLinearKeyPointFunction`), 17 revolve full turn. Sides: 1 against the profile plane's normal,
+  2 along it, 3 symmetric (depth = total), 6 both ways (through). CONFIRMED by the stored tool box of 124 protrusions and
+  by exact rebuilds.
+* **Revolve slots:** 6 = axis (`JMCreateRAThrough2dLine`, head `u32, u8 3, point, direction, t0, t1`, metres, absolute),
+  7 = angle (radians), 3 = 13 finite / 17 full, 4 = side (1 negative turn).
+* **Plane** (`JMCreateReferencePlane` and the base planes): head `u32, u8 14, origin(3), normal(3), x direction(3)` (metres,
+  absolute; the `JTransfValue` it refers to is relative and identity in the samples). The profile's 2D frame is x = x
+  direction, y = normal x x direction.
+* **Profile:** the attribute set names its `Profile2d` (UTF-16 "Profile2d" after `u32 serial, u8 72`); `JProfile2d`:
+  `u32 n, n member serials`. Members (u8 0, u8 flags 0/8 at +8): line 46 bytes `x1 y1 x2 y2`; circle 55 bytes
+  `cx cy r 0.0 1.0 u8`; arc 55 bytes `cx cy r u8 ccw a0 a1` (ccw 0: clockwise from a0 to a1); polynomial B-spline
+  `u32 1, u32 0x80000001, u32 n, u32 0, n poles, u8 order, u32 k, k mults, k knots, 20 bytes`; `u32 2` there is a rational
+  spline (weights not decoded); 71 bytes ellipse arc (not decoded). A member serial 0xffffffff is an empty slot.
+* **Members missing from the store** (sketch-based profiles, newer files): `SKETCH.P_B` edges carry
+  `SolidEdge/ProfileEntityInfo` integers `[1, 0, member serial, 0, profile]`; LINE / CIRCLE curves there, the head fin's
+  vertex ends the edge (as in a body), the curve sense gives the turn. CONFIRMED (the 15 truss members of Shass27 rebuild
+  only so).
+* **DummyCompute profiles** (slot 2 of 546 features): copies made by smart patterns (220 of a sample) and mirror copies;
+  they list their curves at +16 (`u32 n` at +12) and 3D copies of them, but no plane: not read.
+* **Second extents** are common in the older files (servo tower: 16.002 one way, 6.858 the other).

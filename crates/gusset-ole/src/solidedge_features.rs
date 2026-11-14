@@ -654,6 +654,8 @@ enum Kind {
     RevolvedCutout,
     /// A cosmetic thread: no geometry.
     Thread,
+    /// The start of an older part's history, before its first feature.
+    BaseBody,
     Other,
 }
 
@@ -664,14 +666,18 @@ fn kind(class: &str) -> Kind {
         "JMRevolvedProtrusionFunction" => Kind::RevolvedProtrusion,
         "JMRevolvedCutoutFunction" => Kind::RevolvedCutout,
         "JMThreadFunction" => Kind::Thread,
+        "JMBodyFeatureAssocFunc" => Kind::BaseBody,
         _ => Kind::Other,
     }
 }
 
 /// Functions that are bookkeeping, not features of the history.
 fn bookkeeping(class: &str) -> bool {
+    // Features are `JM*Function` and a few `JM*AssocFunc*` (thin wall, base body, feature
+    // group, wrap, extruded surface...).
+    let feature = class.ends_with("Function") || (class.contains("AssocFunc") && !class.contains("Property"));
     !class.starts_with("JM")
-        || !class.ends_with("Function")
+        || !feature
         || class.contains("Transmigrate")
         || class.contains("Dummy")
         || class.contains("KeyPoint")
@@ -728,7 +734,11 @@ fn unsupported(name: &str, what: &str, why: &str) -> Value {
 
 /// The label of a feature class (`JMRoundFunction` -> `Round`).
 fn label(class: &str) -> &str {
-    class.strip_prefix("JM").and_then(|c| c.strip_suffix("Function")).unwrap_or(class)
+    let c = class.strip_prefix("JM").unwrap_or(class);
+    ["AssocFunctionNew", "AssocCFunction", "AssocFunction", "AssocFunc", "Function"]
+        .iter()
+        .find_map(|s| c.strip_suffix(s))
+        .unwrap_or(c)
 }
 
 struct State {
@@ -875,7 +885,9 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
                 }
             }
             Kind::Thread => s.omitted.push(json!({"name": name, "why": "cosmetic thread"})),
-            Kind::Other => s.out.push(unsupported(&name, what, "feature kind not read yet")),
+            // Left out: if it held geometry, the rebuild check finds the body short.
+            Kind::BaseBody if s.out.is_empty() => s.omitted.push(json!({"name": name, "why": "base body feature"})),
+            Kind::Other | Kind::BaseBody => s.out.push(unsupported(&name, what, "feature kind not read yet")),
         }
     }
     if solids == 0 && s.out.iter().all(|f| f.get("type").and_then(Value::as_str) == Some("unsupported")) {
