@@ -1648,6 +1648,22 @@ fn solid_edge_history(
         .collect();
     let text = serde_json::to_vec(&tree).map_err(|e| e.to_string())?;
     let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
+    // A feature the reader could not read fails the check whatever the rest gives: said
+    // without a rebuild (measuring a large part's own body alone can take minutes).
+    let unread = tree.get("features").and_then(Value::as_array).and_then(|fs| {
+        fs.iter().find_map(|f| {
+            (f.get("type")?.as_str()? == "unsupported").then(|| {
+                let n = f.get("name").and_then(Value::as_str).unwrap_or_default();
+                let what = f.get("original_type").and_then(Value::as_str).unwrap_or_default();
+                let reason = f.get("reason").and_then(Value::as_str).unwrap_or_default();
+                format!("the {what} feature {n} cannot be read: {reason}")
+            })
+        })
+    });
+    if let Some(why) = unread {
+        *attempt = Some(t);
+        return Err(why);
+    }
     match rebuild_check(&mut t, bodies, kernel, file_name, "the part's") {
         Ok(note) => {
             let mut notes: Vec<String> = note.into_iter().collect();
@@ -1658,20 +1674,7 @@ fn solid_edge_history(
         }
         Err(why) => {
             *attempt = Some(t);
-            // A feature the reader could not read says why, which the rebuild's own "not
-            // exported" does not.
-            let named = first_skipped(&why).and_then(|n| {
-                tree.get("features")?.as_array()?.iter().find_map(|f| {
-                    (f.get("name")?.as_str()? == n && f.get("type")?.as_str()? == "unsupported")
-                        .then(|| {
-                            let what = f.get("original_type")?.as_str()?;
-                            let reason = f.get("reason")?.as_str()?;
-                            Some(format!("the {what} feature {n} cannot be read: {reason}"))
-                        })
-                        .flatten()
-                })
-            });
-            Err(named.unwrap_or(why))
+            Err(why)
         }
     }
 }

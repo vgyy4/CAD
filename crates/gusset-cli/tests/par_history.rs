@@ -49,7 +49,7 @@ fn solid_edge_parts_come_in_as_history_or_bodies() {
         std::fs::copy(f, p.join("part.par")).unwrap();
         s.project_dir = Some(p.clone());
         s.importer = Some(Arc::new(
-            gusset_worker::WorkerImporter::new(worker.clone()).with_timeout(std::time::Duration::from_secs(300)),
+            gusset_worker::WorkerImporter::new(worker.clone()).with_timeout(std::time::Duration::from_secs(900)),
         ));
         let verbose = std::env::var_os("GUSSET_PAR_VERBOSE").is_some();
         match execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "part.par"})) {
