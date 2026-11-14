@@ -1,6 +1,6 @@
 #![no_main]
 //! Solid Edge and Inventor part containers (OLE2 compound files), and the Inventor feature
-//! history read from their records. Must never panic, and must stay within its limits.
+//! histories read from their records. Must never panic, and must stay within its limits.
 
 use libfuzzer_sys::fuzz_target;
 
@@ -28,12 +28,17 @@ fuzz_target!(|data: &[u8]| {
     let _ = gusset_ole::solidedge::extract_xt(data, &limits);
     let _ = gusset_ole::inventor::extract_sab(data, &limits);
     let _ = gusset_ole::inventor_features::feature_tree(data, "f.ipt", &limits);
+    let _ = gusset_ole::solidedge_features::feature_tree(data, "f.par", &limits);
     // The same bytes behind the compound file signature.
     let mut ole = vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
     ole.extend_from_slice(data);
     let _ = gusset_ole::solidedge::extract_xt(&ole, &limits);
     let _ = gusset_ole::inventor::extract_sab(&ole, &limits);
     let _ = gusset_ole::inventor_features::feature_tree(&ole, "f.ipt", &limits);
+    let _ = gusset_ole::solidedge_features::feature_tree(&ole, "f.par", &limits);
+    // The bytes as a Solid Edge object store, so the object and function readers run.
+    let part = gusset_ole::fixtures::ole(&[("PSMcluster0", data), ("PSMtypetable", &[])]);
+    let _ = gusset_ole::solidedge_features::feature_tree(&part, "f.par", &limits);
     // The bytes cut into records of a well-formed feature segment, so the record readers run:
     // each record is a length byte, a class byte and that many bytes.
     let mut recs: Vec<(usize, Vec<u8>)> = Vec::new();
