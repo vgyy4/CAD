@@ -9,13 +9,16 @@ refuses tag pushes); the tag triggers the release workflow after the milestone r
 Phase 3 has started (see Next).
 
 ## Done
-- Importer status (2026-11-13): Fusion 277 of 318 designs as history (rounds 27-34;
-  paused after two rounds without gains, docs/formats/fusion-corpus-tally.md); SolidWorks
-  next (owner rule: one importer at a time): corpus grown by 1253 openly licensed parts
-  (scratch, never committed), round 1 took history from 85 to 195 of 1352 parts (ADR 0043
-  amendment 2026-11-13); two parts that crashed the importer in-process are fixed (an
-  unbounded face in mass properties, OCCT patch gusset-0005; the hole fit check meshes only
-  the hole's face).
+- Importer status (2026-11-14), feature history that rebuilds under the unchanged strict check:
+  Fusion 277 of 318 (paused after rounds 33-34 gained none; docs/formats/fusion-corpus-tally.md);
+  SolidWorks 263 of 1352 (rounds sw1-sw4, ADR 0043; was 85); Inventor 562 of 1639 on the new corpus
+  and 28 of 47 on the old (rounds ipt1-ipt3, ADR 0046 amendments 8-10; was 263 and 25); Solid Edge 28
+  of 184 ordered parts (round se1, ADR 0046 amendment 11; first history import). Sample corpora are
+  openly licensed downloads kept in scratch, never committed. Two in-process import crashes fixed (an
+  unbounded face in mass properties, OCCT patch gusset-0005; the hole fit check meshes only the hole's
+  face). Some Inventor rules take a value from the part's stored result where the file's record is not
+  decoded (hole centres without sketch points, pulley flange sections, the face a to-face extrude
+  reaches); each rebuilt feature still has to pass the check.
 - Thread, bend and face profiles as commands (2026-11-13; ADR 0012): `feature.thread`
   (title "Face thread"; cosmetic or `modeled`), `feature.bend` (sheet metal, `line: Sketch.lN`,
   `side`, `position`), and `face: <planar body face>` as the profile of `feature.extrude` and
