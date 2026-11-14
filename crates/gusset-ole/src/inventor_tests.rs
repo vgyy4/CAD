@@ -840,7 +840,7 @@ mod sab {
             vec![(custom, vec![S("INV_NMX_SHELL_TAG"), I(-1), I(1), I(44), I(1), I(9), P(2)])],
         ))
         .unwrap();
-        let open = a.shell_openings(9);
+        let open = a.shell_openings(9, &[]);
         assert_eq!(open.len(), 2, "{open:?}");
         let normals: Vec<[f64; 3]> = open.iter().map(|o| o.1.map(f64::abs)).collect();
         assert!(normals.contains(&[1.0, 0.0, 0.0]) && normals.contains(&[0.0, 0.0, 1.0]), "{normals:?}");
@@ -849,7 +849,19 @@ mod sab {
             let c = if n[0].abs() > 0.5 { [0.0, p[1], 0.5] } else { [0.5, p[1], 0.0] };
             assert!(crate::acis::dist(*p, c) < 1e-12, "{p:?}");
         }
-        assert!(a.shell_openings(10).is_empty());
+        assert!(a.shell_openings(10, &[]).is_empty());
+        // A plane a later feature made is no rim.
+        let b = Acis::parse(&blend_with(
+            42,
+            true,
+            vec![
+                (custom, vec![S("INV_NMX_SHELL_TAG"), I(-1), I(1), I(44), I(1), I(9), P(2)]),
+                (custom, vec![S("INV_NMX_GEN_TAG"), I(-1), I(1), I(44), I(1), I(11), P(3)]),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(b.shell_openings(9, &[11]).len(), 1);
+        assert_eq!(b.shell_openings(9, &[]).len(), 2);
     }
 
     #[test]

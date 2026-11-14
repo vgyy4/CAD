@@ -182,8 +182,7 @@ fn custom_attribute(r: &mut Rec, text: Option<&[u8]>) {
         (b"INV_NMX_EDGE_BLEND_TAG", "NMx_edge_blend_tag"),
         (b"INV_NMX_SWEEPGENERATED_TAG", "NMx_Sweep_Generated_Brep_tag"),
         (b"INV_NMX_GEN_TAG", "NMx_Generated_Brep_tag"),
-        // No shell of the older files is in the corpus: the name is ours.
-        (b"INV_NMX_SHELL_TAG", "NMx_Shell_tag"),
+        (b"INV_NMX_SHELL_TAG", "NMx_shell_face_tag"),
     ];
     if !r.ty.starts_with("ATTRIB_CUSTOM") {
         return;
@@ -684,24 +683,30 @@ impl Acis {
     }
 
     /// The open faces of a shell with id `fid`, as they were before it: the planar faces
-    /// beside its inner (shell-tagged) faces that it did not make are the rims left of each face
-    /// it removed, lying in that face's plane. One entry per plane (point, unit normal; file
-    /// units): a corner of the rim's inner boundary, which lay inside the removed face.
-    pub(crate) fn shell_openings(&self, fid: i64) -> Vec<(V3, V3)> {
+    /// beside its inner faces (`NMx_shell_face_tag`) that it did not make are the rims left of
+    /// each face it removed, lying in that face's plane. A face a feature in `later` made (a boss
+    /// on the inner floor) is no rim. One entry per plane (point, unit normal; file units): a
+    /// corner of the rim's inner boundary, which lay inside the removed face.
+    pub(crate) fn shell_openings(&self, fid: i64, later: &[i64]) -> Vec<(V3, V3)> {
         let mut inner = Vec::new();
+        // Face -> the feature ids its naming attributes carry.
+        let mut made: HashMap<i64, Vec<i64>> = HashMap::new();
         for r in &self.recs {
-            if r.ty.starts_with("NMx_Shell_tag")
-                && r.ints.get(3) == Some(&fid)
-                && let Some(&f) = r.refs.iter().find(|&&y| self.is(y, "face"))
-                && !inner.contains(&f)
-            {
+            if !r.ty.starts_with("NMx_") {
+                continue;
+            }
+            let (Some(&f), Some(&id)) = (r.refs.iter().find(|&&y| self.is(y, "face")), r.ints.get(3)) else {
+                continue;
+            };
+            made.entry(f).or_default().push(id);
+            if r.ty.starts_with("NMx_shell_face_tag") && id == fid && !inner.contains(&f) {
                 inner.push(f);
             }
         }
         let mut out: Vec<(V3, V3)> = Vec::new();
         for &f in &inner {
             for (g, e) in self.neighbours(f) {
-                if inner.contains(&g) {
+                if inner.contains(&g) || made.get(&g).is_some_and(|ids| ids.iter().any(|i| later.contains(i))) {
                     continue;
                 }
                 let Surf::Plane { p, n } = self.kind(g) else { continue };

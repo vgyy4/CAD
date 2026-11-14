@@ -967,7 +967,7 @@ fn thicken(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
 /// A shell: slot 3 the wall thickness, slot 0 ends with the side (0 inside, 1 outside), slot 1
 /// lists the names of the faces it opens. The names are not decoded: the open faces are found
 /// in the result body instead ([`Acis::shell_openings`]), and their number must be the list's.
-fn shell(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+fn shell(r: &Reader, st: &mut State, f: &Feature, name: &str, later: &[i64]) -> Result<(), String> {
     let s = r.slots(f)?;
     let t = r.pval(&s, 3)? * CM;
     let side = match s.get(0).and_then(|i| tail_u16(&r.dc, i)) {
@@ -983,7 +983,7 @@ fn shell(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     } else {
         let b = r.result().ok_or("the result body is not readable")?;
         let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
-        let open = b.shell_openings(fid);
+        let open = b.shell_openings(fid, later);
         if open.len() != n {
             return Err(format!("{} of its {n} open faces found in the result body", open.len()));
         }
@@ -1564,7 +1564,7 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
         names,
         holes: HashMap::new(),
     };
-    for f in &feats {
+    for (k, f) in feats.iter().enumerate() {
         let name = f.name.clone().unwrap_or_else(|| format!("Feature{}", f.rec));
         let Some(typ) = f.typ else {
             st.out.push(unsupported(&name, "unknown", None));
@@ -1582,7 +1582,10 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             FeatType::Hole => hole(&r, &mut st, f, &name),
             FeatType::RectPattern => pattern(&r, &mut st, f, &name),
             FeatType::Thicken => thicken(&r, &mut st, f, &name),
-            FeatType::Shell => shell(&r, &mut st, f, &name),
+            FeatType::Shell => {
+                let later: Vec<i64> = feats.iter().skip(k + 1).filter_map(|g| r.dc.seq(g.rec)).map(i64::from).collect();
+                shell(&r, &mut st, f, &name, &later)
+            }
             FeatType::Sweep => sweep(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.
             FeatType::Thread => {
