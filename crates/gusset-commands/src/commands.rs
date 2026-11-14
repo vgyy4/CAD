@@ -2252,13 +2252,17 @@ fn extrude_feature(s: &mut Session, ctx: &CmdCtx, a: ExtrudeParts) -> Result<Val
     let op = op_of(&a.op)?;
     let (sketch_name, all_regions) = (a.profile.sketch.clone(), a.profile.regions.is_empty());
     let seen = std::cell::RefCell::new((String::new(), None::<String>));
+    // A face profile with no `body` works on the face's own body (ADR 0042 amendment), which the
+    // evaluation finds; a stored target would be the latest body, whatever the face belongs to.
+    let face_profile = a.profile.face.clone();
+    let on_face_body = face_profile.is_some() && a.body.is_none() && op != BodyOp::New;
     edit_post(
         s,
         ctx,
         "Extrude",
         |doc, rb| {
             let name = feature_name(doc, a.name, "Extrude")?;
-            let body = target_body(doc, rb, op, a.body)?;
+            let body = if on_face_body { None } else { target_body(doc, rb, op, a.body)? };
             let body_name = check_new_body_name(doc, op, &name, a.body_name)?;
             *seen.borrow_mut() = (name.clone(), body.as_deref().map(|t| body_display_name(doc, t)));
             let created = (op == BodyOp::New).then(|| body_name.clone().unwrap_or_else(|| name.clone()));
@@ -2279,7 +2283,12 @@ fn extrude_feature(s: &mut Session, ctx: &CmdCtx, a: ExtrudeParts) -> Result<Val
         },
         |_, out, ch| {
             let (name, body) = &*seen.borrow();
-            let w = combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch);
+            let on_face = face_profile
+                .as_ref()
+                .filter(|_| on_face_body)
+                .and_then(|f| out.evaluation.bodies.iter().rev().find(|b| b.names.face_index(f).is_some()))
+                .map(|b| b.name.clone());
+            let w = combine_effect_warnings(name, op, body.as_deref().or(on_face.as_deref()), &out.new_errors, ch);
             open_ends_warning(w, &out.evaluation, &sketch_name, all_regions)
         },
     )

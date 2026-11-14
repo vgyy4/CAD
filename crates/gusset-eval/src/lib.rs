@@ -1087,7 +1087,16 @@ impl Evaluator {
                     }
                 };
                 let ctx = input.ctx(name, &e.profile);
-                self.combine_refined(s, name, &ctx, r, e.op, (e.body.as_deref(), e.body_name.as_deref()), e.refine)
+                // No target and a face profile: the face's own body (ADR 0042 amendment).
+                let face_body = e
+                    .profile
+                    .face
+                    .as_ref()
+                    .filter(|_| e.body.is_none() && e.op != BodyOp::New)
+                    .and_then(|f| s.bodies.iter().rev().find(|b| b.names.face_index(f).is_some()))
+                    .map(|b| b.feature.clone());
+                let target = e.body.as_deref().or(face_body.as_deref());
+                self.combine_refined(s, name, &ctx, r, e.op, (target, e.body_name.as_deref()), e.refine)
             }
             FeatureKind::Revolve(r) => self.run_revolve(s, name, r, units, params),
             FeatureKind::Sweep(d) => self.run_sweep(s, name, d, units, params),

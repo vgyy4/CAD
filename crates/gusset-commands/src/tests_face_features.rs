@@ -153,3 +153,31 @@ fn revolve_takes_a_face_and_an_edge_axis() {
         assert_eq!(err(&mut s, "feature.revolve", args).code, "invalid_args");
     }
 }
+
+#[test]
+fn a_face_profile_without_a_body_works_on_the_faces_own_body() {
+    let mut s = session();
+    block(&mut s);
+    // A second, later body: the "latest body" is not the one the face belongs to.
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch2", "x": 40, "y": 0, "width": 5, "height": 5}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch2", "distance": "5 mm", "body_name": "Other"}));
+    run(&mut s, "feature.extrude", json!({"face": "Extrude1/cap(end)", "distance": "3 mm", "op": "add"}));
+    let t = text(&s);
+    assert!(!t.contains("body: Extrude2"), "no stored target: {t}");
+    // The mock kernel only unites bodies that do not touch: the pad touches Base (the face's
+    // body) and not Other (the latest body), so the refusal shows which body it went to.
+    let ev = s.evaluate(&gusset_history::Actor::User).unwrap();
+    let errors = format!("{:?}", ev.errors());
+    assert!(errors.contains("Extrude3") && errors.contains("touch"), "the pad was joined to Base: {errors}");
+    // An explicit body still wins (and the disjoint Other can take it).
+    run(&mut s, "feature.delete", json!({"name": "Extrude3"}));
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"face": "Extrude1/cap(end)", "distance": "1 mm", "op": "add", "body": "Other"}),
+    );
+    assert!(text(&s).contains("body: Extrude2"), "{}", text(&s));
+    let ev = s.evaluate(&gusset_history::Actor::User).unwrap();
+    assert!(ev.errors().is_empty(), "{:?}", ev.errors());
+}
