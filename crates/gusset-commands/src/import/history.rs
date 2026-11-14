@@ -101,7 +101,7 @@ pub(super) fn classify(
         }
         Err(why) if why.is_empty() => (HistoryClass::None, "the file holds no feature history".to_string(), None),
         Err(why) => {
-            body_warnings.push(format!("the design history came in as {what}: {why}"));
+            body_warnings.push(format!("the design history came in as {what}: {}", readable(&why)));
             let class = if attempt.is_some() { HistoryClass::Imperfect } else { HistoryClass::None };
             (class, readable(&why), attempt)
         }
@@ -182,4 +182,24 @@ pub(super) fn plan(mut p: PreparedImport) -> Plan {
     }
     let report = json!({ "class": class.keyword(), "why_user_text": h.info.why, "imported": imported });
     Plan::Commit(Box::new(p), Some(report))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_rebuild_reason_is_plain_text_in_warnings_and_the_report() {
+        let why = r#"2 features could not be rebuilt, the first: {"feature":"Mirror2","reason":"its feature 'Mirror1' was not imported"}"#;
+        let mut warnings = Vec::new();
+        let h = classify(Err(why.into()), None, "", Vec::new(), &mut warnings, "exact bodies");
+        assert_eq!(
+            warnings,
+            [
+                "the design history came in as exact bodies: 2 features could not be rebuilt, the first: Mirror2 (its feature 'Mirror1' was not imported)"
+            ]
+        );
+        assert!(!h.info.why.contains('{'), "{}", h.info.why);
+        assert_eq!(readable("no history"), "no history");
+    }
 }
