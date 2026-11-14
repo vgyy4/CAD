@@ -675,7 +675,12 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
 
 fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
     let s = r.slots(f)?;
-    let items = r.dc.first_list(s.need(7)?, None).map(|x| x.0).ok_or("the hole has no centre list")?;
+    let items = match s.get(7) {
+        Some(c) => r.dc.first_list(c, None).map(|x| x.0).ok_or("the hole has no centre list")?,
+        // Placed on something else than sketch points (concentric to an edge, on a point):
+        // the centres come from the hole's faces in the result body (notes AF).
+        None => Vec::new(),
+    };
     let m = r.dc.placement(s.need(8)?).ok_or("the hole placement is not readable")?;
     let (o, x, y) = frame(&m);
     let mut pos: Vec<V3> = Vec::new();
@@ -707,6 +712,15 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
     // Slot 17 set: the hole goes the other way (into the face whose outward normal is the
     // opposite; notes AF).
     let nd = if s.get(17).is_some_and(|i| r.dc.r(i).last() == Some(&1)) { [-nd[0], -nd[1], -nd[2]] } else { nd };
+    if s.get(7).is_none() {
+        let b = r.result().ok_or("slot 7 is empty and the result body is not readable")?;
+        let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
+        let u = unit3(nd);
+        pos = b.hole_centres(fid, u).into_iter().map(|p| [rnd(p[0] * CM), rnd(p[1] * CM), rnd(p[2] * CM)]).collect();
+        if pos.is_empty() {
+            return Err("slot 7 is empty and no face of the hole is in the result body".into());
+        }
+    }
     let t0 = s.need(0)?;
     let typ = u32_at(r.dc.r(t0), r.dc.body(t0)).ok_or("the hole type is not readable")?;
     let diameter = rnd(r.pval(&s, 1)? * CM);

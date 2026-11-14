@@ -177,12 +177,13 @@ fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
 /// type name in front and loses that int, so the readers below see one layout. Only the names
 /// read here are mapped.
 fn custom_attribute(r: &mut Rec, text: Option<&[u8]>) {
-    const MAP: [(&[u8], &str); 5] = [
+    const MAP: [(&[u8], &str); 6] = [
         (b"INV_NMX_BLEND_TAG", "NMx_blend_tag"),
         (b"INV_NMX_EDGE_BLEND_TAG", "NMx_edge_blend_tag"),
         (b"INV_NMX_SWEEPGENERATED_TAG", "NMx_Sweep_Generated_Brep_tag"),
         (b"INV_NMX_GEN_TAG", "NMx_Generated_Brep_tag"),
         (b"INV_NMX_SHELL_TAG", "NMx_shell_face_tag"),
+        (b"INV_NMX_HOLE_TAG", "NMx_Hole_Brep_tag"),
     ];
     if !r.ty.starts_with("ATTRIB_CUSTOM") {
         return;
@@ -804,6 +805,52 @@ impl Acis {
         }
         segs.extend(spans.into_iter().map(|(h, lo, hi)| RevSeg::Line([lo, h], [hi, h])));
         Ok((o, ax, segs))
+    }
+
+    /// The centres of a hole feature with id `fid` on the face it starts from, from its faces
+    /// in the result (`NMx_Hole_Brep_tag`, 4th int the id): one per axis of its cylinders
+    /// along `dir` (the hole's outward direction, unit), at the farthest point along `dir` of
+    /// the hole's faces round that axis. File units; empty when no face is left.
+    pub(crate) fn hole_centres(&self, fid: i64, dir: V3) -> Vec<V3> {
+        let mut faces: Vec<i64> = Vec::new();
+        for r in &self.recs {
+            if r.ty.starts_with("NMx_Hole_Brep_tag")
+                && r.ints.get(3) == Some(&fid)
+                && let Some(&f) = r.refs.iter().find(|&&y| self.is(y, "face"))
+                && !faces.contains(&f)
+            {
+                faces.push(f);
+            }
+        }
+        // Each axis (a point on it at the height 0 along `dir`) with its widest radius.
+        let mut axes: Vec<(V3, f64)> = Vec::new();
+        for &f in &faces {
+            if let Surf::Cyl { c, ax, r } = self.kind(f)
+                && dist(cross(ax, dir), [0.0; 3]) < 1e-9
+            {
+                let p = sub(c, mul(dir, dot(c, dir)));
+                match axes.iter_mut().find(|a| dist(a.0, p) < 1e-7) {
+                    Some(a) => a.1 = a.1.max(r),
+                    None => axes.push((p, r)),
+                }
+            }
+        }
+        axes.iter()
+            .filter_map(|&(p, r)| {
+                let near = |v: V3| {
+                    let w = sub(v, p);
+                    let h = dot(w, dir);
+                    libm::sqrt((dot(w, w) - h * h).max(0.0)) <= r + 1e-7
+                };
+                let top = faces
+                    .iter()
+                    .flat_map(|&f| self.verts(f))
+                    .filter(|&v| near(v))
+                    .map(|v| dot(v, dir))
+                    .fold(f64::NEG_INFINITY, f64::max);
+                top.is_finite().then(|| add(p, mul(dir, top)))
+            })
+            .collect()
     }
 
     /// Where a sweep with id `fid` ended (extent 4 or 7, to the next face or to a face): the

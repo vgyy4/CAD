@@ -899,6 +899,28 @@ mod sab {
         assert!(a.revolution_profile(9).is_err());
     }
 
+    /// A hole placed on something else than sketch points: its centre is where its cylinder's
+    /// axis leaves its faces along the hole's outward direction (`NMx_Hole_Brep_tag`, or
+    /// `INV_NMX_HOLE_TAG` in newer files).
+    #[test]
+    fn a_hole_centre_from_its_faces() {
+        let custom: &[&str] = &["ATTRIB_CUSTOM", "attrib"];
+        let a = Acis::parse(&blend_with(
+            42,
+            true,
+            vec![(custom, vec![S("INV_NMX_HOLE_TAG"), I(-1), I(1), I(44), I(1), I(5), P(2)])],
+        ))
+        .unwrap();
+        let near = |p: [f64; 3], q: [f64; 3]| crate::acis::dist(p, q) < 1e-12;
+        let up = a.hole_centres(5, [0.0, 1.0, 0.0]);
+        assert!(up.len() == 1 && near(up[0], [0.5, 2.0, 0.5]), "{up:?}");
+        let down = a.hole_centres(5, [0.0, -1.0, 0.0]);
+        assert!(down.len() == 1 && near(down[0], [0.5, 0.0, 0.5]), "{down:?}");
+        // Not along the cylinder, or another feature: none.
+        assert!(a.hole_centres(5, [1.0, 0.0, 0.0]).is_empty());
+        assert!(a.hole_centres(6, [0.0, 1.0, 0.0]).is_empty());
+    }
+
     /// The faces a shell opened are the planes beside its inner (shell-tagged) faces: one
     /// point per plane, a corner of the rim's inner boundary.
     #[test]
@@ -1340,4 +1362,11 @@ fn a_hole_with_slot_17_set_goes_the_other_way() {
     r[29].1.pop();
     r[29].1.push(0);
     assert_eq!(tree(&r).unwrap()["features"][2]["face"]["normal"], json!([0.0, 0.0, 1.0]));
+    // No centre list (a hole placed on an edge or a point): the centres come from the result
+    // body, which this file does not have.
+    slots[7] = 0;
+    r[28].1 = feature(19, 0, 6, &slots);
+    let t = tree(&r).unwrap();
+    assert_eq!(t["features"][2]["type"], "unsupported");
+    assert!(t["features"][2]["reason"].as_str().unwrap().contains("slot 7 is empty and the result body"), "{t}");
 }
