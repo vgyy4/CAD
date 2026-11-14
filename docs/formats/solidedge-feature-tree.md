@@ -144,3 +144,4 @@ halter). Schema keys seen: SCH_*_28002/28101/30000/30100/31100/32001/34001/36001
 * **DummyCompute profiles** (slot 2 of 546 features): copies made by smart patterns (220 of a sample) and mirror copies;
   they list their curves at +16 (`u32 n` at +12) and 3D copies of them, but no plane: not read.
 * **Second extents** are common in the older files (servo tower: 16.002 one way, 6.858 the other).
+* Coverage of round se1 (OCCT test par_history, 184 ordered parts): 28 as history, 154 as exact bodies, 2 failing in the body import (worker killed/crashed, as before). ADR 0046 amendment 11.

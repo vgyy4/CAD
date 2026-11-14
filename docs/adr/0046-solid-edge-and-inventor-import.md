@@ -400,3 +400,40 @@ the 3104 rectangular patterns (12) and the revolve axes off the sketch origin (1
 blocker left is worth at most a handful of parts (note AH); the largest are an iPart family whose
 stored parameters disagree with its body (7) and parts that start from an imported body (31, not a
 rebuild).
+
+## Amendment (2026-11-14, 11): Solid Edge feature history imports as editable features (round se1)
+
+`gusset_ole::solidedge_features` reads an ordered `.par` part's history from `PSMcluster0` into the same
+`gusset-feature-tree` v2 form the other native readers give, and `import.file` hands it to the shared rebuild check
+(`solid_edge_history` in `gusset-commands/src/import.rs`, classified perfect / imperfect / none as for Inventor; tier
+"the Solid Edge feature history as editable features"). Clean room, from the sample bytes and Gusset's own import of
+each part's body (layout notes F10 of `docs/formats/solidedge-feature-tree.md`):
+
+- objects: the longest rising run of `QQ kind serial` candidates; functions: type signature, class, slots (single or
+  list references); the history: the longest chain of previous-feature links (slot 1);
+- extruded protrusions and cutouts: profiles (slot 2), extent (13 finite, 14 through all, 16 through next swept as
+  through all, 72 up to a key point at the reach the key point stores), side (1 against the profile normal, 2 along, 3
+  symmetric, 6 both ways), depth (value object or dimension relation), a second extent (slots 12-14) as `distance2`;
+- revolved protrusions and cutouts: axis (an absolute line object), angle (radians; 17 = full turn);
+- profiles: plane (absolute frame in the plane object), 2D lines, circles, arcs and polynomial B-splines of the
+  `Profile2d`; members kept only in the sketches' Parasolid partition `SKETCH.P_B` are found through their
+  `SolidEdge/ProfileEntityInfo` attribute and brought into the profile plane (gusset-ole now depends on gusset-xt);
+- cosmetic threads and the base-body feature of older parts are listed as left out (the rebuild check tells whether
+  the base body held geometry).
+
+Everything else (rounds, chamfers, holes, patterns, sweeps, lofts, thin walls, rational splines, pattern-copied
+profiles) is an `unsupported` feature: such a tree is refused without running the rebuild (measuring a large part's
+own body can take most of an hour in a debug build), its reason first among the import's warnings. Synchronous parts
+keep no ordered history and stay body imports. The rebuild check is unchanged; no value is taken from the result body.
+
+**Coverage (184 ordered parts: 182 of `samples/se-more`, 11 GitHub sources, plus schraube and halter of Zenodo
+8028435; OCCT corpus test `crates/gusset-cli/tests/par_history.rs`, `GUSSET_PAR_SAMPLES`, floor
+`GUSSET_PAR_MIN_HISTORY`).** 28 come in as history (was 0): schraube, the 15 Shass27 truss members, the servo tower,
+the battery pack and 10 more; 154 come in as their exact body; 2 fail in the body import itself, as before this round
+(the Parasolid worker is killed on one jam-cam part and crashes on another). One part (UFO_base) spends over an hour
+measuring its exact body in a debug build (body import, not the history). First reasons of the 154: a feature kind not
+read (96: rounds 29, multi-section sweeps 20, chamfers 13, thin walls 5, lofts 7, part copies 4, smart patterns 4,
+others), a rational spline or ellipse in a profile (27), a pattern-copied profile (19), a profile curve stored nowhere
+(4), a revolve extent not read (1), a cut whose body did not come in (2) and 5 rebuilds that differ from the part
+(feature groups, later direct edits, a stored body of negative volume). Next: round and chamfer edges (topological references `SEGetSmoothEdgeSeq`, not
+geometry), rational splines (weights after the knots), pattern copies (curves listed, plane to be found), sweeps.
