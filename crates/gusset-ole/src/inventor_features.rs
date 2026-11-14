@@ -529,6 +529,9 @@ struct State {
     /// Feature record -> its name.
     names: HashMap<usize, String>,
     holes: HashMap<String, HoleInfo>,
+    /// Feature name -> the names of the tree features it became (none when it was left out;
+    /// a fillet with several radii is several), for the patterns and mirrors that copy it.
+    emitted: HashMap<String, Vec<String>>,
 }
 
 fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> Result<(), String> {
@@ -557,6 +560,7 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let ext = |i: Option<usize>| i.and_then(|i| tail_u16(&r.dc, i));
     if typ == FeatType::Extrude {
         let rev = s.get(3).and_then(|i| r.dc.r(i).last().copied()) == Some(1);
+        let both = s.get(7).and_then(|i| r.dc.r(i).last().copied()) == Some(1);
         let dist = r.param(&s, 4)? * CM;
         match ext(s.get(6)) {
             Some(2) => {
@@ -566,6 +570,12 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
             Some(1) => {
                 put(&mut j, "distance", json!(rnd(if rev { -dist } else { dist })));
                 put(&mut j, "symmetric", json!(false));
+            }
+            // Through all; with slot 7 set, through all both ways (notes AA).
+            Some(5) if both => {
+                put(&mut j, "distance", json!(2.0 * THROUGH));
+                put(&mut j, "symmetric", json!(true));
+                put(&mut j, "through_all", json!(true));
             }
             Some(5) => {
                 put(&mut j, "distance", json!(rnd(if rev { -THROUGH } else { THROUGH })));
@@ -581,22 +591,13 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
             e => return Err(format!("extrude extent {e:?}")),
         }
     } else {
-        let ax = s.need(2)?;
-        let rec = r.dc.r(ax);
-        let k = rec
-            .get(r.dc.body(ax)..)
-            .and_then(|t| t.windows(4).position(|w| w == [0x02, 0, 0, 0x30]))
-            .map(|k| k + r.dc.body(ax))
-            .ok_or("the revolve axis is not readable")?;
-        let g = |o: usize| f64_at(rec, k + o).ok_or("the revolve axis is cut short");
-        let p0 = [g(8)?, g(16)?, g(24)?];
-        let v = [g(32)?, g(40)?, g(48)?];
-        let ln = libm::sqrt(dot(v, v));
+        let (p0, v) =
+            work_axis(&r.dc, s.need(2)?).map_err(|w| format!("the revolve {}", w.trim_start_matches("the ")))?;
         put(
             &mut j,
             "axis",
             json!({"origin": [rnd(p0[0] * CM), rnd(p0[1] * CM), rnd(p0[2] * CM)],
-                           "direction": [rnd(v[0] / ln), rnd(v[1] / ln), rnd(v[2] / ln)]}),
+                           "direction": [rnd(v[0]), rnd(v[1]), rnd(v[2])]}),
         );
         put(
             &mut j,
@@ -842,6 +843,125 @@ fn pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
         }
     }
     st.out.push(json!({"type": "pattern_linear", "name": name, "features": tgt, "direction": u, "spacing": spacing, "count": count}));
+    Ok(())
+}
+
+/// A work axis record (`8ef06c89`, as a revolve's axis): start point and unit vector, in cm.
+fn work_axis(dc: &Dc, ax: usize) -> Result<(V3, V3), String> {
+    let rec = dc.r(ax);
+    let k = rec
+        .get(dc.body(ax)..)
+        .and_then(|t| t.windows(4).position(|w| w == [0x02, 0, 0, 0x30]))
+        .map(|k| k + dc.body(ax))
+        .ok_or("the axis is not readable")?;
+    let g = |o: usize| f64_at(rec, k + o).ok_or("the axis is cut short");
+    let p0 = [g(8)?, g(16)?, g(24)?];
+    let v = [g(32)?, g(40)?, g(48)?];
+    let ln = libm::sqrt(dot(v, v));
+    if !(ln > 1e-12 && ln.is_finite() && p0.iter().all(|c| c.is_finite())) {
+        return Err("the axis has no direction".into());
+    }
+    Ok((p0, [v[0] / ln, v[1] / ln, v[2] / ln]))
+}
+
+/// The tree features a pattern or mirror copies: the features it refers to before its own
+/// settings (the `90874d18` record), as the tree names them. A feature that was left out
+/// (suppressed, a cosmetic thread) is skipped; one that could not be read refuses the copy.
+fn copied_features(r: &Reader, st: &State, f: &Feature) -> Result<Vec<String>, String> {
+    let refs = r.dc.refs(f.rec);
+    let end = refs.iter().find(|&&(k, x)| k > 14 && r.dc.role(x) == Role::SkPlacement).map_or(usize::MAX, |x| x.0);
+    let mut out: Vec<String> = Vec::new();
+    for &(k, x) in &refs {
+        if k <= 14 || k >= end || x == f.rec {
+            continue;
+        }
+        let Some(n) = st.names.get(&x) else { continue };
+        let made = st.emitted.get(n).ok_or_else(|| format!("its feature {n} comes later"))?;
+        if made.is_empty() {
+            continue;
+        }
+        let read = st.out.iter().filter(|o| made.iter().any(|m| o.get("name").and_then(Value::as_str) == Some(m)));
+        if read.clone().any(|o| o.get("type").and_then(Value::as_str) == Some("unsupported")) {
+            return Err(format!("its feature {n} is not read"));
+        }
+        for m in made {
+            if !out.contains(m) {
+                out.push(m.clone());
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err("no feature to copy (a pattern or mirror of bodies is not read)".into());
+    }
+    Ok(out)
+}
+
+/// A circular pattern (`06977131`, notes AA): the copied features, the count (`bb1dd5df`
+/// whose last word is above 1), the angle (the parameter, radians; 2 pi = a full turn, the
+/// copies spread evenly) and the axis (`8ef06c89` work axis, cm). The flag after the axis's
+/// `8b2be62e` record, when set, turns the other way.
+fn circular_pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    const G_COUNT: u32 = 0xbb1d_d5df;
+    const G_AXIS: u32 = 0x8ef0_6c89;
+    const G_FLAGS: u32 = 0x9087_4d28;
+    let tgt = copied_features(r, st, f)?;
+    let refs: Vec<(usize, usize)> = r.dc.refs(f.rec).into_iter().filter(|&(k, _)| k > 14).collect();
+    let count_of = |x: usize| {
+        let b = r.dc.r(x);
+        u32_at(b, b.len().checked_sub(4)?)
+    };
+    let count = refs
+        .iter()
+        .filter(|&&(_, x)| r.dc.class(x) == G_COUNT)
+        .filter_map(|&(_, x)| count_of(x))
+        .find(|&c| 1 < c && c < 1000)
+        .ok_or("no count")?;
+    let par = refs.iter().map(|x| x.1).find(|&x| r.dc.role(x) == Role::Param).ok_or("no angle")?;
+    let angle = r.dc.param(par).ok_or("the angle is not readable")?.1.to_degrees();
+    let ka = refs.iter().position(|&(_, x)| r.dc.class(x) == G_AXIS).ok_or("the axis is not a work axis")?;
+    let (p0, mut v) = work_axis(&r.dc, refs.get(ka).ok_or("no axis")?.1)?;
+    let flip = refs
+        .iter()
+        .skip(ka + 1)
+        .find(|&&(_, x)| r.dc.class(x) == G_FLAGS)
+        .is_some_and(|&(_, x)| r.dc.r(x).last().is_some_and(|&b| b != 0));
+    if flip {
+        v = [-v[0], -v[1], -v[2]];
+    }
+    if !(angle.is_finite() && angle.abs() > 1e-9 && angle.abs() <= 360.0 + 1e-6) {
+        return Err("the angle is out of range".into());
+    }
+    let angle = if (angle.abs() - 360.0).abs() < 1e-6 { 360.0 } else { rnd(angle) };
+    st.out.push(json!({"type": "pattern_circular", "name": name, "features": tgt,
+        "axis": {"origin": [rnd(p0[0] * CM), rnd(p0[1] * CM), rnd(p0[2] * CM)], "direction": [rnd(v[0]), rnd(v[1]), rnd(v[2])]},
+        "angle": angle, "count": count}));
+    Ok(())
+}
+
+/// A mirror (`fad9a9b5`, notes AA): the copied features and the plane, the last work-plane
+/// record (`ce52df42`) it refers to, whose last 9 doubles are a point and two unit vectors
+/// spanning the plane (cm).
+fn mirror(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    const G_PLANE: u32 = 0xce52_df42;
+    let tgt = copied_features(r, st, f)?;
+    let pl =
+        r.dc.refs(f.rec)
+            .into_iter()
+            .rfind(|&(k, x)| k > 14 && r.dc.class(x) == G_PLANE)
+            .ok_or("the mirror plane is not a work plane")?
+            .1;
+    let rec = r.dc.r(pl);
+    let k = rec.len().checked_sub(72).ok_or("the mirror plane is cut short")?;
+    let g = |j: usize| f64_at(rec, k + 8 * j).ok_or("the mirror plane is cut short");
+    let o = [g(0)?, g(1)?, g(2)?];
+    let (u, w) = ([g(3)?, g(4)?, g(5)?], [g(6)?, g(7)?, g(8)?]);
+    let unit = |a: V3| (dot(a, a) - 1.0).abs() < 1e-6;
+    if !(unit(u) && unit(w) && dot(u, w).abs() < 1e-6 && o.iter().all(|c| c.is_finite() && c.abs() < 1e6)) {
+        return Err("the mirror plane is not readable".into());
+    }
+    let n = unit3(cross(u, w));
+    st.out.push(json!({"type": "mirror", "name": name, "features": tgt,
+        "plane": {"origin": [rnd(o[0] * CM), rnd(o[1] * CM), rnd(o[2] * CM)], "normal": [rnd(n[0]), rnd(n[1]), rnd(n[2])]}}));
     Ok(())
 }
 
@@ -1563,6 +1683,7 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
         omitted: Vec::new(),
         names,
         holes: HashMap::new(),
+        emitted: HashMap::new(),
     };
     for (k, f) in feats.iter().enumerate() {
         let name = f.name.clone().unwrap_or_else(|| format!("Feature{}", f.rec));
@@ -1581,6 +1702,8 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             FeatType::Fillet | FeatType::Chamfer => blend(&r, &mut st, f, &name, typ),
             FeatType::Hole => hole(&r, &mut st, f, &name),
             FeatType::RectPattern => pattern(&r, &mut st, f, &name),
+            FeatType::CircPattern => circular_pattern(&r, &mut st, f, &name),
+            FeatType::Mirror => mirror(&r, &mut st, f, &name),
             FeatType::Thicken => thicken(&r, &mut st, f, &name),
             FeatType::Shell => {
                 let later: Vec<i64> = feats.iter().skip(k + 1).filter_map(|g| r.dc.seq(g.rec)).map(i64::from).collect();
@@ -1601,6 +1724,15 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             st.out.truncate(before);
             st.out.push(unsupported(&name, &typ.label(), Some(why)));
         }
+        let made: Vec<String> = st
+            .out
+            .get(before..)
+            .into_iter()
+            .flatten()
+            .filter(|o| !matches!(o.get("type").and_then(Value::as_str), Some("sketch")))
+            .filter_map(|o| o.get("name").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        st.emitted.insert(name.clone(), made);
     }
     let file = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
     Ok(json!({"format": "gusset-feature-tree", "version": 2,

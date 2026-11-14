@@ -337,6 +337,18 @@ fn extrude_direction_extent_and_operation() {
     let t = tree(&r).unwrap();
     assert_eq!(t["features"][1]["distance"], -1e4);
     assert_eq!(t["features"][1]["through_all"], true);
+    // Through all with slot 7 set: both ways, whatever the direction flag.
+    r.push((OTHER, {
+        let mut v = hdr(0, 0, 0);
+        v.push(1);
+        v
+    })); // 19
+    r[18].1 = feature(1, 0, 5, &[rf(14), rf(12), 0, rf(15), rf(16), 0, rf(17), rf(19)]);
+    let t = tree(&r).unwrap();
+    assert_eq!(t["features"][1]["distance"], 2e4);
+    assert_eq!(t["features"][1]["symmetric"], true);
+    r.pop();
+    r[18].1 = feature(1, 0, 5, &[rf(14), rf(12), 0, rf(15), rf(16), 0, rf(17)]);
     // To the next face / to a face: the reach is measured on the result body, which this
     // file does not have.
     for e in [4, 7] {
@@ -949,4 +961,120 @@ fn a_chamfer_of_two_distances_names_the_face_of_the_first() {
     assert_eq!(chamfer_second(1, 0.2, 0.5, 1, &lines), Ok(Some(Second::Angle(0.5, [48.0, 35.0, 20.0]))));
     assert!(chamfer_second(1, 0.2, 2.0, 1, &lines).is_err());
     assert!(chamfer_second(3, 0.2, 0.4, 1, &lines).unwrap_err().contains("type 3"));
+}
+
+/// The classes of the copy features' records, after the common ones.
+const COPY_CLASSES: [u32; 17] = [
+    0x2b48_a42b,
+    0x9087_4d18,
+    0xce52_df35,
+    0x9087_4d11,
+    0xce52_df3a,
+    0x1111_1111,
+    0xf988_4c43,
+    0x9087_4d26,
+    0x9087_4d91,
+    0x4521_21b6,
+    0x656d_d01e,
+    0x0697_7131, // 11 circular pattern
+    0xfad9_a9b5, // 12 mirror
+    0x8ef0_6c89, // 13 work axis
+    0xce52_df42, // 14 work plane
+    0xbb1d_d5df, // 15 count
+    0x9087_4d28, // 16 flag
+];
+
+fn copy_tree(recs: &[(usize, Vec<u8>)]) -> Value {
+    feature_tree(&inventor_dc_part(&COPY_CLASSES, recs, &[]), "dir/part.ipt", &Limits::default()).unwrap()
+}
+
+fn doubles(rec: &mut Vec<u8>, v: &[f64]) {
+    for x in v {
+        rec.extend(x.to_le_bytes());
+    }
+}
+
+/// A circular pattern (`06977131`) of the base extrude: the copied features before its sketch
+/// placement record, the count's last word, the angle parameter and a work axis (cm), with
+/// the flag after the axis turning it the other way.
+#[test]
+fn a_circular_pattern_reads_its_features_count_angle_and_axis() {
+    let with = |flip: u8, angle: f64| {
+        let mut r = base_records();
+        r.push((NAME, name_rec("Circular Pattern1", Some(0xb6c2_2694)))); // 19
+        r.push((PLACEMENT, hdr(0, 0, 0))); // 20
+        r.push((15, {
+            let mut v = hdr(0, 0, 0);
+            v.extend(utf16("RDxVar2"));
+            v.extend(0u32.to_le_bytes());
+            v
+        })); // 21: the other count (0)
+        r.push((15, {
+            let mut v = hdr(0, 0, 0);
+            v.extend(utf16("d3"));
+            v.extend(6u32.to_le_bytes());
+            v.extend(6u32.to_le_bytes());
+            v
+        })); // 22: the count
+        r.push((PARAM, param("d4", angle))); // 23
+        r.push((13, {
+            let mut v = hdr(0, 0, 0);
+            v.extend(list(&[]));
+            doubles(&mut v, &[1.0, 2.0, 0.0, 0.0, 0.0, 2.0]);
+            v
+        })); // 24: axis through (1, 2, 0) cm along z
+        r.push((16, {
+            let mut v = hdr(0, 0, 0);
+            v.push(flip);
+            v
+        })); // 25
+        let mut f = hdr(rf(19), 0, 6);
+        f.extend(0u32.to_le_bytes());
+        f.extend(list(&[rf(18)]));
+        for x in [20, 21, 22, 23, 24, 25] {
+            f.extend(rf(x).to_le_bytes());
+        }
+        r.push((11, f)); // 26
+        copy_tree(&r)
+    };
+    let t = with(0, std::f64::consts::TAU);
+    assert_eq!(
+        t["features"][2],
+        json!({"type": "pattern_circular", "name": "Circular Pattern1", "features": ["Extrusion1"],
+               "axis": {"origin": [10.0, 20.0, 0.0], "direction": [0.0, 0.0, 1.0]}, "angle": 360.0, "count": 6})
+    );
+    let t = with(1, std::f64::consts::FRAC_PI_2);
+    assert_eq!(t["features"][2]["axis"]["direction"], json!([0.0, 0.0, -1.0]));
+    assert_eq!(t["features"][2]["angle"], 90.0);
+}
+
+/// A mirror (`fad9a9b5`): the copied features, and the plane of its last work-plane record
+/// (a point and two unit vectors, cm). A copy of a feature that was not read is refused.
+#[test]
+fn a_mirror_reads_its_features_and_plane() {
+    let mut r = base_records();
+    r.push((NAME, name_rec("Mirror1", Some(0xb6c2_26a3)))); // 19
+    r.push((PLACEMENT, hdr(0, 0, 0))); // 20
+    r.push((14, {
+        let mut v = hdr(0, 0, 0);
+        doubles(&mut v, &[3.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        v
+    })); // 21
+    let mut f = hdr(rf(19), 0, 6);
+    f.extend(0u32.to_le_bytes());
+    f.extend(list(&[rf(18)]));
+    f.extend(rf(20).to_le_bytes());
+    f.extend(rf(21).to_le_bytes());
+    r.push((12, f)); // 22
+    let t = copy_tree(&r);
+    assert_eq!(
+        t["features"][2],
+        json!({"type": "mirror", "name": "Mirror1", "features": ["Extrusion1"],
+               "plane": {"origin": [30.0, 0.0, 0.0], "normal": [1.0, 0.0, 0.0]}})
+    );
+    // The extrude not read (an extent that is not read): the mirror says why.
+    r[17].1 = tail(9);
+    let t = copy_tree(&r);
+    assert_eq!(t["features"][1]["type"], "unsupported");
+    assert!(t["features"][1]["reason"].as_str().unwrap().contains("Extrusion1 is not read"), "{t}");
 }

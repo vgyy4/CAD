@@ -92,6 +92,10 @@ pub(crate) const G_PATH: u32 = 0x424e_b7d7;
 const T_BODY: u32 = 0x0ca9_112d;
 /// The record that names a solid body (a part-feature record that is a body, not a feature).
 pub(crate) const G_BODY_NAME: u32 = 0x656d_d01e;
+/// Feature records of their own classes (not `90874d91`): circular pattern, mirror and
+/// sketch-driven pattern. Named like part features; left out of the walk before, which
+/// dropped them from the history without a word.
+const G_FEATURE_CLASSES: [u32; 3] = [0x0697_7131, 0xfad9_a9b5, 0xa37b_053c];
 
 /// A feature's kind, by the GUID written after its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +106,8 @@ pub(crate) enum FeatType {
     Thread,
     Thicken,
     RectPattern,
+    CircPattern,
+    Mirror,
     Fillet,
     Chamfer,
     Shell,
@@ -118,6 +124,8 @@ impl FeatType {
             0x28aa_1906 => FeatType::Thread,
             0x7281_f4ec => FeatType::Thicken,
             0x767a_c2da => FeatType::RectPattern,
+            0xb6c2_2694 => FeatType::CircPattern,
+            0xb6c2_26a3 => FeatType::Mirror,
             0xf1f7_15dc => FeatType::Fillet,
             0xf900_713f => FeatType::Chamfer,
             0xb83c_9612 => FeatType::Shell,
@@ -134,6 +142,8 @@ impl FeatType {
             FeatType::Thread => "thread".into(),
             FeatType::Thicken => "thicken".into(),
             FeatType::RectPattern => "rectangular pattern".into(),
+            FeatType::CircPattern => "circular pattern".into(),
+            FeatType::Mirror => "mirror".into(),
             FeatType::Fillet => "fillet".into(),
             FeatType::Chamfer => "chamfer".into(),
             FeatType::Shell => "shell".into(),
@@ -378,14 +388,17 @@ impl Dc {
         (tail.iter().any(|&b| b != 0) && before != Some(&[0, 0][..])).then(|| u32_at(tail, 0)).flatten()
     }
 
-    /// The part and pattern features, in record order. A part-feature record named through a
+    /// The part and pattern features (with the circular-pattern, mirror and sketch-driven
+    /// pattern records), in record order. A part-feature record named through a
     /// `656dd01e` record, or by a name of type `0ca9112d`, is a solid body of the part (its
     /// name, e.g. "Solid1" or a body the user renamed, is behind that record), not a feature:
     /// it is left out.
     pub(crate) fn features(&self) -> Vec<Feature> {
         let mut out = Vec::new();
         for i in 0..self.n() {
-            if !matches!(self.role(i), Role::PartFeature | Role::PatternFeature) {
+            if !matches!(self.role(i), Role::PartFeature | Role::PatternFeature)
+                && !G_FEATURE_CLASSES.contains(&self.class(i))
+            {
                 continue;
             }
             let v = u32_at(self.r(i), 6).and_then(|v| reference(v, self.n()));
