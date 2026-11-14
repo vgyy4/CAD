@@ -1391,3 +1391,60 @@ clash with existing features; one undo per import.
 | F17-8 | Fixed in part: `document_set_text` with the document's own text adds no history step and says so. The null rollback reply stays. |
 | F17-9 | Accepted: assembly bodies are `ImportN` features labelled with their component names, like every import; a second import of the same file is a second copy, as for other formats. |
 | F17-10 | Fixed in part: unbuildable objects are skipped (F17-2). The other messages stay. |
+
+## Run 18 — PCB from nothing, the import history choice, this week's modelling (2026-11-14)
+
+The run was asked for as "run 14"; runs 14 to 17 already exist above, so it is numbered 18 (findings F18-n).
+
+Setup: debug `gusset` with real OCCT and workers, `gusset mcp --no-attach --tools modeling,pcb,sch` over stdio behind a
+small Python JSON-RPC client (scratch, not in the repository). Hand-written fixtures only: a symbol library (R, LED, a
+4-pin connector, +5V/GND/PWR_FLAG) and three footprints (0805 resistor, 0805 LED, 4-pin header). Samples for the import
+part (read-only copies in the scratch folder, never committed): 2 Fusion `.f3d`, 2 SolidWorks `.sldprt`, 2
+Inventor `.ipt`, 2 Solid Edge `.par`. About 300 client calls. Undo is the tool `history_undo`.
+
+| # | Task | Result | Notes |
+|---|---|---|---|
+| 1 | Schematic: J1 (4 pins), R1, R2, an LED on the hierarchical sheet `LED` (hierarchical label IN, sheet pin IN, GND symbol on the sub-sheet), annotate, ERC | Works. `sch_add_sheet`, `sch_sheet_pin`, labels with `sheet: led.kicad_sch`, `sch_annotate` (8 and then 2 renamed), ERC 0 issues; removing the sheet pin gives `hier_label_mismatch` with the label's name; the nets read `/LED/IN`, `/USB_P`. Every edit reply carries `erc_issues` | 30 calls. The sub-sheet is named by its file, not by the sheet name (F18-6) |
+| 2 | Board: `pcb_new`, `pcb_update_from_schematic` (dry run and for real), place, net classes (Power 0.5/min 0.3, USB with diff pair 0.2/0.2 and min 0.15), route with `layers: any`, `pcb_route_pair`, `pcb_tune`, B.Cu zone, text, DRC | Works. Pair skew 0.331 mm after routing, 0.000 after `pcb_tune` (one bump); DRC clean; an added 0.1 mm GND track gives `track_width ... at least 0.300 mm needed` and a short; undo restores | Pad positions had to be worked out by hand (F18-1); the pair name needs the sheet path (F18-2) |
+| 3 | Gerbers, drill, pos, BOM, save, reopen | 9 Gerber files + PTH/NPTH drill written; `pcb_save` also writes `.kicad_pro` (net classes survive); after `pcb_open` + `sch_open` ERC, DRC, lengths, texts, zones, classes are as saved. Overwriting needs the user's approval headless (`approval_denied`) | `pcb_kicad_drc` says `no kicad-cli is set up` with a GUI hint (F18-15) |
+| 4 | Import with `history: ask` of 8 parts, then `rebuild` and `final`, undo after each | `perfect` Fusion parts: `ask` offers rebuild/final, `rebuild` gives 12 and 15 features (tier 1), `final` gives the stored solids. `imperfect` SolidWorks and Inventor parts: the reason names the first failing feature (`Mirror2 (its feature 'Mirror1' was not imported)`, `Fillet3 (it does not build here: ...)`, `Combine1 (not exported by the plugin ...)`), `rebuild` keeps failed features suppressed with a warning that gives the volume difference (67709 against 76424 mm3), `final` gives one `ImportN`. `none` (a part with no features, Solid Edge `.par`): `ask` imports at once with `imported: final` and the reason; `rebuild` adds `the history cannot be imported (...)`. Every import is one undo step (`Undid n6 ... now at n1`) | Wording nits F18-9, F18-16 |
+| 5 | Modelling: block, boss on its top face, thread (cosmetic, with designation, modeled), offset plane + roof body, extrude up to the roof's face, face-profile extrude add and cut, tab + bend | Cosmetic threads are instant, the modeled thread (15 mm, 1.5 pitch) takes 7.9 s in the debug build and removes 244 mm3; `feature_up_to_face` adds the post (volume +1759.29 = pi r^2 h); `feature_bend` of a 80x40x2 tab at x = 40 gives bbox z 41.74 | The face-profile cut hit the wrong body (F18-10, fixed); invalid pitch and angle are committed as failed features (F18-11) |
+
+What worked well: the schematic to board path (sheet pins and hierarchical labels, `pcb_update_from_schematic` dry run),
+the DRC messages with the class limit in them, `pcb_tune` hitting the partner's length exactly, the import reasons and
+the one-step undo, `committed_with_errors` with `undo_hint`, candidates in face-name errors, result sizes (every edit
+reply under 600 bytes except lists).
+
+| ID | Sev | Item | Repro | Expected / actual |
+|---|---|---|---|---|
+| F18-1 | major | There is no read tool for the open board's footprints, pads (position, net), tracks or zones: `pcb_info` only counts. An agent that did not write the footprints cannot find a pad centre to route to, and has to save the board and parse the file. | Place R1 rotated 270 deg, then try to route to its pad 1. | Expected a listing (`pcb_info` with `footprints: true`, or `pcb_pads {footprint}`) with reference, position, angle, side, and per pad number, centre, net. Actual: counts only. |
+| F18-2 | minor | Net names keep the sheet path (`/USB_P`, `/LED/IN`); `pcb_route_pair {pair: "USB"}` failed with `not a differential pair` and a hint that did not mention the slash. | Pair of nets named from a schematic. | Fixed: the name matches with or without the path. |
+| F18-3 | minor | `pcb_net_class {nets: ["USB_P"]}` takes any name: the class stayed empty without a sign because the net is `/USB_P`. | See F18-2. | Fixed: the reply lists `unknown_nets_user_text`. |
+| F18-4 | minor | `pcb_add_zone {net: "GND_typo"}` poured nothing (`filled_mm2: 0`) and said ok. | | Fixed: `not_found: no net 'GND_typo' on this board` with a sheet-path hint. |
+| F18-5 | nit | `pcb_tune {net: "nosuch"}` said `without a target the net must belong to a differential pair`. | | Fixed: `no net 'nosuch' on this board`. |
+| F18-6 | minor | `sch_add_symbol {sheet: "LED"}` (the sheet's name) said `the schematic has no sheet 'LED'` with no hint (the argument is the sheet file `led.kicad_sch`); an unknown symbol got the hint `sch.netlist lists placed parts...` (dotted name, unrelated). | See task 1. | Fixed: hint names the argument, `details.sheets_user_text` / `symbols_user_text` list what exists. |
+| F18-7 | minor | `pcb_route` along an already routed connection lays a second, overlapping set of tracks (+5V: 2 tracks, 9.878 mm becomes 4 tracks, 19.757 mm; `pcb_lengths` doubles; no warning). The same with `pcb_route_pair`. | Route the same two points twice. | Open. Expected: skip pieces already covered by the net's own track, or say `already routed`. |
+| F18-8 | minor | `render_view` with only a board open returns an empty gradient picture and no hint; there is no picture of a board or schematic over MCP. | `pcb_open`, `render_view`. | Fixed in part: the reply has a `note` saying the model has no bodies. A board picture (copper, silk, outline as a PNG) stays open. |
+| F18-9 | minor | The warning on an imperfect history imported as `final` ended in raw JSON: `the first: {"feature":"Mirror2","reason":"..."}`. | `import_file {path: link6.sldprt}`. | Fixed: `Mirror2 (its feature 'Mirror1' was not imported)`, as in `history.why_user_text`. |
+| F18-10 | major | A face-profile extrude with `op: cut` or `add` and no `body` worked on the latest body, not the face's body (ADR 0042 amendment says the face's body): a dimple cut in a boss's top face reported `did not change body 'Roof'`. | Boss on Base, Roof body after it, `feature_extrude {face: Boss/cap(end), distance: -5 mm, op: cut}`. | Fixed for `extrude` (cut now -565.49 mm3 on Base), test added. Open: `feature_sweep` and `feature_revolve` with a face profile still default to the latest body. |
+| F18-11 | minor | Plain argument errors are committed as failed features: `feature_thread {pitch: "-1 mm"}`, `pitch: "0 mm"`, `feature_bend {angle: "200 deg"}` each leave a failed `ThreadN`/`BendN` in the timeline, and every later reply repeats the growing `still_failing` list (two pitch errors add about 230 bytes to each of the next calls). | `feature_thread` with a negative pitch, then any edit. | Open. Expected: a literal that cannot be valid is `invalid_args` and commits nothing (expressions with parameters can stay deferred). |
+| F18-12 | minor | `query_flat_pattern` after `feature_bend` returns `bends: []`, the unbent size and a warning `changed after it was made by Bend1`; the bend is not in the flat pattern at all. | Tab 80x40x2, bend at x = 40, `query_flat_pattern`. | Open. Expected: the bend listed (line, angle, radius, allowance). |
+| F18-13 | nit | `feature_bend {line: "Sketch2.l2"}` with a missing line gives `invalid_document ... has no entity 'l2'` (ids are shared with points: lines were `l3`, `l6`) and no hint of the sketch's lines. | | Open. Expected: `not_found` listing the sketch's lines. |
+| F18-14 | minor | `commands` without a name is 17.5 KB (120 entries) and cannot be narrowed; an agent after the PCB commands reads everything. | `commands {}`. | Fixed: `commands {name: "pcb"}` (or `pcb_`) lists that group; the hint also names `sch` among the toolsets. |
+| F18-15 | nit | Hints written for the GUI: `pcb_kicad_drc` says `name your kicad-cli in the PCB tab's KiCad section`; `confirmation_required` says `pass overwrite: true` although headless this ends in `approval_denied` (rule 3 needs the user). The `toolset` tool is not in a `--tools modeling` list but `commands` tells the agent to call it. | `pcb_export_gerbers` twice; `pcb_kicad_drc`. | Open. |
+| F18-16 | nit | Wording of import reasons: `1 features could not be rebuilt`, `fillet failed: fillet failed`, `1 stored solids are states`; `the import made 5 bodies; the source lists 1` on a perfect rebuild of the 16 mm button; `ask` on a perfect history has `why_user_text: ""`. | button.f3d, endgrip.sldprt. | Open (the corpus tools read some of these strings). |
+| F18-17 | nit | After a modeled thread the cylindrical face is split into 12 faces, so `Boss/side(Sketch2/c2)` no longer exists and a second thread on it fails; the error lists the candidates twice (`details.candidates` and `hint`, 12 names each). | Modeled thread, then another `feature_thread` on the same face. | Open. Expected: keep the original face name on the threaded face; do not repeat the list in the hint. |
+| F18-18 | nit | Out-of-range or rule-breaking edits are silent: `pcb_move_footprint {at: [100, 1]}` on a 40x30 board, `pcb_add_track {width: 0.1}` below the class's min width (DRC finds it later). | | Open. |
+| F18-19 | nit | Argument inconsistencies: `pcb_route {layers: "any" or "F.Cu,B.Cu"}` is a string while `pcb_add_zone {layers: [...]}` is an array; `neck` has no description; `sch_netlist`/`sch_annotate` wrap every name in `{suspicious, user_text}` (1.6 KB for 5 nets and 4 parts). | | Open. |
+
+### Status of the run 18 findings
+
+| ID | Status |
+|---|---|
+| F18-2, F18-3, F18-4, F18-5 | Fixed (commit `fix(pcb): ...`), tests in `tests_pcb_pair`, `tests_pcb_rules`, `tests_pair`. |
+| F18-6 | Fixed, test `a_wrong_sheet_or_symbol_name_says_what_exists`. |
+| F18-8 | Fixed in part (note); the board picture is open. |
+| F18-9 | Fixed, unit test in `import::history`. |
+| F18-10 | Fixed for `extrude` (`a_face_profile_without_a_body_works_on_the_faces_own_body`); sweep and revolve open. |
+| F18-14 | Fixed, test in `crates/gusset-mcp/tests/mcp.rs`. |
+| F18-1, 7, 11, 12, 13, 15, 16, 17, 18, 19 | Open. |
