@@ -9,7 +9,7 @@
 //! previous feature, which gives the history order. What is read here:
 //!
 //! * extruded protrusions and cutouts: profiles (slot 2), extent kind (slot 3: 13 finite,
-//!   14 through all), side (slot 4: 1 against the profile plane's normal, 2 along it,
+//!   14 through all, 16 through next), side (slot 4: 1 against the profile plane's normal, 2 along it,
 //!   3 symmetric, 6 both ways), depth (slot 6: a value object or a dimension relation);
 //! * revolved protrusions and cutouts: profiles, axis (slot 6: a line), angle (slot 7);
 //! * each profile: its plane (an absolute frame in the plane object) and its 2D curves
@@ -438,12 +438,64 @@ pub(crate) fn value(b: &[u8]) -> Option<f64> {
 }
 
 /// A 2D curve of a profile (metres, in the profile plane's frame).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Curve2 {
     Line([f64; 2], [f64; 2]),
     Circle([f64; 2], f64),
     /// Centre, radius, start and end angles, counter-clockwise from start to end.
     Arc([f64; 2], f64, f64, f64),
+    /// A polynomial B-spline: degree, poles, knots (each repeated by its multiplicity).
+    Spline(u32, Vec<[f64; 2]>, Vec<f64>),
+}
+
+/// Most poles of one spline.
+const MAX_POLES: u32 = 10_000;
+
+/// A polynomial B-spline member: `u16 flags, u32 1, u32 0x80000001, u32 n, u32 0, n poles
+/// (x, y), u8 order, u32 k, k multiplicities, k knots`, then 20 bytes. A rational one
+/// (`u32 2` at +10) is not read.
+pub(crate) fn spline(b: &[u8]) -> Option<Curve2> {
+    if u32_at(b, 10)? != 1 || u32_at(b, 14)? != 0x8000_0001 {
+        return None;
+    }
+    let n = u32_at(b, 18)?;
+    if !(2..=MAX_POLES).contains(&n) {
+        return None;
+    }
+    let mut q = 26;
+    let mut poles = Vec::new();
+    for _ in 0..n {
+        let p = [f64_at(b, q)?, f64_at(b, q + 8)?];
+        if !p.iter().all(|v| v.is_finite() && v.abs() < 1e6) {
+            return None;
+        }
+        poles.push(p);
+        q += 16;
+    }
+    let order = u32::from(*b.get(q)?);
+    let k = u32_at(b, q + 1)?;
+    q += 5;
+    if !(2..=26).contains(&order) || !(2..=MAX_POLES + 26).contains(&k) {
+        return None;
+    }
+    let mut mults = Vec::new();
+    for _ in 0..k {
+        mults.push(u32_at(b, q)?);
+        q += 4;
+    }
+    let mut knots = Vec::new();
+    for &m in &mults {
+        let t = f64_at(b, q)?;
+        q += 8;
+        if !t.is_finite() || m == 0 || m > order || knots.last().is_some_and(|&l| t < l) {
+            return None;
+        }
+        knots.extend(std::iter::repeat_n(t, m as usize));
+    }
+    if knots.len() != (n + order) as usize || b.len() != q + 20 {
+        return None;
+    }
+    Some(Curve2::Spline(order - 1, poles, knots))
 }
 
 /// A profile member: a line (`u16 0, x1, y1, x2, y2`), a circle (`u16 0, cx, cy, r, 0.0,
@@ -474,7 +526,7 @@ pub(crate) fn curve(b: &[u8]) -> Option<Curve2> {
             }
             Some(if ccw == 1 { Curve2::Arc([cx, cy], r, a0, a1) } else { Curve2::Arc([cx, cy], r, a1, a0) })
         }
-        _ => None,
+        _ => spline(b),
     }
 }
 
@@ -570,12 +622,17 @@ fn sketch_json(name: &str, profiles: &[Profile]) -> Result<Value, String> {
     };
     let mut curves = Vec::new();
     for (k, c) in profiles.iter().flat_map(|p| p.curves.iter()).enumerate() {
-        curves.push(match *c {
-            Curve2::Line(a, b) => json!({"id": format!("c{k}"), "type": "line", "start": pid(a), "end": pid(b)}),
-            Curve2::Circle(c, r) => {
+        curves.push(match c {
+            &Curve2::Line(a, b) => json!({"id": format!("c{k}"), "type": "line", "start": pid(a), "end": pid(b)}),
+            &Curve2::Circle(c, r) => {
                 json!({"id": format!("c{k}"), "type": "circle", "center": pid(c), "radius": rnd(r * MM)})
             }
-            Curve2::Arc(c, r, a0, a1) => {
+            Curve2::Spline(degree, poles, knots) => {
+                let poles: Vec<String> = poles.iter().map(|&p| pid(p)).collect();
+                let knots: Vec<f64> = knots.iter().map(|&t| rnd(t)).collect();
+                json!({"id": format!("c{k}"), "type": "bspline", "degree": degree, "poles": poles, "knots": knots})
+            }
+            &Curve2::Arc(c, r, a0, a1) => {
                 let at = |a: f64| [c[0] + r * libm::cos(a), c[1] + r * libm::sin(a)];
                 json!({"id": format!("c{k}"), "type": "arc", "center": pid(c), "start": pid(at(a0)), "end": pid(at(a1))})
             }
@@ -711,10 +768,11 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     }
     if revolve {
         let (p, d) = f.slot(6).and_then(|a| st.obj(a)).and_then(axis_line).ok_or("the revolve axis is not readable")?;
-        let angle = if extent == 13 {
-            small(7).ok_or("the revolve angle is not readable")?.to_degrees()
-        } else {
-            return Err(format!("revolve extent {extent}"));
+        let angle = match extent {
+            13 => small(7).ok_or("the revolve angle is not readable")?.to_degrees(),
+            // A full turn.
+            17 => 360.0,
+            e => return Err(format!("revolve extent {e}")),
         };
         if !(angle.is_finite() && angle.abs() > 1e-9 && angle.abs() <= 360.0 + 1e-9) {
             return Err("the revolve angle is out of range".into());
@@ -731,14 +789,16 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
                 }
                 (d.abs(), false)
             }
-            14 => (THROUGH, false),
+            // Through all; through the next face (16) is swept as far, the rebuild check
+            // tells whether the next face was the last one.
+            14 | 16 => (THROUGH, false),
             e => return Err(format!("extent {e} (not finite or through all)")),
         };
         let (dist, symmetric) = match side {
             1 => (-dist, symmetric),
             2 => (dist, symmetric),
             3 => (dist, true),
-            6 if extent == 14 => (2.0 * THROUGH, true),
+            6 if extent != 13 => (2.0 * THROUGH, true),
             other => return Err(format!("side {other}")),
         };
         put(&mut j, "distance", json!(rnd(dist)));
@@ -762,6 +822,9 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
         }
         if extent == 14 {
             put(&mut j, "through_all", json!(true));
+        }
+        if extent == 16 {
+            put(&mut j, "through_next", json!(true));
         }
     }
     s.out.push(sk);

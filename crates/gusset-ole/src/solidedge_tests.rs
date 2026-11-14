@@ -251,3 +251,28 @@ fn a_part_without_ordered_features_has_no_history() {
     assert_eq!(feature_tree(&f, "s.par", &crate::Limits::default()), Err(String::new()));
     assert!(feature_tree(b"not ole", "s.par", &crate::Limits::default()).is_err());
 }
+
+#[test]
+fn a_polynomial_spline_member() {
+    let mut b = vec![0, 0];
+    b.extend(1u32.to_le_bytes());
+    b.extend(0x8000_0001u32.to_le_bytes());
+    b.extend(4u32.to_le_bytes());
+    b.extend(0u32.to_le_bytes());
+    b.extend(f64s(&[0.0, 0.0, 0.01, 0.02, 0.03, 0.02, 0.04, 0.0]));
+    b.push(4);
+    b.extend(2u32.to_le_bytes());
+    b.extend(4u32.to_le_bytes());
+    b.extend(4u32.to_le_bytes());
+    b.extend(f64s(&[0.0, 1.0]));
+    b.extend([0u8; 20]);
+    let Some(Curve2::Spline(3, poles, knots)) = curve(&obj(51, 9, &b)) else { panic!() };
+    assert_eq!(poles.len(), 4);
+    assert_eq!(knots, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
+    // Rational (2 at +10) or with a tail of another length: not read.
+    let mut r = b.clone();
+    r[2] = 2;
+    assert_eq!(curve(&obj(51, 9, &r)), None);
+    b.push(0);
+    assert_eq!(curve(&obj(51, 9, &b)), None);
+}
