@@ -444,8 +444,9 @@ it nets and rules, route, pour, check and write every fabrication file without K
 * **Routing**: a true shove (segments moved aside keeping their shape, several tracks and
   vias pushed in a chain: done, ADR 0058), dragging tracks (with the push of ADR 0058), differential pairs and length tuning (done, ADR 0055), blind and
   buried vias, routing across layers in one search (through vias: done, ADR 0059; video 8 →
-  21 of 30 pad pairs, coldfire 7 → 12), necking a track down to reach fine-pitch pads (the 18
-  coldfire pairs no layer reaches), push-and-shove across layers. Freerouting runs from the user's setting (phase 3);
+  21 of 30 pad pairs, coldfire 7 → 12), necking a track down to reach fine-pitch pads (done,
+  ADR 0060, with an exact escape from the pad: coldfire 12 → 26, StickHub 14 → 22, video 21 →
+  26), necking at points that are not pads, push-and-shove across layers. Freerouting runs from the user's setting (phase 3);
   finding it on the PATH is not done on purpose (the user names the install).
 * **Zones**: several outlines, spoke rules with `starved_thermal`, filling on edit and a
   zone outline editor: done, see ADR 0053. Still open: hatch smoothing and border options.
