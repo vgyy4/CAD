@@ -875,6 +875,30 @@ mod sab {
         assert!((cone.distance([1.0, 0.0, 0.0])).abs() < 1e-12);
     }
 
+    /// A solid of revolution from a feature's faces: the cylinder (axis y through (0.5, 0,
+    /// 0.5)) is a line at radius 0.5 between heights 0 and 2; a plane along the axis refuses.
+    #[test]
+    fn faces_of_revolution_give_a_profile() {
+        use crate::acis::RevSeg;
+        let custom: &[&str] = &["ATTRIB_CUSTOM", "attrib"];
+        let tag = |fid: i32, face: i32| (custom, vec![S("INV_NMX_GEN_TAG"), I(-1), I(1), I(44), I(1), I(fid), P(face)]);
+        let a = Acis::parse(&blend_with(42, true, vec![tag(7, 2), tag(8, 2), tag(8, 3)])).unwrap();
+        let (o, ax, segs) = a.revolution_profile(7).unwrap();
+        assert!(crate::acis::dist(o, [0.5, 0.0, 0.5]) < 1e-12 && crate::acis::dist(ax, [0.0, 1.0, 0.0]) < 1e-12);
+        let [RevSeg::Line(p, q)] = segs.as_slice() else { panic!("{segs:?}") };
+        let mut hs = [p[1], q[1]];
+        hs.sort_by(f64::total_cmp);
+        assert!(
+            (p[0] - 0.5).abs() < 1e-12
+                && (q[0] - 0.5).abs() < 1e-12
+                && hs[0].abs() < 1e-12
+                && (hs[1] - 2.0).abs() < 1e-12,
+            "{segs:?}"
+        );
+        assert!(a.revolution_profile(8).unwrap_err().contains("not across its axis"));
+        assert!(a.revolution_profile(9).is_err());
+    }
+
     /// The faces a shell opened are the planes beside its inner (shell-tagged) faces: one
     /// point per plane, a corner of the rim's inner boundary.
     #[test]
@@ -1256,4 +1280,44 @@ fn a_revolve_axis_off_the_sketch_axes_is_a_construction_line() {
     // Off the sketch plane: as before (the importer says it is not read).
     let t = with([0.0, 0.0, 2.0]);
     assert!(t["features"][1]["axis"].get("origin").is_some());
+}
+
+/// A profile of revolution as a sketch: the pieces chained, an arc counter-clockwise the short
+/// way, and an open chain closed along the axis (a pulley flange: a disk face, a bent rim and
+/// its blend).
+#[test]
+fn a_profile_of_revolution_is_a_closed_sketch_through_the_axis() {
+    use crate::acis::RevSeg;
+    use crate::inventor_features::revolution_sketch;
+    let segs = vec![
+        RevSeg::Line([0.0, 1.0], [2.0, 1.0]),                        // the disk
+        RevSeg::Line([2.0, 1.0], [2.5, 1.2]),                        // the rim
+        RevSeg::Arc { c: [2.0, 1.2], a: [2.0, 1.4], b: [2.5, 1.2] }, // its blend
+    ];
+    let (sk, origin, ax) = revolution_sketch("F_profile", [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], segs).unwrap();
+    assert_eq!(origin, json!([0.0, 0.0, 10.0]));
+    assert!(crate::acis::dist(ax, [0.0, 0.0, 1.0]) < 1e-12);
+    assert_eq!(sk["plane"]["y_axis"], json!([0.0, 0.0, 1.0]));
+    let pt = |id: &str| {
+        let p = sk["points"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap();
+        (p["x"].as_f64().unwrap(), p["y"].as_f64().unwrap())
+    };
+    // From the disk's free end at the axis, round the rim, back to the axis and closed.
+    assert_eq!(pt("q0"), (0.0, 10.0));
+    assert_eq!(pt("q3"), (20.0, 14.0));
+    let curves = sk["curves"].as_array().unwrap();
+    let arc = curves.iter().find(|c| c["type"] == "arc").unwrap();
+    // From (25, 12) to (20, 14) about (20, 12): a quarter turn counter-clockwise.
+    assert_eq!((arc["start"].as_str(), arc["end"].as_str()), (Some("q2"), Some("q3")));
+    // Back along the axis: (20, 14) to (0, 14), then to the start (0, 10); no line of no length.
+    assert_eq!(pt("x0"), (0.0, 14.0));
+    assert_eq!(curves.last().unwrap(), &json!({"id": "eclose", "type": "line", "start": "x0", "end": "q0"}));
+    assert_eq!(curves.len(), 5);
+    // Pieces that do not join into one chain are refused.
+    let apart = vec![
+        RevSeg::Line([0.0, 0.0], [1.0, 0.0]),
+        RevSeg::Line([2.0, 0.0], [3.0, 0.0]),
+        RevSeg::Line([2.0, 1.0], [3.0, 1.0]),
+    ];
+    assert!(revolution_sketch("G", [0.0; 3], [0.0, 0.0, 1.0], apart).is_err());
 }

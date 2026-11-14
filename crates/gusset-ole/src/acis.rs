@@ -415,6 +415,14 @@ pub(crate) struct FullRound {
     pub(crate) span: (f64, f64),
 }
 
+/// A piece of a profile of revolution, in (radius, height) along the axis: a line, or an arc of
+/// about `c` between `a` and `b`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RevSeg {
+    Line([f64; 2], [f64; 2]),
+    Arc { c: [f64; 2], a: [f64; 2], b: [f64; 2] },
+}
+
 /// The face a sweep ran up to (file units): its surface and points of it.
 #[derive(Debug, Clone)]
 pub(crate) struct SweepEnd {
@@ -715,6 +723,87 @@ impl Acis {
             }
         }
         out
+    }
+
+    /// The profile of a solid of revolution that a feature with id `fid` made, from its faces
+    /// in the result (those carrying its id as a sweep would, see [`Acis::sweep_faces`]): every
+    /// one a cone, cylinder or torus about one axis, or a plane across it. Each gives a piece
+    /// of the profile in (radius, height along the axis) from the axis point: a cone or
+    /// cylinder the line between its two rims, a torus the arc between them, a plane the span
+    /// of its radii (from the axis for a disk). File units.
+    pub(crate) fn revolution_profile(&self, fid: i64) -> Result<(V3, V3, Vec<RevSeg>), String> {
+        const TOL: f64 = 1e-7;
+        let faces = self.sweep_faces(fid);
+        if faces.is_empty() {
+            return Err("no face of the feature is in the result body".into());
+        }
+        let mut axis: Option<(V3, V3)> = None;
+        for &f in &faces {
+            let a = match self.kind(f) {
+                Surf::Cyl { c, ax, .. } | Surf::Torus { c, ax, .. } => Some((c, ax)),
+                Surf::Cone => self.rev_axis(f),
+                _ => None,
+            };
+            if let (None, Some(a)) = (axis, a) {
+                axis = Some(a);
+            }
+        }
+        let (o, ax) = axis.ok_or("no face of revolution")?;
+        let rh = |p: V3| {
+            let w = sub(p, o);
+            let h = dot(w, ax);
+            [libm::sqrt((dot(w, w) - h * h).max(0.0)), h]
+        };
+        let same_axis = |c: V3, a: V3| {
+            let w = sub(c, o);
+            dist(cross(a, ax), [0.0; 3]) < 1e-9 && dist(cross(w, ax), [0.0; 3]) < TOL
+        };
+        // The distinct (radius, height) points of a face's vertices.
+        let rims = |f: i64| {
+            let mut out: Vec<[f64; 2]> = Vec::new();
+            for v in self.verts(f) {
+                let q = rh(v);
+                if out.iter().all(|p| (p[0] - q[0]).abs() > TOL || (p[1] - q[1]).abs() > TOL) {
+                    out.push(q);
+                }
+            }
+            out
+        };
+        let mut segs: Vec<RevSeg> = Vec::new();
+        // Planes across the axis: the span of radii per height.
+        let mut spans: Vec<(f64, f64, f64)> = Vec::new();
+        for &f in &faces {
+            let pts = rims(f);
+            match self.kind(f) {
+                Surf::Plane { p, n } => {
+                    if dist(cross(n, ax), [0.0; 3]) > 1e-9 {
+                        return Err("a plane of the feature is not across its axis".into());
+                    }
+                    let h = dot(sub(p, o), ax);
+                    let (lo, hi) = pts.iter().fold((f64::MAX, 0.0f64), |a, q| (a.0.min(q[0]), a.1.max(q[0])));
+                    let lo = if hi - lo < TOL { 0.0 } else { lo };
+                    match spans.iter_mut().find(|s| (s.0 - h).abs() < TOL) {
+                        Some(s) => *s = (s.0, s.1.min(lo), s.2.max(hi)),
+                        None => spans.push((h, lo, hi)),
+                    }
+                }
+                Surf::Cyl { c, ax: a, .. } if same_axis(c, a) => match pts.as_slice() {
+                    [p, q] => segs.push(RevSeg::Line(*p, *q)),
+                    _ => return Err("a cylinder of the feature is not one band".into()),
+                },
+                Surf::Cone if self.rev_axis(f).is_some_and(|(c, a)| same_axis(c, a)) => match pts.as_slice() {
+                    [p, q] => segs.push(RevSeg::Line(*p, *q)),
+                    _ => return Err("a cone of the feature is not one band".into()),
+                },
+                Surf::Torus { c, ax: a, major, .. } if same_axis(c, a) => match pts.as_slice() {
+                    [p, q] => segs.push(RevSeg::Arc { c: [major, dot(sub(c, o), ax)], a: *p, b: *q }),
+                    _ => return Err("a torus of the feature is not one band".into()),
+                },
+                _ => return Err("a face of the feature is not of revolution about its axis".into()),
+            }
+        }
+        segs.extend(spans.into_iter().map(|(h, lo, hi)| RevSeg::Line([lo, h], [hi, h])));
+        Ok((o, ax, segs))
     }
 
     /// Where a sweep with id `fid` ended (extent 4 or 7, to the next face or to a face): the

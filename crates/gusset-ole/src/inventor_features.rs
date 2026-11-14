@@ -15,7 +15,7 @@
 //! Input is untrusted: every count, list, chain and walk is bounded, and a record that is not
 //! shaped as expected gives an `unsupported` feature or an error, never a panic.
 
-use crate::acis::{Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, Surf, V3, cross, dot, local_path};
+use crate::acis::{Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, RevSeg, Surf, V3, cross, dot, local_path};
 use crate::inventor_dc::{Dc, FeatType, Feature, Role, f64_at, u16_at, u32_at};
 use crate::inventor_profile::{P2, Poly, picks};
 use crate::{Limits, inventor};
@@ -1024,6 +1024,103 @@ fn sketch_axis_line(sk: &Sketch, p: V3, v: V3, rec: usize) -> Option<(Vec<Value>
     Some((pts, line, l))
 }
 
+/// A feature whose own records are not read, rebuilt as the solid of revolution its faces in
+/// the result body show (notes AE; the Design Accelerator pulley flanges, `9a78add3`): the
+/// profile is the chain of their generatrices, closed along the axis when it is open, revolved
+/// a full turn and joined to the body. Any face not of revolution about one axis refuses it.
+fn revolved_from_faces(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    let b = r.result().ok_or("the result body is not readable")?;
+    let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
+    let (o, ax, segs) = b.revolution_profile(fid)?;
+    let target = st.first_body.clone().ok_or("a join before any body")?;
+    let sk = format!("{name}_profile");
+    let (sketch, origin, ax) = revolution_sketch(&sk, o, ax, segs)?;
+    st.out.push(sketch);
+    st.out.push(
+        json!({"type": "revolve", "name": name, "sketch": sk, "profiles": "all", "operation": "join", "target": target,
+        "axis": {"origin": origin, "direction": [rnd(ax[0]), rnd(ax[1]), rnd(ax[2])]}, "angle": 360.0}),
+    );
+    Ok(())
+}
+
+/// The sketch of a profile of revolution (file units: axis point `o`, axis `ax`, pieces in
+/// radius and height): the pieces chained from an end only one of them has, closed along the
+/// axis when the chain is open, on the plane through the axis (its y axis). Also the plane's
+/// origin (mm) and the unit axis.
+pub(crate) fn revolution_sketch(sk: &str, o: V3, ax: V3, segs: Vec<RevSeg>) -> Result<(Value, Value, V3), String> {
+    const TOL: f64 = 1e-6;
+    let ends = |g: &RevSeg| match *g {
+        RevSeg::Line(a, b) | RevSeg::Arc { a, b, .. } => (a, b),
+    };
+    let near = |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).abs() < TOL && (p[1] - q[1]).abs() < TOL;
+    let segs: Vec<RevSeg> = segs.into_iter().filter(|g| !near(ends(g).0, ends(g).1)).collect();
+    if segs.is_empty() || segs.len() > MAX_CURVES {
+        return Err("no profile of revolution".into());
+    }
+    // Chain the pieces from an end that only one of them has (or any, for a closed chain).
+    let degree = |p: [f64; 2]| segs.iter().filter(|g| near(ends(g).0, p) || near(ends(g).1, p)).count();
+    let start = segs.iter().flat_map(|g| [ends(g).0, ends(g).1]).find(|&p| degree(p) == 1);
+    let mut cur = start.unwrap_or(ends(segs.first().ok_or("no profile")?).0);
+    let first = cur;
+    let mut left: Vec<RevSeg> = segs;
+    let mut chain: Vec<(RevSeg, [f64; 2])> = Vec::new();
+    while let Some(k) = left.iter().position(|g| near(ends(g).0, cur) || near(ends(g).1, cur)) {
+        let g = left.swap_remove(k);
+        let (a, b) = ends(&g);
+        let next = if near(a, cur) { b } else { a };
+        chain.push((g, next));
+        cur = next;
+    }
+    if !left.is_empty() {
+        return Err("the faces of revolution do not make one profile".into());
+    }
+    let mm = |p: [f64; 2]| [rnd(p[0] * CM), rnd(p[1] * CM)];
+    let mut pts: Vec<(String, [f64; 2])> = vec![("q0".into(), mm(first))];
+    let mut curves: Vec<Value> = Vec::new();
+    for (k, (g, next)) in chain.iter().enumerate() {
+        let (from, to) = (format!("q{k}"), format!("q{}", k + 1));
+        pts.push((to.clone(), mm(*next)));
+        let id = format!("e{k}");
+        match *g {
+            RevSeg::Line(..) => curves.push(json!({"id": id, "type": "line", "start": from, "end": to})),
+            RevSeg::Arc { c, .. } => {
+                // Counter-clockwise from start to end: the arc of a blend is under half a turn.
+                let (cm, p, q) = (mm(c), mm(chain.get(k.wrapping_sub(1)).map_or(first, |x| x.1)), mm(*next));
+                let ang = |x: [f64; 2]| libm::atan2(x[1] - cm[1], x[0] - cm[0]);
+                let ccw = (ang(q) - ang(p)).rem_euclid(std::f64::consts::TAU) <= std::f64::consts::PI;
+                let centre = format!("c{k}");
+                pts.push((centre.clone(), cm));
+                let (s0, s1) = if ccw { (from, to) } else { (to, from) };
+                curves.push(json!({"id": id, "type": "arc", "center": centre, "start": s0, "end": s1}));
+            }
+        }
+    }
+    if !near(cur, first) {
+        // Open: closed along the axis.
+        let (a, z) = (mm(cur), mm(first));
+        let mut last = format!("q{}", chain.len());
+        for (k, p) in [[0.0, a[1]], [0.0, z[1]]].into_iter().enumerate() {
+            let same = |q: [f64; 2]| near(q, p);
+            if same(z) || pts.iter().any(|(id, q)| *id == last && same(*q)) {
+                continue;
+            }
+            let id = format!("x{k}");
+            pts.push((id.clone(), p));
+            curves.push(json!({"id": format!("ex{k}"), "type": "line", "start": last, "end": id}));
+            last = id;
+        }
+        curves.push(json!({"id": "eclose", "type": "line", "start": last, "end": "q0"}));
+    }
+    let ax = unit3(ax);
+    let w = if ax[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let x = unit3(cross(cross(ax, w), ax));
+    let points: Vec<Value> = pts.iter().map(|(id, p)| json!({"id": id, "x": p[0], "y": p[1]})).collect();
+    let origin = json!([rnd(o[0] * CM), rnd(o[1] * CM), rnd(o[2] * CM)]);
+    let sketch = json!({"type": "sketch", "name": sk, "plane": {"origin": origin, "x_axis": [rnd(x[0]), rnd(x[1]), rnd(x[2])],
+        "y_axis": [rnd(ax[0]), rnd(ax[1]), rnd(ax[2])]}, "points": points, "curves": curves});
+    Ok((sketch, origin, ax))
+}
+
 /// A work axis record (`8ef06c89`, as a revolve's axis): start point and unit vector, in cm.
 fn work_axis(dc: &Dc, ax: usize) -> Result<(V3, V3), String> {
     let rec = dc.r(ax);
@@ -1912,6 +2009,7 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             FeatType::RectPattern => pattern(&r, &mut st, f, &name),
             FeatType::CircPattern => circular_pattern(&r, &mut st, f, &name),
             FeatType::Mirror => mirror(&r, &mut st, f, &name),
+            FeatType::Other(0x9a78_add3) => revolved_from_faces(&r, &mut st, f, &name),
             FeatType::Thicken => thicken(&r, &mut st, f, &name),
             FeatType::Shell => {
                 let later: Vec<i64> = feats.iter().skip(k + 1).filter_map(|g| r.dc.seq(g.rec)).map(i64::from).collect();
