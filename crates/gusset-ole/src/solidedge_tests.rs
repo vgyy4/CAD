@@ -3,7 +3,7 @@
 
 use crate::fixtures::ole;
 use crate::solidedge_features::{
-    Curve2, Edge3, Store, axis_line, curve, feature_tree, history, parse_func, plane, value,
+    Curve2, Edge3, Store, axis_line, curve, feature_tree, history, key_point_reach, parse_func, plane, value,
 };
 use serde_json::json;
 
@@ -227,9 +227,9 @@ fn a_protrusion_becomes_a_sketch_and_an_extrude() {
     let t = feature_tree(&part2(2.0, 13.0, Some(2.0)), "p.par", &crate::Limits::default()).unwrap();
     assert_eq!(t["features"][0]["type"], "unsupported");
     // An extent not read: the feature says so.
-    let t = feature_tree(&part(2.0, 72.0), "p.par", &crate::Limits::default()).unwrap();
+    let t = feature_tree(&part(2.0, 99.0), "p.par", &crate::Limits::default()).unwrap();
     assert_eq!(t["features"][0]["type"], "unsupported");
-    assert!(t["features"][0]["reason"].as_str().unwrap().contains("extent 72"));
+    assert!(t["features"][0]["reason"].as_str().unwrap().contains("extent 99"));
 }
 
 #[test]
@@ -275,4 +275,14 @@ fn a_polynomial_spline_member() {
     assert_eq!(curve(&obj(51, 9, &r)), None);
     b.push(0);
     assert_eq!(curve(&obj(51, 9, &b)), None);
+}
+
+#[test]
+fn a_key_point_extent_stores_its_reach() {
+    let mut b = func("JMLinearKeyPointFunction", &[&[3], &[1], &[2], &[0]]);
+    b.extend(1u32.to_le_bytes());
+    b.extend(f64s(&[0.0025, 0.0, 0.0, -2.0]));
+    assert_eq!(key_point_reach(&obj(1, 3, &b)), Some((0.0025, [0.0, 0.0, -1.0])));
+    let other = func("JMCutoutFunction", &[&[3]]);
+    assert_eq!(key_point_reach(&obj(1, 3, &other)), None);
 }

@@ -9,7 +9,7 @@
 //! previous feature, which gives the history order. What is read here:
 //!
 //! * extruded protrusions and cutouts: profiles (slot 2), extent kind (slot 3: 13 finite,
-//!   14 through all, 16 through next), side (slot 4: 1 against the profile plane's normal, 2 along it,
+//!   14 through all, 16 through next, 72 to a key point), side (slot 4: 1 against the profile plane's normal, 2 along it,
 //!   3 symmetric, 6 both ways), depth (slot 6: a value object or a dimension relation);
 //! * revolved protrusions and cutouts: profiles, axis (slot 6: a line), angle (slot 7);
 //! * each profile: its plane (an absolute frame in the plane object) and its 2D curves
@@ -437,6 +437,19 @@ pub(crate) fn value(b: &[u8]) -> Option<f64> {
     (v.is_finite() && v.abs() < 1e6).then_some(v)
 }
 
+/// A key point extent (`JMLinearKeyPointFunction`): after its slots, `u32 1`, the reach (metres)
+/// and its unit direction.
+pub(crate) fn key_point_reach(b: &[u8]) -> Option<(f64, V3)> {
+    let f = parse_func(b)?;
+    if f.class != "JMLinearKeyPointFunction" || u32_at(b, f.tail)? != 1 {
+        return None;
+    }
+    let d = f64_at(b, f.tail + 4)?;
+    let v = v3_at(b, f.tail + 12)?;
+    (d.is_finite() && d.abs() < 1e6 && finite3(v)).then_some(())?;
+    Some((d, unit(v)?))
+}
+
 /// A 2D curve of a profile (metres, in the profile plane's frame).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Curve2 {
@@ -802,9 +815,20 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
             // Through all; through the next face (16) is swept as far, the rebuild check
             // tells whether the next face was the last one.
             14 | 16 => (THROUGH, false),
-            e => return Err(format!("extent {e} (not finite or through all)")),
+            // Up to a key point: the reach the part stores with it, signed along the normal.
+            72 => {
+                let kp = f.slot(6).ok_or("the key point is missing")?;
+                let d = st.obj(kp).and_then(key_point_reach).ok_or("the key point's reach is not readable")?;
+                let along = dot(d.1, profiles.first().map_or([0.0; 3], |p| p.normal));
+                if (along.abs() - 1.0).abs() > 1e-6 || d.0.abs() < 1e-12 {
+                    return Err("the key point's reach is not along the profile normal".into());
+                }
+                (d.0 * along * MM, false)
+            }
+            e => return Err(format!("extent {e} (not finite, through or to a key point)")),
         };
         let (dist, symmetric) = match side {
+            _ if extent == 72 => (dist, symmetric),
             1 => (-dist, symmetric),
             2 => (dist, symmetric),
             3 => (dist, true),
