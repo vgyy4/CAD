@@ -291,7 +291,14 @@ impl Command for PcbNetClass {
         let bytes = serde_json::to_vec_pretty(&pro).map_err(|e| CommandError::new("io", e.to_string()))?;
         let hash = s.put_blob(&bytes).to_hex();
         let label = if self.delete { "Delete net class" } else { "Net class" };
-        let extra = json!({ "class_user_text": name, "deleted": self.delete });
+        let mut extra = json!({ "class_user_text": name, "deleted": self.delete });
+        // A typo in a net name would leave the class empty without a sign; say which nets the
+        // board does not have (nets keep a schematic's sheet path: /USB_P).
+        let unknown: Vec<&String> =
+            self.nets.iter().filter(|n| !self.delete && !open.board.nets.iter().any(|b| &b.name == *n)).collect();
+        if !unknown.is_empty() {
+            extra["unknown_nets_user_text"] = json!(unknown);
+        }
         let out = commit_board(s, ctx, label, open.file.clone(), &open.board, Some(Some(hash)), extra)?;
         Ok(out)
     }
@@ -372,6 +379,14 @@ impl Command for PcbAddZone {
             settings: st,
         };
         let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
+        if let Some(n) = &z.net
+            && !open.board.nets.iter().any(|b| &b.name == n)
+        {
+            return Err(CommandError::not_found(format!("no net '{}' on this board", crate::paths::display_name(n)))
+                .hint(
+                    "nets keep the sheet path a schematic gives them, such as /MID; omit net for an unconnected zone",
+                ));
+        }
         let mut b = open.board.clone();
         let index = b.add_zone(&z, &limits()).map_err(pcb_err)?;
         // Filled at once, so it shows and plots.

@@ -54,6 +54,17 @@ fn class_limits_and_custom_rules_reach_the_drc_report() {
     let c = open.rules.classes.iter().find(|c| c.name == "Power").unwrap();
     assert_eq!((c.min_via_drill, c.diff_pair_gap), (Some(0.45), Some(0.2)));
     assert_eq!(open.rules.custom.rules.len(), 1, "rules survive project edits");
+    // A net the board does not have is reported (a typo or a missing sheet path), not silent.
+    let r = run(&mut s, &u(7), "pcb.net_class", json!({"name": "Power", "nets": ["GND", "USB_P"]}));
+    assert_eq!(r["unknown_nets_user_text"], json!(["USB_P"]), "{r}");
+    let r = run(&mut s, &u(8), "pcb.net_class", json!({"name": "Power", "nets": ["GND"]}));
+    assert!(r.get("unknown_nets_user_text").is_none(), "{r}");
+    // A zone on such a net is refused instead of pouring nothing.
+    let zone = json!({"outline": [[0, 0], [5, 0], [5, 5], [0, 5]], "layers": ["B.Cu"], "net": "GND_typo"});
+    let e = execute(&mut s, &u(9), "pcb.add_zone", zone).unwrap_err();
+    assert_eq!(e.code, "not_found", "{e:?}");
+    let zone = json!({"outline": [[0, 0], [5, 0], [5, 5], [0, 5]], "layers": ["B.Cu"], "net": "GND"});
+    run(&mut s, &u(10), "pcb.add_zone", zone);
 }
 
 #[test]
