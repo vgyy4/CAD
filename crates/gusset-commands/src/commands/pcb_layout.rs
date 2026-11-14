@@ -5,7 +5,7 @@ use super::pcb::{PcbImport, board_source, no_board, write_outputs};
 use super::pcb_edit::commit_board;
 use super::*;
 use crate::pcb_session;
-use gusset_pcb::{Limits, length, pair, push, route, shove, specctra, tune, zones};
+use gusset_pcb::{Limits, layers, length, pair, push, route, shove, specctra, tune, zones};
 use std::sync::atomic::AtomicBool;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
@@ -86,24 +86,60 @@ impl Command for PcbFillZones {
 pub struct PcbRoute {
     /// Start, waypoints, end (mm).
     pub points: Vec<[f64; 2]>,
-    /// Copper layer (default F.Cu).
+    /// Default F.Cu.
     #[serde(default)]
     pub layer: Option<String>,
     /// Default: the start's net.
     #[serde(default)]
     pub net: Option<String>,
-    /// mm (default: the net class's).
+    /// mm (default: class's).
     #[serde(default)]
     pub width: Option<f64>,
-    /// false: straight between the points.
+    /// false: straight.
     #[serde(default)]
     pub around: Option<bool>,
-    /// Arc corner radius (mm).
+    /// Arc corners, mm.
     #[serde(default)]
     pub arc_radius: Option<f64>,
-    /// false: no shoving.
+    /// false: no shove.
     #[serde(default)]
     pub shove: Option<bool>,
+    /// any, or e.g. F.Cu,B.Cu: vias change layer.
+    #[serde(default)]
+    pub layers: Option<String>,
+}
+
+/// The layers a route may use (ADR 0059): `layer` alone unless the caller names more
+/// ("any": every copper layer) or the end's copper of the net is only on other layers.
+fn route_layers(
+    b: &gusset_pcb::Board,
+    asked: Option<&str>,
+    layer: &str,
+    net: Option<&str>,
+    end: [f64; 2],
+) -> Result<Vec<String>, CommandError> {
+    let cu = b.copper_layers();
+    let mut out: Vec<String> = vec![layer.to_string()];
+    match asked.map(str::trim) {
+        None => {
+            let at_end = |l: &str| net.is_some() && b.net_at(end, l).as_deref() == net;
+            if !at_end(layer) {
+                out.extend(cu.iter().filter(|l| at_end(l)).cloned());
+            }
+        }
+        Some("any") => out.extend(cu.iter().cloned()),
+        Some(list) => {
+            for l in list.split(',').map(str::trim).filter(|l| !l.is_empty()) {
+                if !cu.iter().any(|c| c == l) {
+                    return Err(CommandError::args(format!("{l} is not a copper layer of this board")));
+                }
+                out.push(l.to_string());
+            }
+        }
+    }
+    out.sort_by_key(|l| cu.iter().position(|c| c == l));
+    out.dedup();
+    Ok(out)
 }
 
 impl Command for PcbRoute {
@@ -123,62 +159,143 @@ impl Command for PcbRoute {
             return Err(CommandError::args("arc_radius is 0 to 100 mm"));
         }
         let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
-        let b = &open.board;
+        let (b, rules) = (&open.board, &open.rules);
         let layer = self.layer.clone().unwrap_or_else(|| "F.Cu".into());
         if !b.copper_layers().contains(&layer) {
             return Err(CommandError::args("the layer is not a copper layer of this board"));
         }
         let first = self.points.first().copied().unwrap_or_default();
-        let net = self.net.clone().or_else(|| b.net_at(first, &layer));
-        let width = self.width.unwrap_or_else(|| open.rules.track_width_of(net.as_deref()));
+        let last = self.points.last().copied().unwrap_or_default();
+        let mut net = self.net.clone().or_else(|| b.net_at(first, &layer));
+        if net.is_none() && self.layers.is_some() {
+            net = b.copper_layers().iter().find_map(|l| b.net_at(first, l));
+        }
+        let width = self.width.unwrap_or_else(|| rules.track_width_of(net.as_deref()));
         if !(width.is_finite() && width > 0.0 && width <= 100.0) {
             return Err(CommandError::args("the width is above 0 and at most 100 mm"));
         }
-        let grid = (open.rules.clearance_of(net.as_deref()).min(width) / 2.0).clamp(0.05, 0.25);
         let around = self.around.unwrap_or(true);
+        let allowed = if around {
+            route_layers(b, self.layers.as_deref(), &layer, net.as_deref(), last)?
+        } else {
+            vec![layer.clone()]
+        };
+        let idx = |l: &str| allowed.iter().position(|x| x == l).unwrap_or(0);
+        let on = |p: [f64; 2], k: usize| net.is_some() && allowed.get(k).is_some_and(|l| b.net_at(p, l) == net);
+        let grid = (rules.clearance_of(net.as_deref()).min(width) / 2.0).clamp(0.05, 0.25);
+        // The start's layers: the allowed ones with its copper (else `layer`).
+        let mut start_layers: Vec<usize> = (0..allowed.len()).filter(|&k| on(first, k)).collect();
+        if start_layers.is_empty() {
+            start_layers.push(idx(&layer));
+        }
+        let mut cur = if start_layers.contains(&idx(&layer)) {
+            layer.clone()
+        } else {
+            start_layers.first().and_then(|&k| allowed.get(k)).cloned().unwrap_or_else(|| layer.clone())
+        };
         // The board as other nets' tracks are shoved; obstacles rebuilt after a shove.
         let mut nb = b.clone();
-        let mut obs = route::Obstacles::new(&nb, &open.rules, &layer, net.as_deref(), width);
+        let mut obs: std::collections::BTreeMap<String, route::Obstacles> = std::collections::BTreeMap::new();
+        let mut lay: Option<layers::Layered> = None;
         let (mut shoved, mut shoved_vias) = (0usize, 0usize);
-        let mut pts: Vec<[f64; 2]> = vec![first];
+        // Runs of the new track on one layer, and the vias between them.
+        let mut runs: Vec<(String, Vec<[f64; 2]>)> = vec![(cur.clone(), vec![first])];
+        let mut vias: Vec<[f64; 2]> = Vec::new();
+        let n = self.points.len();
         for (i, w) in self.points.windows(2).enumerate() {
             let &[a, c] = w else { continue };
+            let starts = if i == 0 { start_layers.clone() } else { vec![idx(&cur)] };
+            let mut targets: Vec<usize> = Vec::new();
+            if i + 2 == n {
+                targets = (0..allowed.len()).filter(|&k| on(c, k)).collect();
+            }
+            if targets.is_empty() {
+                targets = (0..allowed.len()).collect();
+            }
+            let here = idx(&cur);
+            let one_layer = starts.contains(&here) && targets.contains(&here);
+            let o = obs
+                .entry(cur.clone())
+                .or_insert_with(|| route::Obstacles::new(&nb, rules, &cur, net.as_deref(), width));
             let leg = if !around {
-                vec![a, c]
-            } else if let Some(leg) = route::walkaround(&obs, a, c, grid, true) {
-                leg
+                Some(vec![a, c])
+            } else if one_layer {
+                route::walkaround(o, a, c, grid, true)
             } else {
-                let refused = || {
-                    CommandError::not_found(format!("no clear way from point {i} to point {}", i + 1))
-                        .hint("move the points, route on another layer, or pass around: false")
-                };
-                if !self.shove.unwrap_or(true) {
-                    return Err(refused());
-                }
-                // Push-and-shove (ADR 0058), else the phase 3 shove (one track re-laid).
-                let path =
-                    if let Some(p) = push::push(&nb, &open.rules, &layer, net.as_deref(), width, a, c, grid, &pts) {
-                        nb.apply_push(&p, &layer, &Limits::default()).map_err(pcb_err)?;
-                        shoved += p.lines.len();
-                        shoved_vias += p.vias.len();
-                        p.path
-                    } else {
-                        let sh = shove::shove(&nb, &open.rules, &layer, net.as_deref(), width, a, c, grid, &pts)
-                            .ok_or_else(refused)?;
-                        nb.apply_shove(&sh, &layer, &Limits::default()).map_err(pcb_err)?;
-                        shoved += 1;
-                        sh.path
-                    };
-                obs = route::Obstacles::new(&nb, &open.rules, &layer, net.as_deref(), width);
-                path
+                None
             };
-            pts.extend(leg.into_iter().skip(1));
+            if let Some(leg) = leg {
+                if let Some(r) = runs.last_mut() {
+                    r.1.extend(leg.into_iter().skip(1));
+                }
+                continue;
+            }
+            let refused = |why: &str| {
+                CommandError::not_found(format!("no clear way from point {i} to point {} ({why})", i + 1))
+                    .hint("move the points, allow layers: \"any\", or pass around: false")
+            };
+            // Across layers in one search (ADR 0059).
+            let mut why = "no way round";
+            if allowed.len() > 1 {
+                let l = lay.get_or_insert_with(|| layers::Layered::new(&nb, rules, &allowed, net.as_deref(), width));
+                match layers::route(l, rules, a, &starts, c, &targets, grid, true, None) {
+                    Ok(r) => {
+                        for (layer_k, pts) in r.legs {
+                            match runs.last_mut() {
+                                Some(run) if run.0 == layer_k => run.1.extend(pts.into_iter().skip(1)),
+                                Some(run) if run.1.len() < 2 => *run = (layer_k, pts),
+                                _ => runs.push((layer_k, pts)),
+                            }
+                        }
+                        vias.extend(r.vias);
+                        cur = runs.last().map(|r| r.0.clone()).unwrap_or_default();
+                        continue;
+                    }
+                    Err(e) => why = e,
+                }
+            }
+            if !one_layer || !self.shove.unwrap_or(true) {
+                return Err(refused(why));
+            }
+            // Push-and-shove on this layer (ADR 0058), else the phase 3 shove.
+            let keep: Vec<[f64; 2]> = runs.last().map(|r| r.1.clone()).unwrap_or_default();
+            let path = if let Some(p) = push::push(&nb, rules, &cur, net.as_deref(), width, a, c, grid, &keep) {
+                nb.apply_push(&p, &cur, &Limits::default()).map_err(pcb_err)?;
+                shoved += p.lines.len();
+                shoved_vias += p.vias.len();
+                p.path
+            } else {
+                let sh = shove::shove(&nb, rules, &cur, net.as_deref(), width, a, c, grid, &keep)
+                    .ok_or_else(|| refused(why))?;
+                nb.apply_shove(&sh, &cur, &Limits::default()).map_err(pcb_err)?;
+                shoved += 1;
+                sh.path
+            };
+            obs.clear();
+            lay = None;
+            if let Some(r) = runs.last_mut() {
+                r.1.extend(path.into_iter().skip(1));
+            }
         }
-        let pts = route::simplify(&pts);
-        let segs = route::with_arcs(&obs, &pts, self.arc_radius.unwrap_or(0.0));
-        let length = route::length(&segs);
-        let index = nb.add_route(&segs, width, &layer, net.as_deref(), &Limits::default()).map_err(pcb_err)?;
-        let extra = json!({
+        let radius = self.arc_radius.unwrap_or(0.0);
+        let mut batch: Vec<gusset_pcb::edit::NewRoute> = Vec::new();
+        let mut length = 0.0;
+        for (l, pts) in &runs {
+            let pts = route::simplify(pts);
+            if pts.len() < 2 {
+                continue;
+            }
+            let o = obs.entry(l.clone()).or_insert_with(|| route::Obstacles::new(&nb, rules, l, net.as_deref(), width));
+            let segs = route::with_arcs(o, &pts, radius);
+            length += route::length(&segs);
+            batch.push((segs, width, l.clone(), net.clone()));
+        }
+        let via = layers::via_size(rules, net.as_deref());
+        let new_vias: Vec<gusset_pcb::edit::NewVia> =
+            vias.iter().map(|&at| (at, via.size, via.drill, net.clone())).collect();
+        let (index, first_via) = (nb.tracks.len(), nb.vias.len());
+        nb.add_batch(&batch, &new_vias, &Limits::default()).map_err(pcb_err)?;
+        let mut extra = json!({
             "tracks": nb.tracks.len() - index,
             "first_track": index,
             "length_mm": (length * 1000.0).round() / 1000.0,
@@ -186,7 +303,12 @@ impl Command for PcbRoute {
             "net_user_text": net,
             "shoved_tracks": shoved,
             "shoved_vias": shoved_vias,
+            "vias": vias.len(),
         });
+        if let (false, Value::Object(m)) = (vias.is_empty(), &mut extra) {
+            m.insert("first_via".into(), json!(first_via));
+            m.insert("via_size".into(), json!([via.size, via.drill]));
+        }
         commit_board(s, ctx, "Route track", open.file.clone(), &nb, None, extra)
     }
 }

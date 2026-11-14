@@ -18,9 +18,9 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 /// Most grid points one search may visit.
-const MAX_CELLS: usize = 1_500_000;
+pub(crate) const MAX_CELLS: usize = 1_500_000;
 /// Gaps may fall short of the rule by this (mm), as in the DRC.
-const SLACK: f64 = 4e-4;
+pub(crate) const SLACK: f64 = 4e-4;
 
 /// One piece of a routed track: a line, or an arc through `mid`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -248,7 +248,7 @@ impl Obstacles {
     }
 
     /// Whether a point is free with `extra` to spare.
-    fn free(&self, p: Pt, extra: f64) -> bool {
+    pub(crate) fn free(&self, p: Pt, extra: f64) -> bool {
         self.margin(p, p, extra) >= extra && self.on_board(p)
     }
 }
@@ -512,7 +512,7 @@ fn search(obs: &Obstacles, soft: Option<&Soft>, from: Pt, to: Pt, grid: f64, dia
 
 /// Shortens a clear path: from each kept point, the farthest later point reachable by one
 /// or two 45° segments that are `clear` is joined directly.
-fn pull_tight(clear: &dyn Fn(Pt, Pt) -> bool, pts: &[Pt], diagonal_first: bool) -> Vec<Pt> {
+pub(crate) fn pull_tight(clear: &dyn Fn(Pt, Pt) -> bool, pts: &[Pt], diagonal_first: bool) -> Vec<Pt> {
     let n = pts.len();
     let mut out: Vec<Pt> = Vec::new();
     let mut i = 0usize;

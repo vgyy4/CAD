@@ -311,6 +311,58 @@ fn a_blocking_track_is_shoved_through_the_registry() {
     assert_eq!(board(&s).board.tree, before.tree, "one undo step");
 }
 
+#[test]
+fn a_route_dives_under_a_wall_through_vias() {
+    let mut s = setup();
+    run(&mut s, &u(1), "pcb.new", json!({"width": "30 mm", "height": "10 mm"}));
+    // B runs across the whole board at x = 15 on F.Cu; A's pads either side of it, and
+    // A3 on B.Cu only.
+    let fp = |r: &str, at: [f64; 2], layer: &str| {
+        format!(
+            "(footprint \"P\" (layer \"{layer}\") (at {} {}) (property \"Reference\" \"{r}\" (at 0 0) (layer \"F.Fab\")) (pad \"1\" smd circle (at 0 0) (size 0.6 0.6) (layers \"{layer}\")))",
+            at[0], at[1]
+        )
+    };
+    let parts = [
+        fp("A1", [3.0, 5.0], "F.Cu"),
+        fp("A2", [27.0, 5.0], "F.Cu"),
+        fp("A3", [27.0, 8.0], "B.Cu"),
+        fp("B1", [15.0, 1.0], "F.Cu"),
+        fp("B2", [15.0, 9.0], "F.Cu"),
+    ];
+    let dir = s.project_dir.clone().unwrap();
+    let text = board(&s).board.write().replacen("(net 0 \"\")", &format!("(net 0 \"\") {}", parts.join(" ")), 1);
+    std::fs::write(dir.join("wall.kicad_pcb"), text).unwrap();
+    run(&mut s, &u(2), "pcb.open", json!({"path": "wall.kicad_pcb"}));
+    for (r, n) in [("A1", "A"), ("A2", "A"), ("A3", "A"), ("B1", "B"), ("B2", "B")] {
+        run(&mut s, &u(3), "pcb.set_net", json!({"pads": [format!("{r}.1")], "net": n}));
+    }
+    run(&mut s, &u(4), "pcb.route", json!({"points": [[15, 1], [15, 9]], "around": false}));
+    // On F.Cu alone there is no way.
+    let e = execute(&mut s, &u(5), "pcb.route", json!({"points": [[3, 5], [27, 5]], "shove": false})).unwrap_err();
+    assert_eq!(e.code, "not_found");
+    let bad = execute(&mut s, &u(5), "pcb.route", json!({"points": [[3, 5], [27, 5]], "layers": "F.Cu,In9.Cu"}));
+    assert_eq!(bad.unwrap_err().code, "invalid_args");
+    let before = board(&s).board.clone();
+    let r = run(&mut s, &u(6), "pcb.route", json!({"points": [[3, 5], [27, 5]], "layers": "any"}));
+    assert_eq!((r["vias"].as_u64(), r["unrouted"].as_u64()), (Some(2), Some(1)), "{r}");
+    assert_eq!(r["via_size"], json!([0.6, 0.3]), "{r}");
+    let b = board(&s).board.clone();
+    assert_eq!(b.vias.len(), 2);
+    assert!(b.vias.iter().all(|v| b.net_name(&v.net).as_deref() == Some("A")));
+    assert!(b.tracks.iter().any(|t| t.layer == "B.Cu"));
+    assert_eq!(run(&mut s, &u(7), "pcb.drc", json!({}))["violations"], json!([]));
+    // One undo takes the tracks and both vias back.
+    run(&mut s, &u(8), "history.undo", json!({}));
+    assert_eq!(board(&s).board.tree, before.tree, "one undo step");
+    // An end on B.Cu only lets the route change layer without being asked: one via.
+    let r = run(&mut s, &u(9), "pcb.route", json!({"points": [[3, 5], [27, 8]]}));
+    assert_eq!(r["vias"], 1, "{r}");
+    assert_eq!(run(&mut s, &u(10), "pcb.drc", json!({}))["violations"], json!([]));
+    run(&mut s, &u(11), "history.undo", json!({}));
+    assert_eq!(board(&s).board.tree, before.tree);
+}
+
 /// A stand-in for Freerouting: a shell script in a temporary folder (nothing is
 /// downloaded or run but this). `body` runs with `$out` set to the `-do` path.
 #[cfg(unix)]

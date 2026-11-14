@@ -42,6 +42,7 @@ pub mod geom;
 pub mod gerber;
 #[cfg(test)]
 mod gerber_read;
+pub mod layers;
 pub mod length;
 pub mod netlist;
 pub mod nets;
@@ -80,6 +81,8 @@ mod tests_dsn;
 mod tests_edit;
 #[cfg(test)]
 mod tests_gerber;
+#[cfg(test)]
+mod tests_layers;
 #[cfg(test)]
 mod tests_local;
 #[cfg(test)]
