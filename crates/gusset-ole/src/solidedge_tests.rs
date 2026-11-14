@@ -3,8 +3,8 @@
 
 use crate::fixtures::ole;
 use crate::solidedge_features::{
-    Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, copy_frame, curve, edge_pick, edge_set,
-    feature_tree, history, key_point_reach, parse_func, plane, value,
+    Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, close_open, copy_frame, curve, edge_pick,
+    edge_set, feature_tree, history, key_point_reach, parse_func, plane, value,
 };
 use serde_json::json;
 
@@ -388,7 +388,14 @@ fn rounds_and_chamfers_pick_their_stored_edges() {
 fn a_revolve_axis_off_the_sketch_axes_is_a_construction_line() {
     // A profile on the plane y = 2 (normal -y, x along x): the importer's sketch origin is the
     // foot of the world origin, (0, 2, 0).
-    let p = Profile { origin: [5.0, 2.0, 0.0], normal: [0.0, -1.0, 0.0], x: [1.0, 0.0, 0.0], curves: Vec::new() };
+    let p = Profile {
+        origin: [5.0, 2.0, 0.0],
+        normal: [0.0, -1.0, 0.0],
+        x: [1.0, 0.0, 0.0],
+        curves: Vec::new(),
+        turned: false,
+        backwards: Vec::new(),
+    };
     // The plane's z axis through that foot: one of the sketch's own axes.
     assert_eq!(axis_in_plane(&p, ([0.0, 2.0, 7.0], [0.0, 0.0, 1.0])), None);
     // Parallel to it 3 m off: a line in the plane's frame (y = normal x x = z).
@@ -436,7 +443,7 @@ fn a_pattern_copied_profile_lies_on_its_stored_plane() {
     more.extend(obj(38, 39, &func("JMCutoutFunction", &[&[39], &[0], &[2], &[32], &[33]])));
     more.extend(obj(38, 40, &func("JMMirrorCopyFunction", &[&[40], &[12], &[38], &[39]])));
     more.extend(obj(38, 41, &func("JMCutoutFunction", &[&[41], &[34], &[42], &[32], &[33]])));
-    more.extend(obj(40, 42, &copied(&[4], [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 40)));
+    more.extend(obj(40, 42, &copied(&[4, 5, 6, 7], [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 40)));
     // A copy by anything else is not read.
     more.extend(obj(38, 43, &func("JMCutoutFunction", &[&[43], &[41], &[35], &[32], &[33]])));
     let t = feature_tree(&part_with(1.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
@@ -459,4 +466,40 @@ fn a_pattern_copied_profile_lies_on_its_stored_plane() {
     assert_eq!(f[5]["type"], "extrude");
     assert_eq!(f[6]["type"], "unsupported");
     assert!(f[6]["reason"].as_str().unwrap().contains("copied by a Cutout"), "{t}");
+}
+
+#[test]
+fn an_open_cutout_profile_is_closed_on_its_side() {
+    // A line from (0, 0) to (2, 0): side 1 closes it round its left (+y), 2 round its right.
+    for (side, y) in [(1, 1.0), (2, -1.0)] {
+        let mut c = vec![Curve2::Line([0.0, 0.0], [2.0, 0.0])];
+        close_open(&mut c, &[false], Some(side)).unwrap();
+        assert_eq!(c.len(), 4, "{c:?}");
+        let Curve2::Arc(centre, r, a0, a1) = c[2] else { panic!("{c:?}") };
+        assert_eq!((centre, r), ([1.0, 0.0], 11.0));
+        // Counter-clockwise from a0 to a1 through +y (side 1) or -y (side 2).
+        let mid = if a1 > a0 { (a0 + a1) / 2.0 } else { (a0 + a1) / 2.0 + core::f64::consts::PI };
+        assert!(libm::sin(mid) * y > 0.99, "{c:?}");
+    }
+    // A half circle drawn clockwise over the top from (-1, 0) to (1, 0) (kept counter-clockwise
+    // from its end): its left is outside, its right the inside of the arch, closed below.
+    let arc = Curve2::Arc([0.0, 0.0], 1.0, 0.0, core::f64::consts::PI);
+    let mut c = vec![arc.clone()];
+    close_open(&mut c, &[true], Some(2)).unwrap();
+    let Curve2::Line(p, q) = c[1] else { panic!("{c:?}") };
+    let near = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
+    assert!(near(p, [-1.0, 0.0]) && near(q, [-1.0, -libm::sqrt(11.0 * 11.0 - 1.0)]), "{c:?}");
+    let Curve2::Arc(_, _, a0, a1) = c[2] else { panic!("{c:?}") };
+    assert!(a0 < -core::f64::consts::FRAC_PI_2 && a1 > -core::f64::consts::FRAC_PI_2 && a1 < 0.0, "{c:?}");
+    // A closed profile is left alone; side unknown or three ends: refused.
+    let mut c = vec![Curve2::Circle([0.0, 0.0], 1.0)];
+    close_open(&mut c, &[false], None).unwrap();
+    assert_eq!(c.len(), 1);
+    assert!(close_open(&mut vec![arc], &[false], Some(4)).is_err());
+    let three = [
+        Curve2::Line([0.0, 0.0], [1.0, 0.0]),
+        Curve2::Line([1.0, 0.0], [2.0, 0.0]),
+        Curve2::Line([1.0, 0.0], [1.0, 1.0]),
+    ];
+    assert!(close_open(&mut three.to_vec(), &[false; 3], Some(1)).is_err());
 }

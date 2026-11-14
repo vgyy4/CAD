@@ -700,6 +700,10 @@ pub(crate) struct Profile {
     pub(crate) normal: V3,
     pub(crate) x: V3,
     pub(crate) curves: Vec<Curve2>,
+    /// Turned over (a mirror's copy): the curves run the other way round.
+    pub(crate) turned: bool,
+    /// For each curve, whether it was drawn from its end to its start.
+    pub(crate) backwards: Vec<bool>,
 }
 
 impl Profile {
@@ -733,17 +737,18 @@ fn profile(st: &Store, serial: u32) -> Result<Profile, String> {
     if n > MAX_MEMBERS {
         return Err("the profile has too many members".into());
     }
-    let curves = members(st, pb, 12, n, Some(pl))?;
-    Ok(Profile { origin: pl.0, normal: pl.1, x: pl.2, curves })
+    let (curves, backwards) = members(st, pb, 12, n, Some(pl))?;
+    Ok(Profile { origin: pl.0, normal: pl.1, x: pl.2, curves, turned: false, backwards })
 }
 
 /// The curves of a profile's `n` members, listed (`u32` serials) from `at` in `b`. A member kept
 /// only in `SKETCH.P_B` is brought into `plane`, which a copied profile does not have.
-fn members(st: &Store, b: &[u8], at: usize, n: u32, plane: Option<(V3, V3, V3)>) -> Result<Vec<Curve2>, String> {
+fn members(st: &Store, b: &[u8], at: usize, n: u32, plane: Option<(V3, V3, V3)>) -> Result<Curves, String> {
     if n > MAX_MEMBERS {
         return Err("the profile has too many members".into());
     }
     let mut curves = Vec::new();
+    let mut backwards = Vec::new();
     for k in 0..n as usize {
         let m = u32_at(b, at + 4 * k).ok_or("the 2D profile is cut short")?;
         // No member (a slot left empty).
@@ -755,10 +760,15 @@ fn members(st: &Store, b: &[u8], at: usize, n: u32, plane: Option<(V3, V3, V3)>)
             let e = st.sketch.get(&m).ok_or("a profile curve is not stored in the part")?;
             let pl = plane.ok_or("a copied profile's curve is kept only in the sketches")?;
             curves.push(e.flat(pl.0, pl.1, pl.2).ok_or("a sketch curve does not lie in the profile plane")?);
+            backwards.push(false);
             continue;
         };
         match curve(mb) {
-            Some(c) => curves.push(c),
+            Some(c) => {
+                // An arc drawn clockwise (u8 0 at +34) is kept counter-clockwise, from its end.
+                backwards.push(matches!(c, Curve2::Arc(..)) && mb.get(34) == Some(&0));
+                curves.push(c);
+            }
             None if mb.len() == 46 || mb.len() == 55 => {
                 return Err("a profile curve is not readable".into());
             }
@@ -768,8 +778,11 @@ fn members(st: &Store, b: &[u8], at: usize, n: u32, plane: Option<(V3, V3, V3)>)
     if curves.is_empty() {
         return Err("the profile has no curves".into());
     }
-    Ok(curves)
+    Ok((curves, backwards))
 }
+
+/// A profile's curves and, for each, whether it was drawn from its end to its start.
+type Curves = (Vec<Curve2>, Vec<bool>);
 
 /// The bytes after a copied profile's frame: five zero bytes, `01 01 00 00 00` and a class id.
 const COPY_FRAME_END: [u8; 26] = [
@@ -797,15 +810,15 @@ fn copied_profile(st: &Store, serial: u32, f: &Func) -> Result<Profile, String> 
     };
     match from.class.as_str() {
         "JMSmartPatternFunction" => {
-            let curves = members(st, b, 16, n, seed_feature(4))?;
+            let (curves, backwards) = members(st, b, 16, n, seed_feature(4))?;
             let (origin, normal, x) = copy_frame(b).ok_or("the copied profile's plane is not readable")?;
-            Ok(Profile { origin, normal, x, curves })
+            Ok(Profile { origin, normal, x, curves, turned: false, backwards })
         }
         "JMMirrorCopyFunction" => {
             let (mo, mn, _) =
                 from.slot(2).and_then(|p| st.obj(p)).and_then(plane).ok_or("the mirror plane is not readable")?;
             let (so, sn, sx) = seed_feature(3).ok_or("the mirrored profile's plane is not readable")?;
-            let curves = members(st, b, 16, n, Some((so, sn, sx)))?;
+            let (curves, backwards) = members(st, b, 16, n, Some((so, sn, sx)))?;
             let flip = |v: V3| {
                 let k = 2.0 * dot(v, mn);
                 [v[0] - k * mn[0], v[1] - k * mn[1], v[2] - k * mn[2]]
@@ -813,8 +826,10 @@ fn copied_profile(st: &Store, serial: u32, f: &Func) -> Result<Profile, String> 
             let d = [so[0] - mo[0], so[1] - mo[1], so[2] - mo[2]];
             let fd = flip(d);
             let origin = [mo[0] + fd[0], mo[1] + fd[1], mo[2] + fd[2]];
+            // Turning an arc over swaps its ends.
+            let backwards = curves.iter().zip(backwards).map(|(c, b)| b != matches!(c, Curve2::Arc(..))).collect();
             let curves = curves.iter().map(turned_over).collect();
-            Ok(Profile { origin, normal: flip(sn), x: flip(sx), curves })
+            Ok(Profile { origin, normal: flip(sn), x: flip(sx), curves, turned: true, backwards })
         }
         other => Err(format!("the profile is copied by a {} (not read)", label(other))),
     }
@@ -906,6 +921,88 @@ pub(crate) fn axis_in_plane(p: &Profile, (a, d): (V3, V3)) -> Option<([f64; 2], 
     let y = p.y();
     let s = [dot(w, p.x), dot(w, y)];
     Some((s, [s[0] + dot(d, p.x), s[1] + dot(d, y)]))
+}
+
+/// How far an open profile's ends reach (metres) past its ends' middle: past any part.
+const OPEN_REACH: f64 = 10.0;
+
+/// A point of a 2D curve and a direction there.
+type Ray = ([f64; 2], [f64; 2]);
+
+/// The ends of a profile curve as kept: its start and end, each with the direction leading
+/// away from the curve there.
+fn curve_ends(c: &Curve2) -> Option<(Ray, Ray)> {
+    let dir = |a: [f64; 2], b: [f64; 2]| {
+        let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
+        let l = (dx * dx + dy * dy).sqrt();
+        (l > 1e-12).then(|| [dx / l, dy / l])
+    };
+    match c {
+        Curve2::Line(a, b) => Some(((*a, dir(*a, *b)?), (*b, dir(*b, *a)?))),
+        Curve2::Arc(c, r, a0, a1) => {
+            let at = |t: f64| [c[0] + r * libm::cos(t), c[1] + r * libm::sin(t)];
+            // Counter-clockwise: leaving the start backwards, the end forwards.
+            let (s0, c0, s1, c1) = (libm::sin(*a0), libm::cos(*a0), libm::sin(*a1), libm::cos(*a1));
+            Some(((at(*a0), [s0, -c0]), (at(*a1), [-s1, c1])))
+        }
+        Curve2::Spline(_, poles, _) => {
+            let (p0, p1) = (*poles.first()?, *poles.get(1)?);
+            let (q0, q1) = (*poles.last()?, *poles.get(poles.len().checked_sub(2)?)?);
+            Some(((p0, dir(p0, p1)?), (q0, dir(q0, q1)?)))
+        }
+        Curve2::Circle(..) => None,
+    }
+}
+
+/// An open profile of a cutout (one chain with two free ends) closed on the side the cutout
+/// removes (slot 5: 1 left of the chain as drawn, 2 right): its ends run on along their
+/// directions to a circle [`OPEN_REACH`] round the middle of its ends, and the arc of that
+/// circle on that side closes it. A closed profile is left as it is.
+pub(crate) fn close_open(curves: &mut Vec<Curve2>, backwards: &[bool], side: Option<i64>) -> Result<(), String> {
+    let same = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
+    // Each end: point, outward direction, whether the curve was drawn from it.
+    let mut ends: Vec<([f64; 2], [f64; 2], bool)> = Vec::new();
+    for (k, c) in curves.iter().enumerate() {
+        if let Some((a, b)) = curve_ends(c) {
+            let back = backwards.get(k).copied().unwrap_or(false);
+            ends.push((a.0, a.1, !back));
+            ends.push((b.0, b.1, back));
+        }
+    }
+    let free: Vec<&([f64; 2], [f64; 2], bool)> =
+        ends.iter().filter(|e| ends.iter().filter(|f| same(e.0, f.0)).count() % 2 == 1).collect();
+    // The chain as drawn runs from `a` to `b`.
+    let (a, b) = match free.as_slice() {
+        [] => return Ok(()),
+        [x, y] if !x.2 && y.2 => (*y, *x),
+        [x, y] => (*x, *y),
+        _ => return Err("an open profile with more than two ends".into()),
+    };
+    let c = [(a.0[0] + b.0[0]) / 2.0, (a.0[1] + b.0[1]) / 2.0];
+    let half = libm::hypot(a.0[0] - c[0], a.0[1] - c[1]);
+    if half < 1e-9 {
+        return Err("an open profile whose ends meet".into());
+    }
+    let r = OPEN_REACH + half;
+    // Where the ray from an end meets the circle (the end lies inside it).
+    let out = |(p, d): (&[f64; 2], &[f64; 2])| {
+        let w = [p[0] - c[0], p[1] - c[1]];
+        let bb = d[0] * w[0] + d[1] * w[1];
+        let t = -bb + (bb * bb - (w[0] * w[0] + w[1] * w[1] - r * r)).sqrt();
+        [p[0] + t * d[0], p[1] + t * d[1]]
+    };
+    let (fa, fb) = (out((&a.0, &a.1)), out((&b.0, &b.1)));
+    let ang = |p: [f64; 2]| libm::atan2(p[1] - c[1], p[0] - c[0]);
+    // Left: on from b, counter-clockwise round to a; right: on from a round to b.
+    let (p, fp, fq, q) = match side {
+        Some(1) => (b.0, fb, fa, a.0),
+        Some(2) => (a.0, fa, fb, b.0),
+        other => return Err(format!("an open profile's side {other:?}")),
+    };
+    curves.push(Curve2::Line(p, fp));
+    curves.push(Curve2::Arc(c, r, ang(fp), ang(fq)));
+    curves.push(Curve2::Line(fq, q));
+    Ok(())
 }
 
 /// The feature kinds read, by class.
@@ -1026,6 +1123,14 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     let code = |i: usize| small(i).filter(|v| v.fract() == 0.0 && v.abs() < 1e6).map(|v| v as i64);
     let extent = code(3).ok_or("the extent is not readable")?;
     let side = code(4).ok_or("the side is not readable")?;
+    let mut profiles = profiles;
+    if k == Kind::Cutout
+        && let [one] = profiles.as_mut_slice()
+    {
+        // Turned over, the chain's left is the seed's right.
+        let side = code(5).map(|s| if one.turned { 3 - s } else { s });
+        close_open(&mut one.curves, &one.backwards, side)?;
+    }
     let sketch = format!("{name}_Sketch");
     let revolve = matches!(k, Kind::RevolvedProtrusion | Kind::RevolvedCutout);
     let axis = if revolve {
