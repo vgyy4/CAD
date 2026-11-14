@@ -446,6 +446,7 @@ impl Session {
         let current = self.history.branch(branch).map_err(CommandError::history)?.rollback;
         let rollback = new_rollback.unwrap_or(current);
         let eval = Arc::new(self.evaluate_doc(doc, rollback));
+        self.refuse_literal_argument_errors(branch, doc, &eval, &before)?;
         if let Some(slot) = &mut self.preview {
             // A preview: what the edit would build, and nothing committed.
             *slot = Some(eval);
@@ -468,6 +469,37 @@ impl Session {
         self.remember_eval(node, rollback, eval.clone());
         self.changes.push(Change { actor: ctx.actor.clone(), branch, node, label: label.to_string() });
         Ok(CommitOutcome { node, branch, evaluation: eval, new_errors })
+    }
+
+    /// A new or changed feature whose arguments are all literals (no parameter) and which
+    /// fails with an argument error (`expression`: a negative pitch, a bend of 200 deg) cannot
+    /// become valid later: refuse it as `invalid_args` instead of committing a failed
+    /// feature that every later reply would list (dogfooding F18-11). Arguments with
+    /// parameters are evaluated at rebuild as before.
+    fn refuse_literal_argument_errors(
+        &self,
+        branch: BranchId,
+        doc: &Document,
+        eval: &Evaluation,
+        before: &[String],
+    ) -> Result<(), CommandError> {
+        let head = self.history.head_document(branch).ok();
+        for e in eval.errors() {
+            if e.code != gusset_eval::ErrorCode::Expression || before.contains(&e.to_string()) {
+                continue;
+            }
+            let Some(f) = doc.feature(&e.feature) else { continue };
+            let unchanged = head.as_ref().and_then(|h| h.feature(&e.feature)) == Some(f);
+            if unchanged || !f.kind.parameters().is_empty() {
+                continue;
+            }
+            let mut err = CommandError::args(format!("{}: {}", e.feature, e.message));
+            if let Some(h) = &e.hint {
+                err = err.hint(h.clone());
+            }
+            return Err(err);
+        }
+        Ok(())
     }
 
     /// Records a rate-limit hit; returns false if the actor exceeded its budget.

@@ -1579,15 +1579,17 @@ fn a_feature_is_added_from_its_statement() {
     )
     .unwrap_err();
     assert!(e.message.contains("4 values, not 2"), "{e:?}");
-    let r = run(
+    // A literal that cannot be valid is refused, nothing is committed (F18-11).
+    let e = execute(
         &mut s,
         &u,
         "feature.add",
         json!({"statement":
         "cam_job Neg (sketch: Sketch1, operation: pocket, tool_diameter: 6 mm, depth: -3 mm)"}),
-    );
-    assert!(r["new_errors"].to_string().contains("depth must be positive"), "{r}");
-    run(&mut s, &u, "history.undo", json!({}));
+    )
+    .unwrap_err();
+    assert_eq!(e.code, "invalid_args", "{e:?}");
+    assert!(e.message.contains("depth must be positive"), "{e:?}");
     // Positions are the statement's own (line 1), not the parsed document's (F11-8).
     let e = execute(&mut s, &u, "feature.add", json!({"statement": "extrude E5 (profile: Sketch1, distance: ?)"}))
         .unwrap_err();
@@ -1609,7 +1611,7 @@ fn an_edit_says_which_features_still_fail() {
         &mut s,
         &u,
         "feature.add",
-        json!({ "statement": "extrude Bad (profile: Sketch1, distance: 0 mm, op: add)" }),
+        json!({ "statement": "extrude Bad (profile: Sketch1, distance: width - width, op: add)" }),
     );
     assert_eq!(r["rebuild_ok"], false, "{r}");
     let r = run(&mut s, &u, "param.set", json!({"name": "width", "expr": "50 mm"}));

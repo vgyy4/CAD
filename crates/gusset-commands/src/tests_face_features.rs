@@ -58,6 +58,21 @@ fn a_thread_is_written_with_its_options_and_refused_when_wrong() {
     assert_ne!(e.code, "internal", "{e:?}");
 }
 
+/// Literal arguments that cannot be valid are refused before anything is committed
+/// (dogfooding F18-11); the same text with a parameter is evaluated at rebuild as before.
+#[test]
+fn a_literal_argument_error_commits_nothing_but_a_parameter_one_does() {
+    let mut s = session();
+    block(&mut s);
+    let before = text(&s);
+    let e = err(&mut s, "feature.extrude", json!({"sketch": "Sketch1", "distance": "0 mm", "op": "add"}));
+    assert_eq!(e.code, "invalid_args", "{e:?}");
+    assert_eq!(text(&s), before);
+    run(&mut s, "param.set", json!({"name": "zero", "expr": "0 mm"}));
+    let r = run(&mut s, "feature.extrude", json!({"sketch": "Sketch1", "distance": "zero", "op": "add"}));
+    assert_eq!(r["rebuild_ok"], false, "{r}");
+}
+
 #[test]
 fn a_bend_is_written_and_validated() {
     let mut s = session();
@@ -80,6 +95,7 @@ fn a_bend_is_written_and_validated() {
         (json!({"body": "Tab1", "line": "Sketch2.l3", "angle": "90 deg", "side": "up"}), "side"),
         (json!({"body": "Tab1", "line": "Sketch2.l3", "angle": "90 deg", "position": "mid"}), "position"),
         (json!({"body": "Tab1", "line": "Sketch2.l3", "angle": "90 de"}), "angle"),
+        (json!({"body": "Tab1", "line": "Sketch2.l3", "angle": "200 deg"}), "angle over 180"),
         (json!({"body": "Tab1) x", "line": "Sketch2.l3", "angle": "90 deg"}), "body"),
         (json!({"body": "Sketch1", "line": "Sketch2.l3", "angle": "90 deg"}), "body is not sheet metal, no radius"),
     ] {

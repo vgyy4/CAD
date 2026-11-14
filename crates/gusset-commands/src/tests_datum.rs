@@ -145,8 +145,12 @@ fn datum_plane_argument_errors() {
     let e = fail(&mut s, "feature.mirror", json!({"plane": "Nope"}));
     assert_eq!(e.code, "not_found");
     assert_eq!(text(&s), before, "failed commands change nothing");
-    // A wrong unit is a failing feature with a message, not a panic.
-    let r = run(&mut s, "feature.plane", json!({"offset": "5 deg"}));
+    // A wrong unit in a literal is refused (F18-11); through a parameter it is a failing
+    // feature with a message, not a panic.
+    assert_eq!(fail(&mut s, "feature.plane", json!({"offset": "5 deg"})).code, "invalid_args");
+    assert_eq!(text(&s), before);
+    run(&mut s, "param.set", json!({"name": "turn", "expr": "5 deg"}));
+    let r = run(&mut s, "feature.plane", json!({"offset": "turn"}));
     assert_eq!(r["rebuild_ok"], false, "{r}");
     assert!(r["new_errors"].to_string().contains("Plane1"), "{r}");
 }
@@ -216,10 +220,14 @@ fn move_body_argument_errors() {
         assert!(matches!(e.code.as_str(), "invalid_args" | "not_found" | "invalid_document"), "{args}: {e:?}");
     }
     assert_eq!(text(&s), before);
-    // Units are checked when the feature is rebuilt: an error in the result, no panic.
-    let r = run(&mut s, "feature.move_body", json!({"translate": ["1 deg", "0 mm", "0 mm"]}));
+    // Units in literals are refused (F18-11); with a parameter they are checked when the
+    // feature is rebuilt: an error in the result, no panic.
+    assert_eq!(fail(&mut s, "feature.move_body", json!({"translate": ["1 deg", "0 mm", "0 mm"]})).code, "invalid_args");
+    run(&mut s, "param.set", json!({"name": "turn", "expr": "1 deg"}));
+    let r = run(&mut s, "feature.move_body", json!({"translate": ["turn", "0 mm", "0 mm"]}));
     assert_eq!(r["rebuild_ok"], false, "{r}");
-    let r = run(&mut s, "feature.move_body", json!({"axis": "[0, 0, 0]", "angle": "5 deg"}));
+    assert_eq!(fail(&mut s, "feature.move_body", json!({"axis": "[0, 0, 0]", "angle": "5 deg"})).code, "invalid_args");
+    let r = run(&mut s, "feature.move_body", json!({"axis": "[0, 0, 0]", "angle": "turn"}));
     assert_eq!(r["rebuild_ok"], false, "{r}");
     assert!(r["new_errors"].to_string().contains("no length"), "{r}");
 }
