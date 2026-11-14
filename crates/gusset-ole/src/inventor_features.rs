@@ -583,6 +583,7 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         put(&mut j, "target", json!(fb));
     }
     let ext = |i: Option<usize>| i.and_then(|i| tail_u16(&r.dc, i));
+    let mut axis_line = None;
     if typ == FeatType::Extrude {
         let rev = s.get(3).and_then(|i| r.dc.r(i).last().copied()) == Some(1);
         let both = s.get(7).and_then(|i| r.dc.r(i).last().copied()) == Some(1);
@@ -634,6 +635,7 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
             json!({"origin": [rnd(p0[0] * CM), rnd(p0[1] * CM), rnd(p0[2] * CM)],
                            "direction": [rnd(v[0]), rnd(v[1]), rnd(v[2])]}),
         );
+        axis_line = sketch_axis_line(&sketch, [p0[0] * CM, p0[1] * CM, p0[2] * CM], v, f.rec);
         put(
             &mut j,
             "angle",
@@ -646,6 +648,23 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     if !st.done.contains_key(&sk) {
         st.out.push(sketch.json());
         st.done.insert(sk, ());
+    }
+    // An axis in the sketch plane off its origin or axes: a construction line of the sketch
+    // along it (from the axis point, in its direction) is the axis.
+    if let Some((pts, line, id)) = axis_line {
+        let entry = st.out.iter_mut().rev().find(|o| {
+            o.get("type").and_then(Value::as_str) == Some("sketch")
+                && o.get("name").and_then(Value::as_str) == Some(&sketch.name)
+        });
+        if let Some(Value::Object(o)) = entry {
+            if let Some(Value::Array(p)) = o.get_mut("points") {
+                p.extend(pts);
+            }
+            if let Some(Value::Array(c)) = o.get_mut("curves") {
+                c.push(line);
+            }
+            put(&mut j, "axis", json!({"line": id}));
+        }
     }
     st.out.push(j);
     if st.first_body.is_none() {
@@ -974,6 +993,35 @@ fn two_way_pattern(
         return Err("a pattern of one occurrence".into());
     }
     Ok(())
+}
+
+/// A revolve axis (point `p` in mm, unit direction `v`) that lies in the sketch plane but is
+/// not one of the sketch's own axes through its origin, as a construction line of the sketch:
+/// its two points, the line and the line's id. `None` for the sketch's own axes (read as
+/// such) and for an axis off the plane.
+fn sketch_axis_line(sk: &Sketch, p: V3, v: V3, rec: usize) -> Option<(Vec<Value>, Value, String)> {
+    let (o, x, y) = frame(&sk.m);
+    let n = unit3(cross(x, y));
+    let q = sub3(p, o);
+    if dot(q, n).abs() > 1e-6 || dot(v, n).abs() > 1e-9 {
+        return None;
+    }
+    let along = |a: V3| (dot(v, a).abs() - 1.0).abs() < 1e-9;
+    let through_origin = dot(cross(q, v), cross(q, v)) < 1e-12;
+    if through_origin && (along(x) || along(y)) {
+        return None;
+    }
+    let (u0, v0) = (rnd(dot(q, x)), rnd(dot(q, y)));
+    let (du, dv) = (dot(v, x), dot(v, y));
+    // A line of the sketch's size, so that its ends are not lost in rounding.
+    let len = 10.0;
+    let (a, b, l) = (format!("ax{rec}a"), format!("ax{rec}b"), format!("ax{rec}"));
+    let pts = vec![
+        json!({"id": a, "x": u0, "y": v0, "construction": true}),
+        json!({"id": b, "x": rnd(u0 + len * du), "y": rnd(v0 + len * dv), "construction": true}),
+    ];
+    let line = json!({"id": l, "type": "line", "start": a, "end": b, "construction": true});
+    Some((pts, line, l))
 }
 
 /// A work axis record (`8ef06c89`, as a revolve's axis): start point and unit vector, in cm.

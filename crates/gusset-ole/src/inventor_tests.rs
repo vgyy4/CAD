@@ -1216,3 +1216,44 @@ fn a_rectangular_pattern_in_two_directions_is_two_patterns() {
     r[34].1 = flag(1);
     assert_eq!(copy_tree(&r)["features"][2]["type"], "unsupported");
 }
+
+/// A revolve about a work axis in its sketch's plane but off the sketch's own axes: a
+/// construction line along it is added to the sketch and named as the axis. The sketch's own
+/// x axis stays an origin and direction.
+#[test]
+fn a_revolve_axis_off_the_sketch_axes_is_a_construction_line() {
+    let with = |p0: [f64; 3]| {
+        let mut r = base_records();
+        r[1].1 = name_rec("Revolution1", Some(0x0054_015f));
+        r.push((13, {
+            let mut v = hdr(0, 0, 0);
+            v.extend(list(&[]));
+            doubles(&mut v, &p0);
+            doubles(&mut v, &[1.0, 0.0, 0.0]);
+            v
+        })); // 19: the axis
+        r.push((OTHER, tail(3))); // 20: full turn
+        r[18].1 = feature(1, 0, 5, &[rf(14), rf(12), rf(19), rf(20), rf(16)]);
+        copy_tree(&r)
+    };
+    let t = with([0.0, 3.0, 0.0]);
+    assert_eq!(t["features"][1]["type"], "revolve");
+    assert_eq!(t["features"][1]["axis"], json!({"line": "ax18"}));
+    let sk = &t["features"][0];
+    let pts: Vec<&Value> =
+        sk["points"].as_array().unwrap().iter().filter(|p| p["id"].as_str().unwrap().starts_with("ax")).collect();
+    assert_eq!(pts.len(), 2);
+    assert_eq!((pts[0]["x"].as_f64(), pts[0]["y"].as_f64()), (Some(0.0), Some(30.0)));
+    assert_eq!((pts[1]["x"].as_f64(), pts[1]["y"].as_f64()), (Some(10.0), Some(30.0)));
+    assert!(
+        sk["curves"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"id": "ax18", "type": "line", "start": "ax18a", "end": "ax18b", "construction": true}))
+    );
+    let t = with([5.0, 0.0, 0.0]);
+    assert_eq!(t["features"][1]["axis"], json!({"origin": [50.0, 0.0, 0.0], "direction": [1.0, 0.0, 0.0]}));
+    // Off the sketch plane: as before (the importer says it is not read).
+    let t = with([0.0, 0.0, 2.0]);
+    assert!(t["features"][1]["axis"].get("origin").is_some());
+}
