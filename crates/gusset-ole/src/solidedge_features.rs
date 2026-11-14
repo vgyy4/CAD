@@ -13,14 +13,17 @@
 //!   3 symmetric, 6 both ways), depth (slot 6: a value object or a dimension relation);
 //! * revolved protrusions and cutouts: profiles, axis (slot 6: a line), angle (slot 7);
 //! * each profile: its plane (an absolute frame in the plane object) and its 2D curves
-//!   (lines, circles and arcs, in metres in the plane's frame).
-//!
-//! * profiles copied by a smart pattern: the seed's curves on the plane the copy stores;
+//!   (lines, circles, arcs and B-splines, in metres in the plane's frame); an open profile of a
+//!   cutout closed on the side it cuts;
+//! * profiles copied by a smart pattern (the seed's curves on the plane the copy stores) or a
+//!   mirror (the seed's profile reflected);
+//! * sweeps of one cross section along one path, lofts through their cross sections;
 //! * rounds of a constant radius and equal chamfers: the size and the edges, each picked on
-//!   the curve the part stored for it in the feature's edge set (lines, circles, arcs).
+//!   the curve the part stored for it in the feature's edge set (lines, circles, arcs,
+//!   ellipses, B-splines).
 //!
-//! Anything else (holes, patterns, sweeps, lofts...) is an `unsupported`
-//! feature: the caller rebuilds the tree and keeps it only when it gives the part's own body.
+//! Anything else (thin walls, holes, other patterns...) is an `unsupported` feature: the
+//! caller rebuilds the tree and keeps it only when it gives the part's own body.
 //!
 //! Input is untrusted: every count, list and chain is bounded, and an object that is not
 //! shaped as expected gives an `unsupported` feature or an error, never a panic.
