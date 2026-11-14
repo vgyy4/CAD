@@ -468,6 +468,14 @@ it nets and rules, route, pour, check and write every fabrication file without K
   length tuning tool: done, see the ADR 0050 amendment).
 * From phase 1a: Gerber object attributes (`.N`, `.P`, `.C`), a test-only re-reader and a local
   corpus test: done, see ADR 0051.
+* **Routing the same connection twice** (dogfooding F18-7): `pcb.route` refuses with
+  `already_routed` when its first and last point are already joined by copper of the net
+  (pads, tracks, vias, zone fills; `ratsnest::connected`). It does not skip duplicate pieces:
+  partial overlaps are ambiguous, and a flag would grow the pcb toolset past its byte budget.
+  A deliberate second path is `pcb.add_track`; to re-route, delete the tracks first.
+  `pcb.route_pair` is not checked yet.
+* **Listing the board** (F18-1): `pcb.info {list: footprints|pads|tracks|vias, ref, net}`
+  returns up to 100 entries with `total` and `more`; names are `_user_text`.
 * **KiCad IPC bridge** (protobuf over NNG to a running KiCad, after the `.proto` licence is confirmed).
   The `kicad-cli` wrapper for authoritative DRC/ERC and STEP/IPC-2581/ODB++ export is done, see
   ADR 0056 (still to verify against a real KiCad).

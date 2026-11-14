@@ -108,6 +108,23 @@ fn pcb_info_lists_footprints_pads_tracks_and_vias_bounded() {
 }
 
 #[test]
+fn routing_an_already_connected_pair_is_refused() {
+    let mut s = session();
+    let ctx = CmdCtx::user(1);
+    run(&mut s, &ctx, "pcb.open", json!({"path": "board.kicad_pcb"}));
+    // R1.1 and J1.1 (GND) are joined by the file's track already.
+    let e = execute(&mut s, &ctx, "pcb.route", json!({"points": [[9, 10], [35, 15]], "layers": "any"})).unwrap_err();
+    assert_eq!(e.code, "already_routed", "{e:?}");
+    assert!(e.hint.as_deref().unwrap_or("").contains("pcb_add_track"), "{e:?}");
+    assert_eq!(run(&mut s, &ctx, "pcb.info", json!({}))["tracks"], 1);
+    // Deleting the track makes the route possible again, once.
+    run(&mut s, &ctx, "pcb.delete", json!({"tracks": [0]}));
+    run(&mut s, &ctx, "pcb.route", json!({"points": [[9, 10], [35, 15]], "around": false}));
+    let e = execute(&mut s, &ctx, "pcb.route", json!({"points": [[9, 10], [35, 15]], "around": false})).unwrap_err();
+    assert_eq!(e.code, "already_routed", "{e:?}");
+}
+
+#[test]
 fn pcb_import_adds_the_board_and_component_bodies() {
     let mut s = session();
     let r = run(&mut s, &CmdCtx::user(1), "pcb.import", json!({"path": "board.kicad_pcb", "component_height": "3 mm"}));

@@ -102,6 +102,25 @@ pub fn islands(board: &Board, copper: &Copper) -> Vec<usize> {
     (0..items.len()).map(|i| dsu.find(i)).collect()
 }
 
+/// Whether copper of `net` already joins the points `a` and `b` (each on a pad, track, via
+/// or zone fill of the net, two different items): routing between them again would lay a
+/// second path (pcb.route refuses, ADR 0047).
+pub fn connected(board: &Board, net: &str, a: Pt, b: Pt) -> bool {
+    let copper = Copper::of(board);
+    let root = islands(board, &copper);
+    let touching = |p: Pt| -> Vec<usize> {
+        let dot = copper::Prim::Capsule { a: p, b: p, r: 0.0 };
+        (copper.items.iter().enumerate())
+            .filter(|(_, it)| {
+                it.net.as_deref() == Some(net) && it.prims.iter().any(|q| copper::gap(&dot, q).0 <= TOUCH)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let (from, to) = (touching(a), touching(b));
+    from.iter().any(|&i| to.iter().any(|&j| i != j && root.get(i) == root.get(j)))
+}
+
 /// The board's ratsnest.
 pub fn ratsnest(board: &Board) -> Ratsnest {
     let copper = Copper::of(board);

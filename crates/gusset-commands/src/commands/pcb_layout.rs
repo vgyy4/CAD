@@ -177,6 +177,14 @@ impl Command for PcbRoute {
         if !(width.is_finite() && width > 0.0 && width <= 100.0) {
             return Err(CommandError::args("the width is above 0 and at most 100 mm"));
         }
+        // A connection that copper of its net already makes is not routed again (a second,
+        // overlapping path doubles the track length); a deliberate parallel track is add_track.
+        if let Some(n) = net.as_deref()
+            && gusset_pcb::ratsnest::connected(b, n, first, last)
+        {
+            return Err(CommandError::new("already_routed", "those two points are already connected by copper of the net")
+                .hint("pcb_lengths shows it; delete the tracks first (pcb_delete) to route again, or lay a second path with pcb_add_track"));
+        }
         let around = self.around.unwrap_or(true);
         let allowed = if around {
             route_layers(b, self.layers.as_deref(), &layer, net.as_deref(), last)?
