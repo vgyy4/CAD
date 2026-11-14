@@ -177,11 +177,13 @@ fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
 /// type name in front and loses that int, so the readers below see one layout. Only the names
 /// read here are mapped.
 fn custom_attribute(r: &mut Rec, text: Option<&[u8]>) {
-    const MAP: [(&[u8], &str); 4] = [
+    const MAP: [(&[u8], &str); 5] = [
         (b"INV_NMX_BLEND_TAG", "NMx_blend_tag"),
         (b"INV_NMX_EDGE_BLEND_TAG", "NMx_edge_blend_tag"),
         (b"INV_NMX_SWEEPGENERATED_TAG", "NMx_Sweep_Generated_Brep_tag"),
         (b"INV_NMX_GEN_TAG", "NMx_Generated_Brep_tag"),
+        // No shell of the older files is in the corpus: the name is ours.
+        (b"INV_NMX_SHELL_TAG", "NMx_Shell_tag"),
     ];
     if !r.ty.starts_with("ATTRIB_CUSTOM") {
         return;
@@ -676,6 +678,45 @@ impl Acis {
                 && !out.contains(&f)
             {
                 out.push(f);
+            }
+        }
+        out
+    }
+
+    /// The open faces of a shell with id `fid`, as they were before it: the planar faces
+    /// beside its inner (shell-tagged) faces that it did not make are the rims left of each face
+    /// it removed, lying in that face's plane. One entry per plane (point, unit normal; file
+    /// units): a corner of the rim's inner boundary, which lay inside the removed face.
+    pub(crate) fn shell_openings(&self, fid: i64) -> Vec<(V3, V3)> {
+        let mut inner = Vec::new();
+        for r in &self.recs {
+            if r.ty.starts_with("NMx_Shell_tag")
+                && r.ints.get(3) == Some(&fid)
+                && let Some(&f) = r.refs.iter().find(|&&y| self.is(y, "face"))
+                && !inner.contains(&f)
+            {
+                inner.push(f);
+            }
+        }
+        let mut out: Vec<(V3, V3)> = Vec::new();
+        for &f in &inner {
+            for (g, e) in self.neighbours(f) {
+                if inner.contains(&g) {
+                    continue;
+                }
+                let Surf::Plane { p, n } = self.kind(g) else { continue };
+                let n = unit(n);
+                if out.iter().any(|(q, m)| (dot(*m, n).abs() - 1.0).abs() < 1e-9 && dot(sub(p, *q), *m).abs() < 1e-7) {
+                    continue;
+                }
+                let Some(v) = e
+                    .and_then(|e| self.rec(e))
+                    .and_then(|r| r.refs.iter().copied().find(|&v| self.is(v, "vertex")))
+                    .and_then(|v| self.point_of_vertex(v))
+                else {
+                    continue;
+                };
+                out.push((v, n));
             }
         }
         out
@@ -1314,7 +1355,7 @@ mod tests {
         let mut b = tok(0x0d, b"asmheader");
         b.push(0x11);
         b.extend(attr(b"INV_NMX_BLEND_TAG"));
-        b.extend(attr(b"INV_NMX_SHELL_TAG"));
+        b.extend(attr(b"INV_NMX_THREAD_TAG"));
         let r = records(&b).unwrap();
         assert!(r[1].ty.starts_with("NMx_blend_tag-"), "{}", r[1].ty);
         assert_eq!(r[1].ints, [-1, 44, 1, 209, -1, 1, 1, 24]);

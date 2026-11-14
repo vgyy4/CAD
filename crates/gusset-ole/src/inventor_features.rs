@@ -405,13 +405,32 @@ impl Reader<'_> {
         let (items, _) = self.dc.first_list(lst, None)?;
         let mut out = Vec::new();
         for it in items {
-            let x = it.filter(|&x| self.dc.class(x) == super::inventor_dc::G_LOOP)?;
-            let refs = self.dc.refs(x);
-            let c = refs.iter().map(|&(_, y)| y).rfind(|&y| self.dc.class(y) == super::inventor_dc::G_LOOP_BODY)?;
-            let hb = self.dc.refs(c).into_iter().find(|&(_, y)| self.dc.role(y) == Role::HistoryBlob)?.0;
-            out.push(i64::from(u32_at(self.dc.r(c), hb + 4)?));
+            out.push(self.loop_tag(it?)?);
         }
         Some(out)
+    }
+
+    /// The history-body tag of one loop record (`a477243b`).
+    fn loop_tag(&self, x: usize) -> Option<i64> {
+        (self.dc.class(x) == super::inventor_dc::G_LOOP).then_some(())?;
+        let refs = self.dc.refs(x);
+        let c = refs.iter().map(|&(_, y)| y).rfind(|&y| self.dc.class(y) == super::inventor_dc::G_LOOP_BODY)?;
+        let hb = self.dc.refs(c).into_iter().find(|&(_, y)| self.dc.role(y) == Role::HistoryBlob)?.0;
+        Some(i64::from(u32_at(self.dc.r(c), hb + 4)?))
+    }
+
+    /// The sketch of a sweep's path loop: the one its `424eb7d7` record names.
+    fn path_sketch(&self, lp: usize) -> Option<usize> {
+        for &j in self.back().get(lp)? {
+            if self.dc.class(j) == super::inventor_dc::G_PATH {
+                for (_, x) in self.dc.refs(j) {
+                    if self.dc.role(x) == Role::Sketch {
+                        return Some(x);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// `"all"`, or one point per region the feature's loops surround.
@@ -945,6 +964,154 @@ fn thicken(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
     Ok(())
 }
 
+/// A shell: slot 3 the wall thickness, slot 0 ends with the side (0 inside, 1 outside), slot 1
+/// lists the names of the faces it opens. The names are not decoded: the open faces are found
+/// in the result body instead ([`Acis::shell_openings`]), and their number must be the list's.
+fn shell(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    let s = r.slots(f)?;
+    let t = r.pval(&s, 3)? * CM;
+    let side = match s.get(0).and_then(|i| tail_u16(&r.dc, i)) {
+        Some(0) => "inside",
+        Some(1) => "outside",
+        o => return Err(format!("shell side {o:?} is not decoded")),
+    };
+    let target = st.first_body.clone().ok_or("a shell before any body")?;
+    let n = r.dc.first_list(s.need(1)?, None).map(|x| x.0.len()).ok_or("the shell's face list is not readable")?;
+    let mut j = json!({"type": "shell", "name": name, "thickness": rnd(t), "side": side});
+    if n == 0 {
+        put(&mut j, "body", json!(target));
+    } else {
+        let b = r.result().ok_or("the result body is not readable")?;
+        let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
+        let open = b.shell_openings(fid);
+        if open.len() != n {
+            return Err(format!("{} of its {n} open faces found in the result body", open.len()));
+        }
+        let faces: Vec<Value> = open
+            .iter()
+            .map(|(p, _)| json!({"point": [rnd_to(p[0] * CM, 1e6), rnd_to(p[1] * CM, 1e6), rnd_to(p[2] * CM, 1e6)]}))
+            .collect();
+        put(&mut j, "faces", json!(faces));
+    }
+    st.out.push(j);
+    Ok(())
+}
+
+/// The distance from `p` to the nearest segment of the polylines.
+pub(crate) fn polyline_dist(p: P2, lines: &[Vec<P2>]) -> f64 {
+    let mut best = f64::INFINITY;
+    for l in lines {
+        for w in l.windows(2) {
+            let (Some(&a), Some(&b)) = (w.first(), w.get(1)) else { continue };
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let len2 = dx * dx + dy * dy;
+            let t = if len2 > 0.0 { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            best = best.min(libm::hypot(p.0 - a.0 - t * dx, p.1 - a.1 - t * dy));
+        }
+    }
+    best
+}
+
+/// A sweep (`90bada05`): slot 0 the profile loops (as an extrude's), slot 1 the path loop, slot 2
+/// the operation, slot 3 the taper angle (only 0 is read). The path is a wire body of the
+/// history blob; the curves of the path sketch that lie on it (ends and middle within 0.001 mm,
+/// or the sampling's chord error for arcs) are the path.
+fn sweep(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    let s = r.slots(f)?;
+    let lst = s.need(0)?;
+    let sk = r.profile_sketch(lst).ok_or("no profile sketch found")?;
+    let lp = s.need(1)?;
+    let pk = r.path_sketch(lp).ok_or("no path sketch found")?;
+    if pk == sk {
+        return Err("the path lies in the profile's sketch".into());
+    }
+    if r.pval(&s, 3).is_ok_and(|t| t != 0.0) {
+        return Err("a tapered sweep is not read".into());
+    }
+    let profile = r.sketch(sk)?;
+    let path = r.sketch(pk)?;
+    let ac = r.history().ok_or("the history blob is not readable")?;
+    let tag = r.loop_tag(lp).ok_or("the path loop has no body")?;
+    let wire = ac.loops_of_body(tag).ok_or("the path body is not readable")?;
+    let (o, x, y) =
+        ([path.m[3], path.m[7], path.m[11]], [path.m[0], path.m[4], path.m[8]], [path.m[1], path.m[5], path.m[9]]);
+    let n = unit3(cross(x, y));
+    let mut l2: Vec<Vec<P2>> = Vec::new();
+    for l in wire {
+        let mut out = Vec::new();
+        for p in l {
+            let q = sub3(p, o);
+            if dot(q, n).abs() * CM > 1e-6 {
+                return Err("the path leaves its sketch's plane".into());
+            }
+            out.push((dot(q, x) * CM, dot(q, y) * CM));
+        }
+        l2.push(out);
+    }
+    let pts: HashMap<usize, P2> = path.points.iter().map(|&(i, u, v, _)| (i, (u, v))).collect();
+    let mut ids = Vec::new();
+    for c in &path.curves {
+        let (id, samples, tol) = match *c {
+            Curve::Line { id, a, b, con: false } => {
+                let (Some(&a), Some(&b)) = (pts.get(&a), pts.get(&b)) else { continue };
+                (format!("l{id}"), vec![a, b, ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0)], 1e-3)
+            }
+            Curve::Arc { id, c, s, e, con: false } => {
+                let (Some(&c), Some(&s), Some(&e)) = (pts.get(&c), pts.get(&s), pts.get(&e)) else { continue };
+                let rad = libm::hypot(s.0 - c.0, s.1 - c.1);
+                let (a0, mut a1) = (libm::atan2(s.1 - c.1, s.0 - c.0), libm::atan2(e.1 - c.1, e.0 - c.0));
+                if a1 <= a0 {
+                    a1 += std::f64::consts::TAU;
+                }
+                let m = (a0 + a1) / 2.0;
+                let mid = (c.0 + rad * libm::cos(m), c.1 + rad * libm::sin(m));
+                (format!("a{id}"), vec![s, e, mid], 1e-3_f64.max(rad * 3e-3))
+            }
+            Curve::Circle { id, c, r: rad, con: false } => {
+                let Some(&c) = pts.get(&c) else { continue };
+                let s = vec![(c.0 + rad, c.1), (c.0 - rad, c.1), (c.0, c.1 + rad), (c.0, c.1 - rad)];
+                (format!("c{id}"), s, 1e-3_f64.max(rad * 3e-3))
+            }
+            _ => continue,
+        };
+        if samples.iter().all(|&p| polyline_dist(p, &l2) <= tol) {
+            ids.push(id);
+        }
+    }
+    if ids.is_empty() {
+        return Err("no curve of the path sketch lies on the path".into());
+    }
+    let mut op = match s.get(2).and_then(|i| tail_u16(&r.dc, i)) {
+        Some(2) => "cut",
+        Some(1) => "new",
+        Some(4) => "intersect",
+        _ => "join",
+    };
+    if st.first_body.is_some() && op == "new" {
+        op = "join";
+    }
+    if st.first_body.is_none() && op == "join" {
+        op = "new";
+    }
+    let mut j = json!({"type": "sweep", "name": name, "sketch": profile.name, "path": path.name,
+                       "path_curves": ids, "operation": op});
+    if op != "new" {
+        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        put(&mut j, "target", json!(fb));
+    }
+    for (k, sketch) in [(sk, profile), (pk, path)] {
+        if !st.done.contains_key(&k) {
+            st.out.push(sketch.json());
+            st.done.insert(k, ());
+        }
+    }
+    st.out.push(j);
+    if st.first_body.is_none() {
+        st.first_body = Some(name.to_string());
+    }
+    Ok(())
+}
+
 fn unsupported(name: &str, what: &str, reason: Option<String>) -> Value {
     let mut v = json!({"type": "unsupported", "name": name, "original_type": what});
     if let Some(r) = reason {
@@ -1415,6 +1582,8 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             FeatType::Hole => hole(&r, &mut st, f, &name),
             FeatType::RectPattern => pattern(&r, &mut st, f, &name),
             FeatType::Thicken => thicken(&r, &mut st, f, &name),
+            FeatType::Shell => shell(&r, &mut st, f, &name),
+            FeatType::Sweep => sweep(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.
             FeatType::Thread => {
                 st.omitted.push(json!({"name": name, "why": "cosmetic thread"}));

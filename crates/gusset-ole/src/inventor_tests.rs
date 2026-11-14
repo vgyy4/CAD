@@ -39,6 +39,8 @@ const T_HOLE: u32 = 0x1f75_7d1a;
 const T_THREAD: u32 = 0x28aa_1906;
 const T_FILLET: u32 = 0xf1f7_15dc;
 const T_THICKEN: u32 = 0x7281_f4ec;
+const T_SHELL: u32 = 0xb83c_9612;
+const T_SWEEP: u32 = 0x90ba_da05;
 
 fn rf(i: usize) -> u32 {
     (i as u32 + 1) | 0x8000_0000
@@ -514,6 +516,60 @@ fn fillets_and_chamfers_need_the_result_body() {
     assert!(f["reason"].as_str().unwrap().contains("result body"));
 }
 
+/// A shell: slot 0 ends with the side (0 inside, 1 outside), slot 1 lists the open faces,
+/// slot 3 is the thickness. With no open face it hollows the whole body; open faces are found
+/// in the result body.
+#[test]
+fn a_shell_reads_its_side_thickness_and_open_faces() {
+    let mut r = base_records();
+    r.push((NAME, name_rec("Shell1", Some(T_SHELL)))); // 19
+    r.push((OTHER, tail(0))); // 20 side
+    r.push((OTHER, {
+        let mut v = hdr(0, 0, 0);
+        v.extend(list(&[]));
+        v
+    })); // 21 open faces
+    r.push((PARAM, param("d9", 0.2))); // 22 thickness
+    r.push((FEATURE, feature(19, 0, 6, &[rf(20), rf(21), 0, rf(22)]))); // 23
+    let t = tree(&r).unwrap();
+    assert_eq!(
+        t["features"][2],
+        json!({"type": "shell", "name": "Shell1", "thickness": 2.0, "side": "inside", "body": "Extrusion1"})
+    );
+    r[20].1 = tail(1);
+    assert_eq!(tree(&r).unwrap()["features"][2]["side"], "outside");
+    r[20].1 = tail(2);
+    assert!(tree(&r).unwrap()["features"][2]["reason"].as_str().unwrap().contains("side"));
+    // Open faces need the result body.
+    r[20].1 = tail(0);
+    r[21].1 = {
+        let mut v = hdr(0, 0, 0);
+        v.extend(list(&[rf(20)]));
+        v
+    };
+    assert!(tree(&r).unwrap()["features"][2]["reason"].as_str().unwrap().contains("result body"));
+}
+
+/// A sweep (`90bada05`): slot 0 the profile loops, slot 1 the path loop, whose sketch a
+/// `424eb7d7` record names; without it the sweep says so. Path curves are those on the path
+/// wire: [`polyline_dist`] measures that.
+#[test]
+fn a_sweep_needs_its_path_sketch() {
+    use crate::inventor_features::polyline_dist;
+    let mut r = base_records();
+    r.push((NAME, name_rec("Sweep1", Some(T_SWEEP)))); // 19
+    r.push((OTHER, tail(0))); // 20 not a path loop
+    r.push((FEATURE, feature(19, 0, 6, &[rf(12), rf(20), rf(14)]))); // 21
+    let t = tree(&r).unwrap();
+    let f = &t["features"][2];
+    assert_eq!(f["type"], "unsupported");
+    assert!(f["reason"].as_str().unwrap().contains("no path sketch"), "{f}");
+    let l = vec![vec![(0.0, 0.0), (10.0, 0.0), (10.0, 5.0)]];
+    assert!(polyline_dist((5.0, 0.0), &l).abs() < 1e-12);
+    assert!((polyline_dist((12.0, 2.0), &l) - 2.0).abs() < 1e-12);
+    assert!(polyline_dist((0.0, 0.0), &[]).is_infinite());
+}
+
 #[test]
 fn files_that_are_not_parts_are_errors() {
     let l = Limits::default();
@@ -771,6 +827,29 @@ mod sab {
         // Face 3 (x = 0) runs 2 cm along y.
         let ys: Vec<f64> = a.verts(3).iter().map(|v| v[1]).collect();
         assert!(ys.iter().any(|y| (y - 2.0).abs() < 1e-12) && ys.iter().any(|y| y.abs() < 1e-12), "{ys:?}");
+    }
+
+    /// The faces a shell opened are the planes beside its inner (shell-tagged) faces: one
+    /// point per plane, a corner of the rim's inner boundary.
+    #[test]
+    fn a_shell_finds_the_faces_it_opened() {
+        let custom: &[&str] = &["ATTRIB_CUSTOM", "attrib"];
+        let a = Acis::parse(&blend_with(
+            42,
+            true,
+            vec![(custom, vec![S("INV_NMX_SHELL_TAG"), I(-1), I(1), I(44), I(1), I(9), P(2)])],
+        ))
+        .unwrap();
+        let open = a.shell_openings(9);
+        assert_eq!(open.len(), 2, "{open:?}");
+        let normals: Vec<[f64; 3]> = open.iter().map(|o| o.1.map(f64::abs)).collect();
+        assert!(normals.contains(&[1.0, 0.0, 0.0]) && normals.contains(&[0.0, 0.0, 1.0]), "{normals:?}");
+        // Each point is a corner on the edge the rim shares with the inner face.
+        for (p, n) in &open {
+            let c = if n[0].abs() > 0.5 { [0.0, p[1], 0.5] } else { [0.5, p[1], 0.0] };
+            assert!(crate::acis::dist(*p, c) < 1e-12, "{p:?}");
+        }
+        assert!(a.shell_openings(10).is_empty());
     }
 
     #[test]
