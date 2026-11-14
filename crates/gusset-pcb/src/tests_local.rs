@@ -196,6 +196,17 @@ fn local_samples_custom_rules() {
 /// does) on the board before and after, and the check must find no more after.
 #[test]
 fn local_samples_layers() {
+    layered_pairs(false);
+}
+
+/// ADR 0060: as [`local_samples_layers`], with neck-down tried after the layered search
+/// (before the push): no `track_width` problem may appear, nor any other.
+#[test]
+fn local_samples_neck() {
+    layered_pairs(true);
+}
+
+fn layered_pairs(neck: bool) {
     use crate::{layers, refill, zones};
     use std::time::{Duration, Instant};
     let Some(dir) = std::env::var_os("GUSSET_KICAD_SAMPLES") else { return };
@@ -216,7 +227,9 @@ fn local_samples_layers() {
         let b = Board::read(&std::fs::read_to_string(&p).unwrap(), &lim).unwrap();
         let rules = Rules::for_board(&b);
         let t_board = Instant::now();
-        let before = drc::check(&b, &rules, 100_000).len();
+        let all_before = drc::check(&b, &rules, 100_000);
+        let before = all_before.len();
+        let widths_before = all_before.iter().filter(|v| v.code == "track_width").count();
         let both: Vec<String> = vec!["F.Cu".into(), "B.Cu".into()];
         let mut pairs = Vec::new();
         for n in b.nets.iter().filter(|n| !n.name.is_empty()) {
@@ -236,10 +249,54 @@ fn local_samples_layers() {
                 break;
             }
         }
-        let (mut walked, mut layered, mut vias, mut pushed, mut shoved) = (0, 0, 0, 0, 0);
-        let (mut t_walk, mut t_lay, mut t_push) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        let (mut walked, mut layered, mut vias, mut pushed, mut shoved, mut necked, mut escaped) =
+            (0, 0, 0, 0, 0, 0, 0);
+        let (mut t_walk, mut t_lay, mut t_push, mut t_neck) =
+            (Duration::ZERO, Duration::ZERO, Duration::ZERO, Duration::ZERO);
         let mut worst = 0usize;
+        let mut mins: Vec<f64> = Vec::new();
         let mut refilled_before: std::collections::BTreeMap<Vec<usize>, usize> = std::collections::BTreeMap::new();
+        // Lays a route, pours the zones it touches again and gives how much worse the check
+        // is than the board's with the same zones poured again (and the new track_width
+        // problems).
+        let mut judge = |r: &layers::LayerRoute, net: &str, via: layers::ViaSize| -> (usize, usize) {
+            let mut nb = b.clone();
+            let routes: Vec<crate::edit::NewRoute> = r
+                .pieces()
+                .into_iter()
+                .map(|(l, w, pts)| {
+                    let segs = pts
+                        .windows(2)
+                        .filter(|x| x[0] != x[1])
+                        .map(|x| route::Seg { start: x[0], end: x[1], mid: None })
+                        .collect::<Vec<_>>();
+                    (segs, w, l, Some(net.to_string()))
+                })
+                .filter(|r| !r.0.is_empty())
+                .collect();
+            let vs: Vec<crate::edit::NewVia> =
+                r.vias.iter().map(|&at| (at, via.size, via.drill, Some(net.to_string()))).collect();
+            nb.add_batch(&routes, &vs, &lim).unwrap();
+            let (zs, _) = refill::refill_after_edit(&b, &mut nb, &rules, &lim).unwrap();
+            let base = *refilled_before.entry(zs.clone()).or_insert_with(|| {
+                if zs.is_empty() {
+                    return before;
+                }
+                let mut rb = b.clone();
+                rb.set_zone_fills(&zones::fill(&b, &rules, Some(&zs)).fills, &lim).unwrap();
+                drc::check(&rb, &rules, 100_000).len()
+            });
+            let after = drc::check(&nb, &rules, 100_000);
+            let widths = after.iter().filter(|v| v.code == "track_width").count();
+            let worse = after.len().saturating_sub(base);
+            if worse > 0 {
+                let old: Vec<String> = all_before.iter().map(|x| x.code.to_string() + &x.message).collect();
+                let v: Vec<String> =
+                    after.iter().map(|x| x.code.to_string() + &x.message).filter(|m| !old.contains(m)).collect();
+                eprintln!("  {name} {net}: check worse by {worse} ({} refilled zones): {v:?} {r:?}", zs.len());
+            }
+            (worse, widths.saturating_sub(widths_before))
+        };
         for (net, a, la, c, lc) in &pairs {
             let w = rules.track_width_of(Some(net));
             let grid = (rules.clearance_of(Some(net)).min(w) / 2.0).clamp(0.05, 0.25);
@@ -257,52 +314,9 @@ fn local_samples_layers() {
             t_lay += t.elapsed();
             match &r {
                 Ok(r) => {
-                    let mut nb = b.clone();
-                    let routes: Vec<crate::edit::NewRoute> = r
-                        .legs
-                        .iter()
-                        .map(|(l, pts)| {
-                            let segs = pts
-                                .windows(2)
-                                .filter(|x| x[0] != x[1])
-                                .map(|x| route::Seg { start: x[0], end: x[1], mid: None })
-                                .collect::<Vec<_>>();
-                            (segs, w, l.clone(), Some(net.clone()))
-                        })
-                        .filter(|r| !r.0.is_empty())
-                        .collect();
-                    let vs: Vec<crate::edit::NewVia> =
-                        r.vias.iter().map(|&at| (at, lay.via.size, lay.via.drill, Some(net.clone()))).collect();
-                    nb.add_batch(&routes, &vs, &lim).unwrap();
-                    let (zs, _) = refill::refill_after_edit(&b, &mut nb, &rules, &lim).unwrap();
-                    let base = *refilled_before.entry(zs.clone()).or_insert_with(|| {
-                        if zs.is_empty() {
-                            return before;
-                        }
-                        let mut rb = b.clone();
-                        rb.set_zone_fills(&zones::fill(&b, &rules, Some(&zs)).fills, &lim).unwrap();
-                        drc::check(&rb, &rules, 100_000).len()
-                    });
-                    let after = drc::check(&nb, &rules, 100_000).len();
-                    let worse = after.saturating_sub(base);
+                    let (worse, _) = judge(r, net, lay.via);
                     worst = worst.max(worse);
-                    if worse > 0 {
-                        let old: Vec<String> = drc::check(&b, &rules, 100_000)
-                            .into_iter()
-                            .map(|x| x.code.to_string() + &x.message)
-                            .collect();
-                        let v: Vec<String> = drc::check(&nb, &rules, 100_000)
-                            .into_iter()
-                            .map(|x| x.code.to_string() + &x.message)
-                            .filter(|m| !old.contains(m))
-                            .collect();
-                        eprintln!(
-                            "  {name} {net}: check worse by {worse} ({} refilled zones): {:?} {:?}",
-                            zs.len(),
-                            v,
-                            r
-                        );
-                    } else {
+                    if worse == 0 {
                         layered += 1;
                         vias += r.vias.len();
                         eprintln!("  {name} {net}: layered, {} vias", r.vias.len());
@@ -310,6 +324,58 @@ fn local_samples_layers() {
                     }
                 }
                 Err(why) => eprintln!("  {name} {net}: no layered route: {why}"),
+            }
+            if neck {
+                let t = Instant::now();
+                let nw = layers::neck_width(&rules, Some(net));
+                if !mins.contains(&nw) {
+                    mins.push(nw);
+                }
+                let radii = [layers::neck_radius(&b, *a, Some(net)), layers::neck_radius(&b, *c, Some(net))];
+                // At full width with the escapes first (to tell their share apart).
+                let full = layers::Layered::new(&b, &rules, &both, Some(net), w);
+                if let Ok(r) = layers::route_necked(&full, &rules, *a, la, *c, lc, grid, true, None, radii) {
+                    let (worse, _) = judge(&r, net, full.via);
+                    worst = worst.max(worse);
+                    if worse == 0 {
+                        escaped += 1;
+                        vias += r.vias.len();
+                        t_neck += t.elapsed();
+                        eprintln!("  {name} {net}: escaped at full width, {} vias", r.vias.len());
+                        continue;
+                    }
+                }
+                let lay = layers::Layered::with_neck(&b, &rules, &both, Some(net), w, nw);
+                let r = layers::route_necked(&lay, &rules, *a, la, *c, lc, grid, true, None, radii);
+                t_neck += t.elapsed();
+                match &r {
+                    Ok(r) => {
+                        assert!(r.narrowest() >= nw - 1e-12, "{name} {net}: below the minimum");
+                        let (worse, new_widths) = judge(r, net, lay.via);
+                        assert_eq!(new_widths, 0, "{name} {net}: a track_width problem");
+                        worst = worst.max(worse);
+                        if worse == 0 {
+                            necked += 1;
+                            vias += r.vias.len();
+                            let narrow: f64 = r
+                                .pieces()
+                                .iter()
+                                .filter(|p| p.1 < w)
+                                .map(|p| {
+                                    p.2.windows(2)
+                                        .map(|x| libm::hypot(x[1][0] - x[0][0], x[1][1] - x[0][1]))
+                                        .sum::<f64>()
+                                })
+                                .sum();
+                            eprintln!(
+                                "  {name} {net}: necked to {nw} (radii {radii:?}), {narrow:.2} mm narrow, {} vias",
+                                r.vias.len()
+                            );
+                            continue;
+                        }
+                    }
+                    Err(why) => eprintln!("  {name} {net}: no necked route: {why} (radii {radii:?})"),
+                }
             }
             let t = Instant::now();
             if let Ok(p) = push::push_reason(&b, &rules, "F.Cu", Some(net), w, *a, *c, grid, &[]) {
@@ -328,13 +394,14 @@ fn local_samples_layers() {
             t_push += t.elapsed();
         }
         eprintln!(
-            "{name}: {} pairs, DRC {before} (worst after {worse}); walkaround {walked} ({t_walk:?}); layered +{layered} \
-             ({vias} vias, {t_lay:?}); push +{pushed}, shove +{shoved} ({t_push:?}); total {} in {:?}",
+            "{name}: {} pairs, DRC {before} (worst after {worse}, track_width {widths_before}); walkaround {walked} \
+             ({t_walk:?}); layered +{layered} ({t_lay:?}); escaped +{escaped}, necked +{necked} (min {mins:?}, {t_neck:?}); \
+             {vias} vias; push +{pushed}, shove +{shoved} ({t_push:?}); total {} in {:?}",
             pairs.len(),
-            walked + layered + pushed + shoved,
+            walked + layered + escaped + necked + pushed + shoved,
             t_board.elapsed(),
             worse = before + worst,
         );
-        assert_eq!(worst, 0, "{name}: a layered route made the check worse");
+        assert_eq!(worst, 0, "{name}: a route made the check worse");
     }
 }
