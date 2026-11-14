@@ -361,11 +361,10 @@ pub(crate) fn sketch_edges(pb: &[u8]) -> HashMap<u32, Edge3> {
         if g.type_name(e) != Some("EDGE") {
             continue;
         }
-        // In a sketch wire the head fin's vertex starts the edge and the other fin's ends it
-        // (the arcs of the samples run so).
+        // The head fin's vertex ends the edge, the other fin's starts it (as in a body).
         let head = g.ptr(e, "fin");
-        let start = pt(g.ptr(head, "vertex"));
-        let end = pt(g.ptr(g.ptr(head, "other"), "vertex"));
+        let end = pt(g.ptr(head, "vertex"));
+        let start = pt(g.ptr(g.ptr(head, "other"), "vertex"));
         let cu = g.ptr(e, "curve");
         let forward = g.ch(cu, "sense") != Some(b'-');
         let edge = match g.type_name(cu) {
