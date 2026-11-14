@@ -704,6 +704,9 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
         }
         None => n,
     };
+    // Slot 17 set: the hole goes the other way (into the face whose outward normal is the
+    // opposite; notes AF).
+    let nd = if s.get(17).is_some_and(|i| r.dc.r(i).last() == Some(&1)) { [-nd[0], -nd[1], -nd[2]] } else { nd };
     let t0 = s.need(0)?;
     let typ = u32_at(r.dc.r(t0), r.dc.body(t0)).ok_or("the hole type is not readable")?;
     let diameter = rnd(r.pval(&s, 1)? * CM);

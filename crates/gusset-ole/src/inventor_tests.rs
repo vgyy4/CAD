@@ -1321,3 +1321,23 @@ fn a_profile_of_revolution_is_a_closed_sketch_through_the_axis() {
     ];
     assert!(revolution_sketch("G", [0.0; 3], [0.0, 0.0, 1.0], apart).is_err());
 }
+
+/// A hole's slot 17 flag set: it goes into the face on the other side (`Cover of port`: a
+/// hole from the bottom of a puck whose direction record and centre sketch point up).
+#[test]
+fn a_hole_with_slot_17_set_goes_the_other_way() {
+    let mut r = hole_records();
+    r.push((OTHER, {
+        let mut v = hdr(0, 0, 0);
+        v.push(1);
+        v
+    })); // 29
+    let mut slots = vec![rf(20), rf(21), rf(22), 0, 0, 0, rf(23), rf(25), rf(26), rf(27)];
+    slots.extend([0, 0, 0, 0, 0, 0, 0, rf(29)]);
+    r[28].1 = feature(19, 0, 6, &slots);
+    let t = tree(&r).unwrap();
+    assert_eq!(t["features"][2]["face"]["normal"], json!([0.0, 0.0, -1.0]));
+    r[29].1.pop();
+    r[29].1.push(0);
+    assert_eq!(tree(&r).unwrap()["features"][2]["face"]["normal"], json!([0.0, 0.0, 1.0]));
+}
