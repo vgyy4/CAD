@@ -256,20 +256,21 @@ impl Evaluator {
             && let Some(slot) = s.bodies.get_mut(bi)
         {
             let mut nf = (**flat).clone();
-            // The pattern is in the tab's sketch frame: the bend line's sketch must share it.
-            let same = |f: &Frame| {
-                let close = |x: V3, y: V3| x.iter().zip(y).all(|(p, q)| (p - q).abs() < 1e-9);
-                close(f.origin, frame.origin) && close(f.x, frame.x) && close(f.y, frame.y)
-            };
-            let same_plane =
-                flat.base.as_ref().and_then(|tb| s.solved.get(&tb.sketch)).is_some_and(|tv| same(&tv.frame));
-            if same_plane {
-                let d2 = [q[0] - p[0], q[1] - p[1]];
-                let len = libm::hypot(d2[0], d2[1]);
-                let side = if b.right { -1.0 } else { 1.0 };
-                let across = [-d2[1] / len * side, d2[0] / len * side];
+            // The pattern is in the tab's sketch frame. The bend line's sketch may lie in a plane
+            // parallel to it (the tab's other face, an offset plane): the line is projected
+            // into the tab's frame (dogfooding F18-12).
+            let tab_frame = flat.base.as_ref().and_then(|tb| s.solved.get(&tb.sketch)).map(|tv| tv.frame);
+            let tab_frame =
+                tab_frame.filter(|tf| normalize(tf.normal()).is_some_and(|tn| (dot(tn, n).abs() - 1.0).abs() < 1e-9));
+            if let Some(tf) = tab_frame {
+                let to_tab = |w: V3| -> [f64; 2] {
+                    let d = sub(w, tf.origin);
+                    [dot(d, tf.x), dot(d, tf.y)]
+                };
+                let (p2, q2) = (to_tab(o), to_tab(end));
+                let across = [dot(a, tf.x), dot(a, tf.y)];
                 let shift = |x: f64| {
-                    [[p[0] + across[0] * x, p[1] + across[1] * x], [q[0] + across[0] * x, q[1] + across[1] * x]]
+                    [[p2[0] + across[0] * x, p2[1] + across[1] * x], [q2[0] + across[0] * x, q2[1] + across[1] * x]]
                 };
                 nf.bends.push(sheet::FlatBend {
                     line: b.line.to_string(),
