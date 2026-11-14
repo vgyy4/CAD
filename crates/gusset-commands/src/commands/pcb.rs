@@ -112,20 +112,99 @@ pub(super) fn write_outputs(
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PcbInfo {
-    /// .kicad_pcb or .kicad_mod (default: the open board).
+    /// Default: the open board.
     #[serde(default)]
     pub path: Option<String>,
+    /// footprints|pads|tracks|vias (filter: ref, net; 100 max).
+    #[serde(default)]
+    pub list: Option<String>,
+    #[serde(default, rename = "ref")]
+    pub reference: Option<String>,
+    #[serde(default)]
+    pub net: Option<String>,
+}
+
+/// Entries one `list` returns.
+const LIST_CAP: usize = 100;
+
+/// Whether a net matches a filter, as written or without the sheet path (`/USB_P`, `USB_P`).
+fn net_matches(b: &Board, r: &gusset_pcb::board::NetRef, want: &str) -> bool {
+    let short = |s: &str| s.rsplit('/').next().unwrap_or(s).to_string();
+    b.net_name(r).is_some_and(|n| n == want || short(&n) == want)
+}
+
+impl PcbInfo {
+    /// The footprints, pads, tracks or vias of the board (text from the file in `_user_text`).
+    fn listing(&self, b: &Board, kind: &str) -> Result<Value, CommandError> {
+        let want_ref = self.reference.as_deref();
+        let want_net = self.net.as_deref();
+        let net_ok = |r: &gusset_pcb::board::NetRef| want_net.is_none_or(|n| net_matches(b, r, n));
+        let mut items: Vec<Value> = Vec::new();
+        let mut total = 0usize;
+        let mut push = |v: Value| {
+            total += 1;
+            if items.len() < LIST_CAP {
+                items.push(v);
+            }
+        };
+        let net_of = |r: &gusset_pcb::board::NetRef| b.net_name(r);
+        match kind {
+            "footprints" => {
+                for f in b.footprints.iter().filter(|f| want_ref.is_none_or(|r| f.reference == r)) {
+                    if want_net.is_some() && !f.pads.iter().filter_map(|&i| b.pads.get(i)).any(|p| net_ok(&p.net)) {
+                        continue;
+                    }
+                    push(json!({
+                        "ref_user_text": f.reference, "value_user_text": f.value, "lib_user_text": f.lib_id,
+                        "at": f.at, "angle": f.angle, "side": if f.bottom { "bottom" } else { "top" },
+                        "pads": f.pads.len(),
+                    }));
+                }
+            }
+            "pads" => {
+                for f in b.footprints.iter().filter(|f| want_ref.is_none_or(|r| f.reference == r)) {
+                    for p in f.pads.iter().filter_map(|&i| b.pads.get(i)).filter(|p| net_ok(&p.net)) {
+                        let cu: Vec<&String> = p.layers.iter().filter(|l| l.ends_with(".Cu")).collect();
+                        push(json!({
+                            "ref_user_text": f.reference, "pad_user_text": p.number, "at": p.at,
+                            "layers_user_text": cu, "net_user_text": net_of(&p.net),
+                        }));
+                    }
+                }
+            }
+            "tracks" => {
+                for (i, t) in b.tracks.iter().enumerate().filter(|(_, t)| net_ok(&t.net)) {
+                    push(json!({
+                        "index": i, "from": t.start, "to": t.end, "mid": t.mid, "width": t.width,
+                        "layer_user_text": t.layer, "net_user_text": net_of(&t.net),
+                    }));
+                }
+            }
+            "vias" => {
+                for (i, v) in b.vias.iter().enumerate().filter(|(_, v)| net_ok(&v.net)) {
+                    push(json!({
+                        "index": i, "at": v.at, "size": v.size, "drill": v.drill,
+                        "layers_user_text": v.layers, "net_user_text": net_of(&v.net),
+                    }));
+                }
+            }
+            _ => return Err(CommandError::args("`list` is footprints, pads, tracks or vias")),
+        }
+        Ok(json!({"list": kind, "total": total, "more": total.saturating_sub(items.len()), "items": items}))
+    }
 }
 
 impl Command for PcbInfo {
     const ID: &'static str = "pcb.info";
     const TITLE: &'static str = "PCB info";
-    const DESCRIPTION: &'static str =
-        "Read a KiCad board (.kicad_pcb/.kicad_mod): layers, counts, size, texts, sanity issues.";
+    const DESCRIPTION: &'static str = "Read a board (.kicad_pcb/.kicad_mod): counts, size, texts, issues, or a list.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let (b, _) = board_source(s, ctx, self.path.as_deref())?;
+        if let Some(kind) = self.list.as_deref() {
+            return self.listing(&b, kind);
+        }
         let (loops, _) = gusset_pcb::geom::outline_loops(&b, check::OUTLINE_TOL);
         let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
         for p in loops.iter().flat_map(|l| l.polygon(0.01)) {

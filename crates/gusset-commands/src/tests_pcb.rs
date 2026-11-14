@@ -67,6 +67,47 @@ fn pcb_info_reports_the_board() {
 }
 
 #[test]
+fn pcb_info_lists_footprints_pads_tracks_and_vias_bounded() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    let info = |s: &mut Session, a: Value| run(s, &u, "pcb.info", a);
+    let r = info(&mut s, json!({"path": "board.kicad_pcb", "list": "footprints"}));
+    assert_eq!((r["total"].as_u64(), r["more"].as_u64()), (Some(3), Some(0)), "{r}");
+    let u1 = r["items"].as_array().unwrap().iter().find(|i| i["ref_user_text"] == "U1").unwrap();
+    assert_eq!(
+        (u1["at"].clone(), u1["angle"].clone(), u1["side"].clone()),
+        (json!([25.0, 10.0]), json!(90.0), json!("top"))
+    );
+    let r = info(&mut s, json!({"path": "board.kicad_pcb", "list": "pads", "ref": "R1"}));
+    let items = r["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{r}");
+    assert_eq!((items[0]["pad_user_text"].clone(), items[0]["at"].clone()), (json!("1"), json!([9.0, 10.0])), "{r}");
+    assert_eq!(items[0]["net_user_text"], "GND", "{r}");
+    assert_eq!(items[0]["layers_user_text"], json!(["F.Cu"]), "{r}");
+    let r = info(&mut s, json!({"path": "board.kicad_pcb", "list": "pads", "net": "GND"}));
+    assert_eq!(r["total"], 2, "{r}");
+    let r = info(&mut s, json!({"path": "board.kicad_pcb", "list": "tracks"}));
+    assert_eq!(r["items"][0]["width"], 0.3, "{r}");
+    assert_eq!(r["items"][0]["net_user_text"], "GND", "{r}");
+    let r = info(&mut s, json!({"path": "board.kicad_pcb", "list": "vias"}));
+    assert_eq!(r["total"], 0, "{r}");
+    let e = execute(&mut s, &u, "pcb.info", json!({"path": "board.kicad_pcb", "list": "zones"})).unwrap_err();
+    assert_eq!(e.code, "invalid_args");
+    // Bounded: more tracks than the cap say how many are left.
+    run(&mut s, &u, "pcb.open", json!({"path": "board.kicad_pcb"}));
+    for i in 0..105 {
+        run(
+            &mut s,
+            &u,
+            "pcb.add_track",
+            json!({"start": [1, 1.0 + i as f64 * 0.1], "end": [2, 1.0 + i as f64 * 0.1], "layer": "F.Cu", "net": "GND", "width": 0.3}),
+        );
+    }
+    let r = info(&mut s, json!({"list": "tracks", "net": "GND"}));
+    assert_eq!((r["items"].as_array().unwrap().len(), r["more"].as_u64()), (100, Some(6)), "{r}");
+}
+
+#[test]
 fn pcb_import_adds_the_board_and_component_bodies() {
     let mut s = session();
     let r = run(&mut s, &CmdCtx::user(1), "pcb.import", json!({"path": "board.kicad_pcb", "component_height": "3 mm"}));

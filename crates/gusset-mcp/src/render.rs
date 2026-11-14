@@ -15,22 +15,22 @@ pub const MAX_PNG_BYTES: usize = 16 << 20;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Camera {
-    /// Eye position in model coordinates; give with `target` instead of orbit angles.
+    /// Eye point; with `target`, or use azimuth/elevation.
     #[serde(default)]
     pub eye: Option<[f64; 3]>,
-    /// Point looked at in model coordinates; give with `eye` instead of orbit angles.
+    /// Point looked at; with `eye`.
     #[serde(default)]
     pub target: Option<[f64; 3]>,
     /// Up direction (default +Z).
     #[serde(default = "default_up")]
     pub up: [f64; 3],
-    /// Orthographic projection instead of perspective.
+    /// Orthographic, not perspective.
     #[serde(default)]
     pub orthographic: bool,
-    /// Orbit azimuth in degrees, counter-clockwise from +X in the XY plane.
+    /// Degrees counter-clockwise from +X.
     #[serde(default)]
     pub azimuth: Option<f64>,
-    /// Orbit elevation in degrees above the XY plane.
+    /// Degrees above the XY plane.
     #[serde(default)]
     pub elevation: Option<f64>,
 }
