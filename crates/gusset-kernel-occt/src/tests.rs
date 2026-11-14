@@ -1919,39 +1919,61 @@ fn extrude_to_a_cone_face_that_the_profile_meets_at_its_rim() {
     // z = 6 + r, apex at z = 6). The slivers between the hole's circle and its inscribed
     // hexagon fill the hole from z = 20 down to the cone: their arcs run along the cone's rim
     // (a hex socket over a drill point).
-    let hole = xz_poly(&[[0.0, 6.0], [4.0, 10.0], [4.0, 20.0], [0.0, 20.0]]);
-    let drill = k()
-        .revolve(&hole, &RevolveSpec { axis_origin: [0.0, 0.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::TAU })
-        .unwrap()
-        .shape;
-    let mut sq = boxp(20.0, 20.0);
-    sq.frame.origin = [-10.0, -10.0, 0.0];
-    let slab = k().extrude(&sq, &ExtrudeSpec { distance: 20.0, symmetric: false }).unwrap().shape;
-    let body = k().boolean(BoolOp::Cut, &slab, &drill).unwrap().shape;
-    let t = k().topology(&body).unwrap();
-    let cone = t.faces.iter().position(|f| f.kind == SurfaceKind::Cone).unwrap() as u32;
+    let body = |bore: f64| {
+        let hole = xz_poly(&[[0.0, 10.0 - bore], [bore, 10.0], [bore, 20.0], [0.0, 20.0]]);
+        let drill = k()
+            .revolve(
+                &hole,
+                &RevolveSpec { axis_origin: [0.0, 0.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::TAU },
+            )
+            .unwrap()
+            .shape;
+        let mut sq = boxp(20.0, 20.0);
+        sq.frame.origin = [-10.0, -10.0, 0.0];
+        let slab = k().extrude(&sq, &ExtrudeSpec { distance: 20.0, symmetric: false }).unwrap().shape;
+        let body = k().boolean(BoolOp::Cut, &slab, &drill).unwrap().shape;
+        let t = k().topology(&body).unwrap();
+        let cone = t.faces.iter().position(|f| f.kind == SurfaceKind::Cone).unwrap() as u32;
+        (body, cone)
+    };
     let y = 12.0f64.sqrt();
-    // The six slivers between the circle and its inscribed hexagon, one region each.
+    // The six slivers between a circle of radius `rad` and its inscribed hexagon, one region each.
     let rot = |p: [f64; 2], k: u32| {
         let a = f64::from(k) * std::f64::consts::FRAC_PI_3;
         [p[0] * a.cos() - p[1] * a.sin(), p[0] * a.sin() + p[1] * a.cos()]
     };
-    let regions = (0..6u32)
-        .map(|k| {
-            let (a, b) = (rot([2.0, -y], k), rot([2.0, y], k));
-            let edges = vec![
-                ProfileEdge {
-                    seg: Seg2::Arc { center: [0.0, 0.0], start: a, end: b, ccw: true },
-                    tag: 1 + 2 * u64::from(k),
-                },
-                ProfileEdge { seg: Seg2::Line { a: b, b: a }, tag: 2 + 2 * u64::from(k) },
-            ];
-            Region2 { outer: Loop2 { edges }, holes: vec![] }
-        })
-        .collect();
-    let mut frame = Frame::XY;
-    frame.origin = [0.0, 0.0, 20.0];
-    let sliver = Profile { frame, regions };
+    let slivers = |rad: f64| {
+        let h = rad * 3.0f64.sqrt() / 2.0;
+        let regions = (0..6u32)
+            .map(|k| {
+                let (a, b) = (rot([rad / 2.0, -h], k), rot([rad / 2.0, h], k));
+                let edges = vec![
+                    ProfileEdge {
+                        seg: Seg2::Arc { center: [0.0, 0.0], start: a, end: b, ccw: true },
+                        tag: 1 + 2 * u64::from(k),
+                    },
+                    ProfileEdge { seg: Seg2::Line { a: b, b: a }, tag: 2 + 2 * u64::from(k) },
+                ];
+                Region2 { outer: Loop2 { edges }, holes: vec![] }
+            })
+            .collect();
+        let mut frame = Frame::XY;
+        frame.origin = [0.0, 0.0, 20.0];
+        Profile { frame, regions }
+    };
+    // An M2 hex socket's slivers (radius 0.8660254 mm) in a bore written to six decimals
+    // (0.866025): 4e-7 mm narrower, it still covers them; 0.01 mm narrower, it does not.
+    let small = slivers(0.8660254);
+    let (exact, c1) = body(0.8660254);
+    let (rounded, c2) = body(0.866025);
+    let v1 = volume(&k().extrude_to_face(&small, &exact, c1, 0.0, true).unwrap().shape);
+    let v2 = volume(&k().extrude_to_face(&small, &rounded, c2, 0.0, true).unwrap().shape);
+    assert!(close(v1, v2, 1e-5), "{v1} vs {v2}");
+    let (narrow, c3) = body(0.856);
+    let e = k().extrude_to_face(&small, &narrow, c3, 0.0, true).unwrap_err();
+    assert!(e.message.contains("cover"), "{}", e.message);
+    let sliver = slivers(4.0);
+    let (body, cone) = body(4.0);
     let r = k().extrude_to_face(&sliver, &body, cone, 0.0, true).unwrap();
     assert!(r.face_origins.iter().all(|o| !o.is_empty()), "{:?}", r.face_origins);
     // Height 20 - (6 + r) = 14 - r over each sliver (x 2..4 inside the circle): 14 A - integral

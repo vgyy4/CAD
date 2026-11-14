@@ -1882,7 +1882,11 @@ int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face,
         BRepGProp::SurfaceProperties(cm.Shape(), g1);
         common_area = g1.Mass();
       }
-      if (g0.Mass() - common_area > 1e-6 * std::max(1.0, g0.Mass()))
+      // A strip narrower than 1e-6 mm along the cap's edges is rounding (a sketch circle and
+      // the bore it sits in a few 1e-7 mm apart), not a face too small.
+      GProp_GProps g2;
+      BRepGProp::LinearProperties(cap, g2);
+      if (g0.Mass() - common_area > std::max(1e-6 * std::max(1.0, g0.Mass()), 1e-6 * g2.Mass()))
         return fail("the face does not cover the whole extrusion; pick a face that reaches past the profile");
     }
     carry_recs(sp, rr);
