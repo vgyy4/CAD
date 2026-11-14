@@ -270,7 +270,6 @@ first extrusion's bounding box. It is only trusted through the whole-part rebuil
 thicken parts now get past `Thicken1` and their full rounds (12, 12 and 8 tree fillets) are emitted,
 but each still stops at a later feature (docs/formats/inventor-feature-tree.md I), so they stay bodies.
 
-
 ## Amendment (2026-11-10, 7): Inventor chamfer patches, slot-end rounds, spline surfaces
 
 Chamfer feature faces that replaced no edge (corner patches between chamfers, vertex blend spline
@@ -542,3 +541,40 @@ walls, with an open revolved cut in 114 and a tapered base in 161), 072 (protrus
 
 Each remaining cause is worth fewer than 4 parts except the kernel rounds on sweep intersections (8, all one
 source) and the unread feature kinds taken together.
+
+## Amendment (2026-11-14, 14): the spindle and UFO body imports
+
+The body-import failures of amendment 12 had two causes, neither in OCCT's healing as such.
+
+**Spindles: a sense error in `gusset-xt`.** Parasolid writes many edges on a `TRIMMED_CURVE` (sense `+`)
+whose basis curve has sense `-`; the trim runs from `parm_1` to `parm_2` the way the basis does (all 25,274
+trimmed curves of the corpus: a `+` basis runs up, a `-` basis down). STEP gets the basis curve, and the
+edge took the trim's sense alone, so every tooth's tip and root arc of the jam-cam gears became its
+complement (6.2 rad instead of 0.06). Their faces were tangles of overlapping arcs, and
+`ShapeFix_Wire::FixSelfIntersection` intersected every pair (Driver_Spindle: past the 900 s limit) or
+corrupted the heap while repairing them (Reel_Drive_Spindle: `malloc` aborts when `ShapeFix_Shape`'s
+`ShapeBuild_ReShape` is freed, 3 runs in 5; the path follows address order: no fault under valgrind, gdb
+or an AddressSanitizer build of TKShHealing in 21 runs, so no OCCT patch was made). The senses now
+compose (`model::curve_sense`). The bodies were never an empty solid: each file holds the gear solid
+(141 and 95 faces) and a one-face sheet (a disc) beside it. Both now read in under a second as a valid
+solid (1251.7 and 577.3 mm3) plus the sheet. 92 of 1728 corpus transmits have such edges; read as the
+worker reads them, 16 invalid shapes become valid and backside.SLDPRT (killed before) reads.
+SPS_Injector, whose sphere face `gusset-xt` writes with edges up to 1.4 mm off it (a separate defect,
+next), now stalls in the same healing step instead of reading as an invalid solid of negative volume.
+
+Healing settings for STEP that Gusset writes were measured and left as they are: without
+`FixSelfIntersectionMode`, 25 of 1102 corpus shapes that read valid become invalid (none the other way) (the fix moves vertices
+and tolerances onto the fitted intersection curves), so the step is needed. A time budget on the transfer
+(a progress indicator whose `UserBreak` fires after a deadline) does stop it, but any budget below the
+worker's limit would change imports that now finish near it; the worker's limit stays the bound.
+
+**UFO_base and Reflector_Mounting_Bracket: an OCCT bug** (ADR 0002, patch `gusset-0006`). The fitted
+rolling-ball blends are u-periodic B-splines; OCCT's healing gives some of their faces pcurves one period
+on, or a seam off the first knot, and `BRepGProp_Face::GetUKnots` then found no knot in the face's range,
+so `measured_props`' Gauss-Kronrod ran over all 152 C0 patches at once: about an hour, and 1e-5 off. With
+the patch the knots repeat over the periods: UFO_base measures in 3 s, the bracket in 1.2 s (the four
+parts import in 28 s together). A face's value agrees with an independent integration over the exact
+spans to 5e-9.
+
+**Open.** `query.body` measures a sheet with the closed-shell formula (the spindles' discs read -760 and
+-226 mm3); SPS_Injector's sphere edges.
