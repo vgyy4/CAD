@@ -315,6 +315,9 @@ pub(crate) enum Edge3 {
     /// Centre, normal, radius and, for an arc, its start and end, counter-clockwise about the
     /// normal from start to end.
     Circle(V3, V3, f64, Option<(V3, V3)>),
+    /// Centre, normal, major axis direction, semi-major and semi-minor lengths and, for an
+    /// arc, its start and end, counter-clockwise about the normal from start to end.
+    Ellipse(V3, V3, V3, f64, f64, Option<(V3, V3)>),
 }
 
 impl Edge3 {
@@ -337,6 +340,25 @@ impl Edge3 {
                 let (a, b) = (on(a)?, on(b)?);
                 let ang = |p: [f64; 2]| libm::atan2(p[1] - c2[1], p[0] - c2[0]);
                 Some(if k > 0.0 { Curve2::Arc(c2, r, ang(a), ang(b)) } else { Curve2::Arc(c2, r, ang(b), ang(a)) })
+            }
+            Edge3::Ellipse(c, en, ex, ma, mi, ends) => {
+                let c2 = on(c)?;
+                let k = dot(en, n);
+                if (k.abs() - 1.0).abs() > 1e-7 || dot(ex, n).abs() > 1e-7 || !(ma > 0.0 && mi > 0.0 && mi <= ma) {
+                    return None;
+                }
+                let ux = [dot(ex, x), dot(ex, y)];
+                let u = [ux[0] * ma, ux[1] * ma];
+                let ratio = mi / ma;
+                let Some((a, b)) = ends else { return Some(Curve2::Ellipse(c2, u, ratio, None)) };
+                let (a, b) = (on(a)?, on(b)?);
+                // The parameter of a point: along the major axis and a quarter turn on.
+                let t = |p: [f64; 2]| {
+                    let q = [p[0] - c2[0], p[1] - c2[1]];
+                    libm::atan2((-q[0] * ux[1] + q[1] * ux[0]) / mi, (q[0] * ux[0] + q[1] * ux[1]) / ma)
+                };
+                let range = if k > 0.0 { (t(a), t(b)) } else { (t(b), t(a)) };
+                Some(Curve2::Ellipse(c2, u, ratio, Some(range)))
             }
         }
     }
@@ -394,6 +416,27 @@ pub(crate) fn sketch_edges(pb: &[u8]) -> HashMap<u32, Edge3> {
                     _ => None,
                 };
                 Edge3::Circle(c, n, r, ends)
+            }
+            Some("ELLIPSE") => {
+                let (Some(c), Some(n), Some(xa), Some(ma), Some(mi)) = (
+                    g.vec3(cu, "centre"),
+                    g.vec3(cu, "normal"),
+                    g.vec3(cu, "x_axis"),
+                    g.real(cu, "major_radius"),
+                    g.real(cu, "minor_radius"),
+                ) else {
+                    continue;
+                };
+                let (Some(n), Some(xa)) = (unit(n), unit(xa)) else { continue };
+                if !(ma.is_finite() && mi.is_finite() && ma > 0.0 && mi > 0.0 && finite3(c)) {
+                    continue;
+                }
+                let ends = match (start, end) {
+                    (Some(a), Some(b)) if forward => Some((a, b)),
+                    (Some(a), Some(b)) => Some((b, a)),
+                    _ => None,
+                };
+                Edge3::Ellipse(c, n, xa, ma, mi, ends)
             }
             _ => continue,
         };
@@ -892,6 +935,18 @@ pub(crate) enum Curve2 {
     Arc([f64; 2], f64, f64, f64),
     /// A polynomial B-spline: degree, poles, knots (each repeated by its multiplicity).
     Spline(u32, Vec<[f64; 2]>, Vec<f64>),
+    /// An ellipse: centre, semi-major axis (a vector), minor to major ratio (at most 1) and,
+    /// for an arc of it, the parameters from and to, counter-clockwise (the point at `t` is
+    /// `c + cos t major + ratio sin t major turned a quarter counter-clockwise`).
+    Ellipse([f64; 2], [f64; 2], f64, Option<(f64, f64)>),
+}
+
+impl Curve2 {
+    /// A point of an ellipse at parameter `t` (see [`Curve2::Ellipse`]).
+    fn ellipse_at(c: [f64; 2], u: [f64; 2], ratio: f64, t: f64) -> [f64; 2] {
+        let (cs, sn) = (libm::cos(t), ratio * libm::sin(t));
+        [c[0] + cs * u[0] - sn * u[1], c[1] + cs * u[1] + sn * u[0]]
+    }
 }
 
 /// Most poles of one spline.
@@ -973,8 +1028,31 @@ pub(crate) fn curve(b: &[u8]) -> Option<Curve2> {
             }
             Some(if ccw == 1 { Curve2::Arc([cx, cy], r, a0, a1) } else { Curve2::Arc([cx, cy], r, a1, a0) })
         }
+        71 => ellipse(b),
         _ => spline(b),
     }
+}
+
+/// An ellipse member (71 bytes): after `u8 0, u8 flags`, the centre, the axis the angles
+/// start from (a vector, its length the semi-axis), the other semi-axis over it, `u8 ccw`
+/// and the angles from and to (as an arc's).
+fn ellipse(b: &[u8]) -> Option<Curve2> {
+    let ok = |v: f64| v.is_finite() && v.abs() < 1e6;
+    let (cx, cy, ux, uy, k) = (f64_at(b, 10)?, f64_at(b, 18)?, f64_at(b, 26)?, f64_at(b, 34)?, f64_at(b, 42)?);
+    let (ccw, a0, a1) = (*b.get(50)?, f64_at(b, 51)?, f64_at(b, 59)?);
+    let r = libm::hypot(ux, uy);
+    if ![cx, cy, ux, uy, k, a0, a1].into_iter().all(ok) || r < 1e-12 || !(k > 1e-9 && k < 1e9) || ccw > 1 {
+        return None;
+    }
+    if a0.abs() > 20.0 || a1.abs() > 20.0 {
+        return None;
+    }
+    let (a0, a1) = if ccw == 1 { (a0, a1) } else { (a1, a0) };
+    // A ratio over 1: the other axis is the major one, a quarter turn on.
+    let (u, k, shift) =
+        if k > 1.0 { ([-uy * k, ux * k], 1.0 / k, core::f64::consts::FRAC_PI_2) } else { ([ux, uy], k, 0.0) };
+    let whole = ((a1 - a0).abs() - 2.0 * core::f64::consts::PI).abs() < 1e-12 || (a1 - a0).abs() < 1e-12;
+    Some(Curve2::Ellipse([cx, cy], u, k, (!whole).then_some((a0 - shift, a1 - shift))))
 }
 
 /// A profile member that is not a curve (a constraint, key point, dimension, group...), by
@@ -1160,6 +1238,7 @@ fn turned_over(c: &Curve2) -> Curve2 {
         Curve2::Circle(c, r) => Curve2::Circle(f(*c), *r),
         Curve2::Arc(c, r, a0, a1) => Curve2::Arc(f(*c), *r, -a1, -a0),
         Curve2::Spline(d, poles, knots) => Curve2::Spline(*d, poles.iter().map(|p| f(*p)).collect(), knots.clone()),
+        Curve2::Ellipse(c, u, k, range) => Curve2::Ellipse(f(*c), f(*u), *k, range.map(|(a0, a1)| (-a1, -a0))),
     }
 }
 
@@ -1200,6 +1279,20 @@ fn sketch_json(name: &str, profiles: &[Profile], axis: Option<([f64; 2], [f64; 2
                 let poles: Vec<String> = poles.iter().map(|&p| pid(p)).collect();
                 let knots: Vec<f64> = knots.iter().map(|&t| rnd(t)).collect();
                 json!({"id": format!("c{k}"), "type": "bspline", "degree": degree, "poles": poles, "knots": knots})
+            }
+            &Curve2::Ellipse(c, u, ratio, range) => {
+                let a = libm::hypot(u[0], u[1]);
+                let major = [rnd(u[0] / a), rnd(u[1] / a)];
+                let (a_mm, b_mm) = (rnd(a * MM), rnd(a * ratio * MM));
+                match range {
+                    None => json!({"id": format!("c{k}"), "type": "ellipse", "center": pid(c), "major": major,
+                                   "a": a_mm, "b": b_mm}),
+                    Some((a0, a1)) => {
+                        let (s0, s1) = (Curve2::ellipse_at(c, u, ratio, a0), Curve2::ellipse_at(c, u, ratio, a1));
+                        json!({"id": format!("c{k}"), "type": "ellipse_arc", "center": pid(c), "major": major,
+                               "a": a_mm, "b": b_mm, "start": pid(s0), "end": pid(s1)})
+                    }
+                }
             }
             &Curve2::Arc(c, r, a0, a1) => {
                 let at = |a: f64| [c[0] + r * libm::cos(a), c[1] + r * libm::sin(a)];
@@ -1276,7 +1369,21 @@ fn curve_ends(c: &Curve2) -> Option<(Ray, Ray)> {
             let (q0, q1) = (*poles.last()?, *poles.get(poles.len().checked_sub(2)?)?);
             Some(((p0, dir(p0, p1)?), (q0, dir(q0, q1)?)))
         }
-        Curve2::Circle(..) => None,
+        Curve2::Ellipse(c, u, k, Some((a0, a1))) => {
+            let d = |t: f64| {
+                let (sn, cs) = (libm::sin(t), k * libm::cos(t));
+                [-sn * u[0] - cs * u[1], -sn * u[1] + cs * u[0]]
+            };
+            let (d0, d1) = (d(*a0), d(*a1));
+            let (s0, s1) = (Curve2::ellipse_at(*c, *u, *k, *a0), Curve2::ellipse_at(*c, *u, *k, *a1));
+            let n = |v: [f64; 2]| {
+                let l = libm::hypot(v[0], v[1]);
+                (l > 1e-12).then(|| [v[0] / l, v[1] / l])
+            };
+            // Counter-clockwise: leaving the start backwards, the end forwards.
+            Some(((s0, n([-d0[0], -d0[1]])?), (s1, n(d1)?)))
+        }
+        Curve2::Circle(..) | Curve2::Ellipse(_, _, _, None) => None,
     }
 }
 
@@ -1323,6 +1430,13 @@ fn curve2_points(c: &Curve2) -> Vec<[f64; 2]> {
                     [cn[0] + r * libm::cos(t), cn[1] + r * libm::sin(t)]
                 })
                 .collect()
+        }
+        Curve2::Ellipse(c, u, k, range) => {
+            let (a0, a1) = match range {
+                None => (0.0, 2.0 * core::f64::consts::PI),
+                Some((a0, a1)) => (*a0, if a1 <= a0 { a1 + 2.0 * core::f64::consts::PI } else { *a1 }),
+            };
+            (0..=STEPS).map(|i| Curve2::ellipse_at(*c, *u, *k, a0 + (a1 - a0) * i as f64 / STEPS as f64)).collect()
         }
         Curve2::Spline(degree, poles, knots) => {
             let order = *degree as usize + 1;
@@ -1962,10 +2076,12 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
     }
     if solids == 0 && s.out.iter().all(|f| f.get("type").and_then(Value::as_str) == Some("unsupported")) {
         // Only bookkeeping of a synchronous part, or nothing read at all.
-        if feats
-            .iter()
-            .all(|(_, f)| matches!(label(&f.class), "Hole" | "Thread" | "UserDefinedPattern" | "PartOwnerTrans"))
-        {
+        if feats.iter().all(|(_, f)| {
+            matches!(
+                label(&f.class),
+                "Hole" | "Thread" | "UserDefinedPattern" | "PartOwnerTrans" | "SmartPattern" | "FastPattern"
+            )
+        }) {
             return Err(String::new());
         }
     }

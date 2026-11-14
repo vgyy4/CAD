@@ -281,6 +281,11 @@ fn a_part_without_ordered_features_has_no_history() {
     c.extend(obj(38, 5, &func("JMHoleFunction", &[&[5], &[0]])));
     let f = ole(&[("PSMcluster0", &c), ("PSMtypetable", &[])]);
     assert_eq!(feature_tree(&f, "s.par", &crate::Limits::default()), Err(String::new()));
+    // A synchronous part's smart pattern alone: no ordered history either.
+    let mut c = vec![0u8; 8];
+    c.extend(obj(38, 5, &func("JMSmartPatternFunction", &[&[5], &[0]])));
+    let f = ole(&[("PSMcluster0", &c), ("PSMtypetable", &[])]);
+    assert_eq!(feature_tree(&f, "s.par", &crate::Limits::default()), Err(String::new()));
     assert!(feature_tree(b"not ole", "s.par", &crate::Limits::default()).is_err());
 }
 
@@ -789,4 +794,44 @@ fn an_open_revolve_profile_is_closed_against_its_axis() {
     let mut c = vec![Curve2::Circle([3.0, 0.0], 1.0)];
     close_on_axis(&mut c, &[false], axis, None).unwrap();
     assert_eq!(c.len(), 1);
+}
+
+#[test]
+fn ellipse_members_and_sketch_ellipses() {
+    // A 71-byte member: centre (-6, 0) mm, the axis the angles start from (-3, 0) mm, the
+    // other semi-axis 5/3 of it, counter-clockwise from pi to 2 pi: the upper half of a 3 by 5
+    // ellipse, from (-3, 0) over (-6, 5) to (-9, 0).
+    let member = |ccw: u8| {
+        let mut m = vec![0, 0];
+        m.extend(f64s(&[-0.006, 0.0, -0.003, 0.0, 5.0 / 3.0]));
+        m.push(ccw);
+        m.extend(f64s(&[core::f64::consts::PI, 2.0 * core::f64::consts::PI]));
+        m.extend([1, 0, 0, 0x80]);
+        obj(43, 5, &m)
+    };
+    let b = member(1);
+    assert_eq!(b.len(), 71);
+    let Some(Curve2::Ellipse(c, u, k, Some((a0, a1)))) = curve(&b) else { panic!("{:?}", curve(&b)) };
+    // The major axis is the 5 mm one (a quarter turn on), the ratio 3/5.
+    assert_eq!(c, [-0.006, 0.0]);
+    assert!((libm::hypot(u[0], u[1]) - 0.005).abs() < 1e-12 && (k - 0.6).abs() < 1e-12, "{u:?} {k}");
+    let at = |t: f64| {
+        let (cs, sn) = (libm::cos(t), k * libm::sin(t));
+        [c[0] + cs * u[0] - sn * u[1], c[1] + cs * u[1] + sn * u[0]]
+    };
+    let near = |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).abs() < 1e-12 && (p[1] - q[1]).abs() < 1e-12;
+    assert!(near(at(a0), [-0.003, 0.0]) && near(at(a1), [-0.009, 0.0]), "{:?} {:?}", at(a0), at(a1));
+    assert!(near(at((a0 + a1) / 2.0), [-0.006, 0.005]), "{:?}", at((a0 + a1) / 2.0));
+    // Stored clockwise: the same curve from the other end.
+    let Some(Curve2::Ellipse(_, _, _, Some((b0, b1)))) = curve(&member(0)) else { panic!() };
+    assert!(near(at(b0), [-0.009, 0.0]) && near(at(b1), [-0.003, 0.0]));
+    // A sketch ellipse (SKETCH.P_B) on the plane y = 0 seen from -y (y = n x x = +z), its
+    // normal +y: counter-clockwise about +y is clockwise in the plane, so the ends swap.
+    let e =
+        Edge3::Ellipse([0.0; 3], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 2.0, 1.0, Some(([2.0, 0.0, 0.0], [0.0, 0.0, -1.0])));
+    let Some(Curve2::Ellipse(c2, u2, k2, Some((t0, t1)))) = e.flat([0.0; 3], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]) else {
+        panic!()
+    };
+    assert_eq!((c2, u2, k2), ([0.0, 0.0], [2.0, 0.0], 0.5));
+    assert!((t0 + core::f64::consts::FRAC_PI_2).abs() < 1e-12 && t1.abs() < 1e-12, "{t0} {t1}");
 }
