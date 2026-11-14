@@ -1257,6 +1257,13 @@ async fn pcb_schematic_simulation_and_cam_are_reachable_through_commands_and_run
     }
     let d = ok(&call(&c, "commands", json!({"name": "pcb_add_footprint"})).await);
     assert!(d["inputSchema"]["properties"]["footprint"].is_object(), "{d}");
+    // A group name lists only that group (with or without the trailing underscore).
+    for g in ["sch", "sch_"] {
+        let d = ok(&call(&c, "commands", json!({"name": g})).await);
+        assert_eq!(d["group"], "sch", "{d}");
+        let names: Vec<&str> = d["commands"].as_array().unwrap().iter().filter_map(|e| e["name"].as_str()).collect();
+        assert!(names.contains(&"sch_erc") && names.iter().all(|n| n.starts_with("sch_")), "{d}");
+    }
 
     // Schematic: two resistors, a wire, a label; netlist and ERC.
     run_cmd(&c, "sch_new", json!({"name": "demo"})).await;

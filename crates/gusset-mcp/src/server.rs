@@ -759,15 +759,25 @@ fn commands_result(args: &CommandsArgs, sets: &[Toolset]) -> Result<Value, Comma
                     .iter()
                     .map(|s| json!({ "name": s.tool_name(), "summary": summary(s) }))
                     .collect::<Vec<_>>(),
-                "hint": "a group is the command-name prefix (pcb_, sch_, sim_, cam_...); call commands with a name \
-                         for its arguments, then run it with run. To list a whole area as tools, call toolset \
-                         (enable: pcb, sim or cam)",
+                "hint": "a group is the command-name prefix (pcb_, sch_, sim_, cam_...); call commands with a group \
+                         for its commands only, or a command name for its arguments, then run it with run. To list \
+                         a whole area as tools, call toolset (enable: pcb, sch, sim or cam)",
             }))
         }
         Some(name) => {
+            // A group name (`pcb`, `sch_`) lists that group's commands only.
+            let group = name.trim_end_matches(['_', '.']);
+            let in_group: Vec<Value> = registry()
+                .iter()
+                .filter(|s| !listed_in(sets, s.id) && s.id.split('.').next() == Some(group))
+                .map(|s| json!({ "name": s.tool_name(), "summary": summary(s) }))
+                .collect();
+            if find_command(name).is_none() && !in_group.is_empty() {
+                return Ok(json!({ "group": group, "commands": in_group }));
+            }
             let spec = find_command(name).ok_or_else(|| {
                 CommandError::args(format!("unknown command '{}'", clean_short(name, 100)))
-                    .hint("call commands without a name for the list")
+                    .hint("call commands without a name for the list, or with a group such as pcb")
             })?;
             serde_json::to_value(command_tool(spec)).map_err(|e| CommandError::new("internal", e.to_string()))
         }
