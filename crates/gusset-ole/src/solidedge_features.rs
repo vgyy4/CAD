@@ -284,7 +284,7 @@ pub(crate) enum Edge3 {
 
 impl Edge3 {
     /// The curve in a plane's frame, if it lies in the plane.
-    fn flat(&self, o: V3, n: V3, x: V3) -> Option<Curve2> {
+    pub(crate) fn flat(&self, o: V3, n: V3, x: V3) -> Option<Curve2> {
         let y = cross(n, x);
         let on = |p: V3| {
             let d = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];

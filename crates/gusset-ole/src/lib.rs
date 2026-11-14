@@ -79,4 +79,6 @@ fn open<'a>(
 #[cfg(test)]
 mod inventor_tests;
 #[cfg(test)]
+mod solidedge_tests;
+#[cfg(test)]
 mod tests;
