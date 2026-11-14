@@ -1,0 +1,83 @@
+diff --git a/src/ModelingAlgorithms/TKTopAlgo/BRepGProp/BRepGProp_Face.cxx b/src/ModelingAlgorithms/TKTopAlgo/BRepGProp/BRepGProp_Face.cxx
+--- a/src/ModelingAlgorithms/TKTopAlgo/BRepGProp/BRepGProp_Face.cxx
++++ b/src/ModelingAlgorithms/TKTopAlgo/BRepGProp/BRepGProp_Face.cxx
+@@ -13,6 +13,7 @@
+ // commercial license or contractual agreement.
+ 
+ #include <Bnd_Box2d.hxx>
++#include <cmath>
+ #include <BndLib_Add2dCurve.hxx>
+ #include <BRepGProp_Face.hxx>
+ #include <Geom2d_BezierCurve.hxx>
+@@ -664,6 +665,49 @@
+ 
+ //=================================================================================================
+ 
++// The knots of a periodic parameter repeated over every period that [theMin, theMax] touches.
++// A face on a periodic surface can reach past the last knot (its seam is not at a knot) or lie
++// in another period (its pcurves shifted by one): GetRealKnots then found no end knot and kept
++// none, so Gauss-Kronrod integrated across all the spans' joins at once (hours on a fitted
++// blend of 152 C0 patches, and off by 1e-5 of the face's volume).
++static void ExtendPeriodicKnots(const double                              theMin,
++                                const double                              theMax,
++                                const double                              thePeriod,
++                                occ::handle<NCollection_HArray1<double>>& theKnots)
++{
++  const int    aLower = theKnots->Lower();
++  const int    aUpper = theKnots->Upper();
++  const double aFirst = theKnots->Value(aLower);
++  if (aUpper <= aLower || thePeriod <= 0. || (theMin >= aFirst && theMax <= aFirst + thePeriod))
++  {
++    return;
++  }
++  const double aK0 = std::floor((theMin - aFirst) / thePeriod);
++  const double aK1 = std::floor((theMax - aFirst) / thePeriod);
++  // A range over very many periods is left as it was.
++  if (!(aK1 - aK0 < 64.))
++  {
++    return;
++  }
++  const int aNbPeriods = static_cast<int>(aK1 - aK0) + 1;
++  const int aNbSpans   = aUpper - aLower;
++  occ::handle<NCollection_HArray1<double>> aKnots =
++    new NCollection_HArray1<double>(1, aNbPeriods * aNbSpans + 1);
++  int i = 1;
++  for (int k = 0; k < aNbPeriods; ++k)
++  {
++    const double aShift = (aK0 + k) * thePeriod;
++    for (int j = aLower; j < aUpper; ++j)
++    {
++      aKnots->SetValue(i++, theKnots->Value(j) + aShift);
++    }
++  }
++  aKnots->SetValue(i, theKnots->Value(aUpper) + aK1 * thePeriod);
++  theKnots = aKnots;
++}
++
++//=================================================================================================
++
+ occ::handle<NCollection_HArray1<double>> BRepGProp_Face::GetUKnots(const double theUMin,
+                                                                    const double theUMax) const
+ {
+@@ -694,6 +738,10 @@
+ 
+       aBSplSurf = occ::down_cast<Geom_BSplineSurface>(aSurf);
+       aKnots    = new NCollection_HArray1<double>(aBSplSurf->UKnots());
++      if (aBSplSurf->IsUPeriodic())
++      {
++        ExtendPeriodicKnots(theUMin, theUMax, aBSplSurf->UPeriod(), aKnots);
++      }
+     }
+     else
+     {
+@@ -704,6 +752,10 @@
+       aCurve.Load(occ::down_cast<Geom_SurfaceOfLinearExtrusion>(aSurf)->BasisCurve());
+       aBSplCurve = aCurve.BSpline();
+       aKnots     = new NCollection_HArray1<double>(aBSplCurve->Knots());
++      if (aBSplCurve->IsPeriodic())
++      {
++        ExtendPeriodicKnots(theUMin, theUMax, aBSplCurve->Period(), aKnots);
++      }
+     }
+ 
+     GetRealKnots(theUMin, theUMax, aKnots, theUKnots);

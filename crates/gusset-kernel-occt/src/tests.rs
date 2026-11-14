@@ -2864,3 +2864,175 @@ fn tessellate_face_meshes_one_face() {
     }
     assert!(k().tessellate_face(&a.shape, faces as u32, &p).is_err());
 }
+
+/// A STEP prism over a closed curve of `n` cubic Bezier petals (C0 where they meet), cut below
+/// by the plane z = 0.1 x + 3 and above by z = 10. The side is a u-periodic B-spline surface of
+/// `n` C0 spans (written as gusset-xt writes fitted Parasolid blends), its seam half way along
+/// the first span. Returns the STEP and the exact volume.
+fn petal_prism_step(n: usize) -> (String, f64) {
+    use std::fmt::Write as _;
+    let (r, h, bulge, a, b) = (10.0, 10.0, 0.6, 0.1, 3.0);
+    let petal = |i: usize| -> [[f64; 2]; 4] {
+        let (t0, t1) = (std::f64::consts::TAU * i as f64 / n as f64, std::f64::consts::TAU * (i + 1) as f64 / n as f64);
+        let c = |t: f64, rr: f64| [rr * t.cos(), rr * t.sin()];
+        let rb = r * (1.0 + bulge / 2.0);
+        [c(t0, r), c(t0 + (t1 - t0) / 3.0, rb), c(t0 + 2.0 * (t1 - t0) / 3.0, rb), c(t1, r)]
+    };
+    let lerp = |p: [f64; 2], q: [f64; 2], t: f64| [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])];
+    // The first petal split at its middle (de Casteljau): the seam.
+    let p0 = petal(0);
+    let (ab, bc, cd) = (lerp(p0[0], p0[1], 0.5), lerp(p0[1], p0[2], 0.5), lerp(p0[2], p0[3], 0.5));
+    let (abc, bcd) = (lerp(ab, bc, 0.5), lerp(bc, cd, 0.5));
+    let mid = lerp(abc, bcd, 0.5);
+    let mut spans = vec![[mid, bcd, cd, p0[3]]];
+    spans.extend((1..n).map(petal));
+    spans.push([p0[0], ab, abc, mid]);
+    let mut ents: Vec<String> = vec![
+        "APPLICATION_CONTEXT('automotive design')".into(),
+        "APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#1)".into(),
+        "PRODUCT_CONTEXT('',#1,'mechanical')".into(),
+        "PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design')".into(),
+        "(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.))".into(),
+        "(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.))".into(),
+        "(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT())".into(),
+        "UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-05),#5,'distance_accuracy_value','')".into(),
+        "(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#8)) \
+         GLOBAL_UNIT_ASSIGNED_CONTEXT((#5,#6,#7)) REPRESENTATION_CONTEXT('',''))"
+            .into(),
+    ];
+    let mut add = |s: String| {
+        ents.push(s);
+        ents.len()
+    };
+    let z = |p: [f64; 2], top: bool| [p[0], p[1], if top { h } else { a * p[0] + b }];
+    let pt = |add: &mut dyn FnMut(String) -> usize, p: [f64; 3]| {
+        add(format!("CARTESIAN_POINT('',({:?},{:?},{:?}))", p[0], p[1], p[2]))
+    };
+    let list = |ids: &[usize]| ids.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(",");
+    let nums = |v: &[f64]| v.iter().map(|x| format!("{x:?}")).collect::<Vec<_>>().join(",");
+    // The bottom and top boundaries: cubic B-splines with C0 knots from the seam round.
+    let boundary = |add: &mut dyn FnMut(String) -> usize, top: bool| {
+        let mut ids = vec![pt(add, z(spans[0][0], top))];
+        for s in &spans {
+            for p in &s[1..] {
+                ids.push(pt(add, z(*p, top)));
+            }
+        }
+        let m = spans.len();
+        let mults: Vec<String> = (0..=m).map(|i| if i == 0 || i == m { "4".into() } else { "3".into() }).collect();
+        let knots: Vec<f64> = (0..=m).map(|i| i as f64).collect();
+        add(format!(
+            "B_SPLINE_CURVE_WITH_KNOTS('',3,({}),.UNSPECIFIED.,.T.,.F.,({}),({}),.UNSPECIFIED.)",
+            list(&ids),
+            mults.join(","),
+            nums(&knots)
+        ))
+    };
+    let (c0, c1) = (boundary(&mut add, false), boundary(&mut add, true));
+    let (s0, s1) = (pt(&mut add, z(mid, false)), pt(&mut add, z(mid, true)));
+    let (v0, v1) = (add(format!("VERTEX_POINT('',#{s0})")), add(format!("VERTEX_POINT('',#{s1})")));
+    let e0 = add(format!("EDGE_CURVE('',#{v0},#{v0},#{c0},.T.)"));
+    let e1 = add(format!("EDGE_CURVE('',#{v1},#{v1},#{c1},.T.)"));
+    let up = add("DIRECTION('',(0.,0.,1.))".into());
+    let vec = add(format!("VECTOR('',#{up},1.)"));
+    let sp = pt(&mut add, z(mid, false));
+    let line = add(format!("LINE('',#{sp},#{vec})"));
+    let seam = add(format!("EDGE_CURVE('',#{v0},#{v1},#{line},.T.)"));
+    // The side: from z = 0 to z = h, three poles per petal, periodic knots of multiplicity 3.
+    let mut rows = Vec::new();
+    for i in 0..n {
+        for p in &petal(i)[..3] {
+            let (lo, hi) = (pt(&mut add, [p[0], p[1], 0.0]), pt(&mut add, [p[0], p[1], h]));
+            rows.push(format!("(#{lo},#{hi})"));
+        }
+    }
+    let knots: Vec<f64> = (0..=n).map(|i| i as f64).collect();
+    let side_s = add(format!(
+        "B_SPLINE_SURFACE_WITH_KNOTS('',3,1,({}),.UNSPECIFIED.,.T.,.F.,.F.,({}),(2,2),({}),(0.,1.),.UNSPECIFIED.)",
+        rows.join(","),
+        vec!["3"; n + 1].join(","),
+        nums(&knots)
+    ));
+    let oe = |add: &mut dyn FnMut(String) -> usize, e: usize, along: bool| {
+        add(format!("ORIENTED_EDGE('',*,*,#{e},{})", if along { ".T." } else { ".F." }))
+    };
+    let side_edges =
+        [oe(&mut add, e0, true), oe(&mut add, seam, true), oe(&mut add, e1, false), oe(&mut add, seam, false)];
+    let side_loop = add(format!("EDGE_LOOP('',({}))", list(&side_edges)));
+    let side_bound = add(format!("FACE_OUTER_BOUND('',#{side_loop},.T.)"));
+    let side = add(format!("ADVANCED_FACE('',(#{side_bound}),#{side_s},.T.)"));
+    let norm = (a * a + 1.0_f64).sqrt();
+    let cap = |add: &mut dyn FnMut(String) -> usize, top: bool| {
+        let o = pt(add, [0.0, 0.0, if top { h } else { b }]);
+        let (nz, x) = if top {
+            ("(0.,0.,1.)".to_string(), "(1.,0.,0.)".to_string())
+        } else {
+            (format!("({:?},0.,{:?})", a / norm, -1.0 / norm), format!("({:?},0.,{:?})", 1.0 / norm, a / norm))
+        };
+        let (dn, dx) = (add(format!("DIRECTION('',{nz})")), add(format!("DIRECTION('',{x})")));
+        let ax = add(format!("AXIS2_PLACEMENT_3D('',#{o},#{dn},#{dx})"));
+        let pl = add(format!("PLANE('',#{ax})"));
+        let ed = oe(add, if top { e1 } else { e0 }, top);
+        let lp = add(format!("EDGE_LOOP('',(#{ed}))"));
+        let bd = add(format!("FACE_OUTER_BOUND('',#{lp},.T.)"));
+        add(format!("ADVANCED_FACE('',(#{bd}),#{pl},.T.)"))
+    };
+    let (bottom, top) = (cap(&mut add, false), cap(&mut add, true));
+    let shell = add(format!("CLOSED_SHELL('',(#{side},#{bottom},#{top}))"));
+    let brep = add(format!("MANIFOLD_SOLID_BREP('',#{shell})"));
+    let prod = add("PRODUCT('p','p','',(#3))".into());
+    let pdf = add(format!("PRODUCT_DEFINITION_FORMATION('','',#{prod})"));
+    let pd = add(format!("PRODUCT_DEFINITION('design','',#{pdf},#4)"));
+    let pds = add(format!("PRODUCT_DEFINITION_SHAPE('','',#{pd})"));
+    let rep = add(format!("ADVANCED_BREP_SHAPE_REPRESENTATION('',(#{brep}),#9)"));
+    add(format!("SHAPE_DEFINITION_REPRESENTATION(#{pds},#{rep})"));
+    let mut step = String::from(
+        "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('p','',(''),(''),'','','');\n\
+         FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n",
+    );
+    for (i, e) in ents.iter().enumerate() {
+        let _ = writeln!(step, "#{}={e};", i + 1);
+    }
+    step.push_str("ENDSEC;\nEND-ISO-10303-21;\n");
+    // The volume: the section's area (Green's theorem, exact by 4-point Gauss on cubics) times
+    // the mean height h - b (the cut's x term vanishes: the section is centred on the axis).
+    let gauss = [
+        (-0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
+        (-0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
+    ];
+    let mut area = 0.0;
+    for i in 0..n {
+        let c = petal(i);
+        for (x, w) in gauss {
+            let t = 0.5 * (x + 1.0);
+            let s = 1.0 - t;
+            let bw = [s * s * s, 3.0 * t * s * s, 3.0 * t * t * s, t * t * t];
+            let dw = [-3.0 * s * s, 3.0 * s * s - 6.0 * t * s, 6.0 * t * s - 3.0 * t * t, 3.0 * t * t];
+            let at = |wts: &[f64; 4], k: usize| (0..4).map(|j| wts[j] * c[j][k]).sum::<f64>();
+            area += 0.25 * w * (at(&bw, 0) * at(&dw, 1) - at(&bw, 1) * at(&dw, 0));
+        }
+    }
+    (step, area * (h - b))
+}
+
+/// A face on a periodic B-spline surface whose range crosses the end of its knot vector (the
+/// seam is not at a knot, or its pcurves lie one period on: UFO_base's rolling-ball blends that
+/// gusset-xt fits with 152 C0 patches). OCCT's Gauss-Kronrod lost every span of such a face and
+/// integrated across all the joins at once: minutes to an hour per face, and 1e-5 off. With the
+/// spans repeated over the periods (OCCT patch gusset-0006) it is a fraction of a second.
+#[test]
+fn a_periodic_bspline_face_off_its_knots_measures_fast_and_exactly() {
+    let (step, exact) = petal_prism_step(24);
+    let shapes = k().import_step(step.as_bytes()).unwrap();
+    assert_eq!(shapes.len(), 1);
+    assert_eq!(k().topology(&shapes[0].0).unwrap().solids, 1);
+    let t0 = std::time::Instant::now();
+    let m = k().mass_properties(&shapes[0].0).unwrap();
+    let took = t0.elapsed();
+    // The bottom boundary's pcurve on the side is OCCT's fit of the cut: 1.5e-5 of the volume.
+    assert!(close(m.volume, exact, 1e-4), "{} vs {exact}", m.volume);
+    // Unpatched: more than 5 minutes (release OCCT); patched: 0.1 s.
+    assert!(took < std::time::Duration::from_secs(30), "measuring took {took:?}");
+}

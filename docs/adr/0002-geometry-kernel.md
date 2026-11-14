@@ -107,3 +107,17 @@ release's OCCT source archive carries the patches next to the unmodified source
   function cannot be evaluated. Every integration that found an interval to split is
   unchanged. The shim also refuses such a face before integrating (`has_unbounded_face`).
   To offer upstream.
+- `gusset-0006-gprop-periodic-spans.patch` (2026-11-14): `BRepGProp_Face::GetUKnots` splits the
+  u integration of a B-spline face at the surface's knots, found in the knot vector as given.
+  A face on a u-periodic surface whose range reaches past the last knot (its seam is not at a
+  knot) or lies a period on (its pcurves shifted by one) got no knot at all (`GetRealKnots`
+  found no end span), so Gauss-Kronrod integrated across every C0 join at once. The rolling-ball
+  blends `gusset-xt` fits for Parasolid (152 C0 patches each) made `gs_mass` take about an hour
+  on Solid Edge's UFO_base (several minutes on Reflector_Mounting_Bracket), and the converged
+  value was still off by 1e-5 of each face's volume (an independent integration over the exact
+  spans agrees with the patched value to 5e-9). It now repeats the knots over the periods the
+  range touches (at most 64). UFO_base measures in 3 s, Reflector_Mounting_Bracket in 1.2 s.
+  Faces whose range lies inside the knot vector's period, and every non-periodic face, are
+  integrated exactly as before (OCCT goldens unchanged); the faces it changes were measured
+  wrong. Test: `a_periodic_bspline_face_off_its_knots_measures_fast_and_exactly` (over 5
+  minutes without the patch, 0.1 s with it). To offer upstream.
