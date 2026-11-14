@@ -1256,11 +1256,27 @@ fn a_rectangular_pattern_in_two_directions_is_two_patterns() {
         json!({"type": "pattern_linear", "name": "Rectangular Pattern1_2", "features": ["Extrusion1", "Rectangular Pattern1"],
                "direction": [0.0, 1.0, 0.0], "spacing": 10.0, "count": 2})
     );
-    // The first flag of a direction turns it round; its last is midplane, not read for two.
+    // The first flag of a direction turns it round; its last is midplane: copies both ways
+    // from the originals, for an even count one more behind.
     r[28].1 = flag(1);
     assert_eq!(copy_tree(&r)["features"][3]["direction"], json!([0.0, -1.0, 0.0]));
     r[34].1 = flag(1);
-    assert_eq!(copy_tree(&r)["features"][2]["type"], "unsupported");
+    let t = copy_tree(&r);
+    assert_eq!(t["features"][3]["name"], "Rectangular Pattern1_2");
+    assert_eq!(t["features"][3]["direction"], json!([0.0, 1.0, 0.0]));
+    assert_eq!(t["features"][3]["count"], 2);
+    // Midplane in the first direction (count 3): one copy each way, both copied by the second.
+    r[33].1 = flag(1);
+    r[34].1 = flag(0);
+    let t = copy_tree(&r);
+    let names: Vec<&str> = t["features"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
+    assert_eq!(names[2..], ["Rectangular Pattern1", "Rectangular Pattern1_back", "Rectangular Pattern1_2"]);
+    assert_eq!((t["features"][2]["count"].as_u64(), t["features"][3]["count"].as_u64()), (Some(2), Some(2)));
+    assert_eq!(t["features"][3]["direction"], json!([1.0, 0.0, 0.0]));
+    assert_eq!(
+        t["features"][4]["features"],
+        json!(["Extrusion1", "Rectangular Pattern1", "Rectangular Pattern1_back"])
+    );
 }
 
 /// A revolve about a work axis in its sketch's plane but off the sketch's own axes: a

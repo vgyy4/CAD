@@ -874,7 +874,8 @@ fn pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
         let sh: V3 = u.map(|c| -c * spacing * f64::from(count - 1) / 2.0);
         let holes_only = tgt.iter().all(|t| st.holes.contains_key(t));
         if !holes_only {
-            return Err("a midplane pattern of a feature that is not a hole".into());
+            midplane_halves(st, name, &tgt, u, spacing, count)?;
+            return Ok(());
         }
         for t in &tgt {
             let Some(info) = st.holes.get(t) else { continue };
@@ -989,8 +990,8 @@ fn two_way_pattern(
     let flags = flags_after(r, body, d2, G_FLAGS);
     let flag = |k: usize| flags.get(k).copied().unwrap_or(false);
     let n = flags.len();
-    if n < 4 || flag(n - 2) || flag(n - 1) {
-        return Err("a midplane pattern in two directions".into());
+    if n < 4 {
+        return Err("direction, count or spacing not found".into());
     }
     let mut made: Vec<String> = Vec::new();
     for (k, (dir, count, spacing)) in [(d1, c1, s1), (d2, c2, s2)].into_iter().enumerate() {
@@ -999,17 +1000,50 @@ fn two_way_pattern(
         }
         let v = pattern_direction(r, dir)?;
         let v = if flag(k) { [-v[0], -v[1], -v[2]] } else { v };
+        let u = [rnd(v[0]), rnd(v[1]), rnd(v[2])];
         let nm = if made.is_empty() { name.to_string() } else { format!("{name}_2") };
         let mut feats: Vec<String> = tgt.to_vec();
         feats.extend(made.iter().cloned());
+        // The last flag of each direction: midplane.
+        if flag(n - 2 + k) {
+            made.extend(midplane_halves(st, &nm, &feats, u, rnd(spacing * CM), count)?);
+            continue;
+        }
         st.out.push(json!({"type": "pattern_linear", "name": nm, "features": feats,
-            "direction": [rnd(v[0]), rnd(v[1]), rnd(v[2])], "spacing": rnd(spacing * CM), "count": count}));
+            "direction": u, "spacing": rnd(spacing * CM), "count": count}));
         made.push(nm);
     }
     if made.is_empty() {
         return Err("a pattern of one occurrence".into());
     }
     Ok(())
+}
+
+/// A midplane pattern of features (occurrences on both sides of the originals): Gusset
+/// patterns run one way, so it is a pattern each way sharing the originals. An odd count has
+/// `(count - 1) / 2` copies each way; an even count one more backward (`count / 2`) than
+/// forward (confirmed for 2 on the `pt_*` fixtures: the copy is behind). The names of the
+/// patterns made.
+fn midplane_halves(
+    st: &mut State,
+    name: &str,
+    feats: &[String],
+    u: V3,
+    spacing: f64,
+    count: u32,
+) -> Result<Vec<String>, String> {
+    let (fw, bw) =
+        if count.is_multiple_of(2) { (count / 2, count / 2 + 1) } else { (count.div_ceil(2), count.div_ceil(2)) };
+    let mut made = Vec::new();
+    if fw > 1 {
+        st.out.push(json!({"type": "pattern_linear", "name": name, "features": feats, "direction": u, "spacing": spacing, "count": fw}));
+        made.push(name.to_string());
+    }
+    let back = if made.is_empty() { name.to_string() } else { format!("{name}_back") };
+    let neg = [rnd(-u[0]), rnd(-u[1]), rnd(-u[2])];
+    st.out.push(json!({"type": "pattern_linear", "name": back, "features": feats, "direction": neg, "spacing": spacing, "count": bw}));
+    made.push(back);
+    Ok(made)
 }
 
 /// A revolve axis (point `p` in mm, unit direction `v`) that lies in the sketch plane but is
