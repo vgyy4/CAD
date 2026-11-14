@@ -352,8 +352,8 @@ Results (parts as history; OCCT corpus test, one part per process):
 | first (Zenodo, `GUSSET_IPT_MIN_HISTORY=25`) | 47 | 25 | 25 | 0 | 0 | 0 |
 | second (57 sources) | 1639 | 367 | 449 | 46 | 0 | 46 |
 
-No part of either corpus went from history to body. One screw-rotor part (a body before and after, 11
-minutes in a debug build) ran into the harness's 15-minute limit on a loaded machine. The first corpus
+No part of either corpus went from history to body. One screw-rotor part (a body before and after, 14
+minutes in a debug build when run alone) ran into the harness's 15-minute limit in the parallel run. The first corpus
 gains nothing this round: its 22 bodies stop at blends whose edge is not recoverable, thicken-part
 blends, the thumbscrew knurl and two kernel fillet failures (notes H to J). The next target in the second
 corpus is the 111 volume differences (a per-feature comparison with the result body), then the 80 picks
