@@ -487,3 +487,58 @@ shared code with exactness trade-offs documented in the shim: not changed here.
 
 **Next.** Thin walls (face sets decoded up to the open faces' slot), ellipse profile members (71 bytes), protrusions
 through all or to the next face (their reach), holes, part copies; rounds whose radius equals the face they consume.
+
+## Amendment (2026-11-14, 13): Solid Edge round se3 - thin walls, tapers, ellipses, revolve sides
+
+`gusset_ole::solidedge_features` reads more of a part's history (layout notes F12 of
+`docs/formats/solidedge-feature-tree.md`; clean room, from the sample bytes; every rule checked by exact rebuilds):
+
+- **Thin walls** become shells (wall inside the body, side value 4; the one part with 5 stays `unsupported`): the
+  thickness, and the faces they open from the face set in slot 4. A face set lists plane faces with their
+  boundary loops as they were when the feature was made; each becomes a face pick of points inside it on its plane.
+- **Tapered extrudes** (slot 17: `173`, angle, 4 widening or 5 narrowing) carry `taper_deg`; the slot was ignored.
+- **Revolve sides** name the way the profile moves (2 along its normal, 1 against), as for extrudes; the turn's sense
+  follows from where the profile lies about the axis. Round se1's fixed reading (side 1 a negative turn) held only
+  where a positive turn carries the profile along its normal.
+- **Open revolve profiles** close against the axis (both ends on it), or for cutouts with one end on it round a box on
+  the profile's side of the axis, on the side slot 5 names.
+- **Ellipse members** (71 bytes) and `SKETCH.P_B` ellipses become ellipses and elliptical arcs.
+- **Protrusions through all or to the next face** along a world axis reach where the box the feature stores (the part
+  after it, part of the feature's own record) ends; cuts keep the long reach.
+- Synchronous parts whose only functions are patterns report no ordered history (as those with only holes).
+
+The through-all reach is the only value not given as a feature parameter: it is the extent Solid Edge stored with
+the feature itself, not taken from the result body. The rebuild check is unchanged (an imperfect tree still falls
+back to the exact body). No shared code changed (`gusset-commands`, `gusset-occt-sys`, `gusset-xt` untouched).
+
+**Coverage (184 ordered parts, OCCT `par_history`).** Before (round se2): 56 as history, 126 as bodies, 2 failed.
+After: **62 as history** (none lost; new: 033 and 034 strap cuts (revolve side), 037, 114 and 161 (thin
+walls, with an open revolved cut in 114 and a tapered base in 161), 072 (protrusion through all)),
+120 as bodies, the same 2 failed in the body import.
+
+**What blocks the rest, by cause (first reasons of the bodies).**
+
+- *Rounds and chamfers the kernel does not build* (about 30). Measured by rebuilding each part with only the failing
+  blend's radius reduced by 2 %: only 5 then build (026 and 105, a concave round as tall as the face it consumes;
+  071, 094, 167). Of these only 105 would then match its part (volume within 1e-4 at the reduced radius); 026's
+  stored body is half the features' volume and the other three fail at later blends. The rest fail at any radius: concave rounds on the intersection
+  curves of a pipe sweep and a block (the eight R-4D pipe parts, the largest single group), a round that crosses a
+  window in its face (008), and single cases. A face-consuming fallback in the shared fillet chain would gain at
+  most that one part, so the shim is not changed (no Fusion corpus check needed).
+- *Feature kinds not read* (24): part copies 4, helix protrusions 3 (+1 helical curve; a helix's pitch and turns
+  are in slots 8 and 9 but its curve is stored as a spline, not decoded), body patterns, mirror copies, fast
+  mirrors, holes and simplified base features 2 each, others 1. Each is worth at most 2 to 4 parts, and most of
+  those parts have further unread features.
+- *Rebuilds that differ* (15): per feature, against the box each feature stores: cuts to the next face swept through
+  all (027, 028), through-all protrusions that stop at the first face inside a hollow part (093, 095), loft end
+  conditions not read (039, 068), a round OCCT builds with material outside the part (067), stored bodies of
+  negative volume (068, 140), and differences no stored box shows (035, 042, 153, ...).
+- Thin walls: 13 of the 15 parts' thin walls are read (one has side 5, one comes before its part's first body
+  because its revolves are not read); 3 parts gained. The others stop elsewhere: rounds after the wall (041, 050,
+  080), the tea cup's handle sweep whose path starts 2.2 mm off its section plane (023), an invalid OCCT shell of a
+  dome (111), three pipes whose stored bodies keep only part of their sweeps (054, 056, 060), a stored body of
+  844 mm3 for 17289 mm3 of features (163), and features not read before or after the wall (011, 012, 014, 017,
+  145, 162).
+
+Each remaining cause is worth fewer than 4 parts except the kernel rounds on sweep intersections (8, all one
+source) and the unread feature kinds taken together.

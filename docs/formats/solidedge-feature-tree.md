@@ -198,3 +198,39 @@ Same corpus (184 ordered parts). All from the sample bytes; each rule checked by
   round take the face, OCCT fails), a rebuild that differs 15, a profile curve not read 7 (ellipses), a round edge
   not found 5, others 28.
 
+
+## F12: round se3 (2026-11-14): thin walls, tapers, ellipses, revolve sides, reaches through all
+Same corpus (184 ordered parts). All from the sample bytes; each rule checked by exact rebuilds in `par_history`.
+
+* **Thin walls** (`JMThinwallAssocFunctionNew`): slot 2 a value, 4 in 14 of 15 parts (5 in one, not read);
+  rebuilt as a shell with the wall inside the body; slot 3 the thickness; slot 4 the face set of the faces it
+  **opens** (the cup's rim face, a pipe's two end faces); slot 5 a face set named `JMGetThinwallCommonFace`
+  (one face of the body that is not opened: its bottom, a side; not needed); slot 6 a value 0.
+* **Face sets** (`JMGetSmoothFaceSeq` names, then the list as an edge set's): each face a class id ending in the
+  curve class bytes, type 14 (plane: origin, normal, x direction; every face in the corpus), `u32` loop count,
+  per loop `u32 m, u8 2, u8 0` and `m` curves (type byte and numbers as in an edge set, a spline with its 3
+  trailing bytes, no words between curves), then a few words to the next face's class id. The importer finds
+  each face by points inside it on its plane (scan lines across the loops, even-odd).
+* **Tapers** of extrudes: slot 17 a list of three values: `173`, the angle (radians), 4 widening away from the
+  profile or 5 narrowing (2 parts; the reader used to ignore the slot).
+* **Revolve sides** (slot 4) name the way the profile moves, as an extrude's: 2 along the profile normal, 1
+  against it. The turn's sense about the stored axis follows from where the profile lies (corrects F10, which
+  read side 1 as a negative turn: true only where a positive turn carries the profile along its normal; a
+  family of 333-degree strap cuts turns the other way).
+* **Open revolve profiles**: a chain with both ends on the axis is closed along the axis; a revolved cutout's
+  chain with one end on the axis runs on along its direction to a box 10 m round it on the profile's side of
+  the axis and closes round that box to the axis on the side slot 5 names (1 left of the chain as drawn).
+* **Ellipse members** (71 bytes): `u8 0, u8 flags`, centre, the axis the angles start from as a vector (its
+  length the semi-axis; relative to the centre), the other semi-axis over it (may exceed 1: the other axis is
+  then the major one, a quarter turn on), `u8 ccw` and the angles from and to (as an arc's), `u32`. Sketch
+  ellipses of `SKETCH.P_B` (`ELLIPSE`: centre, normal, x axis, major and minor radius) the same way.
+* **Protrusions through all / to the next face** (extent 14 / 16) along a world axis end where the box the
+  feature stores after its slots ends (the first six `f64` after the slots that make a box of positive extents:
+  the part after the feature). Where Solid Edge's through-all protrusion stops at the first face it meets
+  inside a hollow part (2 tank parts), the box does not say so: those still differ.
+* **Synchronous parts** whose only functions are smart or fast patterns (4) have no ordered history, as those
+  with only holes.
+* **Bounding boxes per feature** (diagnostic, not read by the importer beyond the reach above): comparing the
+  rebuilt part after each feature with the stored box gives the first feature that differs.
+* Coverage of round se3 (OCCT test `par_history`, the same 184 ordered parts): **62 as history** (was 56; none
+  lost), 120 as exact bodies, 2 failing in the body import as before. What blocks the rest: ADR 0046 amendment 13.
