@@ -503,41 +503,9 @@ pub(crate) fn edge_set(b: &[u8]) -> Result<Vec<SetCurve>, String> {
             return Err("an edge of the set is not readable".into());
         }
         let t = *b.get(q + 16).ok_or("the edge set is cut short")?;
-        let at = q + 17;
-        let f = |i: usize| f64_at(b, at + 8 * i).filter(|v| v.is_finite() && v.abs() < 1e6);
-        let v3 = |i: usize| Some([f(i)?, f(i + 1)?, f(i + 2)?]);
-        if t == 27 {
-            let (c, end) = set_spline(b, at)?;
-            out.push(c);
-            q = end;
-        } else {
-            let (c, len) = match t {
-                3 => {
-                    let (p, d, t0, t1) = (v3(0), v3(3).and_then(unit), f(6), f(7));
-                    let (Some(p), Some(d), Some(t0), Some(t1)) = (p, d, t0, t1) else {
-                        return Err("an edge line of the set is not readable".into());
-                    };
-                    (SetCurve::Line(p, d, t0, t1), 8)
-                }
-                15 | 16 => {
-                    let (Some(c), Some(nrm), Some(m), Some(r)) = (v3(0), v3(3).and_then(unit), v3(6), f(9)) else {
-                        return Err("an edge circle of the set is not readable".into());
-                    };
-                    let range = if t == 16 {
-                        let (Some(a0), Some(a1)) = (f(10), f(11)) else {
-                            return Err("an edge arc of the set is not readable".into());
-                        };
-                        Some((a0, a1))
-                    } else {
-                        None
-                    };
-                    (SetCurve::Conic(c, nrm, m, r, range), if t == 16 { 12 } else { 10 })
-                }
-                _ => return Err(format!("an edge of the set is a curve of type {t} (not read)")),
-            };
-            out.push(c);
-            q = at + 8 * len;
-        }
+        let (c, end) = set_curve(b, t, q + 17)?;
+        out.push(c);
+        q = end;
         // A few words follow each curve (zero, or a count and a zero after a spline): the next
         // curve is the next class id within reach.
         if k + 1 < n {
@@ -547,6 +515,39 @@ pub(crate) fn edge_set(b: &[u8]) -> Result<Vec<SetCurve>, String> {
         }
     }
     Ok(out)
+}
+
+/// One stored curve of type `t` whose numbers start at `at` (see [`edge_set`]) and where it
+/// ends.
+fn set_curve(b: &[u8], t: u8, at: usize) -> Result<(SetCurve, usize), String> {
+    let f = |i: usize| f64_at(b, at + 8 * i).filter(|v| v.is_finite() && v.abs() < 1e6);
+    let v3 = |i: usize| Some([f(i)?, f(i + 1)?, f(i + 2)?]);
+    let (c, len) = match t {
+        27 => return set_spline(b, at),
+        3 => {
+            let (p, d, t0, t1) = (v3(0), v3(3).and_then(unit), f(6), f(7));
+            let (Some(p), Some(d), Some(t0), Some(t1)) = (p, d, t0, t1) else {
+                return Err("an edge line of the set is not readable".into());
+            };
+            (SetCurve::Line(p, d, t0, t1), 8)
+        }
+        15 | 16 => {
+            let (Some(c), Some(nrm), Some(m), Some(r)) = (v3(0), v3(3).and_then(unit), v3(6), f(9)) else {
+                return Err("an edge circle of the set is not readable".into());
+            };
+            let range = if t == 16 {
+                let (Some(a0), Some(a1)) = (f(10), f(11)) else {
+                    return Err("an edge arc of the set is not readable".into());
+                };
+                Some((a0, a1))
+            } else {
+                None
+            };
+            (SetCurve::Conic(c, nrm, m, r, range), if t == 16 { 12 } else { 10 })
+        }
+        _ => return Err(format!("an edge of the set is a curve of type {t} (not read)")),
+    };
+    Ok((c, at + 8 * len))
 }
 
 /// A B-spline of an edge set from `at` (see [`edge_set`]) and where it ends.
@@ -585,6 +586,177 @@ fn set_spline(b: &[u8], at: usize) -> Result<(SetCurve, usize), String> {
         return Err(bad());
     }
     Ok((SetCurve::Spline(order, poles, knots), q + 13))
+}
+
+/// A plane face of a face set (`JMGetSmoothFaceSeq` names, then the faces as they were when
+/// the feature was made): its plane (origin, unit normal, x direction; metres, absolute) and
+/// its boundary loops.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SetFace {
+    pub(crate) origin: V3,
+    pub(crate) normal: V3,
+    pub(crate) x: V3,
+    pub(crate) loops: Vec<Vec<SetCurve>>,
+}
+
+/// Most boundary loops of one face.
+const MAX_LOOPS: u32 = 10_000;
+
+/// The faces of a face set: laid out as an edge set's list ([`edge_set`]), each entry a class
+/// id ending in [`SET_CURVE`], type 14 (a plane: origin, normal, x direction), `u32` loop
+/// count and per loop `u32 m, u8 2, u8 0` and its `m` curves (a type byte and its numbers,
+/// as an edge set's), then a few words to the next face.
+pub(crate) fn face_set(b: &[u8]) -> Result<Vec<SetFace>, String> {
+    let at = b
+        .windows(17)
+        .position(|w| w.first() == Some(&0xff) && w.get(7..) == Some(&SET_LIST[..]))
+        .ok_or("the face set lists no faces")?;
+    let mut q = at + 17;
+    let n = u32_at(b, q + 4).ok_or("the face set is cut short")?;
+    if u32_at(b, q) != Some(1) || u32_at(b, q + 8) != Some(0) || b.get(q + 12) != Some(&2) {
+        return Err("the face set's list is not readable".into());
+    }
+    if n == 0 || n > MAX_MEMBERS {
+        return Err("the face set has no faces or too many".into());
+    }
+    q += 13;
+    let mut out = Vec::new();
+    for k in 0..n {
+        if b.get(q + 5..q + 16) != Some(&SET_CURVE[..]) {
+            return Err("a face of the set is not readable".into());
+        }
+        match b.get(q + 16) {
+            Some(14) => {}
+            Some(t) => return Err(format!("a face of the set lies on a surface of type {t} (not read)")),
+            None => return Err("the face set is cut short".into()),
+        }
+        let at = q + 17;
+        let v3 = |i: usize| v3_at(b, at + 8 * i).filter(|v| finite3(*v) && v.iter().all(|c| c.abs() < 1e6));
+        let (Some(origin), Some(normal), Some(x)) = (v3(0), v3(3).and_then(unit), v3(6).and_then(unit)) else {
+            return Err("a face plane of the set is not readable".into());
+        };
+        let nl = u32_at(b, at + 72).ok_or("the face set is cut short")?;
+        if nl == 0 || nl > MAX_LOOPS {
+            return Err("a face of the set has no boundary or too many loops".into());
+        }
+        q = at + 76;
+        let mut loops = Vec::new();
+        for _ in 0..nl {
+            let m = u32_at(b, q).ok_or("the face set is cut short")?;
+            if m == 0 || m > MAX_MEMBERS || b.get(q + 4..q + 6) != Some(&[2, 0][..]) {
+                return Err("a face boundary of the set is not readable".into());
+            }
+            q += 6;
+            let mut curves = Vec::new();
+            for _ in 0..m {
+                let t = *b.get(q).ok_or("the face set is cut short")?;
+                let (c, end) = set_curve(b, t, q + 1)?;
+                curves.push(c);
+                q = end;
+            }
+            loops.push(curves);
+        }
+        out.push(SetFace { origin, normal, x, loops });
+        if k + 1 < n {
+            q = (q..=q + 64)
+                .find(|&o| b.get(o + 5..o + 16) == Some(&SET_CURVE[..]))
+                .ok_or("a face of the set is not readable")?;
+        }
+    }
+    Ok(out)
+}
+
+/// Points along a stored curve (metres): a line's ends, 64 steps along anything else.
+fn curve_points(c: &SetCurve) -> Result<Vec<V3>, String> {
+    const STEPS: usize = 64;
+    let at = |p: V3, d: V3, s: f64| [p[0] + d[0] * s, p[1] + d[1] * s, p[2] + d[2] * s];
+    let steps = |lo: f64, hi: f64, p: &dyn Fn(f64) -> Option<V3>| -> Result<Vec<V3>, String> {
+        (0..=STEPS)
+            .map(|i| {
+                p(lo + (hi - lo) * i as f64 / STEPS as f64).ok_or_else(|| "a boundary curve is not readable".into())
+            })
+            .collect()
+    };
+    match c {
+        SetCurve::Line(p, d, t0, t1) => Ok(vec![at(*p, *d, *t0), at(*p, *d, *t1)]),
+        SetCurve::Conic(cn, n, major, ratio, range) => {
+            let u = unit(*major).ok_or("a boundary circle has no radius")?;
+            let (r, v) = (dot(*major, *major).sqrt(), cross(*n, u));
+            let (lo, hi) = turn(*range);
+            let (cn, ratio) = (*cn, *ratio);
+            steps(lo, hi, &|t: f64| {
+                let (cs, sn) = (r * libm::cos(t), r * ratio * libm::sin(t));
+                Some([cn[0] + cs * u[0] + sn * v[0], cn[1] + cs * u[1] + sn * v[1], cn[2] + cs * u[2] + sn * v[2]])
+            })
+        }
+        SetCurve::Spline(order, poles, knots) => {
+            let (lo, hi) = (
+                *knots.get(order - 1).ok_or("a spline is empty")?,
+                *knots.get(poles.len()).ok_or("a spline is empty")?,
+            );
+            steps(lo, hi, &|t| spline_at(*order, poles, knots, t))
+        }
+    }
+}
+
+/// Points well inside a stored plane face (metres): on scan lines across it, the middle of
+/// each stretch inside its boundary (even-odd over all its loops).
+pub(crate) fn face_inside_points(f: &SetFace) -> Result<Vec<V3>, String> {
+    const LINES: usize = 8;
+    let y = cross(f.normal, f.x);
+    let mut segs: Vec<([f64; 2], [f64; 2])> = Vec::new();
+    for c in f.loops.iter().flatten() {
+        let pts: Vec<[f64; 2]> = curve_points(c)?
+            .iter()
+            .map(|p| {
+                let d = [p[0] - f.origin[0], p[1] - f.origin[1], p[2] - f.origin[2]];
+                [dot(d, f.x), dot(d, y)]
+            })
+            .collect();
+        segs.extend(pts.windows(2).filter_map(|w| if let [a, b] = w { Some((*a, *b)) } else { None }));
+    }
+    let (lo, hi) = segs
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (a, b)| (lo.min(a[1]).min(b[1]), hi.max(a[1]).max(b[1])));
+    if !(hi > lo && (hi - lo).is_finite()) {
+        return Err("a face of the set has no area".into());
+    }
+    let mut out = Vec::new();
+    for k in 0..LINES {
+        // Off the simple fractions, so that a scan line rarely runs through a corner.
+        let v = lo + (hi - lo) * (k as f64 + 0.5 + 0.0123) / LINES as f64;
+        let mut us: Vec<f64> = segs
+            .iter()
+            .filter(|(a, b)| (a[1] <= v) != (b[1] <= v))
+            .map(|(a, b)| a[0] + (b[0] - a[0]) * (v - a[1]) / (b[1] - a[1]))
+            .collect();
+        us.sort_by(f64::total_cmp);
+        for w in us.chunks_exact(2) {
+            if let [u0, u1] = w
+                && u1 - u0 > 1e-6
+            {
+                let u = (u0 + u1) / 2.0;
+                out.push([
+                    f.origin[0] + u * f.x[0] + v * y[0],
+                    f.origin[1] + u * f.x[1] + v * y[1],
+                    f.origin[2] + u * f.x[2] + v * y[2],
+                ]);
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err("a face of the set has no inside".into());
+    }
+    Ok(out)
+}
+
+/// The tree's pick of a stored plane face: points inside it and its plane (mm).
+pub(crate) fn face_pick(f: &SetFace) -> Result<Value, String> {
+    let mm = |p: V3| json!([rnd(p[0] * MM), rnd(p[1] * MM), rnd(p[2] * MM)]);
+    let points: Vec<Value> = face_inside_points(f)?.into_iter().map(mm).collect();
+    let first = points.first().cloned().ok_or("a face of the set has no inside")?;
+    Ok(json!({"point": first, "points": points,
+              "surface": {"type": "plane", "origin": mm(f.origin), "normal": arr(f.normal)}}))
 }
 
 /// A point of a B-spline (order, poles, flat knots) at `t` (de Boor).
@@ -1052,15 +1224,24 @@ fn sketch_json(name: &str, profiles: &[Profile], axis: Option<([f64; 2], [f64; 2
 /// (metres), one metre apart along the axis, for a construction line.
 pub(crate) fn axis_in_plane(p: &Profile, (a, d): (V3, V3)) -> Option<([f64; 2], [f64; 2])> {
     let w = [a[0] - p.origin[0], a[1] - p.origin[1], a[2] - p.origin[2]];
-    if dot(w, p.normal).abs() > 1e-9 || dot(d, p.normal).abs() > 1e-9 {
-        return None;
-    }
+    let line = axis_2d(p, (a, d))?;
     // The foot of the world origin on the plane, seen from the axis point.
     let h = dot(p.origin, p.normal);
     let c = cross([h * p.normal[0] - a[0], h * p.normal[1] - a[1], h * p.normal[2] - a[2]], d);
     let through_origin = dot(c, c).sqrt() < 1e-9;
     let along_axis = (dot(d, p.x).abs() - 1.0).abs() < 1e-9 || (dot(d, p.y()).abs() - 1.0).abs() < 1e-9;
     if through_origin && along_axis {
+        return None;
+    }
+    let _ = w;
+    Some(line)
+}
+
+/// A revolve axis in the profile plane's frame: a point of it and the point a unit further
+/// along it. `None` when it does not lie in the plane.
+fn axis_2d(p: &Profile, (a, d): (V3, V3)) -> Option<([f64; 2], [f64; 2])> {
+    let w = [a[0] - p.origin[0], a[1] - p.origin[1], a[2] - p.origin[2]];
+    if dot(w, p.normal).abs() > 1e-9 || dot(d, p.normal).abs() > 1e-9 {
         return None;
     }
     let y = p.y();
@@ -1099,14 +1280,14 @@ fn curve_ends(c: &Curve2) -> Option<(Ray, Ray)> {
     }
 }
 
-/// An open profile of a cutout (one chain with two free ends) closed on the side the cutout
-/// removes (slot 5: 1 left of the chain as drawn, 2 right): its ends run on along their
-/// directions to a circle [`OPEN_REACH`] round the middle of its ends, and the arc of that
-/// circle on that side closes it. A closed profile is left as it is.
-pub(crate) fn close_open(curves: &mut Vec<Curve2>, backwards: &[bool], side: Option<i64>) -> Result<(), String> {
+/// An end of an open chain: point, outward direction, whether the curve was drawn from it.
+type End = ([f64; 2], [f64; 2], bool);
+
+/// The two free ends of an open profile (one chain), the chain as drawn running from the
+/// first to the second; `None` when the profile is closed.
+fn free_ends(curves: &[Curve2], backwards: &[bool]) -> Result<Option<(End, End)>, String> {
     let same = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
-    // Each end: point, outward direction, whether the curve was drawn from it.
-    let mut ends: Vec<([f64; 2], [f64; 2], bool)> = Vec::new();
+    let mut ends: Vec<End> = Vec::new();
     for (k, c) in curves.iter().enumerate() {
         if let Some((a, b)) = curve_ends(c) {
             let back = backwards.get(k).copied().unwrap_or(false);
@@ -1114,15 +1295,177 @@ pub(crate) fn close_open(curves: &mut Vec<Curve2>, backwards: &[bool], side: Opt
             ends.push((b.0, b.1, back));
         }
     }
-    let free: Vec<&([f64; 2], [f64; 2], bool)> =
-        ends.iter().filter(|e| ends.iter().filter(|f| same(e.0, f.0)).count() % 2 == 1).collect();
-    // The chain as drawn runs from `a` to `b`.
-    let (a, b) = match free.as_slice() {
-        [] => return Ok(()),
-        [x, y] if !x.2 && y.2 => (*y, *x),
-        [x, y] => (*x, *y),
-        _ => return Err("an open profile with more than two ends".into()),
+    let free: Vec<&End> = ends.iter().filter(|e| ends.iter().filter(|f| same(e.0, f.0)).count() % 2 == 1).collect();
+    match free.as_slice() {
+        [] => Ok(None),
+        [x, y] if !x.2 && y.2 => Ok(Some((**y, **x))),
+        [x, y] => Ok(Some((**x, **y))),
+        _ => Err("an open profile with more than two ends".into()),
+    }
+}
+
+/// Points along a 2D profile curve: a line's ends, 64 steps along anything else.
+fn curve2_points(c: &Curve2) -> Vec<[f64; 2]> {
+    const STEPS: usize = 64;
+    match c {
+        Curve2::Line(a, b) => vec![*a, *b],
+        Curve2::Circle(cn, r) => (0..=STEPS)
+            .map(|i| {
+                let t = 2.0 * core::f64::consts::PI * i as f64 / STEPS as f64;
+                [cn[0] + r * libm::cos(t), cn[1] + r * libm::sin(t)]
+            })
+            .collect(),
+        Curve2::Arc(cn, r, a0, a1) => {
+            let a1 = if a1 <= a0 { a1 + 2.0 * core::f64::consts::PI } else { *a1 };
+            (0..=STEPS)
+                .map(|i| {
+                    let t = a0 + (a1 - a0) * i as f64 / STEPS as f64;
+                    [cn[0] + r * libm::cos(t), cn[1] + r * libm::sin(t)]
+                })
+                .collect()
+        }
+        Curve2::Spline(degree, poles, knots) => {
+            let order = *degree as usize + 1;
+            let poles3: Vec<V3> = poles.iter().map(|p| [p[0], p[1], 0.0]).collect();
+            let (Some(&lo), Some(&hi)) = (knots.get(order - 1), knots.get(poles.len())) else { return Vec::new() };
+            (0..=STEPS)
+                .filter_map(|i| spline_at(order, &poles3, knots, lo + (hi - lo) * i as f64 / STEPS as f64))
+                .map(|p| [p[0], p[1]])
+                .collect()
+        }
+    }
+}
+
+/// Whether `p` lies inside the region the curves bound (even-odd).
+fn inside(curves: &[Curve2], p: [f64; 2]) -> bool {
+    let mut odd = false;
+    for c in curves {
+        for w in curve2_points(c).windows(2) {
+            if let [a, b] = w
+                && (a[1] <= p[1]) != (b[1] <= p[1])
+                && p[0] < a[0] + (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1])
+            {
+                odd = !odd;
+            }
+        }
+    }
+    odd
+}
+
+/// How far from a revolve axis (metres) a profile end still lies on it.
+const ON_AXIS: f64 = 1e-7;
+
+/// An open profile of a revolve, closed against its axis (`p`, `q` two points of it in the
+/// profile's frame): a chain whose two ends lie on the axis is closed along it; a cutout's chain
+/// with one end on it runs on from its other end, along its direction, to a box
+/// [`OPEN_REACH`] round it on the profile's side of the axis, and is closed round that box to
+/// the end on the axis on the side slot 5 names (1 left of the chain as drawn, 2 right).
+pub(crate) fn close_on_axis(
+    curves: &mut Vec<Curve2>,
+    backwards: &[bool],
+    (p, q): ([f64; 2], [f64; 2]),
+    side: Option<i64>,
+) -> Result<(), String> {
+    let Some((a, b)) = free_ends(curves, backwards)? else { return Ok(()) };
+    let u = [q[0] - p[0], q[1] - p[1]];
+    let ul = libm::hypot(u[0], u[1]);
+    if ul < 1e-12 {
+        return Err("the revolve axis has no direction".into());
+    }
+    let u = [u[0] / ul, u[1] / ul];
+    // Coordinates along the axis and off it.
+    let along = |x: [f64; 2]| (x[0] - p[0]) * u[0] + (x[1] - p[1]) * u[1];
+    let off = |x: [f64; 2]| (x[1] - p[1]) * u[0] - (x[0] - p[0]) * u[1];
+    match (off(a.0).abs() < ON_AXIS, off(b.0).abs() < ON_AXIS) {
+        (true, true) => {
+            curves.push(Curve2::Line(b.0, a.0));
+            return Ok(());
+        }
+        (false, false) => return Err("an open revolve profile with no end on its axis".into()),
+        _ => {}
+    }
+    let side = match side {
+        Some(1) => 1.0,
+        Some(2) => -1.0,
+        other => return Err(format!("an open profile's side {other:?}")),
     };
+    // `e` the free end off the axis, `o` the one on it; `t` the chain's way at `e` as drawn.
+    let (e, o, t) = if off(a.0).abs() < ON_AXIS { (b, a, b.1) } else { (a, b, [-a.1[0], -a.1[1]]) };
+    let sv = off(e.0).signum();
+    let from = |s: f64, v: f64| [p[0] + s * u[0] - v * sv * u[1], p[1] + s * u[1] + v * sv * u[0]];
+    let (se, ve) = (along(e.0), off(e.0) * sv);
+    let r = OPEN_REACH + se.abs().max(ve).max(along(o.0).abs());
+    // The box: along the axis -r..r, off it 0..r (on the end's side); `e` lies inside it.
+    let (ds, dv) = (e.1[0] * u[0] + e.1[1] * u[1], (e.1[1] * u[0] - e.1[0] * u[1]) * sv);
+    let hit = [(ds, r - se), (-ds, r + se), (dv, r - ve), (-dv, ve)]
+        .iter()
+        .filter(|(d, room)| *d > 1e-12 && *room >= 0.0)
+        .map(|(d, room)| room / d)
+        .fold(f64::INFINITY, f64::min);
+    if !hit.is_finite() {
+        return Err("an open revolve profile that runs nowhere".into());
+    }
+    let f = [se + hit * ds, ve + hit * dv];
+    // Perimeter positions, counter-clockwise from (-r, 0): the axis, then the far sides.
+    let tol = 1e-9 * r;
+    let pos = |s: f64, v: f64| {
+        if v.abs() < tol {
+            s + r
+        } else if (s - r).abs() < tol {
+            2.0 * r + v
+        } else if (v - r).abs() < tol {
+            4.0 * r + (r - s)
+        } else {
+            6.0 * r + (r - v)
+        }
+    };
+    let corners = [(0.0, (-r, 0.0)), (2.0 * r, (r, 0.0)), (4.0 * r, (r, r)), (6.0 * r, (-r, r))];
+    let (pf, po) = (pos(f[0], f[1]), pos(along(o.0), 0.0));
+    let ring = |ccw: bool| -> Vec<Curve2> {
+        let mut out = vec![Curve2::Line(e.0, from(f[0], f[1]))];
+        let mut cs: Vec<(f64, (f64, f64))> = corners
+            .iter()
+            .copied()
+            .map(|(k, c)| {
+                let d = if ccw { k - pf } else { pf - k };
+                (d.rem_euclid(8.0 * r), c)
+            })
+            .filter(|(d, _)| {
+                *d > 0.0 && *d < if ccw { (po - pf).rem_euclid(8.0 * r) } else { (pf - po).rem_euclid(8.0 * r) }
+            })
+            .collect();
+        cs.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut last = from(f[0], f[1]);
+        for (_, (s, v)) in cs {
+            let n = from(s, v);
+            out.push(Curve2::Line(last, n));
+            last = n;
+        }
+        out.push(Curve2::Line(last, o.0));
+        out
+    };
+    // A point just beside the chain near `e` (a step in from it), on the side slot 5 names.
+    let tl = libm::hypot(t[0], t[1]).max(1e-300);
+    let t = [t[0] / tl, t[1] / tl];
+    let eps = 1e-6;
+    let probe = [e.0[0] - e.1[0] * eps - side * t[1] * eps, e.0[1] - e.1[1] * eps + side * t[0] * eps];
+    for ccw in [true, false] {
+        let mut all = curves.clone();
+        all.extend(ring(ccw));
+        if inside(&all, probe) {
+            *curves = all;
+            return Ok(());
+        }
+    }
+    Err("an open revolve profile's side is not found".into())
+}
+
+/// An open profile of a cutout (one chain with two free ends) closed on the side the cutout
+/// removes (slot 5: 1 left of the chain as drawn, 2 right): its ends run on along their
+/// directions to a circle [`OPEN_REACH`] round the middle of its ends, and the arc of that
+/// circle on that side closes it. A closed profile is left as it is.
+pub(crate) fn close_open(curves: &mut Vec<Curve2>, backwards: &[bool], side: Option<i64>) -> Result<(), String> {
+    let Some((a, b)) = free_ends(curves, backwards)? else { return Ok(()) };
     let c = [(a.0[0] + b.0[0]) / 2.0, (a.0[1] + b.0[1]) / 2.0];
     let half = libm::hypot(a.0[0] - c[0], a.0[1] - c[1]);
     if half < 1e-9 {
@@ -1163,6 +1506,7 @@ enum Kind {
     SweptCutout,
     LoftedProtrusion,
     LoftedCutout,
+    ThinWall,
     /// A cosmetic thread: no geometry.
     Thread,
     /// The start of an older part's history, before its first feature.
@@ -1183,6 +1527,7 @@ fn kind(class: &str) -> Kind {
         "JMLoftedCutoutFunction" => Kind::LoftedCutout,
         "JMChamferFunction" => Kind::Chamfer,
         "JMThreadFunction" => Kind::Thread,
+        "JMThinwallAssocFunctionNew" => Kind::ThinWall,
         "JMBodyFeatureAssocFunc" => Kind::BaseBody,
         _ => Kind::Other,
     }
@@ -1291,6 +1636,13 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     } else {
         None
     };
+    if revolve
+        && let (Some(a), [one]) = (axis, profiles.as_mut_slice())
+        && let Some(line2) = axis_2d(one, a)
+    {
+        let side = if k == Kind::RevolvedCutout { code(5).map(|s| if one.turned { 3 - s } else { s }) } else { None };
+        close_on_axis(&mut one.curves, &one.backwards, line2, side)?;
+    }
     let line = axis.and_then(|a| profiles.first().and_then(|p| axis_in_plane(p, a)));
     let sk = sketch_json(&sketch, &profiles, line)?;
     let cut = matches!(k, Kind::Cutout | Kind::RevolvedCutout);
@@ -1378,6 +1730,26 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
                 return Err("the second extent does not lie on the other side of the profile plane".into());
             }
             put(&mut j, "distance2", json!(rnd(d2)));
+        }
+        // A taper (slot 17, a list): `173`, the angle (radians), 4 widening away from the
+        // profile, 5 narrowing.
+        if let [kind, angle, way] = f.list(17) {
+            let v = |x: u32| st.obj(x).and_then(value);
+            let angle = v(*angle).ok_or("the taper angle is not readable")?.to_degrees();
+            let sign = match (v(*kind), v(*way)) {
+                (Some(173.0), Some(4.0)) => 1.0,
+                (Some(173.0), Some(5.0)) => -1.0,
+                other => return Err(format!("taper kind {other:?} (not read)")),
+            };
+            if !(angle.is_finite() && angle.abs() < 89.0) {
+                return Err("the taper angle is out of range".into());
+            }
+            if code(12).is_some() || symmetric {
+                return Err("a taper of an extrude to both sides (not read)".into());
+            }
+            put(&mut j, "taper_deg", json!(rnd(sign * angle)));
+        } else if f.list(17).iter().any(|&x| x != 0) {
+            return Err("the taper is not readable".into());
         }
         if extent == 14 {
             put(&mut j, "through_all", json!(true));
@@ -1496,6 +1868,29 @@ fn blend(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     Ok(())
 }
 
+/// A thin wall (`JMThinwallAssocFunctionNew`): slot 2 the side (4 the wall inside the body),
+/// 3 the thickness, 4 the face set of the faces it opens.
+fn thin_wall(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), String> {
+    let target = s.first_body.clone().ok_or("a thin wall before any body")?;
+    let small = |i: usize| f.slot(i).and_then(|v| st.obj(v)).and_then(value);
+    let side = match small(2) {
+        Some(4.0) => "inside",
+        other => return Err(format!("thin wall side {other:?} (not read)")),
+    };
+    let t = small(3).map(|v| v * MM).filter(|v| *v > 1e-9).ok_or("the thickness is not readable")?;
+    let mut j = json!({"type": "shell", "name": name, "thickness": rnd(t), "side": side});
+    match f.slot(4) {
+        None => put(&mut j, "body", json!(target)),
+        Some(set) => {
+            let set = st.obj(set).ok_or("the open faces' set is missing")?;
+            let picks: Vec<Value> = face_set(set)?.iter().map(face_pick).collect::<Result<_, _>>()?;
+            put(&mut j, "faces", json!(picks));
+        }
+    }
+    s.out.push(j);
+    Ok(())
+}
+
 /// Reads a Solid Edge part's ordered feature history as a feature tree.
 ///
 /// # Errors
@@ -1551,6 +1946,11 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             }
             Kind::Round | Kind::Chamfer => {
                 if let Err(why) = blend(&st, &mut s, func, &name, k) {
+                    s.out.push(unsupported(&name, what, &why));
+                }
+            }
+            Kind::ThinWall => {
+                if let Err(why) = thin_wall(&st, &mut s, func, &name) {
                     s.out.push(unsupported(&name, what, &why));
                 }
             }

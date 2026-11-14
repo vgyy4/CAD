@@ -3,8 +3,8 @@
 
 use crate::fixtures::ole;
 use crate::solidedge_features::{
-    Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, close_open, copy_frame, curve, edge_pick,
-    edge_set, feature_tree, history, key_point_reach, parse_func, plane, value,
+    Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, close_on_axis, close_open, copy_frame, curve,
+    edge_pick, edge_set, face_pick, face_set, feature_tree, history, key_point_reach, parse_func, plane, value,
 };
 use serde_json::json;
 
@@ -176,6 +176,11 @@ fn part2(side: f64, extent: f64, second: Option<f64>) -> Vec<u8> {
 
 /// The same with more objects after the thread (serials above 18).
 fn part_with(side: f64, extent: f64, second: Option<f64>, more: &[u8]) -> Vec<u8> {
+    part_full(side, extent, second, None, more)
+}
+
+/// The same with a taper (slot 17: `173`, the angle in radians, the way 4 or 5).
+fn part_full(side: f64, extent: f64, second: Option<f64>, taper: Option<(f64, f64)>, more: &[u8]) -> Vec<u8> {
     let mut c = vec![0x44, 0xf5, 0x90, 0x6c, 0, 0, 0, 0];
     c.extend(obj(6, 1, &plane_payload([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0])));
     // The profile: a function whose slot 0 is the plane, then "Profile2d" naming object 3.
@@ -207,11 +212,20 @@ fn part_with(side: f64, extent: f64, second: Option<f64>, more: &[u8]) -> Vec<u8
         c.extend(obj(36, 10, &small(0.005)));
     }
     let mut slots: Vec<&[u32]> = vec![&[11], &[0], &[2], &[8], &[9], &[0], &[10]];
-    if second.is_some() {
-        slots.extend([&[0u32] as &[u32], &[0], &[0], &[0], &[0], &[16], &[17], &[18]]);
+    if second.is_some() || taper.is_some() {
+        let s2: &[u32] = if second.is_some() { &[16] } else { &[0] };
+        slots.extend([&[0u32] as &[u32], &[0], &[0], &[0], &[0], s2, &[17], &[18]]);
+    }
+    if taper.is_some() {
+        slots.extend([&[0u32] as &[u32], &[0], &[13, 14, 15]]);
     }
     c.extend(obj(38, 11, &func("JMProtrusionFunction", &slots)));
     c.extend(obj(38, 12, &func("JMThreadFunction", &[&[12], &[11]])));
+    if let Some((angle, way)) = taper {
+        c.extend(obj(36, 13, &small(173.0)));
+        c.extend(obj(36, 14, &small(angle)));
+        c.extend(obj(36, 15, &small(way)));
+    }
     c.extend(obj(36, 16, &small(13.0)));
     c.extend(obj(36, 17, &small(second.unwrap_or(0.0))));
     c.extend(obj(36, 18, &small(0.002)));
@@ -612,4 +626,167 @@ fn a_loft_through_its_sections() {
                "sketches": ["LoftedProtrusion_1_Section1", "LoftedProtrusion_1_Section2"]})
     );
     assert_eq!(f[5]["type"], "unsupported");
+}
+
+/// A face for [`face_set_bytes`]: plane (origin, normal, x) and loops of (type, numbers).
+type TestFace = ([f64; 9], Vec<Vec<(u8, Vec<f64>)>>);
+
+/// A face set: the names' head, the list's class id, `u32 1, n, 0, u8 2`, then each face:
+/// class id, type 14, origin, normal, x direction, the loop count and each loop (`u32 m,
+/// u8 2, u8 0` and its curves as type byte and numbers), then two zero words.
+fn face_set_bytes(faces: &[TestFace]) -> Vec<u8> {
+    let mut v = b"\x14\x00\x00\x00JMGetSmoothFaceSeq\0".to_vec();
+    v.push(0xff);
+    v.extend([0xf0, 0xcb, 0xaa, 0xf5, 0x51, 0xd1]);
+    v.extend([0xcd, 0x11, 0x8b, 0xa4, 0x08, 0x00, 0x36, 0x24, 0xfc, 0x01]);
+    v.extend(1u32.to_le_bytes());
+    v.extend((faces.len() as u32).to_le_bytes());
+    v.extend(0u32.to_le_bytes());
+    v.push(2);
+    for (plane, loops) in faces {
+        v.extend([0x76, 0xe3, 0xfe, 0x7c, 0x16]);
+        v.extend([0x3a, 0xce, 0x11, 0x9a, 0x5e, 0x08, 0x00, 0x36, 0x9b, 0x41, 0x02]);
+        v.push(14);
+        v.extend(f64s(plane));
+        v.extend((loops.len() as u32).to_le_bytes());
+        for l in loops {
+            v.extend((l.len() as u32).to_le_bytes());
+            v.extend([2, 0]);
+            for (t, nums) in l {
+                v.push(*t);
+                v.extend(f64s(nums));
+            }
+        }
+        v.extend([0u8; 6]);
+    }
+    v.extend([2, 0, 0, 0]);
+    v
+}
+
+/// A 20 x 10 mm rectangle at z = 5 mm (lines from a corner along each side).
+fn top_face() -> TestFace {
+    let side = |p: [f64; 2], d: [f64; 2], len: f64| (3u8, vec![p[0], p[1], 0.005, d[0], d[1], 0.0, 0.0, len]);
+    let l = vec![
+        side([0.0, 0.0], [1.0, 0.0], 0.02),
+        side([0.02, 0.0], [0.0, 1.0], 0.01),
+        side([0.02, 0.01], [-1.0, 0.0], 0.02),
+        side([0.0, 0.01], [0.0, -1.0], 0.01),
+    ];
+    ([0.0, 0.0, 0.005, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0], vec![l])
+}
+
+#[test]
+fn a_face_set_lists_plane_faces_with_their_boundaries() {
+    // A ring between circles of 3 and 1 mm on the plane z = 0 (normal -z) after the rectangle.
+    let circle = |r: f64| (15u8, vec![0.0, 0.0, 0.0, 0.0, 0.0, -1.0, r, 0.0, 0.0, 1.0]);
+    let ring = ([0.0, 0.0, 0.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0], vec![vec![circle(0.003)], vec![circle(0.001)]]);
+    let b = face_set_bytes(&[top_face(), ring]);
+    let set = face_set(&b).unwrap();
+    assert_eq!(set.len(), 2);
+    assert_eq!(
+        (set[0].origin, set[0].normal, set[0].loops.len(), set[0].loops[0].len()),
+        ([0.0, 0.0, 0.005], [0.0, 0.0, 1.0], 1, 4)
+    );
+    assert_eq!(set[1].loops.len(), 2);
+    // The rectangle's pick: points inside it on its plane.
+    let p = face_pick(&set[0]).unwrap();
+    assert_eq!(p["surface"], json!({"type": "plane", "origin": [0.0, 0.0, 5.0], "normal": [0.0, 0.0, 1.0]}));
+    let pts = p["points"].as_array().unwrap();
+    assert!(!pts.is_empty());
+    for q in pts {
+        let q: Vec<f64> = q.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        assert!(q[0] > 0.0 && q[0] < 20.0 && q[1] > 0.0 && q[1] < 10.0 && q[2] == 5.0, "{p}");
+    }
+    assert_eq!(p["point"], pts[0]);
+    // The ring's: between the circles, none in the hole.
+    for q in face_pick(&set[1]).unwrap()["points"].as_array().unwrap() {
+        let q: Vec<f64> = q.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let r = libm::hypot(q[0], q[1]);
+        assert!(r > 1.0 && r < 3.0 && q[2] == 0.0, "{q:?}");
+    }
+    // A face on another surface, no list, cut short anywhere: an error, never a panic.
+    let mut cone = face_set_bytes(&[top_face()]);
+    let at = cone.iter().position(|&x| x == 14).unwrap();
+    cone[at] = 17;
+    assert!(face_set(&cone).unwrap_err().contains("type 17"));
+    assert!(face_set(b"QQ no list").is_err());
+    for n in 0..b.len() {
+        let _ = face_set(&b[..n]);
+    }
+}
+
+#[test]
+fn a_thin_wall_opens_its_stored_faces() {
+    // The protrusion part, then a thin wall of 1 mm (side 4: inside) opening its top face.
+    for (side, read) in [(4.0, true), (5.0, false)] {
+        let mut more = obj(40, 21, &face_set_bytes(&[top_face()]));
+        more.extend(obj(36, 22, &small(side)));
+        more.extend(obj(36, 23, &small(0.001)));
+        more.extend(obj(38, 24, &func("JMThinwallAssocFunctionNew", &[&[24], &[12], &[22], &[23], &[21]])));
+        let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+        let f = &t["features"][2];
+        if !read {
+            assert_eq!(f["type"], "unsupported", "{t}");
+            continue;
+        }
+        assert_eq!(
+            (&f["type"], &f["name"], &f["side"], &f["thickness"]),
+            (&json!("shell"), &json!("Thinwall_1"), &json!("inside"), &json!(1.0)),
+            "{t}"
+        );
+        assert_eq!(f["faces"].as_array().unwrap().len(), 1);
+        assert_eq!(f["faces"][0]["surface"]["origin"], json!([0.0, 0.0, 5.0]));
+    }
+}
+
+#[test]
+fn a_tapered_protrusion_leans_its_walls() {
+    // 10 degrees, 4 widening away from the profile, 5 narrowing.
+    for (way, sign) in [(4.0, 1.0), (5.0, -1.0)] {
+        let t = feature_tree(
+            &part_full(2.0, 13.0, None, Some((10f64.to_radians(), way)), &[]),
+            "p.par",
+            &crate::Limits::default(),
+        )
+        .unwrap();
+        let taper = t["features"][1]["taper_deg"].as_f64().unwrap();
+        assert!((taper - sign * 10.0).abs() < 1e-9, "{t}");
+    }
+    let t =
+        feature_tree(&part_full(2.0, 13.0, None, Some((0.1, 7.0)), &[]), "p.par", &crate::Limits::default()).unwrap();
+    assert_eq!(t["features"][0]["type"], "unsupported", "{t}");
+}
+
+#[test]
+fn an_open_revolve_profile_is_closed_against_its_axis() {
+    let axis = ([0.0, 0.0], [0.0, 1.0]);
+    // Both ends on the axis (x = 0): closed along it.
+    let mut c = vec![Curve2::Line([0.0, 0.0], [2.0, 0.0]), Curve2::Line([2.0, 0.0], [0.0, 3.0])];
+    close_on_axis(&mut c, &[false, false], axis, None).unwrap();
+    assert_eq!(c.len(), 3);
+    assert_eq!(c[2], Curve2::Line([0.0, 3.0], [0.0, 0.0]));
+    // A cut's line from the axis out to (2, 1): run on to the box 10 m round it, closed below
+    // the line (its right, side 2) or above it (its left, side 1) back to the axis.
+    for (side, below) in [(2, true), (1, false)] {
+        let mut c = vec![Curve2::Line([0.0, 1.0], [2.0, 1.0])];
+        close_on_axis(&mut c, &[false], axis, Some(side)).unwrap();
+        let ys: Vec<f64> = c
+            .iter()
+            .skip(1)
+            .flat_map(|k| match k {
+                Curve2::Line(a, b) => vec![a[1], b[1]],
+                _ => panic!("{c:?}"),
+            })
+            .collect();
+        assert!(ys.iter().all(|&y| if below { y <= 1.0 } else { y >= 1.0 }), "{side}: {c:?}");
+        // The closure ends on the axis at the line's start; nothing crosses the axis.
+        assert!(matches!(c.last(), Some(Curve2::Line(_, b)) if *b == [0.0, 1.0]), "{c:?}");
+        assert!(c.iter().all(|k| matches!(k, Curve2::Line(a, b) if a[0] >= 0.0 && b[0] >= 0.0)), "{c:?}");
+    }
+    // No end on the axis, or a side not given: refused; a closed profile stays as it is.
+    assert!(close_on_axis(&mut vec![Curve2::Line([1.0, 0.0], [2.0, 0.0])], &[false], axis, Some(1)).is_err());
+    assert!(close_on_axis(&mut vec![Curve2::Line([0.0, 0.0], [2.0, 0.0])], &[false], axis, None).is_err());
+    let mut c = vec![Curve2::Circle([3.0, 0.0], 1.0)];
+    close_on_axis(&mut c, &[false], axis, None).unwrap();
+    assert_eq!(c.len(), 1);
 }
