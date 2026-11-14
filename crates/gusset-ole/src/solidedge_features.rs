@@ -15,7 +15,10 @@
 //! * each profile: its plane (an absolute frame in the plane object) and its 2D curves
 //!   (lines, circles and arcs, in metres in the plane's frame).
 //!
-//! Anything else (rounds, chamfers, holes, patterns, sweeps, lofts...) is an `unsupported`
+//! * rounds of a constant radius and equal chamfers: the size and the edges, each picked on
+//!   the curve the part stored for it in the feature's edge set (lines, circles, arcs).
+//!
+//! Anything else (holes, patterns, sweeps, lofts...) is an `unsupported`
 //! feature: the caller rebuilds the tree and keeps it only when it gives the part's own body.
 //!
 //! Input is untrusted: every count, list and chain is bounded, and an object that is not
@@ -450,6 +453,141 @@ pub(crate) fn key_point_reach(b: &[u8]) -> Option<(f64, V3)> {
     Some((d, unit(v)?))
 }
 
+/// A curve of a round's or chamfer's edge set, as the part stored it when the feature was
+/// made (metres, absolute).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum SetCurve {
+    /// Point, unit direction and the parameter range (the edge runs from `p + t0 d` to `p + t1 d`).
+    Line(V3, V3, f64, f64),
+    /// Centre, unit normal, major axis (its length is the radius), minor to major ratio and,
+    /// for an arc, its angle range, counter-clockwise about the normal from the major axis.
+    Conic(V3, V3, V3, f64, Option<(f64, f64)>),
+}
+
+/// The class id that opens an edge set's curve list ends in these bytes.
+const SET_LIST: [u8; 10] = [0xcd, 0x11, 0x8b, 0xa4, 0x08, 0x00, 0x36, 0x24, 0xfc, 0x01];
+/// The class ids of the stored curves end in these bytes.
+const SET_CURVE: [u8; 11] = [0x3a, 0xce, 0x11, 0x9a, 0x5e, 0x08, 0x00, 0x36, 0x9b, 0x41, 0x02];
+
+/// The edges a round or chamfer works on, from the edge set it refers to (a
+/// `JMTransmigrateAssocFunction` naming them by `SEGetRoundableEdgeSeq`): after the names,
+/// `ff`, a class id ending in [`SET_LIST`], `u32 1, u32 n, u32 0, u8 2`, then `n` curves, each a
+/// class id ending in [`SET_CURVE`], a type byte and its numbers (`f64`), then one or two
+/// `u32 0`: type 3 a line (point, direction, t0, t1), 15 a circle or ellipse (centre, normal,
+/// major axis, ratio), 16 an arc of one (the same and the angles from, to).
+pub(crate) fn edge_set(b: &[u8]) -> Result<Vec<SetCurve>, String> {
+    let at = b
+        .windows(17)
+        .position(|w| w.first() == Some(&0xff) && w.get(7..) == Some(&SET_LIST[..]))
+        .ok_or("the edge set lists no curves")?;
+    let mut q = at + 17;
+    let n = u32_at(b, q + 4).ok_or("the edge set is cut short")?;
+    if u32_at(b, q) != Some(1) || u32_at(b, q + 8) != Some(0) || b.get(q + 12) != Some(&2) {
+        return Err("the edge set's curve list is not readable".into());
+    }
+    if n == 0 || n > MAX_MEMBERS {
+        return Err("the edge set has no curves or too many".into());
+    }
+    q += 13;
+    let mut out = Vec::new();
+    for k in 0..n {
+        if b.get(q + 5..q + 16) != Some(&SET_CURVE[..]) {
+            return Err("an edge of the set is not readable".into());
+        }
+        let t = *b.get(q + 16).ok_or("the edge set is cut short")?;
+        let at = q + 17;
+        let f = |i: usize| f64_at(b, at + 8 * i).filter(|v| v.is_finite() && v.abs() < 1e6);
+        let v3 = |i: usize| Some([f(i)?, f(i + 1)?, f(i + 2)?]);
+        let (c, len) = match t {
+            3 => {
+                let (p, d, t0, t1) = (v3(0), v3(3).and_then(unit), f(6), f(7));
+                let (Some(p), Some(d), Some(t0), Some(t1)) = (p, d, t0, t1) else {
+                    return Err("an edge line of the set is not readable".into());
+                };
+                (SetCurve::Line(p, d, t0, t1), 8)
+            }
+            15 | 16 => {
+                let (Some(c), Some(nrm), Some(m), Some(r)) = (v3(0), v3(3).and_then(unit), v3(6), f(9)) else {
+                    return Err("an edge circle of the set is not readable".into());
+                };
+                let range = if t == 16 {
+                    let (Some(a0), Some(a1)) = (f(10), f(11)) else {
+                        return Err("an edge arc of the set is not readable".into());
+                    };
+                    Some((a0, a1))
+                } else {
+                    None
+                };
+                (SetCurve::Conic(c, nrm, m, r, range), if t == 16 { 12 } else { 10 })
+            }
+            _ => return Err(format!("an edge of the set is a curve of type {t} (not read)")),
+        };
+        out.push(c);
+        q = at + 8 * len;
+        if u32_at(b, q) != Some(0) {
+            return Err("an edge of the set is not readable".into());
+        }
+        q += 4;
+        // Newer parts put a second zero word between curves.
+        if k + 1 < n && b.get(q + 5..q + 16) != Some(&SET_CURVE[..]) && u32_at(b, q) == Some(0) {
+            q += 4;
+        }
+    }
+    Ok(out)
+}
+
+/// The tree's pick of a stored edge: its middle and a short piece of it around the middle
+/// (mm), so the importer finds the model's edge that holds that piece whatever its extent.
+pub(crate) fn edge_pick(c: &SetCurve) -> Result<Value, String> {
+    // Half the length of the piece (mm).
+    const PIECE: f64 = 0.1;
+    let at = |p: V3, d: V3, s: f64| [p[0] + d[0] * s, p[1] + d[1] * s, p[2] + d[2] * s];
+    let (mid, a, b) = match *c {
+        SetCurve::Line(p, d, t0, t1) => {
+            let len = (t1 - t0) * MM;
+            if !(len.is_finite() && len > 1e-6) {
+                return Err("an edge of the set has no length".into());
+            }
+            let m = at(p, d, (t0 + t1) / 2.0);
+            let h = PIECE.min(len / 4.0) / MM;
+            (m, at(m, d, -h), at(m, d, h))
+        }
+        SetCurve::Conic(cn, n, major, ratio, range) => {
+            let r = dot(major, major).sqrt();
+            if (ratio - 1.0).abs() > 1e-9 {
+                return Err("an edge of the set lies on an ellipse".into());
+            }
+            let u = unit(major).ok_or("an edge circle of the set has no radius")?;
+            let v = cross(n, u);
+            let (a0, a1) = match range {
+                // Any point of a whole circle will do.
+                None => (0.0, 2.0 * core::f64::consts::PI),
+                Some((a0, a1)) => {
+                    let a1 = if a1 <= a0 { a1 + 2.0 * core::f64::consts::PI } else { a1 };
+                    (a0, a1)
+                }
+            };
+            let sweep = a1 - a0;
+            if !(sweep > 1e-9 && sweep <= 2.0 * core::f64::consts::PI + 1e-9 && r > 1e-12) {
+                return Err("an edge arc of the set is empty".into());
+            }
+            let p = |t: f64| {
+                let (cs, sn) = (libm::cos(t), libm::sin(t));
+                [
+                    cn[0] + r * (cs * u[0] + sn * v[0]),
+                    cn[1] + r * (cs * u[1] + sn * v[1]),
+                    cn[2] + r * (cs * u[2] + sn * v[2]),
+                ]
+            };
+            let m = (a0 + a1) / 2.0;
+            let h = (PIECE / MM / r).min(sweep / 4.0);
+            (p(m), p(m - h), p(m + h))
+        }
+    };
+    let mm = |p: V3| json!([rnd(p[0] * MM), rnd(p[1] * MM), rnd(p[2] * MM)]);
+    Ok(json!({"midpoint": mm(mid), "path": [mm(a), mm(b)]}))
+}
+
 /// A 2D curve of a profile (metres, in the profile plane's frame).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Curve2 {
@@ -665,6 +803,8 @@ enum Kind {
     Cutout,
     RevolvedProtrusion,
     RevolvedCutout,
+    Round,
+    Chamfer,
     /// A cosmetic thread: no geometry.
     Thread,
     /// The start of an older part's history, before its first feature.
@@ -678,6 +818,8 @@ fn kind(class: &str) -> Kind {
         "JMCutoutFunction" => Kind::Cutout,
         "JMRevolvedProtrusionFunction" => Kind::RevolvedProtrusion,
         "JMRevolvedCutoutFunction" => Kind::RevolvedCutout,
+        "JMRoundFunction" => Kind::Round,
+        "JMChamferFunction" => Kind::Chamfer,
         "JMThreadFunction" => Kind::Thread,
         "JMBodyFeatureAssocFunc" => Kind::BaseBody,
         _ => Kind::Other,
@@ -869,6 +1011,40 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     Ok(())
 }
 
+/// A round (slot 2: the edge set, 3: kind, 1 constant radius; 4: the radius) or an equal
+/// chamfer (slot 2: kind, 41 equal setbacks; 4: the edge set; 5: the setback).
+fn blend(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), String> {
+    if s.first_body.is_none() {
+        return Err("a blend before any body".into());
+    }
+    let small = |i: usize| f.slot(i).and_then(|v| st.obj(v)).and_then(value);
+    let code = |i: usize| small(i).filter(|v| v.fract() == 0.0 && v.abs() < 1e6).map(|v| v as i64);
+    let round = k == Kind::Round;
+    let (set, size) = if round {
+        match code(3) {
+            Some(1) => {}
+            other => return Err(format!("round kind {other:?} (not a constant radius)")),
+        }
+        (2, 4)
+    } else {
+        match code(2) {
+            Some(41) if f.slot(3).is_none() => {}
+            other => return Err(format!("chamfer kind {other:?} (not equal setbacks)")),
+        }
+        (4, 5)
+    };
+    let size = small(size).map(|v| v * MM).filter(|v| *v > 1e-9).ok_or("the size is not readable")?;
+    let set = f.slot(set).and_then(|v| st.obj(v)).ok_or("the edge set is missing")?;
+    let picks: Vec<Value> = edge_set(set)?.iter().map(edge_pick).collect::<Result<_, _>>()?;
+    let j = if round {
+        json!({"type": "fillet", "name": name, "edges": picks, "radius": rnd(size)})
+    } else {
+        json!({"type": "chamfer", "name": name, "edges": picks, "distance": rnd(size)})
+    };
+    s.out.push(j);
+    Ok(())
+}
+
 /// Reads a Solid Edge part's ordered feature history as a feature tree.
 ///
 /// # Errors
@@ -906,6 +1082,11 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
                     s.out.push(unsupported(&name, what, &why));
                 } else {
                     solids += 1;
+                }
+            }
+            Kind::Round | Kind::Chamfer => {
+                if let Err(why) = blend(&st, &mut s, func, &name, k) {
+                    s.out.push(unsupported(&name, what, &why));
                 }
             }
             Kind::Thread => s.omitted.push(json!({"name": name, "why": "cosmetic thread"})),

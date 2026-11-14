@@ -3,7 +3,8 @@
 
 use crate::fixtures::ole;
 use crate::solidedge_features::{
-    Curve2, Edge3, Store, axis_line, curve, feature_tree, history, key_point_reach, parse_func, plane, value,
+    Curve2, Edge3, SetCurve, Store, axis_line, curve, edge_pick, edge_set, feature_tree, history, key_point_reach,
+    parse_func, plane, value,
 };
 use serde_json::json;
 
@@ -170,6 +171,11 @@ fn part(side: f64, extent: f64) -> Vec<u8> {
 
 /// The same with a second extent: side and depth 2 mm.
 fn part2(side: f64, extent: f64, second: Option<f64>) -> Vec<u8> {
+    part_with(side, extent, second, &[])
+}
+
+/// The same with more objects after the thread (serials above 18).
+fn part_with(side: f64, extent: f64, second: Option<f64>, more: &[u8]) -> Vec<u8> {
     let mut c = vec![0x44, 0xf5, 0x90, 0x6c, 0, 0, 0, 0];
     c.extend(obj(6, 1, &plane_payload([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0])));
     // The profile: a function whose slot 0 is the plane, then "Profile2d" naming object 3.
@@ -199,6 +205,7 @@ fn part2(side: f64, extent: f64, second: Option<f64>) -> Vec<u8> {
     c.extend(obj(36, 16, &small(13.0)));
     c.extend(obj(36, 17, &small(second.unwrap_or(0.0))));
     c.extend(obj(36, 18, &small(0.002)));
+    c.extend(more);
     ole(&[("PSMcluster0", &c), ("PSMtypetable", &[])])
 }
 
@@ -285,4 +292,94 @@ fn a_key_point_extent_stores_its_reach() {
     assert_eq!(key_point_reach(&obj(1, 3, &b)), Some((0.0025, [0.0, 0.0, -1.0])));
     let other = func("JMCutoutFunction", &[&[3]]);
     assert_eq!(key_point_reach(&obj(1, 3, &other)), None);
+}
+
+/// An edge set's curve list: a head, the list's class id, `u32 1, n, 0, u8 2` and the curves
+/// (class id, type, numbers, `u32 0`; `extra` adds a second zero word after each but the last).
+fn edge_set_bytes(curves: &[(u8, Vec<f64>)], extra: bool) -> Vec<u8> {
+    let mut v = b"\x16\x00\x00\x00SEGetRoundableEdgeSeq\0".to_vec();
+    v.push(0xff);
+    v.extend([0xf0, 0xcb, 0xaa, 0xf5, 0x51, 0xd1]);
+    v.extend([0xcd, 0x11, 0x8b, 0xa4, 0x08, 0x00, 0x36, 0x24, 0xfc, 0x01]);
+    v.extend(1u32.to_le_bytes());
+    v.extend((curves.len() as u32).to_le_bytes());
+    v.extend(0u32.to_le_bytes());
+    v.push(2);
+    for (k, (t, nums)) in curves.iter().enumerate() {
+        v.extend([0x74, 0x0c, 0x54, 0x25, 0x15]);
+        v.extend([0x3a, 0xce, 0x11, 0x9a, 0x5e, 0x08, 0x00, 0x36, 0x9b, 0x41, 0x02]);
+        v.push(*t);
+        v.extend(f64s(nums));
+        v.extend(0u32.to_le_bytes());
+        if extra && k + 1 < curves.len() {
+            v.extend(0u32.to_le_bytes());
+        }
+    }
+    v.extend([2, 0, 0, 0]);
+    v
+}
+
+#[test]
+fn an_edge_set_lists_its_curves() {
+    let line = (3u8, vec![0.001, 0.002, 0.0, -1.0, 0.0, 0.0, 0.0, 0.004]);
+    let circle = (15u8, vec![0.0, 0.0, 0.002, 0.0, 0.0, -1.0, 0.005, 0.0, 0.0, 1.0]);
+    let arc = (16u8, vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.003, 0.0, 1.0, 0.0, core::f64::consts::FRAC_PI_2]);
+    for extra in [false, true] {
+        let set = edge_set(&edge_set_bytes(&[line.clone(), circle.clone(), arc.clone()], extra)).unwrap();
+        assert_eq!(set.len(), 3);
+        assert_eq!(set[0], SetCurve::Line([0.001, 0.002, 0.0], [-1.0, 0.0, 0.0], 0.0, 0.004));
+        assert_eq!(set[1], SetCurve::Conic([0.0, 0.0, 0.002], [0.0, 0.0, -1.0], [0.005, 0.0, 0.0], 1.0, None));
+        // The line's pick: its middle (x 1 - 2 = -1 mm) and 0.1 mm either way.
+        let p = edge_pick(&set[0]).unwrap();
+        assert_eq!(p["midpoint"], json!([-1.0, 2.0, 0.0]));
+        assert_eq!(p["path"], json!([[-0.9, 2.0, 0.0], [-1.1, 2.0, 0.0]]));
+        // A quarter arc of radius 3 from +y (major axis) toward -x (normal x major).
+        let p = edge_pick(&set[2]).unwrap();
+        let r = 3.0 * core::f64::consts::FRAC_1_SQRT_2;
+        let m = p["midpoint"].as_array().unwrap();
+        assert!((m[0].as_f64().unwrap() + r).abs() < 1e-9 && (m[1].as_f64().unwrap() - r).abs() < 1e-9);
+        // A whole circle: a point of it, at the radius from the centre in its plane.
+        let p = edge_pick(&set[1]).unwrap();
+        let m: Vec<f64> = p["midpoint"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        assert!((libm::hypot(m[0], m[1]) - 5.0).abs() < 1e-9 && (m[2] - 2.0).abs() < 1e-9);
+    }
+    // An ellipse, an unknown curve type and a list without curves are refused.
+    let ellipse = (15u8, vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.005, 0.0, 0.0, 0.5]);
+    assert!(edge_pick(&edge_set(&edge_set_bytes(&[ellipse], false)).unwrap()[0]).is_err());
+    assert!(edge_set(&edge_set_bytes(&[(27, vec![0.0; 4])], false)).is_err());
+    assert!(edge_set(&edge_set_bytes(&[], false)).is_err());
+    assert!(edge_set(b"QQ no list").is_err());
+    // Cut short anywhere: an error, never a panic.
+    let b = edge_set_bytes(&[line, circle], true);
+    for n in 0..b.len() {
+        let _ = edge_set(&b[..n]);
+    }
+}
+
+#[test]
+fn rounds_and_chamfers_pick_their_stored_edges() {
+    // The protrusion part, then a round of r 1 mm (kind 1) and an equal chamfer of 0.5 mm
+    // (kind 41) on the box's edge along x at y = 0, z = 0.
+    let set = edge_set_bytes(&[(3, vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.02])], false);
+    let mut more = obj(40, 21, &set);
+    more.extend(obj(36, 22, &small(1.0)));
+    more.extend(obj(36, 23, &small(0.001)));
+    more.extend(obj(38, 24, &func("JMRoundFunction", &[&[24], &[12], &[21], &[22], &[23]])));
+    more.extend(obj(36, 25, &small(41.0)));
+    more.extend(obj(36, 26, &small(0.0005)));
+    more.extend(obj(38, 27, &func("JMChamferFunction", &[&[27], &[24], &[25], &[0], &[21], &[26]])));
+    // A round of another kind (variable radius) is not read.
+    more.extend(obj(36, 28, &small(17.0)));
+    more.extend(obj(38, 29, &func("JMRoundFunction", &[&[29], &[27], &[21], &[28], &[23]])));
+    let t = feature_tree(&part_with(1.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = t["features"].as_array().unwrap();
+    assert_eq!(f.len(), 5, "{t}");
+    assert_eq!(f[2]["type"], "fillet");
+    assert_eq!(f[2]["radius"], json!(1.0));
+    assert_eq!(f[2]["edges"], json!([{"midpoint": [10.0, 0.0, 0.0], "path": [[9.9, 0.0, 0.0], [10.1, 0.0, 0.0]]}]));
+    assert_eq!(f[3]["type"], "chamfer");
+    assert_eq!(f[3]["distance"], json!(0.5));
+    assert_eq!(f[3]["edges"], f[2]["edges"]);
+    assert_eq!(f[4]["type"], "unsupported");
+    assert!(f[4]["reason"].as_str().unwrap().contains("round kind"), "{t}");
 }
