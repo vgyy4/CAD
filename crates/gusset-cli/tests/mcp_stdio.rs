@@ -157,6 +157,9 @@ fn mcp_stdio_handshake_tools_and_read_only() {
     let img = r["content"].as_array().unwrap().iter().find(|c| c["type"] == "image").unwrap();
     assert_eq!(img["mimeType"], "image/png");
     assert_eq!(png_size(img["data"].as_str().unwrap()), (64, 48));
+    // An empty model gives an empty picture, and the reply says why.
+    let note = r["content"].as_array().unwrap().iter().filter_map(|c| c["text"].as_str()).collect::<String>();
+    assert!(note.contains("the model has no bodies"), "{r}");
 
     // --read-only rejects mutating tools.
     let r = p.call_tool("param_set", json!({"name": "width", "expr": "40 mm"}));

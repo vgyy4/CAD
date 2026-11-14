@@ -1240,13 +1240,19 @@ impl GussetMcp {
             Err(e) => return self.err_result(&agent, &e),
         };
         let (w, h) = (request.width, request.height);
+        let empty = scene.bodies.is_empty();
         let png = tokio::task::spawn_blocking(move || renderer.render_png(&request, &scene))
             .await
             .map_err(|_| "the renderer crashed".to_string())
             .and_then(|r| r);
         match png {
             Ok(bytes) if is_png(&bytes) && bytes.len() <= MAX_PNG_BYTES => {
-                let meta = json!({"width": w, "height": h, "bytes": bytes.len(), "mime_type": "image/png"});
+                let mut meta = json!({"width": w, "height": h, "bytes": bytes.len(), "mime_type": "image/png"});
+                if empty {
+                    meta["note"] = json!(
+                        "the picture is empty: the model has no bodies (an open board or schematic is not drawn here; pcb_import adds a board as bodies)"
+                    );
+                }
                 let mut r = CallToolResult::success(vec![
                     ContentBlock::image(crate::b64::encode(&bytes), "image/png"),
                     ContentBlock::text(meta.to_string()),
