@@ -1723,6 +1723,17 @@ struct State {
     omitted: Vec<Value>,
 }
 
+/// A point of a profile curve (in its plane's frame).
+fn curve_point(c: &Curve2) -> Option<[f64; 2]> {
+    match c {
+        Curve2::Line(a, _) => Some(*a),
+        Curve2::Circle(c, r) => Some([c[0] + r, c[1]]),
+        Curve2::Arc(c, r, a0, _) => Some([c[0] + r * libm::cos(*a0), c[1] + r * libm::sin(*a0)]),
+        Curve2::Spline(_, poles, _) => poles.first().copied(),
+        Curve2::Ellipse(c, u, k, range) => Some(Curve2::ellipse_at(*c, *u, *k, range.map_or(0.0, |r| r.0))),
+    }
+}
+
 /// The box of the part after a feature (metres, `min xyz, max xyz`): the first six `f64`
 /// within reach after the function's slots that make a box of positive extents.
 pub(crate) fn stored_box(b: &[u8], tail: usize) -> Option<[f64; 6]> {
@@ -1805,7 +1816,25 @@ fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Ki
         if !(angle.is_finite() && angle.abs() > 1e-9 && angle.abs() <= 360.0 + 1e-9) {
             return Err("the revolve angle is out of range".into());
         }
-        let angle = if side == 1 { -angle } else { angle };
+        // Side 2 turns the profile along its normal, 1 against it (as an extrude's sides):
+        // the sense of the turn about the axis follows from where the profile lies.
+        let along = profiles.first().and_then(|pr| {
+            let y = pr.y();
+            pr.curves.iter().filter_map(curve_point).find_map(|q| {
+                let w = [
+                    pr.origin[0] + q[0] * pr.x[0] + q[1] * y[0] - p[0],
+                    pr.origin[1] + q[0] * pr.x[1] + q[1] * y[1] - p[1],
+                    pr.origin[2] + q[0] * pr.x[2] + q[1] * y[2] - p[2],
+                ];
+                let t = dot(cross(d, w), pr.normal);
+                (t.abs() > 1e-9).then_some(t > 0.0)
+            })
+        });
+        let angle = match (side, along) {
+            (1, Some(true)) | (2, Some(false)) => -angle,
+            (1, None) => -angle,
+            _ => angle,
+        };
         if line.is_some() {
             put(&mut j, "axis", json!({"line": "axis"}));
         } else {

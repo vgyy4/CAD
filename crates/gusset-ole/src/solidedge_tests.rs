@@ -855,3 +855,29 @@ fn a_protrusion_through_all_reaches_the_stored_box() {
     let d = core::f64::consts::FRAC_1_SQRT_2;
     assert_eq!(reach_in_box(&bx, [0.0; 3], [d, d, 0.0]), None);
 }
+
+#[test]
+fn a_revolve_turns_its_profile_to_the_side_it_names() {
+    // The protrusion part's rectangle (x 0..20, y 0..10 mm on XY, normal +z), revolved 90
+    // degrees about the y axis: a positive turn about +y carries it to -z, against its normal.
+    // Side 2 (along the normal) is then a negative turn, side 1 a positive one; about -y the
+    // other way round.
+    for (dir, side, want) in [(1.0, 2.0, -90.0), (1.0, 1.0, 90.0), (-1.0, 2.0, 90.0), (-1.0, 1.0, -90.0)] {
+        let mut a = vec![0u8; 4];
+        a.push(0x03);
+        a.extend(f64s(&[0.0, 0.0, 0.0, 0.0, dir, 0.0, 0.0, 1.0]));
+        let mut more = obj(30, 21, &a);
+        more.extend(obj(36, 22, &small(13.0)));
+        more.extend(obj(36, 23, &small(side)));
+        more.extend(obj(36, 24, &small(core::f64::consts::FRAC_PI_2)));
+        more.extend(obj(
+            38,
+            25,
+            &func("JMRevolvedProtrusionFunction", &[&[25], &[12], &[2], &[22], &[23], &[0], &[21], &[24]]),
+        ));
+        let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+        let r = &t["features"][3];
+        assert_eq!(r["type"], "revolve", "{t}");
+        assert_eq!(r["angle"], json!(want), "{dir} {side}: {t}");
+    }
+}
