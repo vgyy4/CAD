@@ -1248,9 +1248,12 @@ impl GussetMcp {
         match png {
             Ok(bytes) if is_png(&bytes) && bytes.len() <= MAX_PNG_BYTES => {
                 let mut meta = json!({"width": w, "height": h, "bytes": bytes.len(), "mime_type": "image/png"});
-                if empty {
-                    meta["note"] = json!(
-                        "the picture is empty: the model has no bodies (an open board or schematic is not drawn here; pcb_import adds a board as bodies)"
+                if let (true, Some(o)) = (empty, meta.as_object_mut()) {
+                    o.insert(
+                        "note".into(),
+                        json!(
+                            "the picture is empty: the model has no bodies (an open board or schematic is not drawn here; pcb_import adds a board as bodies)"
+                        ),
                     );
                 }
                 let mut r = CallToolResult::success(vec![

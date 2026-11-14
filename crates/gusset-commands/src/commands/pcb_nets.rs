@@ -296,8 +296,8 @@ impl Command for PcbNetClass {
         // board does not have (nets keep a schematic's sheet path: /USB_P).
         let unknown: Vec<&String> =
             self.nets.iter().filter(|n| !self.delete && !open.board.nets.iter().any(|b| &b.name == *n)).collect();
-        if !unknown.is_empty() {
-            extra["unknown_nets_user_text"] = json!(unknown);
+        if let (false, Some(o)) = (unknown.is_empty(), extra.as_object_mut()) {
+            o.insert("unknown_nets_user_text".into(), json!(unknown));
         }
         let out = commit_board(s, ctx, label, open.file.clone(), &open.board, Some(Some(hash)), extra)?;
         Ok(out)
@@ -379,7 +379,10 @@ impl Command for PcbAddZone {
             settings: st,
         };
         let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
+        // A board with no nets yet takes the zone's net as its first; once it has nets, a name it
+        // lacks is a typo or a missing sheet path.
         if let Some(n) = &z.net
+            && open.board.nets.iter().any(|b| !b.name.is_empty())
             && !open.board.nets.iter().any(|b| &b.name == n)
         {
             return Err(CommandError::not_found(format!("no net '{}' on this board", crate::paths::display_name(n)))
