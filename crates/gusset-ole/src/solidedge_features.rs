@@ -15,6 +15,7 @@
 //! * each profile: its plane (an absolute frame in the plane object) and its 2D curves
 //!   (lines, circles and arcs, in metres in the plane's frame).
 //!
+//! * profiles copied by a smart pattern: the seed's curves on the plane the copy stores;
 //! * rounds of a constant radius and equal chamfers: the size and the edges, each picked on
 //!   the curve the part stored for it in the feature's edge set (lines, circles, arcs).
 //!
@@ -716,6 +717,9 @@ impl Profile {
 /// the curves of its `Profile2d`.
 fn profile(st: &Store, serial: u32) -> Result<Profile, String> {
     let f = st.func(serial).ok_or("the profile is not readable")?;
+    if f.class == "JMDummyComputeFunction" {
+        return copied_profile(st, serial, &f);
+    }
     if f.class != "JProfileRecomputeEx" {
         return Err(format!("the profile is a {} (not a sketch profile)", label(&f.class)));
     }
@@ -729,9 +733,19 @@ fn profile(st: &Store, serial: u32) -> Result<Profile, String> {
     if n > MAX_MEMBERS {
         return Err("the profile has too many members".into());
     }
+    let curves = members(st, pb, 12, n, Some(pl))?;
+    Ok(Profile { origin: pl.0, normal: pl.1, x: pl.2, curves })
+}
+
+/// The curves of a profile's `n` members, listed (`u32` serials) from `at` in `b`. A member kept
+/// only in `SKETCH.P_B` is brought into `plane`, which a copied profile does not have.
+fn members(st: &Store, b: &[u8], at: usize, n: u32, plane: Option<(V3, V3, V3)>) -> Result<Vec<Curve2>, String> {
+    if n > MAX_MEMBERS {
+        return Err("the profile has too many members".into());
+    }
     let mut curves = Vec::new();
     for k in 0..n as usize {
-        let m = u32_at(pb, 12 + 4 * k).ok_or("the 2D profile is cut short")?;
+        let m = u32_at(b, at + 4 * k).ok_or("the 2D profile is cut short")?;
         // No member (a slot left empty).
         if m == 0 || m == u32::MAX || not_a_curve(st.kind_name(m)) {
             continue;
@@ -739,6 +753,7 @@ fn profile(st: &Store, serial: u32) -> Result<Profile, String> {
         let Some(mb) = st.obj(m) else {
             // A curve of a sketch: in the sketches' Parasolid partition.
             let e = st.sketch.get(&m).ok_or("a profile curve is not stored in the part")?;
+            let pl = plane.ok_or("a copied profile's curve is kept only in the sketches")?;
             curves.push(e.flat(pl.0, pl.1, pl.2).ok_or("a sketch curve does not lie in the profile plane")?);
             continue;
         };
@@ -753,7 +768,40 @@ fn profile(st: &Store, serial: u32) -> Result<Profile, String> {
     if curves.is_empty() {
         return Err("the profile has no curves".into());
     }
-    Ok(Profile { origin: pl.0, normal: pl.1, x: pl.2, curves })
+    Ok(curves)
+}
+
+/// The bytes after a copied profile's frame: five zero bytes, `01 01 00 00 00` and a class id.
+const COPY_FRAME_END: [u8; 26] = [
+    0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0x40, 0x11, 0x7d, 0xba, 0x44, 0x76, 0x1b, 0x10, 0xac, 0x07, 0x08, 0x00, 0x36, 0x01,
+    0xb1, 0x4e,
+];
+
+/// A profile copied by a smart pattern (`JMDummyComputeFunction`): `u32 n` at +12 and the `n`
+/// member serials of the seed profile's curves (2D, in the seed's frame), the curves again,
+/// then the copy's plane laid out as a plane object's: origin, normal and x direction (9 `f64`,
+/// metres, absolute), followed by [`COPY_FRAME_END`].
+fn copied_profile(st: &Store, serial: u32, f: &Func) -> Result<Profile, String> {
+    let from = f.slot(1).and_then(|p| st.func(p)).map(|p| p.class).unwrap_or_default();
+    if from != "JMSmartPatternFunction" {
+        return Err(format!("the profile is copied by a {} (not read)", label(&from)));
+    }
+    let b = st.obj(serial).ok_or("the profile is missing")?;
+    let n = u32_at(b, 12).ok_or("the copied profile is cut short")?;
+    let curves = members(st, b, 16, n, None)?;
+    let (origin, normal, x) = copy_frame(b).ok_or("the copied profile's plane is not readable")?;
+    Ok(Profile { origin, normal, x, curves })
+}
+
+/// A copied profile's plane: origin, normal and x direction (see [`copied_profile`]).
+pub(crate) fn copy_frame(b: &[u8]) -> Option<(V3, V3, V3)> {
+    let at = b.windows(COPY_FRAME_END.len()).position(|w| w == COPY_FRAME_END)?.checked_sub(72)?;
+    let (o, n, x) = (v3_at(b, at)?, v3_at(b, at + 24)?, v3_at(b, at + 48)?);
+    if !(finite3(o) && o.iter().all(|v| v.abs() < 1e6)) {
+        return None;
+    }
+    let unit_len = |v: V3| (dot(v, v) - 1.0).abs() < 1e-9;
+    (unit_len(n) && unit_len(x) && dot(n, x).abs() < 1e-9).then_some((o, n, x))
 }
 
 /// A sketch of profiles on one plane, as a tree feature.

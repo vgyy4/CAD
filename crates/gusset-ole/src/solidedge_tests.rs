@@ -3,8 +3,8 @@
 
 use crate::fixtures::ole;
 use crate::solidedge_features::{
-    Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, curve, edge_pick, edge_set, feature_tree,
-    history, key_point_reach, parse_func, plane, value,
+    Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, copy_frame, curve, edge_pick, edge_set,
+    feature_tree, history, key_point_reach, parse_func, plane, value,
 };
 use serde_json::json;
 
@@ -395,4 +395,54 @@ fn a_revolve_axis_off_the_sketch_axes_is_a_construction_line() {
     assert_eq!(axis_in_plane(&p, ([3.0, 2.0, 0.0], [0.0, 0.0, 1.0])), Some(([-2.0, 0.0], [-2.0, 1.0])));
     // Out of the plane: none.
     assert_eq!(axis_in_plane(&p, ([3.0, 2.5, 0.0], [0.0, 0.0, 1.0])), None);
+}
+
+/// A profile copied by a pattern or mirror (`from`, slot 1): header, the members, a stand-in
+/// for the curve copies, the copy's plane (origin, normal, x) and the bytes that end it.
+fn copied(members: &[u32], o: [f64; 3], n: [f64; 3], x: [f64; 3], from: u32) -> Vec<u8> {
+    let mut v = vec![0x20, 0, 0, 2];
+    v.extend((members.len() as u32).to_le_bytes());
+    for m in members {
+        v.extend(m.to_le_bytes());
+    }
+    v.extend([1, 0, 0, 0, 1, 2, 0x67]);
+    v.extend(f64s(&[0.0; 6]));
+    v.extend(f64s(&o));
+    v.extend(f64s(&n));
+    v.extend(f64s(&x));
+    v.extend([0, 0, 0, 0, 0, 1, 1, 0, 0, 0]);
+    v.extend([0x40, 0x11, 0x7d, 0xba, 0x44, 0x76, 0x1b, 0x10, 0xac, 0x07, 0x08, 0x00, 0x36, 0x01, 0xb1, 0x4e]);
+    v.extend(func("JMDummyComputeFunction", &[&[0], &[from]]));
+    v
+}
+
+#[test]
+fn a_pattern_copied_profile_lies_on_its_stored_plane() {
+    let b = copied(&[4], [0.0, 0.0, 0.01], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0], 31);
+    assert_eq!(copy_frame(&b), Some(([0.0, 0.0, 0.01], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0])));
+    // Not unit or not square: none.
+    assert_eq!(copy_frame(&copied(&[4], [0.0; 3], [0.0, 0.0, 2.0], [0.0, 1.0, 0.0], 31)), None);
+    assert_eq!(copy_frame(&copied(&[4], [0.0; 3], [0.0, 0.0, 1.0], [0.0, 0.6, 0.8], 31)), None);
+    // A cutout of the protrusion's rectangle copied by a smart pattern onto z = 10 mm, turned a
+    // quarter; then one copied by a mirror (not read).
+    let mut more = obj(40, 30, &copied(&[4, 5, 6, 7], [0.0, 0.0, 0.01], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], 31));
+    more.extend(obj(38, 31, &func("JMSmartPatternFunction", &[&[31], &[12]])));
+    more.extend(obj(36, 32, &small(14.0)));
+    more.extend(obj(36, 33, &small(1.0)));
+    more.extend(obj(38, 34, &func("JMCutoutFunction", &[&[34], &[12], &[30], &[32], &[33]])));
+    more.extend(obj(40, 35, &copied(&[4], [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 36)));
+    more.extend(obj(38, 36, &func("JMMirrorCopyFunction", &[&[36], &[12]])));
+    more.extend(obj(38, 37, &func("JMCutoutFunction", &[&[37], &[34], &[35], &[32], &[33]])));
+    let t = feature_tree(&part_with(1.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = t["features"].as_array().unwrap();
+    assert_eq!(f[2]["type"], "sketch", "{t}");
+    assert_eq!(
+        f[2]["plane"],
+        json!({"origin": [0.0, 0.0, 10.0], "x_axis": [0.0, 1.0, 0.0], "y_axis": [-1.0, 0.0, 0.0]})
+    );
+    assert_eq!(f[2]["curves"].as_array().unwrap().len(), 4);
+    assert_eq!(f[3]["type"], "extrude");
+    assert_eq!(f[3]["operation"], "cut");
+    assert_eq!(f[4]["type"], "unsupported");
+    assert!(f[4]["reason"].as_str().unwrap().contains("MirrorCopy"), "{t}");
 }
