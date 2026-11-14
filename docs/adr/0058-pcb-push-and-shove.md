@@ -108,7 +108,9 @@ shove) for the same pairs.
   pushed through `pcb.route`, DRC clean, one undo restores the board exactly);
   `gusset-app` `tests_pcb` (the preview shows the push, cached, and the click command).
 * MCP: `pcb.route`'s description is the same length (72 bytes), its schema unchanged; the
-  pcb toolset's size is unchanged.
+  pcb toolset stays at 24 tools, 14 360 bytes (598 per tool).
+* Suites: `gusset-pcb` 133, `gusset-commands` 302, `gusset-app` 195, `gusset-mcp` 47 + 34,
+  all passing (the test-only Gerber re-reader included).
 
 ## Consequences
 * Pushing keeps other tracks' shapes and topology; what it cannot do (crossings) falls back
