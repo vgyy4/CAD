@@ -95,12 +95,14 @@ fn a_function_gives_its_class_and_slots() {
 #[test]
 fn objects_are_cut_at_rising_serials() {
     let mut c = vec![0x44, 0xf5, 0x90, 0x6c, 0, 0, 0, 0];
+    c.extend(obj(1, 9, &[1; 3]));
     c.extend(obj(1, 10, b"QQ\x01\x00\x05\x00\x00\x00abc"));
-    c.extend(obj(2, 11, &[9; 5]));
+    c.extend(obj(2, 40000, &[9; 5]));
     let st = Store::new(c, &[]).unwrap();
-    // The "QQ" inside object 10 names serial 5, below 10: not an object.
+    // The "QQ" inside object 10 names serial 5, below 10: it breaks the rise, not an object.
+    // Serials may jump far.
     assert_eq!(st.obj(10).unwrap().len(), 8 + 11);
-    assert_eq!(st.obj(11).unwrap(), obj(2, 11, &[9; 5]).as_slice());
+    assert_eq!(st.obj(40000).unwrap(), obj(2, 40000, &[9; 5]).as_slice());
     assert!(st.obj(5).is_none());
     assert!(Store::new(vec![1, 2, 3], &[]).is_err());
 }
@@ -163,6 +165,11 @@ fn sketch_curves_come_into_the_profile_plane() {
 
 /// A part with one protrusion: a 20 x 10 mm rectangle on XY, `side` and depth 5 mm.
 fn part(side: f64, extent: f64) -> Vec<u8> {
+    part2(side, extent, None)
+}
+
+/// The same with a second extent: side and depth 2 mm.
+fn part2(side: f64, extent: f64, second: Option<f64>) -> Vec<u8> {
     let mut c = vec![0x44, 0xf5, 0x90, 0x6c, 0, 0, 0, 0];
     c.extend(obj(6, 1, &plane_payload([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0])));
     // The profile: a function whose slot 0 is the plane, then "Profile2d" naming object 3.
@@ -183,8 +190,15 @@ fn part(side: f64, extent: f64) -> Vec<u8> {
     c.extend(obj(36, 8, &small(extent)));
     c.extend(obj(36, 9, &small(side)));
     c.extend(obj(36, 10, &small(0.005)));
-    c.extend(obj(38, 11, &func("JMProtrusionFunction", &[&[11], &[0], &[2], &[8], &[9], &[0], &[10]])));
+    let mut slots: Vec<&[u32]> = vec![&[11], &[0], &[2], &[8], &[9], &[0], &[10]];
+    if second.is_some() {
+        slots.extend([&[0u32] as &[u32], &[0], &[0], &[0], &[0], &[16], &[17], &[18]]);
+    }
+    c.extend(obj(38, 11, &func("JMProtrusionFunction", &slots)));
     c.extend(obj(38, 12, &func("JMThreadFunction", &[&[12], &[11]])));
+    c.extend(obj(36, 16, &small(13.0)));
+    c.extend(obj(36, 17, &small(second.unwrap_or(0.0))));
+    c.extend(obj(36, 18, &small(0.002)));
     ole(&[("PSMcluster0", &c), ("PSMtypetable", &[])])
 }
 
@@ -206,6 +220,12 @@ fn a_protrusion_becomes_a_sketch_and_an_extrude() {
     let t = feature_tree(&part(3.0, 13.0), "p.par", &crate::Limits::default()).unwrap();
     assert_eq!(t["features"][1]["symmetric"], json!(true));
     assert_eq!(t["features"][1]["distance"], json!(5.0));
+    // Two sides: the second reaches 2 mm the other way.
+    let t = feature_tree(&part2(2.0, 13.0, Some(1.0)), "p.par", &crate::Limits::default()).unwrap();
+    assert_eq!(t["features"][1]["distance"], json!(5.0));
+    assert_eq!(t["features"][1]["distance2"], json!(-2.0));
+    let t = feature_tree(&part2(2.0, 13.0, Some(2.0)), "p.par", &crate::Limits::default()).unwrap();
+    assert_eq!(t["features"][0]["type"], "unsupported");
     // An extent not read: the feature says so.
     let t = feature_tree(&part(2.0, 72.0), "p.par", &crate::Limits::default()).unwrap();
     assert_eq!(t["features"][0]["type"], "unsupported");

@@ -39,9 +39,9 @@ const MAX_MEMBERS: u32 = 20_000;
 /// Longest type signature and class name read.
 const MAX_SIG: u32 = 4096;
 const MAX_NAME: u32 = 128;
-/// Largest serial step between two consecutive objects (a `QQ` inside a payload whose
-/// "serial" jumps further is not an object start).
-const MAX_SERIAL_STEP: u32 = 5000;
+/// Largest object kind and serial taken for an object start.
+const MAX_KIND: u16 = 4096;
+const MAX_SERIAL: u32 = 1 << 28;
 /// A through-all extent, in millimetres.
 const THROUGH: f64 = 1e4;
 /// Profile points closer than this (mm) are one point.
@@ -213,22 +213,22 @@ pub(crate) struct Store {
 impl Store {
     /// Segments `PSMcluster0` into objects (`QQ`, kind, serial; serials rise).
     pub(crate) fn new(data: Vec<u8>, typetable: &[u8]) -> Result<Store, String> {
-        let mut starts: Vec<(u32, u16, usize)> = Vec::new();
-        let mut last = 0u32;
+        // Every `QQ` with a plausible kind is a candidate; the objects are the longest run of
+        // candidates whose serials rise (a `QQ` inside a payload breaks the rise).
+        let mut cand: Vec<(u32, u16, usize)> = Vec::new();
         let mut i = 0;
         while let Some(p) = data.get(i..).and_then(|t| t.windows(2).position(|w| w == b"QQ")) {
             let at = i + p;
-            i = at + 1;
+            i = at + 2;
             let (Some(kind), Some(serial)) = (u16_at(&data, at + 2), u32_at(&data, at + 4)) else { break };
-            if serial > last && serial - last < MAX_SERIAL_STEP {
-                if starts.len() >= MAX_OBJECTS {
+            if kind < MAX_KIND && serial > 0 && serial < MAX_SERIAL {
+                if cand.len() >= 2 * MAX_OBJECTS {
                     return Err("the part has too many objects".into());
                 }
-                starts.push((serial, kind, at));
-                last = serial;
-                i = at + 8;
+                cand.push((serial, kind, at));
             }
         }
+        let starts = rising(&cand);
         if starts.is_empty() {
             return Err("the part's object store is empty".into());
         }
@@ -252,6 +252,34 @@ impl Store {
     fn func(&self, serial: u32) -> Option<Func> {
         parse_func(self.obj(serial)?)
     }
+}
+
+/// The longest subsequence of `cand` (in store order) whose serials rise strictly.
+fn rising(cand: &[(u32, u16, usize)]) -> Vec<(u32, u16, usize)> {
+    // tails[k]: index of the smallest last serial of a rising run of length k + 1.
+    let mut tails: Vec<usize> = Vec::new();
+    let mut prev: Vec<Option<usize>> = vec![None; cand.len()];
+    for (i, c) in cand.iter().enumerate() {
+        let k = tails.partition_point(|&t| cand.get(t).is_some_and(|x| x.0 < c.0));
+        if let Some(p) = prev.get_mut(i) {
+            *p = k.checked_sub(1).and_then(|j| tails.get(j).copied());
+        }
+        if let Some(t) = tails.get_mut(k) {
+            *t = i;
+        } else {
+            tails.push(i);
+        }
+    }
+    let mut out = Vec::new();
+    let mut at = tails.last().copied();
+    while let Some(i) = at {
+        if let Some(c) = cand.get(i) {
+            out.push(*c);
+        }
+        at = prev.get(i).copied().flatten();
+    }
+    out.reverse();
+    out
 }
 
 /// `PSMtypetable`: records `class id(16), u32 index, 01 00 ff ff, u32 count, u16 n, name(n)`.
@@ -333,10 +361,11 @@ pub(crate) fn sketch_edges(pb: &[u8]) -> HashMap<u32, Edge3> {
         if g.type_name(e) != Some("EDGE") {
             continue;
         }
-        // The head fin's vertex ends the edge, the other fin's starts it.
+        // In a sketch wire the head fin's vertex starts the edge and the other fin's ends it
+        // (the arcs of the samples run so).
         let head = g.ptr(e, "fin");
-        let end = pt(g.ptr(head, "vertex"));
-        let start = pt(g.ptr(g.ptr(head, "other"), "vertex"));
+        let start = pt(g.ptr(head, "vertex"));
+        let end = pt(g.ptr(g.ptr(head, "other"), "vertex"));
         let cu = g.ptr(e, "curve");
         let forward = g.ch(cu, "sense") != Some(b'-');
         let edge = match g.type_name(cu) {
@@ -421,7 +450,8 @@ pub(crate) enum Curve2 {
 /// A profile member: a line (`u16 0, x1, y1, x2, y2`), a circle (`u16 0, cx, cy, r, 0.0,
 /// 1.0, u8`) or an arc (`u16 0, cx, cy, r, u8 ccw, a0, a1`); `None` for anything else.
 pub(crate) fn curve(b: &[u8]) -> Option<Curve2> {
-    if u16_at(b, 8)? != 0 {
+    // u8 0, u8 flags (0 or 8 seen on curves).
+    if *b.get(8)? != 0 || !matches!(*b.get(9)?, 0 | 8) {
         return None;
     }
     let ok = |v: f64| v.is_finite() && v.abs() < 1e6;
@@ -500,7 +530,8 @@ fn profile(st: &Store, serial: u32) -> Result<Profile, String> {
     let mut curves = Vec::new();
     for k in 0..n as usize {
         let m = u32_at(pb, 12 + 4 * k).ok_or("the 2D profile is cut short")?;
-        if not_a_curve(st.kind_name(m)) {
+        // No member (a slot left empty).
+        if m == 0 || m == u32::MAX || not_a_curve(st.kind_name(m)) {
             continue;
         }
         let Some(mb) = st.obj(m) else {
@@ -713,6 +744,23 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
         };
         put(&mut j, "distance", json!(rnd(dist)));
         put(&mut j, "symmetric", json!(symmetric));
+        // A second extent (slots 12 to 14, laid out like 3, 4 and 6): the other side.
+        if let Some(e2) = code(12) {
+            let reach = match e2 {
+                13 => small(14).ok_or("the second depth is not readable")?.abs() * MM,
+                14 => THROUGH,
+                e => return Err(format!("second extent {e} (not finite or through all)")),
+            };
+            let d2 = match code(13) {
+                Some(1) => -reach,
+                Some(2) => reach,
+                other => return Err(format!("second side {other:?}")),
+            };
+            if symmetric || d2 * dist >= 0.0 || d2.abs() < 1e-9 {
+                return Err("the second extent does not lie on the other side of the profile plane".into());
+            }
+            put(&mut j, "distance2", json!(rnd(d2)));
+        }
         if extent == 14 {
             put(&mut j, "through_all", json!(true));
         }
