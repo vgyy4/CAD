@@ -363,6 +363,51 @@ fn a_route_dives_under_a_wall_through_vias() {
     assert_eq!(board(&s).board.tree, before.tree);
 }
 
+#[test]
+fn a_track_necks_down_to_reach_a_tight_pad() {
+    let mut s = setup();
+    run(&mut s, &u(1), "pcb.new", json!({"width": "30 mm", "height": "10 mm"}));
+    // A1 in a row of 0.3 × 1.6 mm pads 0.5 mm apart (B either side); A2 clear.
+    let fp = |r: &str, at: [f64; 2], size: [f64; 2]| {
+        format!(
+            "(footprint \"P\" (layer \"F.Cu\") (at {} {}) (property \"Reference\" \"{r}\" (at 0 0) (layer \"F.Fab\")) (pad \"1\" smd rect (at 0 0) (size {} {}) (layers \"F.Cu\")))",
+            at[0], at[1], size[0], size[1]
+        )
+    };
+    let parts = [
+        fp("A1", [10.0, 5.0], [0.3, 1.6]),
+        fp("B1", [9.5, 5.0], [0.3, 1.6]),
+        fp("B2", [10.5, 5.0], [0.3, 1.6]),
+        fp("A2", [25.0, 5.0], [0.6, 0.6]),
+    ];
+    let dir = s.project_dir.clone().unwrap();
+    let text = board(&s).board.write().replacen("(net 0 \"\")", &format!("(net 0 \"\") {}", parts.join(" ")), 1);
+    std::fs::write(dir.join("row.kicad_pcb"), text).unwrap();
+    run(&mut s, &u(2), "pcb.open", json!({"path": "row.kicad_pcb"}));
+    for (r, n) in [("A1", "A"), ("A2", "A"), ("B1", "B"), ("B2", "B")] {
+        run(&mut s, &u(3), "pcb.set_net", json!({"pads": [format!("{r}.1")], "net": n}));
+    }
+    let route = json!({"points": [[10, 5], [25, 5]], "width": 0.4, "shove": false});
+    // At 0.4 mm the pad cannot be left, and with neck-down refused there is no way.
+    let mut no_neck = route.clone();
+    no_neck["neck"] = json!(false);
+    let e = execute(&mut s, &u(4), "pcb.route", no_neck).unwrap_err();
+    assert_eq!(e.code, "not_found");
+    let before = board(&s).board.clone();
+    let r = run(&mut s, &u(5), "pcb.route", route);
+    assert_eq!(r["neck_width"], json!(0.15), "{r}");
+    assert!(r["necked_mm"].as_f64().unwrap() > 0.0 && r["necked_mm"].as_f64().unwrap() < 2.0, "{r}");
+    assert_eq!(r["unrouted"], 1, "only B left: {r}");
+    let b = board(&s).board.clone();
+    let mut widths: Vec<f64> = b.tracks.iter().map(|t| t.width).collect();
+    widths.dedup();
+    assert_eq!(widths, [0.15, 0.4], "narrow at the pad, then full width");
+    assert_eq!(run(&mut s, &u(6), "pcb.drc", json!({}))["violations"], json!([]));
+    // One undo takes the whole track back.
+    run(&mut s, &u(7), "history.undo", json!({}));
+    assert_eq!(board(&s).board.tree, before.tree, "one undo step");
+}
+
 /// A stand-in for Freerouting: a shell script in a temporary folder (nothing is
 /// downloaded or run but this). `body` runs with `$out` set to the `-do` path.
 #[cfg(unix)]

@@ -89,7 +89,7 @@ pub struct PcbRoute {
     /// Default F.Cu.
     #[serde(default)]
     pub layer: Option<String>,
-    /// Default: the start's net.
+    /// Default: start's.
     #[serde(default)]
     pub net: Option<String>,
     /// mm (default: class's).
@@ -104,9 +104,12 @@ pub struct PcbRoute {
     /// false: no shove.
     #[serde(default)]
     pub shove: Option<bool>,
-    /// any, or e.g. F.Cu,B.Cu: vias change layer.
+    /// any or F.Cu,B.Cu
     #[serde(default)]
     pub layers: Option<String>,
+    // false: full width near pads too (no description: the pcb toolset is at its cap).
+    #[serde(default)]
+    pub neck: Option<bool>,
 }
 
 /// The layers a route may use (ADR 0059): `layer` alone unless the caller names more
@@ -197,9 +200,13 @@ impl Command for PcbRoute {
         let mut nb = b.clone();
         let mut obs: std::collections::BTreeMap<String, route::Obstacles> = std::collections::BTreeMap::new();
         let mut lay: Option<layers::Layered> = None;
+        let mut lay_neck: Option<layers::Layered> = None;
+        // Neck-down near pads (ADR 0060): to the net's minimum width, unless refused.
+        let neck = if self.neck == Some(false) { width } else { layers::neck_width(rules, net.as_deref()).min(width) };
         let (mut shoved, mut shoved_vias) = (0usize, 0usize);
-        // Runs of the new track on one layer, and the vias between them.
-        let mut runs: Vec<(String, Vec<[f64; 2]>)> = vec![(cur.clone(), vec![first])];
+        // Runs of the new track on one layer (with each segment's width), and the vias
+        // between them.
+        let mut runs: Vec<(String, Vec<[f64; 2]>, Vec<f64>)> = vec![(cur.clone(), vec![first], Vec::new())];
         let mut vias: Vec<[f64; 2]> = Vec::new();
         let n = self.points.len();
         for (i, w) in self.points.windows(2).enumerate() {
@@ -226,6 +233,7 @@ impl Command for PcbRoute {
             };
             if let Some(leg) = leg {
                 if let Some(r) = runs.last_mut() {
+                    r.2.extend(std::iter::repeat_n(width, leg.len().saturating_sub(1)));
                     r.1.extend(leg.into_iter().skip(1));
                 }
                 continue;
@@ -234,25 +242,41 @@ impl Command for PcbRoute {
                 CommandError::not_found(format!("no clear way from point {i} to point {} ({why})", i + 1))
                     .hint("move the points, allow layers: \"any\", or pass around: false")
             };
-            // Across layers in one search (ADR 0059).
+            // Across layers in one search (ADR 0059), then near pads with neck-down (ADR 0060).
             let mut why = "no way round";
+            let mut found: Option<layers::LayerRoute> = None;
             if allowed.len() > 1 {
                 let l = lay.get_or_insert_with(|| layers::Layered::new(&nb, rules, &allowed, net.as_deref(), width));
                 match layers::route(l, rules, a, &starts, c, &targets, grid, true, None) {
-                    Ok(r) => {
-                        for (layer_k, pts) in r.legs {
-                            match runs.last_mut() {
-                                Some(run) if run.0 == layer_k => run.1.extend(pts.into_iter().skip(1)),
-                                Some(run) if run.1.len() < 2 => *run = (layer_k, pts),
-                                _ => runs.push((layer_k, pts)),
-                            }
-                        }
-                        vias.extend(r.vias);
-                        cur = runs.last().map(|r| r.0.clone()).unwrap_or_default();
-                        continue;
-                    }
+                    Ok(r) => found = Some(r),
                     Err(e) => why = e,
                 }
+            }
+            let radii = [layers::neck_radius(&nb, a, net.as_deref()), layers::neck_radius(&nb, c, net.as_deref())];
+            if found.is_none() && radii.iter().any(|&r| r > 0.0) {
+                let l = lay_neck.get_or_insert_with(|| {
+                    layers::Layered::with_neck(&nb, rules, &allowed, net.as_deref(), width, neck)
+                });
+                match layers::route_necked(l, rules, a, &starts, c, &targets, grid, true, None, radii) {
+                    Ok(r) => found = Some(r),
+                    Err(e) => why = e,
+                }
+            }
+            if let Some(r) = found {
+                for (k, (layer_k, pts)) in r.legs.into_iter().enumerate() {
+                    let ws = r.widths.get(k).cloned().unwrap_or_default();
+                    match runs.last_mut() {
+                        Some(run) if run.0 == layer_k => {
+                            run.1.extend(pts.into_iter().skip(1));
+                            run.2.extend(ws);
+                        }
+                        Some(run) if run.1.len() < 2 => *run = (layer_k, pts, ws),
+                        _ => runs.push((layer_k, pts, ws)),
+                    }
+                }
+                vias.extend(r.vias);
+                cur = runs.last().map(|r| r.0.clone()).unwrap_or_default();
+                continue;
             }
             if !one_layer || !self.shove.unwrap_or(true) {
                 return Err(refused(why));
@@ -273,22 +297,40 @@ impl Command for PcbRoute {
             };
             obs.clear();
             lay = None;
+            lay_neck = None;
             if let Some(r) = runs.last_mut() {
+                r.2.extend(std::iter::repeat_n(width, path.len().saturating_sub(1)));
                 r.1.extend(path.into_iter().skip(1));
             }
         }
         let radius = self.arc_radius.unwrap_or(0.0);
         let mut batch: Vec<gusset_pcb::edit::NewRoute> = Vec::new();
-        let mut length = 0.0;
-        for (l, pts) in &runs {
-            let pts = route::simplify(pts);
-            if pts.len() < 2 {
-                continue;
+        let (mut length, mut necked) = (0.0, 0.0);
+        for (l, pts, ws) in &runs {
+            // Pieces of one width; corners rounded at full width only.
+            let mut pieces: Vec<(f64, Vec<[f64; 2]>)> = Vec::new();
+            for (k, w) in pts.windows(2).enumerate() {
+                let &[p, q] = w else { continue };
+                let wk = ws.get(k).copied().unwrap_or(width);
+                match pieces.last_mut() {
+                    Some((pw, pp)) if (*pw - wk).abs() < 1e-12 => pp.push(q),
+                    _ => pieces.push((wk, vec![p, q])),
+                }
             }
-            let o = obs.entry(l.clone()).or_insert_with(|| route::Obstacles::new(&nb, rules, l, net.as_deref(), width));
-            let segs = route::with_arcs(o, &pts, radius);
-            length += route::length(&segs);
-            batch.push((segs, width, l.clone(), net.clone()));
+            for (w, pp) in pieces {
+                let pp = route::simplify(&pp);
+                if pp.len() < 2 {
+                    continue;
+                }
+                let o =
+                    obs.entry(l.clone()).or_insert_with(|| route::Obstacles::new(&nb, rules, l, net.as_deref(), width));
+                let segs = route::with_arcs(o, &pp, if w < width { 0.0 } else { radius });
+                length += route::length(&segs);
+                if w < width {
+                    necked += route::length(&segs);
+                }
+                batch.push((segs, w, l.clone(), net.clone()));
+            }
         }
         let via = layers::via_size(rules, net.as_deref());
         let new_vias: Vec<gusset_pcb::edit::NewVia> =
@@ -309,6 +351,10 @@ impl Command for PcbRoute {
             m.insert("first_via".into(), json!(first_via));
             m.insert("via_size".into(), json!([via.size, via.drill]));
         }
+        if let (true, Value::Object(m)) = (necked > 0.0, &mut extra) {
+            m.insert("neck_width".into(), json!(neck));
+            m.insert("necked_mm".into(), json!(r3(necked)));
+        }
         commit_board(s, ctx, "Route track", open.file.clone(), &nb, None, extra)
     }
 }
@@ -328,10 +374,10 @@ pub struct PcbRoutePair {
     /// Default F.Cu.
     #[serde(default)]
     pub layer: Option<String>,
-    /// Track width (default: the class's diff_pair_width).
+    /// mm (default: class's).
     #[serde(default)]
     pub width: Option<f64>,
-    /// Edge gap (default: diff_pair_gap).
+    /// Edge gap, mm.
     #[serde(default)]
     pub gap: Option<f64>,
 }
