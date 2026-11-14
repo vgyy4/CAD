@@ -17,13 +17,15 @@
 //!   ending on it re-joined at 45° on this layer and stretched on the others (as dragging
 //!   a via does, ADR 0050). Pads never move.
 //! * Every pushed line and via is checked against the hard copper of the board; the whole
-//!   result is kept only when the design rule check finds no more problems than before.
+//!   result is kept only when the design rule check finds no more problems than before
+//!   (counted where tracks and vias changed, [`crate::drc::count_near`], ADR 0059).
 
 use crate::board::{Board, Limits, Pt};
 use crate::copper::{self, Copper, Prim};
 use crate::route::{self, Obstacles, Seg, Soft};
 use crate::rules::Rules;
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 /// How many pushes deep a chain may go.
 pub const MAX_DEPTH: usize = 8;
@@ -363,11 +365,18 @@ impl<'a> Model<'a> {
         }
         let straight =
             |i: usize| board.tracks.get(i).is_some_and(|t| t.mid.is_none() && pushable_net(&board.net_name(&t.net)));
+        // Pads on the layer by x, to find the one a point is on quickly.
+        let mut pads: Vec<(Pt, f64)> = board
+            .pads
+            .iter()
+            .filter(|pad| board.on_layer(&pad.layers, layer))
+            .map(|pad| (pad.at, pad.size[0].max(pad.size[1]) / 2.0))
+            .collect();
+        pads.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]));
+        let reach = pads.iter().fold(0.0f64, |r, p| r.max(p.1));
         let on_pad = |p: Pt| {
-            board
-                .pads
-                .iter()
-                .any(|pad| board.on_layer(&pad.layers, layer) && dist(pad.at, p) < pad.size[0].max(pad.size[1]) / 2.0)
+            let lo = pads.partition_point(|q| q.0[0] < p[0] - reach);
+            pads.iter().skip(lo).take_while(|q| q.0[0] <= p[0] + reach).any(|q| dist(q.0, p) < q.1)
         };
         let mut used = vec![false; board.tracks.len()];
         let mut lines = Vec::new();
@@ -815,27 +824,10 @@ pub fn push(
     grid: f64,
     keep: &[Pt],
 ) -> Option<Push> {
-    push_with(board, rules, layer, net, width, from, to, grid, keep, None)
+    push_reason(board, rules, layer, net, width, from, to, grid, keep).ok()
 }
 
-/// As [`push`], with the board's design rule check count before when known.
-#[allow(clippy::too_many_arguments)]
-pub fn push_with(
-    board: &Board,
-    rules: &Rules,
-    layer: &str,
-    net: Option<&str>,
-    width: f64,
-    from: Pt,
-    to: Pt,
-    grid: f64,
-    keep: &[Pt],
-    before: Option<usize>,
-) -> Option<Push> {
-    push_reason(board, rules, layer, net, width, from, to, grid, keep, before).ok()
-}
-
-/// As [`push_with`], saying why when there is no push.
+/// As [`push`], saying why when there is no push.
 ///
 /// # Errors
 /// Why the track could not be laid by pushing.
@@ -850,23 +842,51 @@ pub fn push_reason(
     to: Pt,
     grid: f64,
     keep: &[Pt],
-    before: Option<usize>,
 ) -> Result<Push, &'static str> {
+    push_cancel(board, rules, layer, net, width, from, to, grid, keep, &AtomicBool::new(false))
+}
+
+/// As [`push_reason`], giving up (with the reason "cancelled") soon after `cancel` is set
+/// (an editor preview whose target moved on).
+///
+/// # Errors
+/// Why the track could not be laid by pushing, or "cancelled".
+#[allow(clippy::too_many_arguments)]
+pub fn push_cancel(
+    board: &Board,
+    rules: &Rules,
+    layer: &str,
+    net: Option<&str>,
+    width: f64,
+    from: Pt,
+    to: Pt,
+    grid: f64,
+    keep: &[Pt],
+    cancel: &AtomicBool,
+) -> Result<Push, &'static str> {
+    let stop = || if cancel.load(AtomicOrdering::Relaxed) { Err("cancelled") } else { Ok(()) };
+    stop()?;
     let mut m = Model::new(board, rules, layer, net, width).ok_or("a failed edit")?;
+    stop()?;
     // The head: hard copper as walls, pushable copper soft.
     let layer_s = layer.to_string();
     let obs = m.hard_obs(&layer_s, net, width).clone();
     let soft = m.soft((width / 2.0, net), &[], true);
-    let search =
-        |soft: &Soft| [true, false].into_iter().find_map(|d| route::walkaround_soft(&obs, soft, from, to, grid, d));
-    let path = match search(&soft) {
+    let search = |soft: &Soft| {
+        [true, false].into_iter().find_map(|d| route::walkaround_soft_cancel(&obs, soft, from, to, grid, d, cancel))
+    };
+    let found = search(&soft);
+    stop()?;
+    let path = match found {
         Some(p) => route::simplify(&p),
         None => {
             // No way without crossing other tracks: lay the head across them and lay the
             // tracks it crosses again round it.
             let mut crossing = m.soft((width / 2.0, net), &[], true);
             crossing.cross = Some(CROSS);
-            let p = route::simplify(&search(&crossing).ok_or("no way even pushing")?);
+            let p = search(&crossing);
+            stop()?;
+            let p = route::simplify(&p.ok_or("no way even pushing")?);
             m.head.push(p.clone());
             let crossed: Vec<usize> = (0..m.lines.len())
                 .filter(|&l| m.lines.get(l).is_some_and(|ln| poly_dist(&p, &ln.pts, 0.0) < 1e-9))
@@ -885,9 +905,11 @@ pub fn push_reason(
     if keep.len() >= 2 {
         m.head.push(keep.to_vec());
     }
+    stop()?;
     if m.run().is_none() {
         return Err(if m.fail.is_empty() { "a failed push" } else { m.fail });
     }
+    stop()?;
     let mut out = Push { path, tracks: Vec::new(), lines: Vec::new(), vias: Vec::new() };
     for l in m.lines.iter().filter(|l| l.moved) {
         out.tracks.extend(&l.segs);
@@ -896,15 +918,18 @@ pub fn push_reason(
     for v in m.vias.iter().filter(|v| v.moved) {
         out.vias.push((v.idx, [v.at[0] - v.orig[0], v.at[1] - v.orig[1]]));
     }
-    // Kept only when the check finds nothing new.
-    let before = before.unwrap_or_else(|| crate::drc::check(board, rules, 100_000).len());
+    // Kept only when the check finds nothing new: counted where tracks and vias changed,
+    // which decides exactly as counting the whole board would (ADR 0059).
     let mut after = board.clone();
     after.apply_push(&out, layer, &Limits::default()).map_err(|_| "a failed edit")?;
     let segs = lines(&out.path);
     if !segs.is_empty() {
         after.add_route(&segs, width, layer, net, &Limits::default()).map_err(|_| "a failed edit")?;
     }
-    if crate::drc::check(&after, rules, 100_000).len() > before {
+    stop()?;
+    if let Some(w) = crate::refill::changed_box(board, &after)
+        && crate::drc::count_near(&after, rules, w) > crate::drc::count_near(board, rules, w)
+    {
         return Err("the check would be worse");
     }
     Ok(out)

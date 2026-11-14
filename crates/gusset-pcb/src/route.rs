@@ -289,7 +289,7 @@ impl PartialOrd for Open {
 /// `from` first, `to` last), or `None` when there is no way within the search window.
 /// `diagonal_first` picks the bend of a free two-segment route.
 pub fn walkaround(obs: &Obstacles, from: Pt, to: Pt, grid: f64, diagonal_first: bool) -> Option<Vec<Pt>> {
-    search(obs, None, from, to, grid, diagonal_first)
+    search(obs, None, from, to, grid, diagonal_first, None)
 }
 
 /// Copper a route may pass closer to than the rules ask, as it can be pushed aside
@@ -314,10 +314,31 @@ pub fn walkaround_soft(
     grid: f64,
     diagonal_first: bool,
 ) -> Option<Vec<Pt>> {
-    search(obs, Some(soft), from, to, grid, diagonal_first)
+    search(obs, Some(soft), from, to, grid, diagonal_first, None)
 }
 
-fn search(obs: &Obstacles, soft: Option<&Soft>, from: Pt, to: Pt, grid: f64, diagonal_first: bool) -> Option<Vec<Pt>> {
+/// As [`walkaround_soft`], giving up (`None`) once `cancel` is set.
+pub fn walkaround_soft_cancel(
+    obs: &Obstacles,
+    soft: &Soft,
+    from: Pt,
+    to: Pt,
+    grid: f64,
+    diagonal_first: bool,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Option<Vec<Pt>> {
+    search(obs, Some(soft), from, to, grid, diagonal_first, Some(cancel))
+}
+
+fn search(
+    obs: &Obstacles,
+    soft: Option<&Soft>,
+    from: Pt,
+    to: Pt,
+    grid: f64,
+    diagonal_first: bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Option<Vec<Pt>> {
     if !obs.on_board(to) || obs.margin(to, to, 0.0) < -SLACK {
         return None;
     }
@@ -442,7 +463,9 @@ fn search(obs: &Obstacles, soft: Option<&Soft>, from: Pt, to: Pt, grid: f64, dia
             continue;
         }
         visited += 1;
-        if visited > MAX_CELLS {
+        if visited > MAX_CELLS
+            || visited.is_multiple_of(4096) && cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        {
             break;
         }
         let (x, y) = ((cell % nx) as i64, (cell / nx) as i64);

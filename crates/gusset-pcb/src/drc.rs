@@ -109,9 +109,30 @@ pub(crate) fn named(message: String, rule: &Option<String>) -> String {
 
 /// Checks `board` against `rules`; at most `max` violations.
 pub fn check(board: &Board, rules: &Rules, max: usize) -> Vec<Violation> {
+    check_in(board, rules, max, None)
+}
+
+/// How many violations [`check`] finds that involve tracks, vias or holes whose box meets
+/// `window` (and copper there), leaving out the checks no track or via changes (zone
+/// fills against each other, starved thermals, courtyards, silkscreen). For two boards that
+/// differ only in tracks and vias inside `window`, the difference of these counts is the
+/// difference of the full counts (ADR 0059): every violation outside it is in both.
+pub fn count_near(board: &Board, rules: &Rules, window: [Pt; 2]) -> usize {
+    check_in(board, rules, usize::MAX, Some(window)).len()
+}
+
+/// Whether a box meets the scope (always, without one).
+pub(crate) fn in_scope(scope: Option<[Pt; 2]>, b: &[Pt; 2]) -> bool {
+    scope.is_none_or(|w| copper::boxes_near(b, &w, 0.0))
+}
+
+fn round_box(at: Pt, r: f64) -> [Pt; 2] {
+    [[at[0] - r, at[1] - r], [at[0] + r, at[1] + r]]
+}
+
+fn check_in(board: &Board, rules: &Rules, max: usize, scope: Option<[Pt; 2]>) -> Vec<Violation> {
     let mut out = Vec::new();
-    let copper = Copper::of(board);
-    let items = &copper.items;
+    let mut copper = Copper::of(board);
     let widest = rules
         .classes
         .iter()
@@ -119,6 +140,12 @@ pub fn check(board: &Board, rules: &Rules, max: usize) -> Vec<Violation> {
         .fold(rules.clearance, f64::max)
         .max(rules.edge_clearance)
         .max(rules.custom.largest_min(Kind::Clearance));
+    if let Some(w) = scope {
+        // Only copper within reach of the window can be in a violation counted.
+        copper.items.retain(|it| copper::boxes_near(&it.bbox, &w, widest + 1e-6));
+    }
+    let copper = copper;
+    let items = &copper.items;
     let layer_names = |w: ItemRef| -> Vec<String> {
         items
             .iter()
@@ -131,7 +158,7 @@ pub fn check(board: &Board, rules: &Rules, max: usize) -> Vec<Violation> {
             return out;
         }
         let (Some(a), Some(b)) = (items.get(i), items.get(j)) else { continue };
-        if a.net.is_some() && a.net == b.net {
+        if a.net.is_some() && a.net == b.net || !(in_scope(scope, &a.bbox) || in_scope(scope, &b.bbox)) {
             continue;
         }
         let mut need = rules.clearance_of(a.net.as_deref()).max(rules.clearance_of(b.net.as_deref()));
@@ -161,22 +188,39 @@ pub fn check(board: &Board, rules: &Rules, max: usize) -> Vec<Violation> {
             out.push(Violation { code, message, at, layer, items: vec![a.what, b.what], rule });
         }
     }
-    track_widths(board, rules, max, &mut out);
-    zones(board, rules, &copper, max, &mut out);
-    starved_thermals(board, rules, &copper, max, &mut out);
-    annular_rings(board, rules, max, &mut out);
-    edges(board, rules, &copper, max, &mut out);
-    crate::drc_more::holes(board, rules, max, &mut out);
-    crate::drc_more::drawings(board, rules, max, &mut out);
+    track_widths(board, rules, max, scope, &mut out);
+    zones(board, rules, &copper, max, scope, &mut out);
+    if scope.is_none() {
+        starved_thermals(board, rules, &copper, max, &mut out);
+    }
+    annular_rings(board, rules, max, scope, &mut out);
+    edges(board, rules, &copper, max, scope, &mut out);
+    crate::drc_more::holes(board, rules, max, scope, &mut out);
+    if scope.is_none() {
+        crate::drc_more::drawings(board, rules, max, &mut out);
+    }
     out.truncate(max);
     out
 }
 
 /// Track widths against the board's minimum, the net class's and the custom rules'.
-fn track_widths(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violation>) {
+fn track_widths(board: &Board, rules: &Rules, max: usize, scope: Option<[Pt; 2]>, out: &mut Vec<Violation>) {
     for (i, t) in board.tracks.iter().enumerate() {
         if out.len() >= max {
             return;
+        }
+        if scope.is_some() {
+            let mut pts = vec![t.start, t.end];
+            if let Some(m) = t.mid {
+                pts = geom::arc_points(t.start, m, t.end, 0.01);
+            }
+            let r = t.width / 2.0;
+            let bb = pts.iter().fold([[f64::MAX; 2], [f64::MIN; 2]], |[lo, hi], q| {
+                [[lo[0].min(q[0] - r), lo[1].min(q[1] - r)], [hi[0].max(q[0] + r), hi[1].max(q[1] + r)]]
+            });
+            if !in_scope(scope, &bb) {
+                continue;
+            }
         }
         let net = board.net_name(&t.net);
         let (mut min, mut upper, mut rule) = (rules.min_track_width_of(net.as_deref()), None, None);
@@ -254,7 +298,7 @@ fn starved_thermals(board: &Board, rules: &Rules, copper: &Copper, max: usize, o
 }
 
 /// Zone fills against the copper of other nets on their layer, and against each other.
-fn zones(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Vec<Violation>) {
+fn zones(board: &Board, rules: &Rules, copper: &Copper, max: usize, scope: Option<[Pt; 2]>, out: &mut Vec<Violation>) {
     let mut fills: Vec<(usize, Option<String>, usize, copper::EdgeGrid, f64)> = Vec::new();
     for (zi, z) in board.zones.iter().enumerate().filter(|(_, z)| !z.keepout) {
         let net = board.net_name(&z.net);
@@ -276,7 +320,7 @@ fn zones(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Ve
             if out.len() >= max {
                 return;
             }
-            if net.is_some() && it.net == *net {
+            if net.is_some() && it.net == *net || !in_scope(scope, &it.bbox) {
                 continue;
             }
             let mut need = rules.clearance_of(it.net.as_deref()).max(*zone_need).max(rules.clearance);
@@ -315,6 +359,9 @@ fn zones(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Ve
         }
     }
     // Fills of different nets on one layer: each one's corners against the other.
+    if scope.is_some() {
+        return;
+    }
     for (i, (za, na, la, ga, need_a)) in fills.iter().enumerate() {
         for (zb, nb, lb, gb, need_b) in fills.iter().skip(i + 1) {
             if la != lb || (na.is_some() && na == nb) || za == zb || out.len() >= max {
@@ -345,8 +392,11 @@ fn zones(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Ve
     }
 }
 
-fn annular_rings(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violation>) {
+fn annular_rings(board: &Board, rules: &Rules, max: usize, scope: Option<[Pt; 2]>, out: &mut Vec<Violation>) {
     for (i, v) in board.vias.iter().enumerate() {
+        if !in_scope(scope, &round_box(v.at, v.size / 2.0)) {
+            continue;
+        }
         let ring = (v.size - v.drill) / 2.0;
         if ring < rules.min_annular_ring - 1e-9 && out.len() < max {
             out.push(Violation {
@@ -360,7 +410,10 @@ fn annular_rings(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violati
         }
     }
     for (i, p) in board.pads.iter().enumerate() {
-        if p.kind != PadKind::Tht || matches!(p.shape, PadShape::Custom { .. }) {
+        if p.kind != PadKind::Tht
+            || matches!(p.shape, PadShape::Custom { .. })
+            || !in_scope(scope, &round_box(p.at, libm::hypot(p.size[0], p.size[1])))
+        {
             continue;
         }
         let Some(d) = p.drill else { continue };
@@ -382,7 +435,7 @@ fn annular_rings(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violati
 }
 
 /// Holes and copper near the board outline.
-fn edges(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Vec<Violation>) {
+fn edges(board: &Board, rules: &Rules, copper: &Copper, max: usize, scope: Option<[Pt; 2]>, out: &mut Vec<Violation>) {
     let (loops, _) = crate::geom::outline_loops(board, crate::check::OUTLINE_TOL);
     let mut segs: Vec<(Pt, Pt)> = Vec::new();
     for l in &loops {
@@ -408,7 +461,11 @@ fn edges(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Ve
         if out.len() >= max {
             return;
         }
-        let prim = Prim::Capsule { a: h.at, b: h.slot_end.unwrap_or(h.at), r: h.diameter / 2.0 };
+        let (a, b, r) = (h.at, h.slot_end.unwrap_or(h.at), h.diameter / 2.0);
+        if !in_scope(scope, &[[a[0].min(b[0]) - r, a[1].min(b[1]) - r], [a[0].max(b[0]) + r, a[1].max(b[1]) + r]]) {
+            continue;
+        }
+        let prim = Prim::Capsule { a, b, r };
         let (g, at) = near_edge(&prim);
         if g < rules.hole_to_edge - SLACK {
             out.push(Violation {
@@ -441,7 +498,7 @@ fn edges(board: &Board, rules: &Rules, copper: &Copper, max: usize, out: &mut Ve
             copper::boxes_near(&it.bbox, &sb, widest_edge)
         });
         let outside = it.bbox[0][0] < lo[0] || it.bbox[0][1] < lo[1] || it.bbox[1][0] > hi[0] || it.bbox[1][1] > hi[1];
-        if !near && !outside {
+        if !near && !outside || !in_scope(scope, &it.bbox) {
             continue;
         }
         let (mut m, mut rule) = (rules.edge_clearance, None);

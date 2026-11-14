@@ -108,6 +108,8 @@ pub struct State {
     /// A net drawn brighter than the rest.
     pub highlight: Option<String>,
     route_cache: Option<RouteCache>,
+    /// The push preview computed on a worker thread (ADR 0059).
+    push_worker: PushWorker,
     fill_cache: FillCache,
     /// More picked items (Shift-click, Shift-drag box), beside `selected`.
     pub multi: Vec<Sel>,
@@ -239,6 +241,7 @@ impl Default for State {
             arc_radius: 0.0,
             highlight: None,
             route_cache: None,
+            push_worker: PushWorker::default(),
             fill_cache: FillCache::default(),
             multi: Vec::new(),
             boxing: None,
@@ -1020,6 +1023,122 @@ pub fn push_preview(open: &OpenBoard, st: &mut State, to: Pt) -> Option<gusset_p
     p
 }
 
+/// What a push preview is for: board, layer, net, width, from, to (bits).
+type PushKey = (String, String, Option<String>, u64, [u64; 4]);
+
+/// A push preview being computed on a worker thread.
+#[derive(Debug)]
+struct PushJob {
+    key: PushKey,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    rx: std::sync::mpsc::Receiver<Option<gusset_pcb::push::Push>>,
+}
+
+/// The editor's push preview off the UI thread (ADR 0059): at most one job runs; a new
+/// target cancels it (the push gives up at its next check) and starts once it has ended;
+/// the last result is kept for its target.
+#[derive(Debug, Default)]
+pub struct PushWorker {
+    running: Option<PushJob>,
+    done: Option<(PushKey, Option<gusset_pcb::push::Push>)>,
+    /// Jobs started.
+    started: usize,
+}
+
+impl Drop for PushWorker {
+    fn drop(&mut self) {
+        if let Some(j) = &self.running {
+            j.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// How many push preview jobs have been started.
+pub fn push_worker_started(st: &State) -> usize {
+    st.push_worker.started
+}
+
+/// A preview computed off the UI thread: ready, or still being worked on.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pending<T> {
+    Ready(T),
+    Waiting,
+}
+
+/// As [`push_preview`], computed on a worker thread so the editor stays responsive on
+/// dense boards: `Waiting` until the push for this target is known (call again on the
+/// next frame), then `Ready` with it. A pointer that moves on cancels the job.
+pub fn push_preview_async(
+    open: &std::sync::Arc<OpenBoard>,
+    st: &mut State,
+    to: Pt,
+) -> Pending<Option<gusset_pcb::push::Push>> {
+    let Some(from) = st.track_from else { return Pending::Ready(None) };
+    let net = st.route_net.clone();
+    let width = open.rules.track_width_of(net.as_deref());
+    let key: PushKey = (
+        open.board_hash.clone(),
+        st.active.clone(),
+        net.clone(),
+        width.to_bits(),
+        [from[0].to_bits(), from[1].to_bits(), to[0].to_bits(), to[1].to_bits()],
+    );
+    let w = &mut st.push_worker;
+    // A finished job: keep its result (a cancelled one sends none).
+    if let Some(job) = &w.running {
+        match job.rx.try_recv() {
+            Ok(r) => {
+                w.done = Some((job.key.clone(), r));
+                w.running = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => w.running = None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+    if let Some((k, r)) = &w.done
+        && *k == key
+    {
+        return Pending::Ready(r.clone());
+    }
+    if let Some(job) = &w.running {
+        if job.key != key {
+            job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        return Pending::Waiting;
+    }
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (shared, layer, stop) = (std::sync::Arc::clone(open), st.active.clone(), std::sync::Arc::clone(&cancel));
+    let grid = (open.rules.clearance_of(net.as_deref()).min(width) / 2.0).clamp(0.05, 0.25);
+    let work = move || {
+        let r = gusset_pcb::push::push_cancel(
+            &shared.board,
+            &shared.rules,
+            &layer,
+            net.as_deref(),
+            width,
+            from,
+            to,
+            grid,
+            &[],
+            &stop,
+        );
+        if r != Err("cancelled") {
+            // The receiver may be gone (the editor closed): nothing to do then.
+            let _ = tx.send(r.ok());
+        }
+    };
+    match std::thread::Builder::new().name("gusset-push-preview".into()).spawn(work) {
+        Ok(_) => {
+            w.started += 1;
+            w.running = Some(PushJob { key, cancel, rx });
+            Pending::Waiting
+        }
+        // No thread to be had: compute it here.
+        Err(_) => Pending::Ready(push_preview(open, st, to)),
+    }
+}
+
 fn same_pt(a: Pt, b: Pt) -> bool {
     a[0].to_bits() == b[0].to_bits() && a[1].to_bits() == b[1].to_bits()
 }
@@ -1760,13 +1879,13 @@ pub fn tree(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
 }
 
 /// Draws the board and handles the editing tools.
-pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State) -> Out {
+pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&std::sync::Arc<OpenBoard>>, st: &mut State) -> Out {
     let mut out = Out::default();
     let rect = ui.max_rect();
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::from_rgb(0, 16, 35));
-    let Some(open) = open else {
+    let Some(shared) = open else {
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -1777,6 +1896,7 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
         );
         return out;
     };
+    let open: &OpenBoard = shared;
     let b = &open.board;
     if st.fitted.as_deref() != Some(open.file.as_str()) || st.zoom <= 0.0 {
         st.fit(rect, b);
@@ -2247,9 +2367,9 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                     }
                 }
             }
-            None => match push_preview(open, st, q) {
+            None => match push_preview_async(shared, st, q) {
                 // The shoved tracks and vias where the click would put them.
-                Some(p) => {
+                Pending::Ready(Some(p)) => {
                     let moved = Color32::from_rgb(255, 200, 80);
                     for (pts, tw, _) in &p.lines {
                         let tw = (*tw as f32 * map.zoom).max(1.0);
@@ -2271,7 +2391,12 @@ pub fn show(ui: &mut Ui, pal: &Palette, open: Option<&OpenBoard>, st: &mut State
                         }
                     }
                 }
-                None => {
+                // Still working it out (off the UI thread): a dim line meanwhile.
+                Pending::Waiting => {
+                    painter.line_segment([map.to(a), map.to(q)], Stroke::new(1.0, Color32::from_gray(140)));
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+                }
+                Pending::Ready(None) => {
                     painter.line_segment([map.to(a), map.to(q)], Stroke::new(1.5, Color32::from_rgb(255, 60, 60)));
                 }
             },

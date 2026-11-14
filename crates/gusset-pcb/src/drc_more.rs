@@ -30,10 +30,15 @@ fn hole_prim(h: &Hole) -> Prim {
 }
 
 /// The drilled-hole rules: `drill_size`, `via_diameter` and `hole_to_hole`.
-pub(crate) fn holes(board: &Board, rules: &Rules, max: usize, out: &mut Vec<Violation>) {
+pub(crate) fn holes(board: &Board, rules: &Rules, max: usize, scope: Option<[Pt; 2]>, out: &mut Vec<Violation>) {
     let list = drilled(board);
-    drill_sizes(board, &list, rules, max, out);
-    hole_to_hole(board, &list, rules, max, out);
+    drill_sizes(board, &list, rules, max, scope, out);
+    hole_to_hole(board, &list, rules, max, scope, out);
+}
+
+fn hole_box(h: &Hole) -> [Pt; 2] {
+    let (a, b, r) = (h.at, h.slot_end.unwrap_or(h.at), h.diameter / 2.0);
+    [[a[0].min(b[0]) - r, a[1].min(b[1]) - r], [a[0].max(b[0]) + r, a[1].max(b[1]) + r]]
 }
 
 /// All the rules on footprints' drawings: `courtyard_overlap`.
@@ -296,8 +301,15 @@ fn courtyards(board: &Board, max: usize, out: &mut Vec<Violation>) {
 
 /// Pad holes narrower than the through-hole minimum (slots by their narrow side), via
 /// drills under the via minimum, and via copper under the via diameter minimum.
-fn drill_sizes(board: &Board, list: &[(ItemRef, Hole)], rules: &Rules, max: usize, out: &mut Vec<Violation>) {
-    for (r, h) in list {
+fn drill_sizes(
+    board: &Board,
+    list: &[(ItemRef, Hole)],
+    rules: &Rules,
+    max: usize,
+    scope: Option<[Pt; 2]>,
+    out: &mut Vec<Violation>,
+) {
+    for (r, h) in list.iter().filter(|(_, h)| crate::drc::in_scope(scope, &hole_box(h))) {
         let net = net_of(board, *r);
         let (mut min, what) = match r {
             ItemRef::Via(_) => (rules.min_via_drill_of(net.as_deref()), "via drill"),
@@ -382,20 +394,21 @@ fn layers_of(board: &Board, r: ItemRef) -> Vec<String> {
 }
 
 /// Edge to edge of two holes closer than the rule (a sweep over X).
-fn hole_to_hole(board: &Board, list: &[(ItemRef, Hole)], rules: &Rules, max: usize, out: &mut Vec<Violation>) {
+fn hole_to_hole(
+    board: &Board,
+    list: &[(ItemRef, Hole)],
+    rules: &Rules,
+    max: usize,
+    scope: Option<[Pt; 2]>,
+    out: &mut Vec<Violation>,
+) {
     let base = rules.hole_to_hole;
     let custom = rules.custom.has(Kind::HoleToHole);
     let need = base.max(rules.custom.largest_min(Kind::HoleToHole));
     if need <= 0.0 {
         return;
     }
-    let boxes: Vec<[Pt; 2]> = list
-        .iter()
-        .map(|(_, h)| {
-            let (a, b, r) = (h.at, h.slot_end.unwrap_or(h.at), h.diameter / 2.0);
-            [[a[0].min(b[0]) - r, a[1].min(b[1]) - r], [a[0].max(b[0]) + r, a[1].max(b[1]) + r]]
-        })
-        .collect();
+    let boxes: Vec<[Pt; 2]> = list.iter().map(|(_, h)| hole_box(h)).collect();
     let mut order: Vec<usize> = (0..list.len()).collect();
     let lo_x = |i: usize| boxes.get(i).map_or(0.0, |b| b[0][0]);
     order.sort_by(|a, b| lo_x(*a).total_cmp(&lo_x(*b)));
@@ -408,7 +421,9 @@ fn hole_to_hole(board: &Board, list: &[(ItemRef, Hole)], rules: &Rules, max: usi
             if out.len() >= max {
                 return;
             }
-            if !copper::boxes_near(bi, bj, need) {
+            if !copper::boxes_near(bi, bj, need)
+                || !(crate::drc::in_scope(scope, bi) || crate::drc::in_scope(scope, bj))
+            {
                 continue;
             }
             let (Some((ra, ha)), Some((rb, hb))) = (list.get(i), list.get(j)) else { continue };

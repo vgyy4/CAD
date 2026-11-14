@@ -140,6 +140,18 @@ fn a_via_is_pushed_with_its_tracks() {
 }
 
 #[test]
+fn a_cancelled_push_gives_up() {
+    let b = channel(B_TRACK);
+    let rules = Rules::for_board(&b);
+    let stop = std::sync::atomic::AtomicBool::new(true);
+    let r = push::push_cancel(&b, &rules, "F.Cu", Some("A"), 0.25, A1, A2, 0.1, &[], &stop);
+    assert_eq!(r, Err("cancelled"));
+    stop.store(false, std::sync::atomic::Ordering::Relaxed);
+    let r = push::push_cancel(&b, &rules, "F.Cu", Some("A"), 0.25, A1, A2, 0.1, &[], &stop);
+    assert_eq!(r.ok(), push::push(&b, &rules, "F.Cu", Some("A"), 0.25, A1, A2, 0.1, &[]));
+}
+
+#[test]
 fn pads_in_the_way_refuse_the_push() {
     let extra = format!("{B_TRACK}\n  {}", part("B3", [15.0, 5.0], 1.0, "(net 2 \"B\")"));
     let b = channel(&extra);
@@ -165,4 +177,45 @@ fn the_check_is_never_worse() {
         }
     }
     assert!(kept >= 1);
+}
+
+/// ADR 0059: the check counted where tracks and vias changed decides as the whole check:
+/// for edits that make it better, worse or leave it, the two differences agree.
+#[test]
+fn the_windowed_check_decides_as_the_whole_check() {
+    let extra = r#"(segment (start 2 5) (end 15 4.8) (width 0.25) (layer "F.Cu") (net 2))
+  (segment (start 15 4.8) (end 28 5) (width 0.25) (layer "F.Cu") (net 2))
+  (via (at 15 4.8) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 2))
+  (segment (start 15 4.8) (end 15 6.5) (width 0.25) (layer "B.Cu") (net 2))
+  (segment (start 1 0.1) (end 29 0.1) (width 0.1) (layer "F.Cu") (net 4))"#;
+    let b = channel(extra);
+    let rules = Rules::for_board(&b);
+    let full = |x: &Board| drc::check(x, &rules, 100_000).len() as i64;
+    let mut edits: Vec<Board> = Vec::new();
+    // The push laid; a track across C's pad; the via moved; the thin track near the edge
+    // taken away; a via that is too small.
+    let p = push::push(&b, &rules, "F.Cu", Some("A"), 0.25, A1, A2, 0.05, &[]).expect("a push");
+    edits.push(applied(&b, &p, "A", 0.25));
+    let mut e = b.clone();
+    let seg = [route::Seg { start: [12.0, 6.3], end: [18.0, 6.3], mid: None }];
+    e.add_route(&seg, 0.25, "F.Cu", Some("D"), &lim()).unwrap();
+    edits.push(e);
+    let mut e = b.clone();
+    e.move_items(&[], &[0], [0.0, 1.2], true, &lim()).unwrap();
+    edits.push(e);
+    let mut e = b.clone();
+    let thin = e.tracks.iter().position(|t| t.width < 0.2).unwrap();
+    e.delete_items(&[thin], &[], &lim()).unwrap();
+    edits.push(e);
+    let mut e = b.clone();
+    e.add_via([5.0, 2.5], 0.35, 0.3, Some("E"), &lim()).unwrap();
+    edits.push(e);
+    let mut signs = std::collections::BTreeSet::new();
+    for (k, a) in edits.iter().enumerate() {
+        let w = crate::refill::changed_box(&b, a).expect("a change");
+        let near = drc::count_near(a, &rules, w) as i64 - drc::count_near(&b, &rules, w) as i64;
+        assert_eq!(near, full(a) - full(&b), "edit {k}");
+        signs.insert(near.signum());
+    }
+    assert_eq!(signs.len(), 3, "better, worse and the same are all tried: {signs:?}");
 }

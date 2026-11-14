@@ -865,3 +865,48 @@ fn the_route_preview_shows_pushed_tracks() {
     // Into C's pad: nothing to push.
     assert!(pcb_view::push_preview(&open, &mut st, [15.0, 6.325]).is_none());
 }
+
+/// Asks for the threaded push preview until it is ready (at most 60 s).
+fn push_ready(
+    open: &std::sync::Arc<gusset_commands::pcb_session::OpenBoard>,
+    st: &mut pcb_view::State,
+    to: [f64; 2],
+) -> Option<gusset_pcb::push::Push> {
+    let t = std::time::Instant::now();
+    loop {
+        if let pcb_view::Pending::Ready(r) = pcb_view::push_preview_async(open, st, to) {
+            return r;
+        }
+        assert!(t.elapsed() < std::time::Duration::from_secs(60), "the preview never came");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn the_push_preview_runs_off_the_ui_thread() {
+    let open = std::sync::Arc::new(pushing_board());
+    let mut st = pcb_view::State::default();
+    st.track_from = Some([8.0, 6.0]);
+    st.route_net = Some("A".into());
+    let mut sync = pcb_view::State::default();
+    sync.track_from = st.track_from;
+    sync.route_net = st.route_net.clone();
+    // A new target starts a job and returns at once; the result is the push itself.
+    assert_eq!(pcb_view::push_preview_async(&open, &mut st, [22.0, 6.0]), pcb_view::Pending::Waiting);
+    let p = push_ready(&open, &mut st, [22.0, 6.0]).expect("a push");
+    assert_eq!(Some(p.clone()), pcb_view::push_preview(&open, &mut sync, [22.0, 6.0]));
+    assert_eq!(p.lines.len(), 1);
+    // Kept for its target: no new job.
+    let started = pcb_view::push_worker_started(&st);
+    assert_eq!(pcb_view::push_preview_async(&open, &mut st, [22.0, 6.0]), pcb_view::Pending::Ready(Some(p)));
+    assert_eq!(pcb_view::push_worker_started(&st), started);
+    // The pointer moves on while a job runs: that job is cancelled, the new target's
+    // result arrives and matches the push computed here.
+    assert_eq!(pcb_view::push_preview_async(&open, &mut st, [20.0, 6.0]), pcb_view::Pending::Waiting);
+    let none = push_ready(&open, &mut st, [15.0, 6.325]);
+    assert_eq!(none, pcb_view::push_preview(&open, &mut sync, [15.0, 6.325]));
+    assert!(none.is_none(), "into C's pad: nothing to push");
+    assert_eq!(pcb_view::push_worker_started(&st), started + 2);
+    let moved = push_ready(&open, &mut st, [20.0, 6.0]);
+    assert_eq!(moved, pcb_view::push_preview(&open, &mut sync, [20.0, 6.0]));
+}

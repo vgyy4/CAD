@@ -58,6 +58,7 @@ fn local_samples_phase3() {
         let (mut walked, mut old, mut new, mut new_push) = (0, 0, 0, 0);
         let (mut t_walk, mut t_old, mut t_new) =
             (std::time::Duration::ZERO, std::time::Duration::ZERO, std::time::Duration::ZERO);
+        let (mut t_push, mut tried) = (std::time::Duration::ZERO, 0u32);
         let drc_ok = |nb: &Board| drc::check(nb, &rules, 100_000).len() <= before;
         let lay = |nb: &mut Board, path: &[[f64; 2]], net: &str, w: f64| {
             let segs: Vec<route::Seg> =
@@ -86,7 +87,10 @@ fn local_samples_phase3() {
             t_old += t.elapsed();
             old += usize::from(old_ok);
             let t = std::time::Instant::now();
-            let p = push::push_reason(&b, &rules, "F.Cu", Some(net), w, *a, *c, grid, &[], Some(before));
+            let tp = std::time::Instant::now();
+            let p = push::push_reason(&b, &rules, "F.Cu", Some(net), w, *a, *c, grid, &[]);
+            t_push += tp.elapsed();
+            tried += 1;
             if let Err(why) = &p {
                 // Whether the pads alone leave a way (the other nets' tracks and vias gone).
                 let mut bare = b.clone();
@@ -106,6 +110,10 @@ fn local_samples_phase3() {
                 nb.apply_push(p, "F.Cu", &Limits::default()).unwrap();
                 lay(&mut nb, &p.path, net, w);
                 assert!(drc_ok(&nb), "{name}: {net}: the push made the check worse");
+                // ADR 0059: the windowed count the push decided by agrees with the whole.
+                let win = crate::refill::changed_box(&b, &nb).unwrap();
+                let near = drc::count_near(&nb, &rules, win) as i64 - drc::count_near(&b, &rules, win) as i64;
+                assert_eq!(near, drc::check(&nb, &rules, 100_000).len() as i64 - before as i64, "{name} {net}");
                 new_push += 1;
                 new += 1;
                 eprintln!("  {name} {net}: pushed {} lines, {} vias", p.lines.len(), p.vias.len());
@@ -116,10 +124,12 @@ fn local_samples_phase3() {
         }
         eprintln!(
             "{name}: {} pairs, DRC {before}; walkaround {walked} ({t_walk:?}); + old shove {} ({t_old:?}); \
-             + push-and-shove {} ({new_push} by pushing; {t_new:?} incl. the old shove fallback)",
+             + push-and-shove {} ({new_push} by pushing; {t_new:?} incl. the old shove fallback); \
+             a push alone {:?} per pair tried ({tried})",
             pairs.len(),
             walked + old,
             walked + new,
+            t_push / tried.max(1),
         );
     }
 }
@@ -302,7 +312,7 @@ fn local_samples_layers() {
                 Err(why) => eprintln!("  {name} {net}: no layered route: {why}"),
             }
             let t = Instant::now();
-            if let Ok(p) = push::push_reason(&b, &rules, "F.Cu", Some(net), w, *a, *c, grid, &[], Some(before)) {
+            if let Ok(p) = push::push_reason(&b, &rules, "F.Cu", Some(net), w, *a, *c, grid, &[]) {
                 let _ = p;
                 pushed += 1;
             } else if shove::shove(&b, &rules, "F.Cu", Some(net), w, *a, *c, grid, &[]).is_some_and(|s| {

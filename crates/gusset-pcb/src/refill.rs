@@ -28,7 +28,10 @@ fn items(b: &Board) -> Vec<(String, Spot)> {
     let mut v = Vec::new();
     for t in &b.tracks {
         let key = format!("t {:?} {:?} {:?} {} {} {:?}", t.start, t.end, t.mid, t.width, t.layer, b.net_name(&t.net));
-        let pts: Vec<Pt> = [Some(t.start), Some(t.end), t.mid].into_iter().flatten().collect();
+        let pts: Vec<Pt> = match t.mid {
+            Some(m) => crate::geom::arc_points(t.start, m, t.end, 0.01),
+            None => vec![t.start, t.end],
+        };
         v.push((key, spot(&pts, t.width / 2.0, Some(t.layer.clone()))));
     }
     for x in &b.vias {
@@ -61,6 +64,18 @@ fn items(b: &Board) -> Vec<(String, Spot)> {
         v.push((key, spot(&[p.at], r, None)));
     }
     v
+}
+
+/// The box of the tracks, vias and pads that differ between two boards (`None`: none).
+pub fn changed_box(old: &Board, new: &Board) -> Option<[Pt; 2]> {
+    let (a, b) = (items(old), items(new));
+    let before: HashSet<&str> = a.iter().map(|(k, _)| k.as_str()).collect();
+    let after: HashSet<&str> = b.iter().map(|(k, _)| k.as_str()).collect();
+    let gone = a.iter().filter(|(k, _)| !after.contains(k.as_str()));
+    let new_ones = b.iter().filter(|(k, _)| !before.contains(k.as_str()));
+    gone.chain(new_ones)
+        .map(|(_, s)| s.0)
+        .reduce(|x, y| [[x[0][0].min(y[0][0]), x[0][1].min(y[0][1])], [x[1][0].max(y[1][0]), x[1][1].max(y[1][1])]])
 }
 
 /// What makes a zone the same zone (fills left out).

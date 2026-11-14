@@ -2303,7 +2303,7 @@ impl App {
             } else if self.pcb_view_shown() {
                 let pal = *theme::palette(self.theme);
                 let pcb = self.snapshot.pcb.clone();
-                let out = crate::pcb_view::show(ui, &pal, pcb.as_deref(), &mut self.pcb_state);
+                let out = crate::pcb_view::show(ui, &pal, pcb.as_ref(), &mut self.pcb_state);
                 self.pcb_commands(out);
                 self.cross_probe();
             } else if self.sch_view_shown() {
