@@ -229,7 +229,7 @@ impl LayerRoute {
                 let &[a, b] = w else { continue };
                 let wi = ws.and_then(|ws| ws.get(i)).copied().unwrap_or(0.0);
                 match cur.as_mut() {
-                    Some((cw, cp)) if *cw == wi => cp.push(b),
+                    Some((cw, cp)) if (*cw - wi).abs() < 1e-12 => cp.push(b),
                     _ => {
                         if let Some((cw, cp)) = cur.take() {
                             out.push((layer.clone(), cw, cp));
