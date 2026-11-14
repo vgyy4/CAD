@@ -591,3 +591,22 @@ fn an_edge_set_spline_is_picked_along_its_whole_length() {
     r[w] = 1;
     assert!(edge_set(&r).unwrap_err().contains("rational"));
 }
+
+#[test]
+fn a_loft_through_its_sections() {
+    // The rectangle and its pattern copy 10 mm up as sections; one section alone: not read.
+    let mut more = obj(40, 30, &copied(&[4, 5, 6, 7], [0.0, 0.0, 0.01], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 31));
+    more.extend(obj(38, 31, &func("JMSmartPatternFunction", &[&[31], &[12]])));
+    more.extend(obj(38, 32, &func("JMLoftedProtrusionFunction", &[&[32], &[12], &[2, 30]])));
+    more.extend(obj(38, 33, &func("JMLoftedCutoutFunction", &[&[33], &[32], &[2]])));
+    let t = feature_tree(&part_with(1.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = t["features"].as_array().unwrap();
+    assert_eq!(f[2]["name"], "LoftedProtrusion_1_Section1", "{t}");
+    assert_eq!(f[3]["plane"]["origin"], json!([0.0, 0.0, 10.0]));
+    assert_eq!(
+        f[4],
+        json!({"type": "loft", "name": "LoftedProtrusion_1", "operation": "join", "target": "Protrusion_1",
+               "sketches": ["LoftedProtrusion_1_Section1", "LoftedProtrusion_1_Section2"]})
+    );
+    assert_eq!(f[5]["type"], "unsupported");
+}

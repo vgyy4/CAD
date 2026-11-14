@@ -1158,6 +1158,8 @@ enum Kind {
     Chamfer,
     SweptProtrusion,
     SweptCutout,
+    LoftedProtrusion,
+    LoftedCutout,
     /// A cosmetic thread: no geometry.
     Thread,
     /// The start of an older part's history, before its first feature.
@@ -1174,6 +1176,8 @@ fn kind(class: &str) -> Kind {
         "JMRoundFunction" => Kind::Round,
         "JMMultiSweepProtrusionFunction" => Kind::SweptProtrusion,
         "JMMultiSweepCutoutFunction" => Kind::SweptCutout,
+        "JMLoftedProtrusionFunction" => Kind::LoftedProtrusion,
+        "JMLoftedCutoutFunction" => Kind::LoftedCutout,
         "JMChamferFunction" => Kind::Chamfer,
         "JMThreadFunction" => Kind::Thread,
         "JMBodyFeatureAssocFunc" => Kind::BaseBody,
@@ -1422,6 +1426,39 @@ fn sweep(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     Ok(())
 }
 
+/// A loft (`JMLofted*Function`): slot 2 the cross sections in order, each a sketch of its own.
+/// The ends' conditions (slots 11 to 16) are not read: the rebuild check tells.
+fn loft(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), String> {
+    let sections: Vec<Profile> =
+        f.list(2).iter().filter(|&&p| p != 0).map(|&p| profile(st, p)).collect::<Result<_, _>>()?;
+    if sections.len() < 2 {
+        return Err(format!("a loft of {} cross sections", sections.len()));
+    }
+    let op = if k == Kind::LoftedCutout {
+        "cut"
+    } else if s.first_body.is_none() {
+        "new"
+    } else {
+        "join"
+    };
+    let mut names = Vec::new();
+    for (i, p) in sections.iter().enumerate() {
+        let n = format!("{name}_Section{}", i + 1);
+        s.out.push(sketch_json(&n, std::slice::from_ref(p), None)?);
+        names.push(n);
+    }
+    let mut j = json!({"type": "loft", "name": name, "sketches": names, "operation": op});
+    if op != "new" {
+        let fb = s.first_body.clone().ok_or("a cut before any body")?;
+        put(&mut j, "target", json!(fb));
+    }
+    s.out.push(j);
+    if s.first_body.is_none() {
+        s.first_body = Some(name.to_string());
+    }
+    Ok(())
+}
+
 /// A round (slot 2: the edge set, 3: kind, 1 constant radius; 4: the radius) or an equal
 /// chamfer (slot 2: kind, 41 equal setbacks; 4: the edge set; 5: the setback).
 fn blend(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), String> {
@@ -1495,9 +1532,14 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
                     solids += 1;
                 }
             }
-            Kind::SweptProtrusion | Kind::SweptCutout => {
+            Kind::SweptProtrusion | Kind::SweptCutout | Kind::LoftedProtrusion | Kind::LoftedCutout => {
                 let before = s.out.len();
-                if let Err(why) = sweep(&st, &mut s, func, &name, k) {
+                let made = if matches!(k, Kind::SweptProtrusion | Kind::SweptCutout) {
+                    sweep(&st, &mut s, func, &name, k)
+                } else {
+                    loft(&st, &mut s, func, &name, k)
+                };
+                if let Err(why) = made {
                     s.out.truncate(before);
                     s.out.push(unsupported(&name, what, &why));
                 } else {
