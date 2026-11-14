@@ -447,3 +447,78 @@ below come from these bytes only; Gusset's import of each part's own result body
   two spacing parameters and two `ce52df40` directions (unit vectors, the last three of five doubles), no `a244457b`.
   Not read (the direction sign is not known).
 * Parts that start from an imported base body (a cut as the first feature: "a cut or join before any body").
+
+# Round ipt2 (2026-11-14): extents to a face, unequal chamfers, countersinks, shells, sweeps
+
+Same corpora and harness as round ipt1. Each rule below was checked against the part's own result
+body through the whole-part rebuild check; none is trusted otherwise.
+
+## R. Extrude extents 4 and 7 (to the next face, to a face)
+* The end face is named through the naming records (not decoded). The reach is measured instead on the
+  faces the feature made in the result body: side faces carry `NMx_Sweep_Generated_Brep_tag`, caps
+  `NMx_Generated_Brep_tag` (newer files: `INV_NMX_SWEEPGENERATED_TAG`, `INV_NMX_GEN_TAG`, one more int
+  before the version as in O), 4th int = the feature id. Their corners projected on the sketch normal
+  lie on one side of the sketch plane; the farthest is the distance (emitted as a blind extrude).
+  Faces on both sides, or none left in the result, refuse the feature. Extent 12 (from a face) is not read.
+
+## S. Points on a sketch circle (importer, not layout)
+* A line ending on a circle (a hexagon's corners on its circumcircle, a chord) was written with 6 decimals
+  while the circle kept 8: up to 5e-7 off, the circle was cut twice near each corner and the region's arc
+  ended on two radii ("could not build an arc of the profile", 44 parts). Such points and the circle's
+  centre keep 8 decimals now (`tree_import::on_circles`).
+
+## T. Chamfer type 2 = two distances (confirmed, 51 chamfers)
+* Slot 4's type 2: slot 2 the first distance, slot 3 the second (cm). The two `797737b1` records of slot 8
+  both start at the same point on the edge: the first runs the first distance into its face, the second
+  the second distance into the other face (`ch_two_dist`: 2 mm along -x, 4 mm along -z). Emitted as
+  `distance` + `distance2` with the first record's end as the reference face. Equal distances (most
+  standard parts write both) are an equal chamfer on any number of edges; unequal ones on several edges
+  stay refused. The ISO screw heads write distances 1e-5 cm apart (0.049076/0.049086) on one edge: read
+  as unequal, and they rebuild.
+
+## U. Hole variants (confirmed on the `ho_*` fixtures and 6 parts)
+* The type record (slot 0) ends `u16 3, u16 variant`: 0 drilled, 1 countersink, 2 counterbore (the old
+  "bit 0x20000"), 3 seen 4 times (spot face; read as counterbore as before). Countersink: slot 3 its
+  diameter, slot 5 its angle (`ho_csink`: 1.0 cm, pi/2). Before this a countersink came in as a plain
+  hole (the 46 mm3 cone of `ho_csink` missing).
+
+## V. Records kept from an older save (confirmed)
+* Every record carries the version word of the save that wrote it: features at 22, other classes after
+  `0xffffffff`. A record from an older save keeps its word (0x0a92 among 0x0a96 records): its body starts
+  after it as well. Before, such records were read from the version word on (hole centres of 1e186).
+
+## W. Shell `b83c9612` (8 parts rebuild)
+* Slots: 0 `b3a169e4` ending `u16 2, u16 side` (0 inside, 1 outside; 2 not seen), 1 `24bcb2f1` the list of
+  the open faces' names (`509fb5cc`, not decoded), 3 the thickness (cm), 5 `d83ef271` reference lines.
+* The shell's inner faces carry `NMx_shell_face_tag` (newer: `INV_NMX_SHELL_TAG`) with its id. The planes
+  beside them that no later feature made are the rims of the opened faces, lying in those faces' planes;
+  a corner of a rim's inner boundary lay inside the opened face and is its pick. The number of planes
+  must be the list's length; otherwise (later cuts beside the inner faces, rims a fillet consumed) the
+  shell is refused. An empty list hollows the whole body.
+
+## X. Sweep `90bada05` (20 parts rebuild, 19 of them timing belts)
+* Slots: 0 the profile loops (`22947391`, as an extrude's), 1 the path loop (`a477243b`), 2 the operation,
+  3 the taper angle (only 0 read), 4 `92637d29`, 8..10 `a29c84b7`/`31f02eed`/`5cb011e2` (orientation
+  options, not decoded). A `424eb7d7` record ties the path loop to its sketch (as `f9884c43` does the
+  profile's) and lists `a3277869` -> `90874d13` entries that name the sketch entities by their 1-based
+  index among the sketch's points and curves (not used). The path's wire body in the history blob gives
+  its geometry; the path sketch's curves lying on it (ends and middle) are the tree's `path_curves`. A
+  path outside its sketch plane is refused; 5 sweeps have no `424eb7d7` record (their path is not a 2D
+  sketch the reader finds), 2 have no sketch curve on the wire, 1 is tapered. A twist (the block of N) is
+  not read.
+
+## Y. Parts without a solid (reader classification)
+* 46 parts' result holds no face (sketch-, work-geometry- and parameter-only parts, templates). The import
+  says so (`INVENTOR_NO_SOLID`) instead of reporting a damaged file; the corpus test counts them apart.
+  Two of them (thread templates of 2004) store `ACIS BinaryFile` with no integer-width character: the
+  version follows the magic and integers are 4 bytes (`gusset-sat`).
+
+## Z. Left after this round
+Second corpus after this round (1639 parts): 449 as history, 1143 bodies, 46 without a solid, 0 import
+failures. Of the bodies: 412 have no features and 201 are derived parts (nothing to rebuild); 111 volume
+differences (more parts now get through every feature: these are the next target, the first diverging
+feature is not found yet); 80 picks with no model edge at their midpoint; 31 start from an imported base
+body; 30 sheet-metal parts (`55585fc6`); 27 unknown features; 15 empty slots; 12 rectangular patterns of the
+3104 layout; 12 coils (`b41914da`); 11 revolve axes off the sketch origin; 9 extents whose faces lie on
+both sides of the sketch (a sketch inside the material; a two-sided reach is not read) and 7 whose faces
+are gone from the result; 6 shells whose rims do not count right; 6 unequal chamfers on several edges.

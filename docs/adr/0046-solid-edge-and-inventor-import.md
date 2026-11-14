@@ -319,3 +319,42 @@ work-geometry- and surface-only fixtures among them) and two whose ShapeManager 
 features (imported bodies) and 201 are derived parts (`8e29cbee`); the largest blockers left among the rest are extrude
 extents 4/7/12 (to next / to a face / from a face, 79 parts), volume differences (68), picks the kernel does not find
 (43), feature `90bada05` (33), sheet metal (30), shell (30) and chamfer types other than 0 and 1 (30).
+
+## Amendment (2026-11-14, 9): Inventor round ipt2 - extents to a face, unequal chamfers, shells, sweeps
+
+Round 2 on both corpora (notes R to Z of `docs/formats/inventor-feature-tree.md`). What the reader now does:
+
+- **Extents 4 and 7** (to the next face, to a face): the end face is named through naming records that
+  are not decoded, so the reach is measured on the faces the feature made in the result body (its id in
+  the sweep-generated and generated tags) and emitted as a blind distance.
+- **Chamfer type 2** (two distances), with the reference face from slot 8's first line; equal distances
+  are an equal chamfer on any number of edges.
+- **Hole variant 1** (countersink: diameter slot 3, angle slot 5); through holes with a counterbore or
+  countersink keep it in the plain-cut fallback.
+- **Records of an older save** carry their own version word after `0xffffffff`; their bodies start after it.
+- **Shell**: thickness, side, and the opened faces found as the rims beside the shell's inner faces in the
+  result body, their number checked against the feature's face list.
+- **Sweep** along a 2D path sketch: the path curves are those lying on the path's wire body in the
+  history blob.
+- **Parts without a solid** (a result with no face) fail with a reason that says so (`INVENTOR_NO_SOLID`)
+  rather than as a damaged ShapeManager file; `gusset-sat` reads the older `ACIS BinaryFile` form without
+  an integer-width character.
+
+Importer fix (gusset-commands, all tree imports): sketch points lying on a circle keep the circle's 8
+decimals, so the region's arcs end on one circle ("could not build an arc of the profile", 44 Inventor
+parts).
+
+Every new reading is a candidate only: the rebuild check (volume 2e-5, box) is unchanged and decides.
+Results (parts as history; OCCT corpus test, one part per process):
+
+| corpus | parts | history before | after | import failures before | after | without a solid |
+|---|---|---|---|---|---|---|
+| first (Zenodo, `GUSSET_IPT_MIN_HISTORY=25`) | 47 | 25 | 25 | 0 | 0 | 0 |
+| second (57 sources) | 1639 | 367 | 449 | 46 | 0 | 46 |
+
+No part of either corpus went from history to body. One screw-rotor part (a body before and after, 11
+minutes in a debug build) ran into the harness's 15-minute limit on a loaded machine. The first corpus
+gains nothing this round: its 22 bodies stop at blends whose edge is not recoverable, thicken-part
+blends, the thumbscrew knurl and two kernel fillet failures (notes H to J). The next target in the second
+corpus is the 111 volume differences (a per-feature comparison with the result body), then the 80 picks
+with no model edge.
