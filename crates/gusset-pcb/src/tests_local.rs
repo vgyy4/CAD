@@ -5,7 +5,7 @@
 
 use crate::board::{Board, Limits, PadKind};
 use crate::rules::Rules;
-use crate::{drc, gerber, route, shove};
+use crate::{drc, gerber, push, route, shove};
 
 #[test]
 fn local_samples_phase3() {
@@ -53,32 +53,59 @@ fn local_samples_phase3() {
                 break;
             }
         }
-        let (mut walked, mut shoved, mut clean) = (0, 0, 0);
-        let t = std::time::Instant::now();
+        // Walkaround; walkaround + the phase 3 shove (one chain re-laid); walkaround + the
+        // push-and-shove of ADR 0058 (then the phase 3 shove).
+        let (mut walked, mut old, mut new, mut new_push) = (0, 0, 0, 0);
+        let (mut t_walk, mut t_old, mut t_new) =
+            (std::time::Duration::ZERO, std::time::Duration::ZERO, std::time::Duration::ZERO);
+        let drc_ok = |nb: &Board| drc::check(nb, &rules, 100_000).len() <= before;
+        let lay = |nb: &mut Board, path: &[[f64; 2]], net: &str, w: f64| {
+            let segs: Vec<route::Seg> =
+                path.windows(2).map(|x| route::Seg { start: x[0], end: x[1], mid: None }).collect();
+            nb.add_route(&segs, w, "F.Cu", Some(net), &Limits::default()).unwrap();
+        };
         for (net, a, c) in &pairs {
             let w = rules.track_width_of(Some(net));
             let grid = (rules.clearance_of(Some(net)).min(w) / 2.0).clamp(0.05, 0.25);
+            let t = std::time::Instant::now();
             let obs = route::Obstacles::new(&b, &rules, "F.Cu", Some(net), w);
-            if route::walkaround(&obs, *a, *c, grid, true).is_some() {
+            let walk = route::walkaround(&obs, *a, *c, grid, true).is_some();
+            t_walk += t.elapsed();
+            if walk {
                 walked += 1;
                 continue;
             }
-            if let Some(s) = shove::shove(&b, &rules, "F.Cu", Some(net), w, *a, *c, grid, &[]) {
-                shoved += 1;
+            let t = std::time::Instant::now();
+            let s = shove::shove(&b, &rules, "F.Cu", Some(net), w, *a, *c, grid, &[]);
+            let old_ok = s.as_ref().is_some_and(|s| {
                 let mut nb = b.clone();
-                nb.apply_shove(&s, "F.Cu", &Limits::default()).unwrap();
-                let segs: Vec<route::Seg> =
-                    s.path.windows(2).map(|x| route::Seg { start: x[0], end: x[1], mid: None }).collect();
-                nb.add_route(&segs, w, "F.Cu", Some(net), &Limits::default()).unwrap();
-                if drc::check(&nb, &rules, 100_000).len() <= before {
-                    clean += 1;
-                }
+                nb.apply_shove(s, "F.Cu", &Limits::default()).unwrap();
+                lay(&mut nb, &s.path, net, w);
+                drc_ok(&nb)
+            });
+            t_old += t.elapsed();
+            old += usize::from(old_ok);
+            let t = std::time::Instant::now();
+            let p = push::push_with(&b, &rules, "F.Cu", Some(net), w, *a, *c, grid, &[], Some(before));
+            if let Some(p) = &p {
+                let mut nb = b.clone();
+                nb.apply_push(p, "F.Cu", &Limits::default()).unwrap();
+                lay(&mut nb, &p.path, net, w);
+                assert!(drc_ok(&nb), "{name}: {net}: the push made the check worse");
+                new_push += 1;
+                new += 1;
+                eprintln!("  {name} {net}: pushed {} lines, {} vias", p.lines.len(), p.vias.len());
+            } else if old_ok {
+                new += 1;
             }
+            t_new += t.elapsed();
         }
         eprintln!(
-            "{name}: {} pairs, {walked} walked around, {shoved} shoved ({clean} DRC no worse), {:?}",
+            "{name}: {} pairs, DRC {before}; walkaround {walked} ({t_walk:?}); + old shove {} ({t_old:?}); \
+             + push-and-shove {} ({new_push} by pushing; {t_new:?} incl. the old shove fallback)",
             pairs.len(),
-            t.elapsed()
+            walked + old,
+            walked + new,
         );
     }
 }

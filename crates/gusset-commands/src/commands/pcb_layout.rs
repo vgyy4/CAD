@@ -5,7 +5,7 @@ use super::pcb::{PcbImport, board_source, no_board, write_outputs};
 use super::pcb_edit::commit_board;
 use super::*;
 use crate::pcb_session;
-use gusset_pcb::{Limits, length, pair, route, shove, specctra, tune, zones};
+use gusset_pcb::{Limits, length, pair, push, route, shove, specctra, tune, zones};
 use std::sync::atomic::AtomicBool;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
@@ -109,7 +109,7 @@ pub struct PcbRoute {
 impl Command for PcbRoute {
     const ID: &'static str = "pcb.route";
     const TITLE: &'static str = "Route track";
-    const DESCRIPTION: &'static str = "Lay a 45° track through points around other nets (may shove one track).";
+    const DESCRIPTION: &'static str = "Lay a 45° track through points around other nets (may push tracks, vias aside).";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -139,7 +139,7 @@ impl Command for PcbRoute {
         // The board as other nets' tracks are shoved; obstacles rebuilt after a shove.
         let mut nb = b.clone();
         let mut obs = route::Obstacles::new(&nb, &open.rules, &layer, net.as_deref(), width);
-        let mut shoved = 0usize;
+        let (mut shoved, mut shoved_vias) = (0usize, 0usize);
         let mut pts: Vec<[f64; 2]> = vec![first];
         for (i, w) in self.points.windows(2).enumerate() {
             let &[a, c] = w else { continue };
@@ -148,19 +148,30 @@ impl Command for PcbRoute {
             } else if let Some(leg) = route::walkaround(&obs, a, c, grid, true) {
                 leg
             } else {
-                let sh = if self.shove.unwrap_or(true) {
-                    shove::shove(&nb, &open.rules, &layer, net.as_deref(), width, a, c, grid, &pts)
+                let refused = || {
+                    CommandError::not_found(format!("no clear way from point {i} to point {}", i + 1))
+                        .hint("move the points, route on another layer, or pass around: false")
+                };
+                if !self.shove.unwrap_or(true) {
+                    return Err(refused());
+                }
+                // Push-and-shove (ADR 0058), else the phase 3 shove (one track re-laid).
+                let path = if let Some(p) =
+                    push::push(&nb, &open.rules, &layer, net.as_deref(), width, a, c, grid, &pts)
+                {
+                    nb.apply_push(&p, &layer, &Limits::default()).map_err(pcb_err)?;
+                    shoved += p.lines.len();
+                    shoved_vias += p.vias.len();
+                    p.path
                 } else {
-                    None
+                    let sh = shove::shove(&nb, &open.rules, &layer, net.as_deref(), width, a, c, grid, &pts)
+                        .ok_or_else(refused)?;
+                    nb.apply_shove(&sh, &layer, &Limits::default()).map_err(pcb_err)?;
+                    shoved += 1;
+                    sh.path
                 };
-                let Some(sh) = sh else {
-                    return Err(CommandError::not_found(format!("no clear way from point {i} to point {}", i + 1))
-                        .hint("move the points, route on another layer, or pass around: false"));
-                };
-                nb.apply_shove(&sh, &layer, &Limits::default()).map_err(pcb_err)?;
                 obs = route::Obstacles::new(&nb, &open.rules, &layer, net.as_deref(), width);
-                shoved += 1;
-                sh.path
+                path
             };
             pts.extend(leg.into_iter().skip(1));
         }
@@ -175,6 +186,7 @@ impl Command for PcbRoute {
             "width": width,
             "net_user_text": net,
             "shoved_tracks": shoved,
+            "shoved_vias": shoved_vias,
         });
         commit_board(s, ctx, "Route track", open.file.clone(), &nb, None, extra)
     }

@@ -2,8 +2,8 @@
 //! close, and that copper is pushed aside keeping its shape.
 //!
 //! * The new track (the head) is searched with other nets' straight tracks and vias as
-//!   soft obstacles: it may pass closer to them than the rules ask (never over them), at
-//!   a cost, so it prefers clear ways; pads, arcs, the edge and the head's own net stay
+//!   soft obstacles: it may pass closer to them than the rules ask (never across their
+//!   centre lines), at a cost, so it prefers clear ways; pads, arcs, the edge and the head's own net stay
 //!   hard.
 //! * Tracks are cut into lines: chains of straight segments of one net and width between
 //!   anchors (pads, vias, branches, width changes, free ends). A line's ends stay put.
@@ -37,8 +37,9 @@ const HIT: f64 = 1e-4;
 const MAX_LINE_PTS: usize = 400;
 /// Extra cost per grid step of the head taken too close to pushable copper.
 const PENALTY: f64 = 2.0;
-/// Least gap the head keeps from pushable copper while searching (mm).
-const MIN_GAP: f64 = 0.02;
+/// Least gap the head's centre line keeps from pushable copper's centre lines while
+/// searching (mm): it may run over that copper, which is then pushed, never across it.
+const MIN_GAP: f64 = 0.05;
 
 /// A push that works: the new track and what moved to make room.
 #[derive(Debug, Clone, PartialEq)]
@@ -748,13 +749,13 @@ pub fn push_with(
         let need = mine.max(rules.clearance_of(Some(&l.net))) + half;
         for (a, b) in pieces(&l.pts) {
             full.push((Prim::Capsule { a, b, r: l.width / 2.0 }, need));
-            min.push((Prim::Capsule { a, b, r: l.width / 2.0 }, half + MIN_GAP));
+            min.push((Prim::Capsule { a, b, r: 0.0 }, MIN_GAP));
         }
     }
     for v in &m.vias {
         let need = mine.max(rules.clearance_of(Some(&v.net))) + half;
         full.push((Prim::Capsule { a: v.at, b: v.at, r: v.size / 2.0 }, need));
-        min.push((Prim::Capsule { a: v.at, b: v.at, r: v.size / 2.0 }, half + MIN_GAP));
+        min.push((Prim::Capsule { a: v.at, b: v.at, r: 0.0 }, MIN_GAP));
     }
     let soft =
         Soft { full: Obstacles::from_prims(full, half), min: Obstacles::from_prims(min, half), penalty: PENALTY };
