@@ -1197,6 +1197,9 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
             e => return Err(format!("extent {e} (not finite, through or to a key point)")),
         };
         let (dist, symmetric) = match side {
+            // Symmetric up to a key point: the reach each way (the pattern copies of such a
+            // cut store twice the reach as their symmetric depth).
+            3 if extent == 72 => (2.0 * dist.abs(), true),
             _ if extent == 72 => (dist, symmetric),
             1 => (-dist, symmetric),
             2 => (dist, symmetric),

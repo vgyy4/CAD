@@ -195,7 +195,15 @@ fn part_with(side: f64, extent: f64, second: Option<f64>, more: &[u8]) -> Vec<u8
     }
     c.extend(obj(36, 8, &small(extent)));
     c.extend(obj(36, 9, &small(side)));
-    c.extend(obj(36, 10, &small(0.005)));
+    if extent == 72.0 {
+        // Up to a key point 4 mm along +z.
+        let mut kp = func("JMLinearKeyPointFunction", &[&[10], &[1], &[2], &[0]]);
+        kp.extend(1u32.to_le_bytes());
+        kp.extend(f64s(&[0.004, 0.0, 0.0, 1.0]));
+        c.extend(obj(37, 10, &kp));
+    } else {
+        c.extend(obj(36, 10, &small(0.005)));
+    }
     let mut slots: Vec<&[u32]> = vec![&[11], &[0], &[2], &[8], &[9], &[0], &[10]];
     if second.is_some() {
         slots.extend([&[0u32] as &[u32], &[0], &[0], &[0], &[0], &[16], &[17], &[18]]);
@@ -292,6 +300,11 @@ fn a_key_point_extent_stores_its_reach() {
     assert_eq!(key_point_reach(&obj(1, 3, &b)), Some((0.0025, [0.0, 0.0, -1.0])));
     let other = func("JMCutoutFunction", &[&[3]]);
     assert_eq!(key_point_reach(&obj(1, 3, &other)), None);
+    // One side: the reach along the normal; symmetric (side 3): that reach each way.
+    let t = feature_tree(&part(2.0, 72.0), "p.par", &crate::Limits::default()).unwrap();
+    assert_eq!((&t["features"][1]["distance"], &t["features"][1]["symmetric"]), (&json!(4.0), &json!(false)), "{t}");
+    let t = feature_tree(&part(3.0, 72.0), "p.par", &crate::Limits::default()).unwrap();
+    assert_eq!((&t["features"][1]["distance"], &t["features"][1]["symmetric"]), (&json!(8.0), &json!(true)), "{t}");
 }
 
 /// An edge set's curve list: a head, the list's class id, `u32 1, n, 0, u8 2` and the curves
