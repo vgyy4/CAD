@@ -263,6 +263,18 @@ impl Command for Bend {
                         .hint("give bend_radius, e.g. \"2 mm\""));
                 }
             };
+            // A line that is not in the sketch lists the sketch's lines (ids are shared with its
+            // points, so `l2` is often a point's number: F18-13).
+            if let Some(FeatureKind::Sketch(sk)) = doc.features.iter().find(|f| f.name == sketch).map(|f| &f.kind) {
+                let lines: Vec<&str> =
+                    sk.entities.iter().filter(|e| e.geom.id_prefix() == 'l').map(|e| e.id.as_str()).collect();
+                if !lines.contains(&line.as_str()) {
+                    let shown: Vec<String> = lines.iter().take(12).map(|l| format!("{sketch}.{l}")).collect();
+                    return Err(CommandError::not_found(format!("sketch '{sketch}' has no line '{line}'"))
+                        .hint(format!("its lines: {}", shown.join(", ")))
+                        .details(json!({ "lines": shown })));
+                }
+            }
             let name = feature_name(doc, self.name, "Bend")?;
             let op = SheetOp::Bend {
                 body: self.body,

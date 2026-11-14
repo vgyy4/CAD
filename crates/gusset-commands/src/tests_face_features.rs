@@ -101,6 +101,10 @@ fn a_bend_is_written_and_validated() {
     ] {
         assert_eq!(err(&mut s, "feature.bend", args).code, "invalid_args", "{what}");
     }
+    // A line the sketch lacks is not_found and lists the sketch's lines (F18-13).
+    let e = err(&mut s, "feature.bend", json!({"body": "Tab1", "line": "Sketch2.l2", "angle": "90 deg"}));
+    assert_eq!(e.code, "not_found", "{e:?}");
+    assert!(e.hint.as_deref().unwrap_or("").contains("Sketch2.l3"), "{e:?}");
 }
 
 #[test]
