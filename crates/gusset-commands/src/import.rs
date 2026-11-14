@@ -1615,8 +1615,10 @@ fn stored_stock(
 const TIER_INVENTOR_HISTORY: &str = "tier 1: the Inventor feature history as editable features";
 
 /// The tree for an Inventor part's holes, kept or swapped for their plain-cut form: the tree
-/// without the reader's `_` keys, each hole named in `swapped` replaced by its `_fallback`.
-fn inventor_candidate(tree: &Value, swapped: &std::collections::HashSet<String>) -> Value {
+/// without the reader's `_` keys, each hole named in `swapped` replaced by its `_fallback`;
+/// with `blind`, each extrude up to a face as the blind extrude of its measured reach
+/// (`_blind`).
+fn inventor_candidate(tree: &Value, swapped: &std::collections::HashSet<String>, blind: bool) -> Value {
     let mut out = tree.clone();
     let feats = tree.get("features").and_then(Value::as_array).cloned().unwrap_or_default();
     let mut next = Vec::with_capacity(feats.len());
@@ -1636,6 +1638,12 @@ fn inventor_candidate(tree: &Value, swapped: &std::collections::HashSet<String>)
         }
         let mut f = f;
         if let Some(o) = f.as_object_mut() {
+            if blind && let Some(d) = o.get("_blind").cloned() {
+                for k in ["end_condition", "face", "reverse"] {
+                    o.remove(k);
+                }
+                o.insert("distance".into(), d);
+            }
             o.retain(|k, _| !k.starts_with('_'));
             if let Some(Value::Array(copied)) = o.get_mut("features") {
                 *copied = std::mem::take(copied)
@@ -1662,7 +1670,8 @@ fn first_skipped(why: &str) -> Option<String> {
 /// An Inventor part's feature history as a feature tree (ADR 0046 amendment), kept only when
 /// it rebuilds to the part's own body like a FreeCAD history does. A hole the kernel refuses
 /// is tried as plain cuts (one by one in order, then all of them): the rebuild decides, so the
-/// outcome is the same every time. `Err("")`: nothing to say.
+/// outcome is the same every time. Extrudes up to a face that do not rebuild as such are
+/// tried as their measured blind reach. `Err("")`: nothing to say.
 fn inventor_history(
     bytes: &[u8],
     bodies: &[PreparedBody],
@@ -1687,10 +1696,46 @@ fn inventor_history(
         .filter_map(|o| Some(format!("{} ({})", o.get("name")?.as_str()?, o.get("why")?.as_str()?)))
         .take(20)
         .collect();
+    // Extrudes up to a face carry their measured reach (`_blind`): when the tree does not
+    // rebuild with the faces, it is tried again with those extrudes blind, as before.
+    let has_blind =
+        tree.get("features").and_then(Value::as_array).is_some_and(|fs| fs.iter().any(|f| f.get("_blind").is_some()));
+    let mut last = Err("the holes could not be rebuilt".to_string());
+    for blind in [false, true] {
+        if blind && !has_blind {
+            break;
+        }
+        last = inventor_holes(&tree, &holes, &omitted, blind, bodies, kernel, file_name, attempt);
+        if let Ok((_, note)) = &mut last {
+            if blind {
+                let fs = tree.get("features").and_then(Value::as_array);
+                let n = fs.map_or(0, |fs| fs.iter().filter(|f| f.get("_blind").is_some()).count());
+                let b = format!("{n} extrude(s) up to a face are blind extrudes of their measured reach");
+                *note = Some(note.take().map_or(b.clone(), |x| format!("{x}; {b}")));
+            }
+            break;
+        }
+    }
+    last
+}
+
+/// One form of an Inventor tree (extrudes up to a face as such, or `blind`) through the
+/// rebuild check, its holes as holes and then as plain cuts (one by one in order, then all).
+#[allow(clippy::too_many_arguments)]
+fn inventor_holes(
+    tree: &Value,
+    holes: &[String],
+    omitted: &[String],
+    blind: bool,
+    bodies: &[PreparedBody],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    file_name: &str,
+    attempt: &mut Option<crate::tree_import::Tree>,
+) -> Result<(crate::tree_import::Tree, Option<String>), String> {
     let mut swapped = std::collections::HashSet::new();
     let mut all_tried = false;
     for _ in 0..holes.len() + 2 {
-        let text = serde_json::to_vec(&inventor_candidate(&tree, &swapped)).map_err(|e| e.to_string())?;
+        let text = serde_json::to_vec(&inventor_candidate(tree, &swapped, blind)).map_err(|e| e.to_string())?;
         let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
         match rebuild_check(&mut t, bodies, kernel, file_name, "the part's") {
             Ok(note) => {
@@ -4947,16 +4992,32 @@ mod inventor_candidate_tests {
                 {"type": "sketch", "name": "Hole1_1_sketch"}, {"type": "revolve", "name": "Hole1_1"}]},
             {"type": "extrude", "name": "Boss"},
             {"type": "pattern_circular", "name": "P", "features": ["Hole1", "Boss"], "_x": 1}]});
-        let kept = inventor_candidate(&tree, &std::collections::HashSet::new());
+        let kept = inventor_candidate(&tree, &std::collections::HashSet::new(), false);
         assert_eq!(
             kept["features"][2],
             json!({"type": "pattern_circular", "name": "P", "features": ["Hole1", "Boss"]})
         );
         assert!(kept["features"][0].get("_fallback").is_none());
-        let swapped = inventor_candidate(&tree, &["Hole1".to_string()].into_iter().collect());
+        let swapped = inventor_candidate(&tree, &["Hole1".to_string()].into_iter().collect(), false);
         let names: Vec<&str> =
             swapped["features"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["Hole1_0_sketch", "Hole1_0", "Hole1_1_sketch", "Hole1_1", "Boss", "P"]);
         assert_eq!(swapped["features"][5]["features"], json!(["Hole1_0", "Hole1_1", "Boss"]));
+    }
+
+    #[test]
+    fn an_extrude_up_to_a_face_falls_back_to_its_measured_reach() {
+        let tree = json!({"features": [{"type": "extrude", "name": "E", "symmetric": false, "end_condition": "to_face",
+            "face": {"point": [0.0, 0.0, 5.0]}, "reverse": true, "_blind": -5.0}]});
+        let none = std::collections::HashSet::new();
+        assert_eq!(
+            inventor_candidate(&tree, &none, false)["features"][0],
+            json!({"type": "extrude", "name": "E", "symmetric": false, "end_condition": "to_face",
+                   "face": {"point": [0.0, 0.0, 5.0]}, "reverse": true})
+        );
+        assert_eq!(
+            inventor_candidate(&tree, &none, true)["features"][0],
+            json!({"type": "extrude", "name": "E", "symmetric": false, "distance": -5.0})
+        );
     }
 }
