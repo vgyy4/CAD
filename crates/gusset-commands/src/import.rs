@@ -1620,18 +1620,29 @@ fn inventor_candidate(tree: &Value, swapped: &std::collections::HashSet<String>)
     let mut out = tree.clone();
     let feats = tree.get("features").and_then(Value::as_array).cloned().unwrap_or_default();
     let mut next = Vec::with_capacity(feats.len());
+    // A swapped hole's name -> the names of the cuts that stand in for it, for the patterns
+    // and mirrors that copy it.
+    let mut stand_ins: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
     for f in feats {
         let name = f.get("name").and_then(Value::as_str).unwrap_or_default();
         if f.get("type").and_then(Value::as_str) == Some("hole")
             && swapped.contains(name)
             && let Some(fb) = f.get("_fallback").and_then(Value::as_array)
         {
+            let cuts = fb.iter().filter(|g| g.get("type").and_then(Value::as_str) != Some("sketch"));
+            stand_ins.insert(name.to_string(), cuts.filter_map(|g| g.get("name").cloned()).collect());
             next.extend(fb.iter().cloned());
             continue;
         }
         let mut f = f;
         if let Some(o) = f.as_object_mut() {
             o.retain(|k, _| !k.starts_with('_'));
+            if let Some(Value::Array(copied)) = o.get_mut("features") {
+                *copied = std::mem::take(copied)
+                    .into_iter()
+                    .flat_map(|c| c.as_str().and_then(|n| stand_ins.get(n)).cloned().unwrap_or_else(|| vec![c]))
+                    .collect();
+            }
         }
         next.push(f);
     }
@@ -4921,5 +4932,31 @@ mod local_body_tests {
         assert_eq!(picks, [0, 1, 3]);
         assert_eq!(local_body_index(&names, &used, "Other"), Some(2));
         assert_eq!(local_body_index(&names, &used, "Missing"), None);
+    }
+}
+
+#[cfg(test)]
+mod inventor_candidate_tests {
+    use super::*;
+
+    #[test]
+    fn a_pattern_of_a_hole_swapped_for_cuts_copies_the_cuts() {
+        let tree = json!({"features": [
+            {"type": "hole", "name": "Hole1", "_fallback": [
+                {"type": "sketch", "name": "Hole1_0_sketch"}, {"type": "revolve", "name": "Hole1_0"},
+                {"type": "sketch", "name": "Hole1_1_sketch"}, {"type": "revolve", "name": "Hole1_1"}]},
+            {"type": "extrude", "name": "Boss"},
+            {"type": "pattern_circular", "name": "P", "features": ["Hole1", "Boss"], "_x": 1}]});
+        let kept = inventor_candidate(&tree, &std::collections::HashSet::new());
+        assert_eq!(
+            kept["features"][2],
+            json!({"type": "pattern_circular", "name": "P", "features": ["Hole1", "Boss"]})
+        );
+        assert!(kept["features"][0].get("_fallback").is_none());
+        let swapped = inventor_candidate(&tree, &["Hole1".to_string()].into_iter().collect());
+        let names: Vec<&str> =
+            swapped["features"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Hole1_0_sketch", "Hole1_0", "Hole1_1_sketch", "Hole1_1", "Boss", "P"]);
+        assert_eq!(swapped["features"][5]["features"], json!(["Hole1_0", "Hole1_1", "Boss"]));
     }
 }
