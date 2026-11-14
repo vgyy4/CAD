@@ -1212,8 +1212,12 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         let mut ch = json!({"type": "chamfer", "name": name, "edges": edges, "distance": rnd(dist * CM)});
         match chamfer_kind(r, &s, dist, edges.len()) {
             Ok(None) => {}
-            Ok(Some((angle, face))) => {
+            Ok(Some(Second::Angle(angle, face))) => {
                 put(&mut ch, "angle", json!(rnd(angle.to_degrees())));
+                put(&mut ch, "face", json!({"point": face}));
+            }
+            Ok(Some(Second::Distance(d2, face))) => {
+                put(&mut ch, "distance2", json!(rnd(d2 * CM)));
                 put(&mut ch, "face", json!({"point": face}));
             }
             Err(why) => {
@@ -1246,7 +1250,18 @@ pub(crate) fn radius_groups(set_radii: &[f64], face_radii: &[Option<f64>]) -> Op
 /// `distance` away inside a support face; the first one is the face of the first distance.
 /// Anything else (another type, one record not a line of that length, several edges: the pick
 /// would apply to every edge) is refused.
-fn chamfer_kind(r: &Reader, s: &Slots, dist: f64, edges: usize) -> Result<Option<(f64, V3)>, String> {
+/// The second leg of an unequal chamfer: an angle (radians) or a distance (cm), with a point on
+/// the reference face (mm) that the first distance runs along.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Second {
+    Angle(f64, V3),
+    Distance(f64, V3),
+}
+
+/// A chamfer's type (slot 4) read: 0 equal distances, 1 distance and angle (slot 10), 2 two
+/// distances (slots 2 and 3). `None` for an equal chamfer (type 2 with both distances the same
+/// included).
+fn chamfer_kind(r: &Reader, s: &Slots, dist: f64, edges: usize) -> Result<Option<Second>, String> {
     let rec = r.dc.r(s.need(4)?);
     let n = rec.len();
     let (Some(two), Some(ty), Some(zero)) = (
@@ -1259,31 +1274,73 @@ fn chamfer_kind(r: &Reader, s: &Slots, dist: f64, edges: usize) -> Result<Option
     if two != 2 || zero != 0 {
         return Err("the chamfer type record has an unknown layout".into());
     }
-    match ty {
+    let leg = match ty {
         0 => return Ok(None),
-        1 => {}
+        1 => r.pval(s, 10)?,
+        2 => r.pval(s, 3)?,
+        t => return Err(format!("chamfer type {t} is not decoded")),
+    };
+    // The reference lines (`797737b1` records of slot 8): kind, start, end (cm).
+    let mut lines: Vec<(u32, V3, V3)> = Vec::new();
+    if let Some(i) = s.get(8)
+        && let Some((items, _)) = r.dc.first_list(i, None)
+    {
+        for k in items.iter().take(2).flatten() {
+            let rf = r.dc.r(*k);
+            let f = |j: usize| f64_at(rf, 22 + 8 * j).filter(|v| v.is_finite());
+            let (Some(kind), Some(a), Some(b), Some(c), Some(d), Some(e), Some(g)) =
+                (u32_at(rf, 10), f(0), f(1), f(2), f(3), f(4), f(5))
+            else {
+                break;
+            };
+            lines.push((kind, [a, b, c], [d, e, g]));
+        }
+    }
+    chamfer_second(ty, dist, leg, edges, &lines)
+}
+
+/// The second leg of a chamfer of type `ty` (1 or 2) from its first distance `dist` (cm), the
+/// leg (the angle in radians for type 1, the second distance in cm for type 2), the number of
+/// edges and the reference lines of slot 8. The first line runs from the edge `dist` into the
+/// face of the first distance (its end is the reference face's point); for two distances the
+/// second runs from the same start `leg` into the other face. Two equal distances are an equal
+/// chamfer. Only one edge: the reference face of each further edge is not read.
+pub(crate) fn chamfer_second(
+    ty: u16,
+    dist: f64,
+    leg: f64,
+    edges: usize,
+    lines: &[(u32, V3, V3)],
+) -> Result<Option<Second>, String> {
+    match ty {
+        1 if !(leg > 0.0 && leg < std::f64::consts::FRAC_PI_2) => {
+            return Err("the chamfer angle is out of range".into());
+        }
+        2 if !(leg.is_finite() && leg > 0.0) => return Err("the second chamfer distance is not positive".into()),
+        2 if (leg - dist).abs() <= 1e-9 => return Ok(None),
+        1 | 2 => {}
         t => return Err(format!("chamfer type {t} is not decoded")),
     }
     if edges != 1 {
         return Err("an unequal chamfer on several edges: the reference face of each edge is not read".into());
     }
-    let angle = r.pval(s, 10)?;
-    if !(angle > 0.0 && angle < std::f64::consts::FRAC_PI_2) {
-        return Err("the chamfer angle is out of range".into());
-    }
-    let (items, _) = r.dc.first_list(s.need(8)?, None).ok_or("the chamfer has no reference faces")?;
-    let first = items.first().copied().flatten().ok_or("the chamfer has no reference face")?;
-    let rf = r.dc.r(first);
-    let f = |k: usize| f64_at(rf, 22 + 8 * k).filter(|v| v.is_finite());
-    let (Some(p0), Some(p1)) =
-        (f(0).zip(f(1)).zip(f(2)).map(|((a, b), c)| [a, b, c]), f(3).zip(f(4)).zip(f(5)).map(|((a, b), c)| [a, b, c]))
-    else {
+    let Some(&(_, p0, p1)) = lines.first().filter(|l| l.0 == 2) else {
         return Err("the reference face of the chamfer is not readable".into());
     };
-    if u32_at(rf, 10) != Some(2) || (crate::acis::dist(p0, p1) - dist).abs() > 1e-6 {
+    if (crate::acis::dist(p0, p1) - dist).abs() > 1e-6 {
         return Err("the first distance does not run along the first reference face".into());
     }
-    Ok(Some((angle, [rnd_to(p1[0] * CM, 1e6), rnd_to(p1[1] * CM, 1e6), rnd_to(p1[2] * CM, 1e6)])))
+    let face = [rnd_to(p1[0] * CM, 1e6), rnd_to(p1[1] * CM, 1e6), rnd_to(p1[2] * CM, 1e6)];
+    if ty == 1 {
+        return Ok(Some(Second::Angle(leg, face)));
+    }
+    let Some(&(_, q0, q1)) = lines.get(1).filter(|l| l.0 == 2) else {
+        return Err("the second reference face of the chamfer is not readable".into());
+    };
+    if (crate::acis::dist(q0, q1) - leg).abs() > 1e-6 || crate::acis::dist(p0, q0) > 1e-6 {
+        return Err("the second distance does not run along the second reference face".into());
+    }
+    Ok(Some(Second::Distance(leg, face)))
 }
 
 /// The part's feature history as a tree (see the module notes).

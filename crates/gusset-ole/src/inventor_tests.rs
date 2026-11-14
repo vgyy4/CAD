@@ -780,3 +780,25 @@ mod sab {
         assert!((p[0].0 - 5.0).abs() < 1.0 && (p[0].1 - 3.0).abs() < 1.0, "{p:?}");
     }
 }
+
+/// Chamfer type 2 is two distances (slots 2 and 3): the first reference line runs the first
+/// distance into its face, the second the second distance into the other face, from the same
+/// point on the edge. Equal distances are an equal chamfer; type 1 takes the angle.
+#[test]
+fn a_chamfer_of_two_distances_names_the_face_of_the_first() {
+    use crate::inventor_features::{Second, chamfer_second};
+    // `ch_two_dist`: 2 mm along -x, 4 mm along -z from the edge point (5, 3.5, 2) cm.
+    let lines = [(2, [5.0, 3.5, 2.0], [4.8, 3.5, 2.0]), (2, [5.0, 3.5, 2.0], [5.0, 3.5, 1.6])];
+    assert_eq!(chamfer_second(2, 0.2, 0.4, 1, &lines), Ok(Some(Second::Distance(0.4, [48.0, 35.0, 20.0]))));
+    // The distances the other way round do not match the lines.
+    assert!(chamfer_second(2, 0.4, 0.2, 1, &lines).unwrap_err().contains("first distance"));
+    // Equal distances: an equal chamfer, on any number of edges.
+    assert_eq!(chamfer_second(2, 0.2, 0.2, 5, &[]), Ok(None));
+    // Unequal on several edges, or without its second line: refused.
+    assert!(chamfer_second(2, 0.2, 0.4, 2, &lines).unwrap_err().contains("several edges"));
+    assert!(chamfer_second(2, 0.2, 0.4, 1, &lines[..1]).unwrap_err().contains("second reference"));
+    // Type 1: the angle and the first line's end.
+    assert_eq!(chamfer_second(1, 0.2, 0.5, 1, &lines), Ok(Some(Second::Angle(0.5, [48.0, 35.0, 20.0]))));
+    assert!(chamfer_second(1, 0.2, 2.0, 1, &lines).is_err());
+    assert!(chamfer_second(3, 0.2, 0.4, 1, &lines).unwrap_err().contains("type 3"));
+}
