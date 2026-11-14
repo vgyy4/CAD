@@ -604,6 +604,43 @@ fn spline_at(order: usize, poles: &[V3], knots: &[f64], t: f64) -> Option<V3> {
     d.last().copied()
 }
 
+/// An arc's angles from and to, the second past the first; a whole turn without them.
+fn turn(range: Option<(f64, f64)>) -> (f64, f64) {
+    match range {
+        None => (0.0, 2.0 * core::f64::consts::PI),
+        Some((a0, a1)) => (a0, if a1 <= a0 { a1 + 2.0 * core::f64::consts::PI } else { a1 }),
+    }
+}
+
+/// The pick of an edge along a curve `p(t)`, `t` from `lo` to `hi`: the point at the middle
+/// and the whole edge as a polyline within 2 um of it (mm), the importer matching the model's
+/// edges that lie along it.
+fn along(p: &dyn Fn(f64) -> Option<V3>, lo: f64, hi: f64) -> Result<Value, String> {
+    if !(hi > lo && (hi - lo).is_finite()) {
+        return Err("an edge of the set is empty".into());
+    }
+    let mm = |p: V3| json!([rnd(p[0] * MM), rnd(p[1] * MM), rnd(p[2] * MM)]);
+    let ev = |t: f64| p(t).ok_or("an edge of the set is not readable");
+    let mut n = 16;
+    let pts = loop {
+        let pts: Vec<V3> = (0..=n).map(|i| ev(lo + (hi - lo) * i as f64 / n as f64)).collect::<Result<_, _>>()?;
+        let mut worst = 0.0f64;
+        for (i, w) in pts.windows(2).enumerate() {
+            let m = ev(lo + (hi - lo) * (i as f64 + 0.5) / n as f64)?;
+            if let [a, b] = w {
+                let c = [(a[0] + b[0]) / 2.0 - m[0], (a[1] + b[1]) / 2.0 - m[1], (a[2] + b[2]) / 2.0 - m[2]];
+                worst = worst.max(dot(c, c).sqrt());
+            }
+        }
+        if worst * MM < 0.002 || n >= 256 {
+            break pts;
+        }
+        n *= 2;
+    };
+    let path: Vec<Value> = pts.iter().map(|p| mm(*p)).collect();
+    Ok(json!({"midpoint": mm(ev((lo + hi) / 2.0)?), "path": path}))
+}
+
 /// The tree's pick of a stored edge: its middle and a short piece of it around the middle
 /// (mm), so the importer finds the model's edge that holds that piece whatever its extent.
 pub(crate) fn edge_pick(c: &SetCurve) -> Result<Value, String> {
@@ -612,34 +649,27 @@ pub(crate) fn edge_pick(c: &SetCurve) -> Result<Value, String> {
     let at = |p: V3, d: V3, s: f64| [p[0] + d[0] * s, p[1] + d[1] * s, p[2] + d[2] * s];
     let mm = |p: V3| json!([rnd(p[0] * MM), rnd(p[1] * MM), rnd(p[2] * MM)]);
     if let SetCurve::Spline(order, poles, knots) = c {
-        // The whole edge as a polyline close to it (within 2 um), the importer matching the
-        // model's edges that lie along it.
         let (lo, hi) = (
             *knots.get(order - 1).ok_or("an edge spline is empty")?,
             *knots.get(poles.len()).ok_or("an edge spline is empty")?,
         );
-        if hi <= lo {
-            return Err("an edge spline of the set is empty".into());
+        return along(&|t| spline_at(*order, poles, knots, t), lo, hi);
+    }
+    // An ellipse (or an arc of one): along it as well.
+    if let SetCurve::Conic(cn, n, major, ratio, range) = *c
+        && (ratio - 1.0).abs() > 1e-9
+    {
+        let u = unit(major).ok_or("an edge ellipse of the set has no axis")?;
+        let (r, v) = (dot(major, major).sqrt(), cross(n, u));
+        let (lo, hi) = turn(range);
+        if !(ratio > 1e-6 && ratio < 1e6) {
+            return Err("an edge ellipse of the set is flat".into());
         }
-        let ev = |t: f64| spline_at(*order, poles, knots, t).ok_or("an edge spline of the set is not readable");
-        let mut n = 16;
-        let pts = loop {
-            let pts: Vec<V3> = (0..=n).map(|i| ev(lo + (hi - lo) * i as f64 / n as f64)).collect::<Result<_, _>>()?;
-            let mut worst = 0.0f64;
-            for (i, w) in pts.windows(2).enumerate() {
-                let m = ev(lo + (hi - lo) * (i as f64 + 0.5) / n as f64)?;
-                if let [p, q] = w {
-                    let c = [(p[0] + q[0]) / 2.0 - m[0], (p[1] + q[1]) / 2.0 - m[1], (p[2] + q[2]) / 2.0 - m[2]];
-                    worst = worst.max(dot(c, c).sqrt());
-                }
-            }
-            if worst * MM < 0.002 || n >= 256 {
-                break pts;
-            }
-            n *= 2;
+        let p = |t: f64| {
+            let (cs, sn) = (r * libm::cos(t), r * ratio * libm::sin(t));
+            Some([cn[0] + cs * u[0] + sn * v[0], cn[1] + cs * u[1] + sn * v[1], cn[2] + cs * u[2] + sn * v[2]])
         };
-        let path: Vec<Value> = pts.iter().map(|p| mm(*p)).collect();
-        return Ok(json!({"midpoint": mm(ev((lo + hi) / 2.0)?), "path": path}));
+        return along(&p, lo, hi);
     }
     let (mid, a, b) = match *c {
         SetCurve::Line(p, d, t0, t1) => {
@@ -651,21 +681,12 @@ pub(crate) fn edge_pick(c: &SetCurve) -> Result<Value, String> {
             let h = PIECE.min(len / 4.0) / MM;
             (m, at(m, d, -h), at(m, d, h))
         }
-        SetCurve::Conic(cn, n, major, ratio, range) => {
+        SetCurve::Conic(cn, n, major, _, range) => {
             let r = dot(major, major).sqrt();
-            if (ratio - 1.0).abs() > 1e-9 {
-                return Err("an edge of the set lies on an ellipse".into());
-            }
             let u = unit(major).ok_or("an edge circle of the set has no radius")?;
             let v = cross(n, u);
-            let (a0, a1) = match range {
-                // Any point of a whole circle will do.
-                None => (0.0, 2.0 * core::f64::consts::PI),
-                Some((a0, a1)) => {
-                    let a1 = if a1 <= a0 { a1 + 2.0 * core::f64::consts::PI } else { a1 };
-                    (a0, a1)
-                }
-            };
+            // Any point of a whole circle will do.
+            let (a0, a1) = turn(range);
             let sweep = a1 - a0;
             if !(sweep > 1e-9 && sweep <= 2.0 * core::f64::consts::PI + 1e-9 && r > 1e-12) {
                 return Err("an edge arc of the set is empty".into());

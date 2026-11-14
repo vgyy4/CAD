@@ -366,9 +366,14 @@ fn an_edge_set_lists_its_curves() {
         let m: Vec<f64> = p["midpoint"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
         assert!((libm::hypot(m[0], m[1]) - 5.0).abs() < 1e-9 && (m[2] - 2.0).abs() < 1e-9);
     }
-    // An ellipse, an unknown curve type and a list without curves are refused.
+    // An ellipse (5 by 2.5 mm): picked along its whole turn, from the end of its major axis.
     let ellipse = (15u8, vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.005, 0.0, 0.0, 0.5]);
-    assert!(edge_pick(&edge_set(&edge_set_bytes(&[ellipse], false)).unwrap()[0]).is_err());
+    let p = edge_pick(&edge_set(&edge_set_bytes(&[ellipse], false)).unwrap()[0]).unwrap();
+    assert_eq!(p["midpoint"], json!([-5.0, 0.0, 0.0]));
+    let path = p["path"].as_array().unwrap();
+    assert_eq!((&path[0], path.last().unwrap()), (&json!([5.0, 0.0, 0.0]), &json!([5.0, 0.0, 0.0])));
+    assert!(path.iter().any(|q| q == &json!([0.0, 2.5, 0.0])), "{p}");
+    // An unknown curve type and a list without curves are refused.
     assert!(edge_set(&edge_set_bytes(&[(27, vec![0.0; 4])], false)).is_err());
     assert!(edge_set(&edge_set_bytes(&[], false)).is_err());
     assert!(edge_set(b"QQ no list").is_err());
