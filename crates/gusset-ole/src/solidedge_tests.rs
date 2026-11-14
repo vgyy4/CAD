@@ -184,8 +184,10 @@ fn part_with(side: f64, extent: f64, second: Option<f64>, more: &[u8]) -> Vec<u8
     prof.push(9 * 8);
     prof.extend("Profile2d".encode_utf16().flat_map(u16::to_le_bytes));
     c.extend(obj(26, 2, &prof));
-    let mut p2 = 4u32.to_le_bytes().to_vec();
-    for m in [4u32, 5, 6, 7] {
+    // The rectangle's lines, an empty slot (0xfffffffd) and a relation listed with them (not
+    // shaped as a curve: byte 8 is 1).
+    let mut p2 = 6u32.to_le_bytes().to_vec();
+    for m in [4u32, 0xffff_fffd, 5, 6, 19, 7] {
         p2.extend(m.to_le_bytes());
     }
     c.extend(obj(65, 3, &p2));
@@ -213,6 +215,7 @@ fn part_with(side: f64, extent: f64, second: Option<f64>, more: &[u8]) -> Vec<u8
     c.extend(obj(36, 16, &small(13.0)));
     c.extend(obj(36, 17, &small(second.unwrap_or(0.0))));
     c.extend(obj(36, 18, &small(0.002)));
+    c.extend(obj(41, 19, &[1, 1, 2, 0, 0, 0, 0, 1, 0, 0x41]));
     c.extend(more);
     ole(&[("PSMcluster0", &c), ("PSMtypetable", &[])])
 }

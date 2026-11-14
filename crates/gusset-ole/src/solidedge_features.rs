@@ -874,8 +874,8 @@ fn members(st: &Store, b: &[u8], at: usize, n: u32, plane: Option<(V3, V3, V3)>)
     let mut backwards = Vec::new();
     for k in 0..n as usize {
         let m = u32_at(b, at + 4 * k).ok_or("the 2D profile is cut short")?;
-        // No member (a slot left empty).
-        if m == 0 || m == u32::MAX || not_a_curve(st.kind_name(m)) {
+        // No member (a slot left empty: 0, 0xffffffff or 0xfffffffd).
+        if m == 0 || m >= 0xffff_fff0 || not_a_curve(st.kind_name(m)) {
             continue;
         }
         let Some(mb) = st.obj(m) else {
