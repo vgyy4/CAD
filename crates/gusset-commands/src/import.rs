@@ -495,6 +495,11 @@ impl ImportJob {
                         &mut warnings,
                         "an exact body",
                     );
+                    // Why the history did not come in goes first: a large part's body can
+                    // bring more warnings than the result shows.
+                    if warnings.last().is_some_and(|w| w.starts_with("the design history")) {
+                        warnings.rotate_right(1);
+                    }
                     history = Some(h);
                     (out, tier, warnings)
                 } else {
