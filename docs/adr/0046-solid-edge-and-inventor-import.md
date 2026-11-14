@@ -437,3 +437,53 @@ others), a rational spline or ellipse in a profile (27), a pattern-copied profil
 (4), a revolve extent not read (1), a cut whose body did not come in (2) and 5 rebuilds that differ from the part
 (feature groups, later direct edits, a stored body of negative volume). Next: round and chamfer edges (topological references `SEGetSmoothEdgeSeq`, not
 geometry), rational splines (weights after the knots), pattern copies (curves listed, plane to be found), sweeps.
+
+## Amendment (2026-11-14, 12): Solid Edge round se2 - rounds, chamfers, copied profiles, open cuts, sweeps, lofts
+
+`gusset_ole::solidedge_features` reads more of a part's history (layout notes F11 of
+`docs/formats/solidedge-feature-tree.md`; clean room, from the sample bytes; every rule checked by exact rebuilds):
+
+- **Rounds and equal chamfers.** Their edge set (the `JMTransmigrateAssocFunction` the feature refers to) keeps,
+  after the edges' topological names, the curve each edge lay on when the feature was made: lines with their
+  range, circles and arcs, ellipses, B-splines. Each becomes an edge pick: a line, circle or arc by its middle and
+  0.1 mm of it either way (the importer's path matching finds the model edge holding that piece, a tangent chain
+  being rounded whole by the kernel); an ellipse or spline by its middle and the whole edge as a polyline within
+  2 um. The radius and setback come from the file; variable rounds and two-setback chamfers stay `unsupported`.
+  The names themselves are not resolved: the stored geometry identifies the edges on the rebuilt model.
+- **Profiles copied by a smart pattern** are the seed's 2D curves on the plane the copy stores (laid out as a plane
+  object); **by a mirror**, the seed profile reflected in the mirror plane, its curves turned over.
+- **Cutouts with an open profile** (one chain): closed on the side slot 5 names (1 left of the chain as drawn, 2
+  right) by running the ends on to a circle 10 m round them and the arc on that side.
+- **Up to a key point, symmetric** (side 3): the stored reach each way. **Revolve axes** off the importer's sketch
+  axes: a construction line of the sketch.
+- **Sweeps** of one cross section along one path (the section may be a model circle edge) and **lofts** through
+  their sections in order (the ends' conditions not read: the rebuild check decides).
+- **Profile members**: splines drawn through points (kind 2: same poles and knots), empty slots marked
+  `0xfffffffd`, and relations or dimensions the profile lists with its curves (skipped).
+
+Nothing derived from the result body: every value comes from the file; the rebuild check is unchanged (an imperfect
+tree still falls back to the exact body). No shared code changed (`gusset-commands`, `gusset-xt` untouched).
+
+**Coverage (184 ordered parts, OCCT `par_history`).** Before (round se1): 28 as history, 154 as bodies, 2 failed.
+After: **56 as history** (the 28 and 28 more), 126 as bodies, the same 2 failed. First reasons of the 126: a feature
+kind not read 43 (thin walls 15, smart patterns 4, part copies 4, helices 4, others), a round or chamfer the kernel
+does not build 28 (mostly a radius as wide as the face it rolls over, which Solid Edge allows), a rebuild that
+differs 15 (two of them stored bodies of negative volume), an ellipse profile curve 7, a round edge not found 5, 28
+others.
+
+**Body-import failures (unchanged, not in the reader).** Both jam-cam spindles keep a sheet body (Parasolid body type
+3, beside an empty solid) whose two gear faces have 176 (Driver_Spindle) and 96 (Reel_Drive_Spindle) B-spline edges.
+The worker reads the STEP that `gusset-xt` writes for it in 1 s; OCCT's shape healing then runs
+`ShapeFix_Wire::FixSelfIntersection` on those wires: on Driver_Spindle the pairwise pcurve intersections run past the
+import's 900 s limit (the worker is killed), on Reel_Drive_Spindle the healing corrupts the heap (`free()` of a
+`Geom2d_BSplineCurve` in `BRep_CurveOnSurface`'s destructor under `ShapeProcess::Perform`; the worker aborts or
+segfaults, in most runs, not all). Neither is a decoding error of ours; a fix belongs to the shared STEP reading
+(healing settings for STEP that Gusset wrote itself, or an OCCT patch) and is left to the owner. **UFO_base**: its
+STEP reads in under a second; the hour goes to measuring the exact body (`gs_mass` -> `measured_props`, OCCT's
+Gauss-Kronrod to a relative 1e-9) over 8 B-spline faces that `gusset-xt` fits for Parasolid rolling-ball blends
+(`BLENDED_EDGE`: 20 x 9 grid -> 58 x 25 poles, 152 C0 Bezier patches each, every patch integrated on its own);
+the Reflector_Mounting_Bracket spends many minutes in the same integration. Both the fit and the integration are
+shared code with exactness trade-offs documented in the shim: not changed here.
+
+**Next.** Thin walls (face sets decoded up to the open faces' slot), ellipse profile members (71 bytes), protrusions
+through all or to the next face (their reach), holes, part copies; rounds whose radius equals the face they consume.

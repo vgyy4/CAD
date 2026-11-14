@@ -145,3 +145,56 @@ halter). Schema keys seen: SCH_*_28002/28101/30000/30100/31100/32001/34001/36001
   they list their curves at +16 (`u32 n` at +12) and 3D copies of them, but no plane: not read.
 * **Second extents** are common in the older files (servo tower: 16.002 one way, 6.858 the other).
 * Coverage of round se1 (OCCT test par_history, 184 ordered parts): 28 as history, 154 as exact bodies, 2 failing in the body import (worker killed/crashed, as before). ADR 0046 amendment 11.
+
+## F11: round se2 (2026-11-14): blends, copied profiles, open cuts, sweeps, lofts
+Same corpus (184 ordered parts). All from the sample bytes; each rule checked by exact rebuilds in `par_history`.
+
+* **Edge sets** (`JMTransmigrateAssocFunction`, the edges a round or chamfer works on; the names are
+  `SEGetRoundableEdgeSeq` entries, faces `JMGetSmoothFaceSeq`). After the names: `ff`, a class id ending in
+  `cd 11 8b a4 08 00 36 24 fc 01`, `u32 1, u32 n, u32 0, u8 2`, then `n` curves, each a class id ending in
+  `3a ce 11 9a 5e 08 00 36 9b 41 02`, a type byte and its data (metres, absolute), then a few words (`u32 0`; newer
+  files two; after a spline a count and a zero): type 3 line (point, unit direction, t0, t1); 15 circle or ellipse
+  (centre, unit normal, major axis whose length is the radius, minor/major ratio); 16 an arc of one (the same, then
+  the angles from and to, counter-clockwise about the normal from the major axis, wrapping past 2 pi); 27 B-spline
+  (`u32 n`, `n` poles xyz, `u32` weight count (0 in every sample), `u32 k`, `k` knots, `f64 -1`, `u8 0`, `u8 order`,
+  3 bytes). The curves are the edges as they were when the feature was made: the washer's round lists the two
+  circles r 9.525 at z 0 and 2.54 (CONFIRMED by exact rebuilds of 14 parts with rounds and chamfers).
+* **Round** slots: 2 edge set, 3 kind (1 constant radius in 339 of 345; 2 and 17 not read), 4 radius (value object
+  or relation), 7 five option values (66 69 71 152 154 nearly always). **Chamfer**: 2 kind (41 equal setbacks;
+  42 with a reference face set in slot 3 and a second value in slot 6, not read), 4 edge set, 5 setback.
+* **Smart pattern copies** (`JMDummyComputeFunction`, slot 1 the `JMSmartPatternFunction`, whose slot 4 is the seed
+  feature): `u32` at +8, `u32 n` at +12, `n` member serials (the seed profile's 2D curves), the curves again (a type
+  byte and their data in the seed's frame), then the copy's plane laid out as a plane object (origin, normal, x
+  direction; 9 `f64`) just before `00 00 00 00 00 01 01 00 00 00` and the class id `40117dba-4476-1b10-ac07-
+  08003601b14e`. CONFIRMED: a 16-fold circular pattern in 22.5 degree steps (normal kept, x turned), a pattern
+  along a 3D curve.
+* **Mirror copies** (slot 1 a `JMMirrorCopyFunction`: slot 2 the mirror plane, slot 3 the seed feature) store no
+  plane: the seed profile's plane reflected, its curves turned over (y to -y) so the sketch keeps the reflected
+  normal; for an open profile the side flips.
+* **Open profiles of cutouts**: one chain with two free ends; slot 5 is the side cut away, 1 left of the chain as
+  drawn, 2 right (lines from their first point; an arc member with `u8 0` at +34 is drawn clockwise). The reader
+  runs the ends on along their directions to a circle 10 m round them and closes on that side.
+* **Up to a key point, side 3**: symmetric, the stored reach each way (the pattern copies of such a cut store twice
+  the reach as their symmetric depth).
+* **Multi-section sweeps**: slot 2 the path's profiles, slot 3 the cross sections' (a sketch profile, or an edge
+  set of one whole circle: an edge of the model), 16 another profile (not read). One section along one path is a
+  sweep (frenet). **Lofts**: slot 2 the cross sections in order; slots 11 and 14 the ends' conditions (20, 113),
+  13 and 16 their weights: not read, the rebuild check decides.
+* **Spline members of kind 2** (`u32 2` at +10, flags 1 or 0x80000001 at +14) are drawn through points: the poles
+  and knots are the curve; after the knots `u32 0, u8 1|4, u8 1, u32 m`, `m` point parameters and their indices.
+* **Profile members** with byte 8 not 0 (relations and dimensions the `Profile2d` lists with its curves) are not
+  curves.
+* **Thin walls** (`JMThinwallAssocFunctionNew`, 13 parts): slot 2 a value (4), 3 the thickness (relation), 4 (one
+  or two faces) and 5 (one face) face sets (`JMGetSmoothFaceSeq`, the same list layout; every face in the corpus a
+  plane, type 14: origin, normal, x direction), each plane followed by `u32` 1 or 2, `u32 m`, `u8 2, u8 0` and its
+  `m` boundary curves as type byte and data like an edge set's (no class ids). Not read yet: which slot holds the
+  open faces and what slot 2 says are open; the importer would pick each face by points of its boundary.
+* Not read: ellipse members (71 bytes), thin walls, holes, part copies, helices, protrusions through all or to the
+  next face (their reach is the part's), variable rounds, chamfers with two setbacks.
+* Coverage of round se2 (OCCT test `par_history`, the same 184 ordered parts): **56 as history** (was 28; none lost),
+  126 as exact bodies, 2 failing in the body import as before (see ADR 0046 amendment 12 for why). First reasons of
+  the 126: a feature kind not read 43 (thin walls 15, smart patterns 4, part copies 4, helices 4, others), a round or
+  chamfer the kernel does not build 28 (mostly a radius as large as the face it rolls over: Solid Edge lets the
+  round take the face, OCCT fails), a rebuild that differs 15, a profile curve not read 7 (ellipses), a round edge
+  not found 5, others 28.
+
