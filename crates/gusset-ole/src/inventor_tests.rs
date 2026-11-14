@@ -964,7 +964,7 @@ fn a_chamfer_of_two_distances_names_the_face_of_the_first() {
 }
 
 /// The classes of the copy features' records, after the common ones.
-const COPY_CLASSES: [u32; 17] = [
+const COPY_CLASSES: [u32; 18] = [
     0x2b48_a42b,
     0x9087_4d18,
     0xce52_df35,
@@ -982,6 +982,7 @@ const COPY_CLASSES: [u32; 17] = [
     0xce52_df42, // 14 work plane
     0xbb1d_d5df, // 15 count
     0x9087_4d28, // 16 flag
+    0xd83e_f271, // 17 references
 ];
 
 fn copy_tree(recs: &[(usize, Vec<u8>)]) -> Value {
@@ -996,7 +997,8 @@ fn doubles(rec: &mut Vec<u8>, v: &[f64]) {
 
 /// A circular pattern (`06977131`) of the base extrude: the copied features before its sketch
 /// placement record, the count's last word, the angle parameter and a work axis (cm), with
-/// the flag after the axis turning it the other way.
+/// the flag after the axis turning it the other way. Its only feature made the body: a copy of
+/// every feature so far is a copy of the body.
 #[test]
 fn a_circular_pattern_reads_its_features_count_angle_and_axis() {
     let with = |flip: u8, angle: f64| {
@@ -1040,7 +1042,7 @@ fn a_circular_pattern_reads_its_features_count_angle_and_axis() {
     let t = with(0, std::f64::consts::TAU);
     assert_eq!(
         t["features"][2],
-        json!({"type": "pattern_circular", "name": "Circular Pattern1", "features": ["Extrusion1"],
+        json!({"type": "pattern_circular", "name": "Circular Pattern1", "features": [], "target": "Extrusion1",
                "axis": {"origin": [10.0, 20.0, 0.0], "direction": [0.0, 0.0, 1.0]}, "angle": 360.0, "count": 6})
     );
     let t = with(1, std::f64::consts::FRAC_PI_2);
@@ -1069,9 +1071,45 @@ fn a_mirror_reads_its_features_and_plane() {
     let t = copy_tree(&r);
     assert_eq!(
         t["features"][2],
-        json!({"type": "mirror", "name": "Mirror1", "features": ["Extrusion1"],
+        json!({"type": "mirror", "name": "Mirror1", "features": [], "target": "Extrusion1",
                "plane": {"origin": [30.0, 0.0, 0.0], "normal": [1.0, 0.0, 0.0]}})
     );
+    // With a later feature before it that it does not list, the feature that made the body
+    // cannot be copied alone.
+    let mut later = r.clone();
+    let cut = later[18].1.clone();
+    later.insert(22, (FEATURE, cut));
+    later[22].1[18..22].copy_from_slice(&7u32.to_le_bytes());
+    later[22].1[6..10].copy_from_slice(&rf(0).to_le_bytes());
+    let t = copy_tree(&later);
+    assert!(
+        t["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["reason"].as_str().is_some_and(|w| w.contains("not every feature"))),
+        "{t}"
+    );
+    // No feature listed, and the flag after the `d83ef271` record set: the whole body.
+    r.push((17, hdr(0, 0, 0))); // 23
+    r.push((16, {
+        let mut v = hdr(0, 0, 0);
+        v.push(1);
+        v
+    })); // 24
+    let mut f = hdr(rf(19), 0, 6);
+    f.extend(0u32.to_le_bytes());
+    for x in [20, 23, 24, 21] {
+        f.extend(rf(x).to_le_bytes());
+    }
+    let feature = std::mem::replace(&mut r[22].1, f);
+    let t = copy_tree(&r);
+    assert_eq!(t["features"][2]["features"], json!([]));
+    assert_eq!(t["features"][2]["target"], "Extrusion1");
+    r[24].1.pop();
+    r[24].1.push(0);
+    assert_eq!(copy_tree(&r)["features"][2]["type"], "unsupported");
+    r[22].1 = feature;
     // The extrude not read (an extent that is not read): the mirror says why.
     r[17].1 = tail(9);
     let t = copy_tree(&r);

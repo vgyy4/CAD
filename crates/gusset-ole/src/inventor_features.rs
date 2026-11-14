@@ -864,10 +864,13 @@ fn work_axis(dc: &Dc, ax: usize) -> Result<(V3, V3), String> {
     Ok((p0, [v[0] / ln, v[1] / ln, v[2] / ln]))
 }
 
-/// The tree features a pattern or mirror copies: the features it refers to before its own
-/// settings (the `90874d18` record), as the tree names them. A feature that was left out
-/// (suppressed, a cosmetic thread) is skipped; one that could not be read refuses the copy.
-fn copied_features(r: &Reader, st: &State, f: &Feature) -> Result<Vec<String>, String> {
+/// What a pattern or mirror copies: the features it refers to before its own settings (the
+/// `90874d18` record), as the tree names them, or (empty, with the body's tree name) the
+/// whole body when the flag after its `d83ef271` record is set and it lists no feature, or
+/// when it lists every feature so far. A
+/// feature that was left out (suppressed, a cosmetic thread) is skipped; one that could not
+/// be read refuses the copy.
+fn copied_features(r: &Reader, st: &State, f: &Feature) -> Result<(Vec<String>, Option<String>), String> {
     let refs = r.dc.refs(f.rec);
     let end = refs.iter().find(|&&(k, x)| k > 14 && r.dc.role(x) == Role::SkPlacement).map_or(usize::MAX, |x| x.0);
     let mut out: Vec<String> = Vec::new();
@@ -891,9 +894,28 @@ fn copied_features(r: &Reader, st: &State, f: &Feature) -> Result<Vec<String>, S
         }
     }
     if out.is_empty() {
-        return Err("no feature to copy (a pattern or mirror of bodies is not read)".into());
+        const G_REFS: u32 = 0xd83e_f271;
+        const G_FLAGS: u32 = 0x9087_4d28;
+        let solids = refs
+            .iter()
+            .skip_while(|&&(k, x)| k <= 14 || r.dc.class(x) != G_REFS)
+            .find(|&&(_, x)| r.dc.class(x) == G_FLAGS)
+            .is_some_and(|&(_, x)| r.dc.r(x).last() == Some(&1));
+        return match (solids, &st.first_body) {
+            (true, Some(b)) => Ok((out, Some(b.clone()))),
+            _ => Err("no feature to copy".into()),
+        };
     }
-    Ok(out)
+    // The features listed include the one that made the body: a copy of every feature so far
+    // is a copy of the body (built again, the first feature's copy would be a body of its own).
+    if let Some(b) = st.first_body.as_ref().filter(|b| out.contains(b)) {
+        let so_far = st.out.iter().filter(|o| o.get("type").and_then(Value::as_str) != Some("sketch"));
+        if so_far.clone().all(|o| o.get("name").and_then(Value::as_str).is_some_and(|n| out.iter().any(|m| m == n))) {
+            return Ok((Vec::new(), Some(b.clone())));
+        }
+        return Err("it copies the feature that made the body, but not every feature before it".into());
+    }
+    Ok((out, None))
 }
 
 /// A circular pattern (`06977131`, notes AA): the copied features, the count (`bb1dd5df`
@@ -904,7 +926,7 @@ fn circular_pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Resu
     const G_COUNT: u32 = 0xbb1d_d5df;
     const G_AXIS: u32 = 0x8ef0_6c89;
     const G_FLAGS: u32 = 0x9087_4d28;
-    let tgt = copied_features(r, st, f)?;
+    let (tgt, body) = copied_features(r, st, f)?;
     let refs: Vec<(usize, usize)> = r.dc.refs(f.rec).into_iter().filter(|&(k, _)| k > 14).collect();
     let count_of = |x: usize| {
         let b = r.dc.r(x);
@@ -932,9 +954,13 @@ fn circular_pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Resu
         return Err("the angle is out of range".into());
     }
     let angle = if (angle.abs() - 360.0).abs() < 1e-6 { 360.0 } else { rnd(angle) };
-    st.out.push(json!({"type": "pattern_circular", "name": name, "features": tgt,
+    let mut j = json!({"type": "pattern_circular", "name": name, "features": tgt,
         "axis": {"origin": [rnd(p0[0] * CM), rnd(p0[1] * CM), rnd(p0[2] * CM)], "direction": [rnd(v[0]), rnd(v[1]), rnd(v[2])]},
-        "angle": angle, "count": count}));
+        "angle": angle, "count": count});
+    if let Some(b) = body {
+        put(&mut j, "target", json!(b));
+    }
+    st.out.push(j);
     Ok(())
 }
 
@@ -943,7 +969,7 @@ fn circular_pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Resu
 /// spanning the plane (cm).
 fn mirror(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
     const G_PLANE: u32 = 0xce52_df42;
-    let tgt = copied_features(r, st, f)?;
+    let (tgt, body) = copied_features(r, st, f)?;
     let pl =
         r.dc.refs(f.rec)
             .into_iter()
@@ -960,8 +986,12 @@ fn mirror(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Str
         return Err("the mirror plane is not readable".into());
     }
     let n = unit3(cross(u, w));
-    st.out.push(json!({"type": "mirror", "name": name, "features": tgt,
-        "plane": {"origin": [rnd(o[0] * CM), rnd(o[1] * CM), rnd(o[2] * CM)], "normal": [rnd(n[0]), rnd(n[1]), rnd(n[2])]}}));
+    let mut j = json!({"type": "mirror", "name": name, "features": tgt,
+        "plane": {"origin": [rnd(o[0] * CM), rnd(o[1] * CM), rnd(o[2] * CM)], "normal": [rnd(n[0]), rnd(n[1]), rnd(n[2])]}});
+    if let Some(b) = body {
+        put(&mut j, "target", json!(b));
+    }
+    st.out.push(j);
     Ok(())
 }
 
