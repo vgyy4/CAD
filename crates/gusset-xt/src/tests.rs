@@ -108,6 +108,13 @@ fn v3(p: [f64; 3]) -> Vec<W> {
 
 /// A 10 mm cube as a V12 text file.
 fn cube() -> Vec<u8> {
+    cube_with(false)
+}
+
+/// [`cube`]; with `trimmed`, the edge from corner 0 to corner 1 lies on a `+` trimmed curve
+/// whose basis is a `-` line pointing from corner 1 to corner 0 (Parasolid writes tolerant
+/// edges so: Driver_Spindle's gear arcs).
+fn cube_with(trimmed: bool) -> Vec<u8> {
     let s = 0.01;
     let pos = |v: usize| [(v & 1) as f64 * s, ((v >> 1) & 1) as f64 * s, ((v >> 2) & 1) as f64 * s];
     // Faces: corners counter-clockwise seen from outside, and the outward normal.
@@ -126,6 +133,7 @@ fn cube() -> Vec<u8> {
         i
     };
     let (shell, solid, void) = (id(), id(), id());
+    let (trim, basis) = (id(), id());
     let vert: Vec<u32> = (0..8).map(|_| id()).collect();
     let point: Vec<u32> = (0..8).map(|_| id()).collect();
     let face: Vec<u32> = (0..6).map(|_| id()).collect();
@@ -215,8 +223,32 @@ fn cube() -> Vec<u8> {
         }
     }
     for ((a, b), (e, l)) in &edges {
-        f.node(16, *e, &[("fin", vec![n(pos_fin[&(*a, *b)])]), ("curve", vec![n(*l)])]);
         let d = crate::geom::sub(pos(*b), pos(*a));
+        if trimmed && (*a, *b) == (0, 1) {
+            f.node(16, *e, &[("fin", vec![n(pos_fin[&(*a, *b)])]), ("curve", vec![n(trim)])]);
+            f.node(
+                133,
+                trim,
+                &[
+                    ("basis_curve", vec![n(basis)]),
+                    ("point_1", v3(pos(*a))),
+                    ("point_2", v3(pos(*b))),
+                    ("parm_1", vec![n("0.0")]),
+                    ("parm_2", vec![n(format!("{:?}", -s))]),
+                ],
+            );
+            f.node(
+                30,
+                basis,
+                &[
+                    ("pvec", v3(pos(*a))),
+                    ("direction", v3(crate::geom::scale(d, -1.0 / s))),
+                    ("sense", vec![W::C(b'-')]),
+                ],
+            );
+            continue;
+        }
+        f.node(16, *e, &[("fin", vec![n(pos_fin[&(*a, *b)])]), ("curve", vec![n(*l)])]);
         f.node(30, *l, &[("pvec", v3(pos(*a))), ("direction", v3(crate::geom::scale(d, 1.0 / s)))]);
     }
     f.finish()
@@ -241,6 +273,32 @@ fn a_synthetic_v12_cube_becomes_a_closed_step_solid() {
     // Every edge is used once in each direction.
     let along = c.step.matches(",.T.);").count();
     assert!(along >= 12, "{along}");
+}
+
+/// The STEP line `#id=...` of a reference such as `#12`.
+fn step_line<'a>(step: &'a str, reference: &str) -> &'a str {
+    let id = reference.trim().trim_start_matches('#');
+    step.lines().find(|l| l.starts_with(&format!("#{id}="))).unwrap()
+}
+
+/// A trimmed curve runs the way its basis curve does: a `+` trim of a `-` curve runs against
+/// the basis's parameter, so its edge is written against the curve STEP gets (the basis).
+/// Taking the trim's sense alone turned Driver_Spindle's gear arcs into their complements, and
+/// OCCT's healing of the tangled wires ran past the import limit or corrupted the heap.
+#[test]
+fn an_edge_on_a_trimmed_reversed_curve_runs_against_the_basis() {
+    let c = to_step(&cube_with(true), "cube", &Limits::default()).unwrap();
+    assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+    let against: Vec<&str> = c.step.lines().filter(|l| l.contains("=EDGE_CURVE(") && l.ends_with(",.F.);")).collect();
+    assert_eq!(against.len(), 1, "{against:?}");
+    // That edge's curve is the basis line, pointing from corner 1 to corner 0.
+    let line = step_line(&c.step, against[0].split(',').nth(3).unwrap());
+    let vector = step_line(&c.step, line.split(',').nth(2).unwrap().trim_end_matches(");"));
+    let dir = step_line(&c.step, vector.split(',').nth(1).unwrap());
+    assert!(dir.contains("(-1.0,"), "{line} {vector} {dir}");
+    // Without the trim every edge runs along its curve.
+    let plain = to_step(&cube(), "cube", &Limits::default()).unwrap();
+    assert!(!plain.step.lines().any(|l| l.contains("=EDGE_CURVE(") && l.ends_with(",.F.);")));
 }
 
 #[test]

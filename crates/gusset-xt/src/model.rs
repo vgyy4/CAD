@@ -359,8 +359,24 @@ fn edge(g: &Graph, e: u32, m: &mut Model) {
         c => c,
     };
     let ends = if start != 0 && end != 0 { Some((start, end)) } else { None };
-    let same_sense = curve == 0 || sense(g, curve);
+    let same_sense = curve == 0 || curve_sense(g, curve, 0);
     m.edges.insert(e, Edge { curve, ends, same_sense });
+}
+
+/// Whether a curve runs along the parameter of the geometry the STEP file gets for it. A
+/// trimmed curve is written as its basis curve, and it runs the way its basis does (from
+/// `parm_1` to `parm_2`), so the senses compose: a `+` trim of a `-` circle runs against the
+/// circle's parameter. Taking the trim's own sense alone turned such arcs into their
+/// complements (Driver_Spindle's gear: every tooth's tip arc went the long way round).
+fn curve_sense(g: &Graph, c: u32, depth: u32) -> bool {
+    let own = sense(g, c);
+    if depth < 8 && g.type_name(c) == Some("TRIMMED_CURVE") {
+        let basis = g.ptr(c, "basis_curve");
+        if basis != 0 {
+            return own == curve_sense(g, basis, depth + 1);
+        }
+    }
+    own
 }
 
 /// Names written with STEP's `\X2\hhhh\X0\` escapes (SolidWorks does) as plain text.
