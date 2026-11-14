@@ -1913,6 +1913,64 @@ fn extrude_to_cylinder_face() {
     assert!(k().extrude_to_face(&boxp(10.0, 10.0), &cyl, side, 1.0, false).is_err());
 }
 
+#[test]
+fn extrude_to_a_cone_face_that_the_profile_meets_at_its_rim() {
+    // A block with a hole of radius 4 (z 10..20) ending in a conical drill point (the cone is
+    // z = 6 + r, apex at z = 6). The slivers between the hole's circle and its inscribed
+    // hexagon fill the hole from z = 20 down to the cone: their arcs run along the cone's rim
+    // (a hex socket over a drill point).
+    let hole = xz_poly(&[[0.0, 6.0], [4.0, 10.0], [4.0, 20.0], [0.0, 20.0]]);
+    let drill = k()
+        .revolve(&hole, &RevolveSpec { axis_origin: [0.0, 0.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::TAU })
+        .unwrap()
+        .shape;
+    let mut sq = boxp(20.0, 20.0);
+    sq.frame.origin = [-10.0, -10.0, 0.0];
+    let slab = k().extrude(&sq, &ExtrudeSpec { distance: 20.0, symmetric: false }).unwrap().shape;
+    let body = k().boolean(BoolOp::Cut, &slab, &drill).unwrap().shape;
+    let t = k().topology(&body).unwrap();
+    let cone = t.faces.iter().position(|f| f.kind == SurfaceKind::Cone).unwrap() as u32;
+    let y = 12.0f64.sqrt();
+    // The six slivers between the circle and its inscribed hexagon, one region each.
+    let rot = |p: [f64; 2], k: u32| {
+        let a = f64::from(k) * std::f64::consts::FRAC_PI_3;
+        [p[0] * a.cos() - p[1] * a.sin(), p[0] * a.sin() + p[1] * a.cos()]
+    };
+    let regions = (0..6u32)
+        .map(|k| {
+            let (a, b) = (rot([2.0, -y], k), rot([2.0, y], k));
+            let edges = vec![
+                ProfileEdge {
+                    seg: Seg2::Arc { center: [0.0, 0.0], start: a, end: b, ccw: true },
+                    tag: 1 + 2 * u64::from(k),
+                },
+                ProfileEdge { seg: Seg2::Line { a: b, b: a }, tag: 2 + 2 * u64::from(k) },
+            ];
+            Region2 { outer: Loop2 { edges }, holes: vec![] }
+        })
+        .collect();
+    let mut frame = Frame::XY;
+    frame.origin = [0.0, 0.0, 20.0];
+    let sliver = Profile { frame, regions };
+    let r = k().extrude_to_face(&sliver, &body, cone, 0.0, true).unwrap();
+    assert!(r.face_origins.iter().all(|o| !o.is_empty()), "{:?}", r.face_origins);
+    // Height 20 - (6 + r) = 14 - r over each sliver (x 2..4 inside the circle): 14 A - integral
+    // of r over it, A = (16 pi / 3) - 2 sqrt 12 (the segment of a 60 degree half-angle).
+    let area = 16.0 * std::f64::consts::PI / 3.0 - 2.0 * y;
+    // Integral of r over the segment: polar, theta in (-60, 60) deg, r from 2 / cos to 4:
+    // (64 - 8 / cos^3) / 3 integrated over theta.
+    let n = 20_000;
+    let dt = (2.0 * std::f64::consts::FRAC_PI_3) / f64::from(n);
+    let ir: f64 = (0..n)
+        .map(|i| {
+            let th = -std::f64::consts::FRAC_PI_3 + (f64::from(i) + 0.5) * dt;
+            (64.0 - 8.0 / th.cos().powi(3)) / 3.0 * dt
+        })
+        .sum();
+    let expect = 6.0 * (14.0 * area - ir);
+    assert!(close(volume(&r.shape), expect, 1e-6), "{} vs {expect}", volume(&r.shape));
+}
+
 /// A rational Bézier kernel segment from its control points and weights.
 fn rational(poles: &[P2], weights: &[f64]) -> Seg2 {
     let mut p = [[0.0; 2]; gusset_kernel::MAX_SEG_DEGREE + 1];

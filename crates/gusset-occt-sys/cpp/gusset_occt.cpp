@@ -31,6 +31,7 @@
 #include <BRepOffsetAPI_MakePipeShell.hxx>
 #include <BRepLib.hxx>
 #include <Geom2d_Line.hxx>
+#include <Geom_ConicalSurface.hxx>
 #include <Geom_CylindricalSurface.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepTools.hxx>
@@ -1701,8 +1702,8 @@ int gs_extrude(const GsProfile* p, double distance, int symmetric, GsShape** out
 
 // Extrudes the profile from its plane until the face `face` of `target` (shifted by `offset`
 // along the face normal toward the far side for planes), returning the swept tool solid.
-// The prism is made longer than needed and split by the face's surface (a plane or cylinder
-// extended past the face, any other surface as bounded); the piece holding the start cap is
+// The prism is made longer than needed and split by the face's surface (a plane, cylinder or
+// cone extended past the face, any other surface as bounded); the piece holding the start cap is
 // the result. The cut-off end must lie inside the face itself, or the call fails.
 int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face, double offset, int reverse,
                        GsShape** out, GsBuf* origins) {
@@ -1785,6 +1786,31 @@ int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face,
       }
       occ::handle<Geom_CylindricalSurface> cs = new Geom_CylindricalSurface(cyl);
       BRepBuilderAPI_MakeFace mf(cs, 0.0, 2.0 * M_PI, lo - 1.0, hi + 1.0, 1e-7);
+      if (!mf.IsDone()) return fail("could not extend the face");
+      tool_face = mf.Face();
+    } else if (sa.GetType() == GeomAbs_Cone) {
+      // A cone, extended along its generatrix to the whole box (not past its apex): an end
+      // that meets the face along its rim is then cut cleanly.
+      gp_Cone cone = sa.Cone();
+      gp_Ax1 ax = cone.Axis();
+      const double ca = std::cos(cone.SemiAngle()), sn = std::sin(cone.SemiAngle());
+      if (std::fabs(ca) < 1e-9) return fail("could not extend the face");
+      double lo = 1e300, hi = -1e300;
+      for (const auto& c : ucorners) {
+        double v = gp_Vec(ax.Location(), c).Dot(gp_Vec(ax.Direction())) / ca;
+        lo = std::min(lo, v);
+        hi = std::max(hi, v);
+      }
+      lo -= 1.0;
+      hi += 1.0;
+      if (std::fabs(sn) > 1e-12) {
+        const double apex = -cone.RefRadius() / sn;
+        if (sn > 0) lo = std::max(lo, apex);
+        else hi = std::min(hi, apex);
+      }
+      if (!(hi > lo)) return fail("could not extend the face");
+      occ::handle<Geom_ConicalSurface> cs = new Geom_ConicalSurface(cone);
+      BRepBuilderAPI_MakeFace mf(cs, 0.0, 2.0 * M_PI, lo, hi, 1e-7);
       if (!mf.IsDone()) return fail("could not extend the face");
       tool_face = mf.Face();
     } else {

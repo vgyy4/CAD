@@ -153,3 +153,73 @@ fn the_command_extrudes_up_to_a_face() {
     let e = execute(&mut s, &CmdCtx::user(1), "feature.up_to_face", json!({"sketch": "Sk3", "to": "nonsense"}));
     assert!(e.is_err());
 }
+
+/// A screw's hex socket (an Inventor ISO 4762 M2 head): six slivers between the socket's
+/// circle and its hexagon, added from the head's face up to the drill point's cone. The
+/// slivers' arcs lie on the bore (0.866025 against 0.8660254 mm) and meet the cone at its rim;
+/// the cone is extended past its face to cut them, as planes and cylinders are.
+#[test]
+fn hex_socket_slivers_up_to_the_drill_point_cone() {
+    let text = r"gusset 1
+units mm
+sketch Sketch1 (plane: XY, next_id: 28) {
+  p1 = point(-0.5, 0)
+  p2 = point(10, 0)
+  p3 = point(10, 1)
+  p4 = point(1, 1)
+  p5 = point(0.75452, 1)
+  p6 = point(0, 1)
+  p7 = point(0, 1.9)
+  p8 = point(-2, 1.9)
+  p9 = point(-2, 0.866025)
+  p10 = point(-1, 0.866025)
+  p11 = point(-4.4, 0) construction
+  p12 = point(12.4, 0) construction
+  p13 = point(0, -0.38) construction
+  p14 = point(0, 2.28) construction
+  l15 = line(p1, p2)
+  l16 = line(p2, p3)
+  l17 = line(p3, p4)
+  l18 = line(p4, p5)
+  l19 = line(p5, p6)
+  l20 = line(p6, p7)
+  l21 = line(p7, p8)
+  l22 = line(p8, p9)
+  l23 = line(p9, p10)
+  l24 = line(p10, p1)
+  l25 = line(p11, p12)
+  l26 = line(p13, p14)
+  l27 = line(p4, p6) construction
+}
+revolve Body (profile: Sketch1.regions(l15, l15_r1), axis: X, angle: 360 deg, op: new)
+plane Sketch2_plane (base: YZ, offset: -2 mm)
+sketch Sketch2 (plane: Sketch2_plane, next_id: 22) {
+  p1 = point(0, 0) construction
+  p2 = point(-2.66, 0) construction
+  p3 = point(2.66, 0) construction
+  p4 = point(0, -2.66) construction
+  p5 = point(0, 2.66) construction
+  p6 = point(0, 0)
+  p7 = point(0, 0.8660254)
+  p8 = point(-0.75, 0.4330127)
+  p9 = point(-0.75, -0.4330127)
+  p10 = point(0, -0.8660254)
+  p11 = point(0.75, -0.4330127)
+  p12 = point(0.75, 0.4330127)
+  c13 = circle(p1, 0.8660254)
+  l14 = line(p2, p3)
+  l15 = line(p4, p5)
+  l16 = line(p7, p8)
+  l17 = line(p8, p9)
+  l18 = line(p9, p10)
+  l19 = line(p10, p11)
+  l20 = line(p11, p12)
+  l21 = line(p12, p7)
+}
+extrude Slot (profile: Sketch2.regions(c13, c13_r1, c13_r2, c13_r3, c13_r4, c13_r5, c13_r6, c13_r7), to: Body/side(Sketch1/l24), op: add, body: Body)
+";
+    let (ev, r) = eval(text);
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let v = volume(&ev, &r, "Body");
+    assert!((v - 51.7677).abs() < 1e-4, "{v}");
+}
