@@ -197,3 +197,40 @@ fn a_face_profile_without_a_body_works_on_the_faces_own_body() {
     let ev = s.evaluate(&gusset_history::Actor::User).unwrap();
     assert!(ev.errors().is_empty(), "{:?}", ev.errors());
 }
+
+/// Revolve and sweep with a face profile, an `add`/`cut` op and no `body` store no target
+/// either: the evaluation takes the face's own body, not the latest one (F18-10).
+#[test]
+fn revolve_and_sweep_of_a_face_profile_store_no_latest_body() {
+    let mut s = session();
+    block(&mut s);
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch2", "x": 40, "y": 0, "width": 5, "height": 5}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch2", "distance": "5 mm", "body_name": "Other"}));
+    run(&mut s, "sketch.create", json!({"plane": "XZ"}));
+    run(&mut s, "sketch.add_polyline", json!({"sketch": "Sketch3", "points": [[0, 0], [0, 30]]}));
+    let _ = execute(
+        &mut s,
+        &CmdCtx::user(1),
+        "feature.revolve",
+        json!({"face": "Extrude1/cap(end)", "axis": "X", "angle": "90 deg", "op": "cut", "name": "Rev"}),
+    );
+    let _ = execute(
+        &mut s,
+        &CmdCtx::user(1),
+        "feature.sweep",
+        json!({"face": "Extrude1/cap(end)", "path": "Sketch3", "op": "add", "name": "Sw"}),
+    );
+    let t = text(&s);
+    for name in ["revolve Rev", "sweep Sw"] {
+        let line = t.lines().find(|l| l.contains(name)).unwrap_or_else(|| panic!("{name} in {t}"));
+        assert!(!line.contains("body: Extrude2") && !line.contains("body: Other"), "no stored target: {line}");
+    }
+    // An explicit body is stored as before.
+    run(
+        &mut s,
+        "feature.revolve",
+        json!({"face": "Extrude1/cap(end)", "axis": "X", "angle": "90 deg", "op": "add", "body": "Other", "name": "Rev2"}),
+    );
+    assert!(text(&s).lines().any(|l| l.contains("revolve Rev2") && l.contains("body: Extrude2")), "{}", text(&s));
+}

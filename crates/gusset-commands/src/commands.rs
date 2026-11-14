@@ -622,6 +622,32 @@ fn check_new_body_name(
     Ok(requested)
 }
 
+/// [`target_body`] for extrude, revolve and sweep: a face profile with no `body` stores no
+/// target, so the evaluation uses the face's own body (ADR 0042 amendment; F18-10).
+pub(crate) fn profile_target(
+    doc: &Document,
+    rollback: Option<usize>,
+    op: BodyOp,
+    explicit: Option<String>,
+    profile: &ProfileRef,
+) -> Result<Option<String>, CommandError> {
+    if profile.face.is_some() && explicit.is_none() && op != BodyOp::New {
+        return Ok(None);
+    }
+    target_body(doc, rollback, op, explicit)
+}
+
+/// The name of the body a face profile (with no stored target) belongs to in `ev`.
+pub(crate) fn face_profile_body(
+    ev: &gusset_eval::Evaluation,
+    profile: &ProfileRef,
+    stored: Option<&str>,
+    op: BodyOp,
+) -> Option<String> {
+    let f = profile.face.as_ref().filter(|_| stored.is_none() && op != BodyOp::New)?;
+    ev.bodies.iter().rev().find(|b| b.names.face_index(f).is_some()).map(|b| b.name.clone())
+}
+
 /// The body an add/cut/intersect combines with, resolved when the feature is created and
 /// stored in the document, so later deletes or reorders can never silently retarget it.
 pub(crate) fn target_body(
@@ -2402,13 +2428,14 @@ impl Command for Revolve {
         let profile = profile_of(self.sketch, self.regions, self.face)?;
         let (sketch_name, all_regions) = (profile.sketch.clone(), profile.regions.is_empty());
         let seen = std::cell::RefCell::new((String::new(), None::<String>));
+        let probe = profile.clone();
         edit_post(
             s,
             ctx,
             "Revolve",
             |doc, rb| {
                 let name = feature_name(doc, self.name, "Revolve")?;
-                let body = target_body(doc, rb, op, self.body)?;
+                let body = profile_target(doc, rb, op, self.body, &profile)?;
                 let body_name = check_new_body_name(doc, op, &name, self.body_name)?;
                 *seen.borrow_mut() = (name.clone(), body.as_deref().map(|t| body_display_name(doc, t)));
                 let created = (op == BodyOp::New).then(|| body_name.clone().unwrap_or_else(|| name.clone()));
@@ -2421,7 +2448,8 @@ impl Command for Revolve {
             },
             |_, out, ch| {
                 let (name, body) = &*seen.borrow();
-                let w = combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch);
+                let on_face = face_profile_body(&out.evaluation, &probe, body.as_deref(), op);
+                let w = combine_effect_warnings(name, op, body.as_deref().or(on_face.as_deref()), &out.new_errors, ch);
                 open_ends_warning(w, &out.evaluation, &sketch_name, all_regions)
             },
         )

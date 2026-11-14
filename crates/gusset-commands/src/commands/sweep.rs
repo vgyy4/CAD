@@ -62,13 +62,14 @@ impl Command for Sweep {
         let profile = super::profile_of(self.sketch, self.regions, self.face)?;
         let (sketch_name, all_regions) = (profile.sketch.clone(), profile.regions.is_empty());
         let seen = std::cell::RefCell::new((String::new(), None::<String>));
+        let probe = profile.clone();
         edit_post(
             s,
             ctx,
             "Sweep",
             |doc, rb| {
                 let name = feature_name(doc, self.name, "Sweep")?;
-                let body = target_body(doc, rb, op, self.body)?;
+                let body = profile_target(doc, rb, op, self.body, &profile)?;
                 let body_name = check_new_body_name(doc, op, &name, self.body_name)?;
                 *seen.borrow_mut() = (name.clone(), body.as_deref().map(|t| body_display_name(doc, t)));
                 let created = (op == BodyOp::New).then(|| body_name.clone().unwrap_or_else(|| name.clone()));
@@ -90,7 +91,8 @@ impl Command for Sweep {
             },
             |_, out, ch| {
                 let (name, body) = &*seen.borrow();
-                let w = combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch);
+                let on_face = face_profile_body(&out.evaluation, &probe, body.as_deref(), op);
+                let w = combine_effect_warnings(name, op, body.as_deref().or(on_face.as_deref()), &out.new_errors, ch);
                 open_ends_warning(w, &out.evaluation, &sketch_name, all_regions)
             },
         )

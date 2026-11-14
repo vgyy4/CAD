@@ -412,6 +412,22 @@ const MAX_CRASH_RESTARTS: usize = 32;
 const CRASH_HINT: &str = "the rest of the model is rebuilt without it; change this feature's inputs \
                           (a smaller size, fewer copies, a simpler profile) and it is tried again";
 
+/// No target and a face profile: the face's own body (ADR 0042 amendment; extrude, revolve
+/// and sweep).
+pub(crate) fn face_body_target(
+    s: &State,
+    profile: &gusset_doc::ProfileRef,
+    body: Option<&str>,
+    op: BodyOp,
+) -> Option<String> {
+    profile
+        .face
+        .as_ref()
+        .filter(|_| body.is_none() && op != BodyOp::New)
+        .and_then(|f| s.bodies.iter().rev().find(|b| b.names.face_index(f).is_some()))
+        .map(|b| b.feature.clone())
+}
+
 impl Evaluator {
     pub fn new(kernel: Arc<dyn Kernel>) -> Self {
         let parallel = kernel.parallelism().max(1);
@@ -1087,14 +1103,7 @@ impl Evaluator {
                     }
                 };
                 let ctx = input.ctx(name, &e.profile);
-                // No target and a face profile: the face's own body (ADR 0042 amendment).
-                let face_body = e
-                    .profile
-                    .face
-                    .as_ref()
-                    .filter(|_| e.body.is_none() && e.op != BodyOp::New)
-                    .and_then(|f| s.bodies.iter().rev().find(|b| b.names.face_index(f).is_some()))
-                    .map(|b| b.feature.clone());
+                let face_body = face_body_target(s, &e.profile, e.body.as_deref(), e.op);
                 let target = e.body.as_deref().or(face_body.as_deref());
                 self.combine_refined(s, name, &ctx, r, e.op, (target, e.body_name.as_deref()), e.refine)
             }

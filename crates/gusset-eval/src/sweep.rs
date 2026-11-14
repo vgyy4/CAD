@@ -46,7 +46,9 @@ impl Evaluator {
             .revolve(&profile, &RevolveSpec { axis_origin, axis_dir, angle })
             .map_err(|ke| kernel_err(name, "revolve", ke))?;
         let ctx = input.ctx(name, &r.profile);
-        self.combine_refined(s, name, &ctx, res, r.op, (r.body.as_deref(), r.body_name.as_deref()), r.refine)
+        let face_body = face_body_target(s, &r.profile, r.body.as_deref(), r.op);
+        let target = r.body.as_deref().or(face_body.as_deref());
+        self.combine_refined(s, name, &ctx, res, r.op, (target, r.body_name.as_deref()), r.refine)
     }
 
     pub(crate) fn run_sweep(
@@ -107,7 +109,9 @@ impl Evaluator {
         let res =
             k.sweep(&profile, &path, &SweepSpec { orientation, twist }).map_err(|ke| kernel_err(name, "sweep", ke))?;
         let ctx = input.ctx(name, &d.profile);
-        self.combine_refined(s, name, &ctx, res, d.op, (d.body.as_deref(), d.body_name.as_deref()), d.refine)
+        let face_body = face_body_target(s, &d.profile, d.body.as_deref(), d.op);
+        let target = d.body.as_deref().or(face_body.as_deref());
+        self.combine_refined(s, name, &ctx, res, d.op, (target, d.body_name.as_deref()), d.refine)
     }
 
     /// A helix about the axis, through the profile (ADR 0034): its radius and start direction
