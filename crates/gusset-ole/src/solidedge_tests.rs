@@ -3,8 +3,8 @@
 
 use crate::fixtures::ole;
 use crate::solidedge_features::{
-    Curve2, Edge3, SetCurve, Store, axis_line, curve, edge_pick, edge_set, feature_tree, history, key_point_reach,
-    parse_func, plane, value,
+    Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, curve, edge_pick, edge_set, feature_tree,
+    history, key_point_reach, parse_func, plane, value,
 };
 use serde_json::json;
 
@@ -382,4 +382,17 @@ fn rounds_and_chamfers_pick_their_stored_edges() {
     assert_eq!(f[3]["edges"], f[2]["edges"]);
     assert_eq!(f[4]["type"], "unsupported");
     assert!(f[4]["reason"].as_str().unwrap().contains("round kind"), "{t}");
+}
+
+#[test]
+fn a_revolve_axis_off_the_sketch_axes_is_a_construction_line() {
+    // A profile on the plane y = 2 (normal -y, x along x): the importer's sketch origin is the
+    // foot of the world origin, (0, 2, 0).
+    let p = Profile { origin: [5.0, 2.0, 0.0], normal: [0.0, -1.0, 0.0], x: [1.0, 0.0, 0.0], curves: Vec::new() };
+    // The plane's z axis through that foot: one of the sketch's own axes.
+    assert_eq!(axis_in_plane(&p, ([0.0, 2.0, 7.0], [0.0, 0.0, 1.0])), None);
+    // Parallel to it 3 m off: a line in the plane's frame (y = normal x x = z).
+    assert_eq!(axis_in_plane(&p, ([3.0, 2.0, 0.0], [0.0, 0.0, 1.0])), Some(([-2.0, 0.0], [-2.0, 1.0])));
+    // Out of the plane: none.
+    assert_eq!(axis_in_plane(&p, ([3.0, 2.5, 0.0], [0.0, 0.0, 1.0])), None);
 }

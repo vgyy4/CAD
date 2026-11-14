@@ -694,11 +694,11 @@ fn not_a_curve(class: &str) -> bool {
 
 /// A profile: its plane and curves.
 #[derive(Debug, Clone, PartialEq)]
-struct Profile {
-    origin: V3,
-    normal: V3,
-    x: V3,
-    curves: Vec<Curve2>,
+pub(crate) struct Profile {
+    pub(crate) origin: V3,
+    pub(crate) normal: V3,
+    pub(crate) x: V3,
+    pub(crate) curves: Vec<Curve2>,
 }
 
 impl Profile {
@@ -757,7 +757,7 @@ fn profile(st: &Store, serial: u32) -> Result<Profile, String> {
 }
 
 /// A sketch of profiles on one plane, as a tree feature.
-fn sketch_json(name: &str, profiles: &[Profile]) -> Result<Value, String> {
+fn sketch_json(name: &str, profiles: &[Profile], axis: Option<([f64; 2], [f64; 2])>) -> Result<Value, String> {
     let first = profiles.first().ok_or("no profile")?;
     if profiles.iter().any(|p| !p.same_plane(first)) {
         return Err("the profiles lie on different planes".into());
@@ -789,11 +789,37 @@ fn sketch_json(name: &str, profiles: &[Profile]) -> Result<Value, String> {
             }
         });
     }
+    // A revolve axis off the sketch's origin and axes: a construction line along it.
+    if let Some((a, b)) = axis {
+        let (a, b) = (pid(a), pid(b));
+        curves.push(json!({"id": "axis", "type": "line", "start": a, "end": b, "construction": true}));
+    }
     let points: Vec<Value> =
         pts.iter().enumerate().map(|(i, p)| json!({"id": format!("p{i}"), "x": rnd(p[0]), "y": rnd(p[1])})).collect();
     Ok(json!({"type": "sketch", "name": name,
               "plane": {"origin": arr_mm(first.origin), "x_axis": arr(first.x), "y_axis": arr(first.y())},
               "points": points, "curves": curves}))
+}
+
+/// A revolve axis that lies in the profile plane but is not one of the importer's sketch axes
+/// (through the foot of the world origin on the plane, along x or y): its ends in the plane
+/// (metres), one metre apart along the axis, for a construction line.
+pub(crate) fn axis_in_plane(p: &Profile, (a, d): (V3, V3)) -> Option<([f64; 2], [f64; 2])> {
+    let w = [a[0] - p.origin[0], a[1] - p.origin[1], a[2] - p.origin[2]];
+    if dot(w, p.normal).abs() > 1e-9 || dot(d, p.normal).abs() > 1e-9 {
+        return None;
+    }
+    // The foot of the world origin on the plane, seen from the axis point.
+    let h = dot(p.origin, p.normal);
+    let c = cross([h * p.normal[0] - a[0], h * p.normal[1] - a[1], h * p.normal[2] - a[2]], d);
+    let through_origin = dot(c, c).sqrt() < 1e-9;
+    let along_axis = (dot(d, p.x).abs() - 1.0).abs() < 1e-9 || (dot(d, p.y()).abs() - 1.0).abs() < 1e-9;
+    if through_origin && along_axis {
+        return None;
+    }
+    let y = p.y();
+    let s = [dot(w, p.x), dot(w, y)];
+    Some((s, [s[0] + dot(d, p.x), s[1] + dot(d, y)]))
 }
 
 /// The feature kinds read, by class.
@@ -915,7 +941,14 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     let extent = code(3).ok_or("the extent is not readable")?;
     let side = code(4).ok_or("the side is not readable")?;
     let sketch = format!("{name}_Sketch");
-    let sk = sketch_json(&sketch, &profiles)?;
+    let revolve = matches!(k, Kind::RevolvedProtrusion | Kind::RevolvedCutout);
+    let axis = if revolve {
+        Some(f.slot(6).and_then(|a| st.obj(a)).and_then(axis_line).ok_or("the revolve axis is not readable")?)
+    } else {
+        None
+    };
+    let line = axis.and_then(|a| profiles.first().and_then(|p| axis_in_plane(p, a)));
+    let sk = sketch_json(&sketch, &profiles, line)?;
     let cut = matches!(k, Kind::Cutout | Kind::RevolvedCutout);
     let op = if cut {
         "cut"
@@ -924,7 +957,6 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     } else {
         "join"
     };
-    let revolve = matches!(k, Kind::RevolvedProtrusion | Kind::RevolvedCutout);
     let mut j = json!({"type": if revolve {"revolve"} else {"extrude"}, "name": name, "sketch": sketch,
                        "profiles": "all", "operation": op});
     if op != "new" {
@@ -932,7 +964,7 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
         put(&mut j, "target", json!(fb));
     }
     if revolve {
-        let (p, d) = f.slot(6).and_then(|a| st.obj(a)).and_then(axis_line).ok_or("the revolve axis is not readable")?;
+        let (p, d) = axis.ok_or("the revolve axis is not readable")?;
         let angle = match extent {
             13 => small(7).ok_or("the revolve angle is not readable")?.to_degrees(),
             // A full turn.
@@ -943,7 +975,11 @@ fn solid(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
             return Err("the revolve angle is out of range".into());
         }
         let angle = if side == 1 { -angle } else { angle };
-        put(&mut j, "axis", json!({"origin": arr_mm(p), "direction": arr(d)}));
+        if line.is_some() {
+            put(&mut j, "axis", json!({"line": "axis"}));
+        } else {
+            put(&mut j, "axis", json!({"origin": arr_mm(p), "direction": arr(d)}));
+        }
         put(&mut j, "angle", json!(rnd(angle)));
     } else {
         let (dist, symmetric) = match extent {
