@@ -102,8 +102,11 @@ const SENTINEL: [u8; 8] = [0x7d, 0xc3, 0x94, 0x25, 0xad, 0x49, 0xb2, 0x54];
 const CLASS_DECL: [u8; 4] = [0xff, 0xff, 1, 0];
 const UTF16_MARK: [u8; 3] = [0xff, 0xfe, 0xff];
 /// The empty string some newer files write before the end of a parameter.
-/// The low 20 bits of a feature node's flags word that mark a cut (a boss has `0x140`).
-const CUT_FLAGS: u32 = 0x2_01ca;
+/// The low 12 bits of a feature node's flags word that mark a cut (a boss has `0x140`). Newer
+/// files add bit 17 (`0x2_01ca`); older ones write `0x1ca` alone (the French, Russian and Spanish
+/// parts whose cuts are not named "Cut-...": 46 cuts and 44 localized ones over the corpora, and
+/// no boss).
+const CUT_FLAGS: u32 = 0x1ca;
 const PARAM_CSTRING: [u8; 4] = [0xff, 0xfe, 0xff, 0];
 const IDENT: [f64; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
@@ -3015,7 +3018,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if !solid {
                 "new"
             } else if cls.as_deref() == Some(cut_class)
-                || n.flags & 0xf_ffff == CUT_FLAGS
+                || n.flags & 0xfff == CUT_FLAGS
                 || n.name.to_lowercase().starts_with("cut")
             {
                 "cut"
