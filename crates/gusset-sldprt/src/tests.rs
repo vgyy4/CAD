@@ -1514,6 +1514,44 @@ fn sketch_lines_are_split_merged_and_stripped_of_shared_walls() {
     assert_eq!(curves[2]["id"], "c1");
 }
 
+#[test]
+fn a_line_drawn_twice_in_one_loop_keeps_one_copy() {
+    let pts = |list: &[(f64, f64)]| -> Vec<serde_json::Value> {
+        list.iter().enumerate().map(|(i, (x, y))| serde_json::json!({"id": format!("p{i}"), "x": x, "y": y})).collect()
+    };
+    let line = |id: &str, a: &str, b: &str| serde_json::json!({"id": id, "type": "line", "start": a, "end": b});
+    let ends = |out: &serde_json::Value| -> Vec<(String, String)> {
+        let mut v: Vec<_> = out["curves"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                let (a, b) = (c["start"].as_str().unwrap().to_string(), c["end"].as_str().unwrap().to_string());
+                if a <= b { (a, b) } else { (b, a) }
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let p = |a: &str, b: &str| (a.to_string(), b.to_string());
+    // A slot whose left side (p0-p1) is drawn again over its upper half (p4-p1).
+    let sk = serde_json::json!({"type": "sketch", "name": "S", "plane": {},
+        "points": pts(&[(0.0, -3.0), (0.0, 3.0), (60.0, 3.0), (60.0, -3.0), (0.0, 0.0)]),
+        "curves": [line("c0", "p0", "p1"), line("c1", "p1", "p2"), line("c2", "p2", "p3"),
+                   line("c3", "p3", "p0"), line("c4", "p4", "p1")]});
+    let got = ends(&features::normalize_lines(sk));
+    assert_eq!(got, [p("p0", "p3"), p("p0", "p4"), p("p1", "p2"), p("p1", "p4"), p("p2", "p3")]);
+    // A rectangle on a longer line (a projected edge running past it on both sides), its bottom
+    // drawn again in two halves: the bottom stays, the line's open ends too.
+    let sk = serde_json::json!({"type": "sketch", "name": "S", "plane": {},
+        "points": pts(&[(-12.0, 0.0), (12.0, 0.0), (-4.0, 0.0), (4.0, 0.0), (4.0, 60.0), (-4.0, 60.0), (0.0, 0.0)]),
+        "curves": [line("c0", "p0", "p1"), line("c1", "p2", "p6"), line("c5", "p6", "p3"),
+                   line("c2", "p3", "p4"), line("c3", "p4", "p5"), line("c4", "p5", "p2")]});
+    let got = ends(&features::normalize_lines(sk));
+    assert!(got.contains(&p("p2", "p6")) && got.contains(&p("p3", "p6")), "{got:?}");
+    assert_eq!(got.len(), 7, "{got:?}");
+}
+
 /// `hay` with every `from` replaced by `to`.
 fn replaced(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();

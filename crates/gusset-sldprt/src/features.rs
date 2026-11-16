@@ -1355,6 +1355,78 @@ pub(crate) fn normalize_lines(mut sk: Value) -> Value {
             }
         }
     }
+    // A shared piece whose ends would both be left open without it is no wall between two
+    // loops but a line drawn twice in one loop (shaft_stage_1's keyway: a side line and a
+    // second line over half of it): one copy of it stays. Lines that lead nowhere (a projected
+    // edge running past a profile) are pruned first, so they keep no end closed.
+    let shared = |key: &Pair| owners.get(key).is_some_and(|o| o.len() > 1);
+    let mut edges: Vec<Pair> = Vec::new();
+    let mut known: std::collections::HashSet<Pair> = std::collections::HashSet::new();
+    for (c, piece, orig) in &pieces {
+        let e = match (piece, orig) {
+            (Some((u, v)), Some(_)) => pair(u, v),
+            _ if profile(c) && matches!(c.get("type").and_then(Value::as_str), Some("line" | "arc")) => {
+                let (Some(u), Some(v)) = (str_of(c, "start"), str_of(c, "end")) else { continue };
+                (u, v)
+            }
+            _ => continue,
+        };
+        if known.insert(e.clone()) {
+            edges.push(e);
+        }
+    }
+    // Prune leaves: a queue of ends met once.
+    let mut alive = vec![true; edges.len()];
+    let mut at_vertex: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, (u, v)) in edges.iter().enumerate() {
+        at_vertex.entry(u).or_default().push(i);
+        if u != v {
+            at_vertex.entry(v).or_default().push(i);
+        }
+    }
+    let mut deg: HashMap<&str, usize> = at_vertex.iter().map(|(k, l)| (*k, l.len())).collect();
+    let mut queue: Vec<&str> = deg.iter().filter(|(_, d)| **d == 1).map(|(k, _)| *k).collect();
+    while let Some(x) = queue.pop() {
+        let Some(list) = at_vertex.get(x) else { continue };
+        for &i in list {
+            let (Some(a), Some((u, v))) = (alive.get_mut(i), edges.get(i)) else { continue };
+            if !*a {
+                continue;
+            }
+            *a = false;
+            for y in [u.as_str(), v.as_str()] {
+                if let Some(d) = deg.get_mut(y) {
+                    *d = d.saturating_sub(1);
+                    if *d == 1 {
+                        queue.push(y);
+                    }
+                }
+            }
+        }
+    }
+    let mut degree: HashMap<String, usize> = HashMap::new();
+    for ((u, v), _) in edges.iter().zip(&alive).filter(|(e, a)| **a && !shared(e)) {
+        *degree.entry(u.clone()).or_default() += 1;
+        *degree.entry(v.clone()).or_default() += 1;
+    }
+    // Restored along runs of shared pieces from an open end: each piece from an open end to
+    // another open end or to a point only shared pieces meet (the run goes on from there).
+    let mut restore: std::collections::HashSet<Pair> = std::collections::HashSet::new();
+    let runs: Vec<&Pair> = edges.iter().zip(&alive).filter(|(e, a)| **a && shared(e)).map(|(e, _)| e).collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (u, v) in &runs {
+            let d = |e: &String| degree.get(e).copied().unwrap_or(0);
+            let open = |e: &String| d(e) % 2 == 1;
+            if (open(u) && (open(v) || d(v) == 0) || open(v) && d(u) == 0) && restore.insert(pair(u, v)) {
+                for e in [u, v] {
+                    *degree.entry(e.clone()).or_default() += 1;
+                }
+                changed = true;
+            }
+        }
+    }
     let (mut out, mut seen, mut nid) = (Vec::new(), std::collections::HashSet::new(), 0usize);
     for (c, piece, orig) in pieces {
         let (Some((u, v)), Some(orig)) = (piece, orig) else {
@@ -1362,7 +1434,7 @@ pub(crate) fn normalize_lines(mut sk: Value) -> Value {
             continue;
         };
         let key = pair(&u, &v);
-        if owners.get(&key).is_some_and(|o| o.len() > 1) || !seen.insert(key.clone()) {
+        if (shared(&key) && !restore.contains(&key)) || !seen.insert(key.clone()) {
             continue;
         }
         nid += 1;
