@@ -661,6 +661,10 @@ struct EndSpec {
     flag: u32,
     /// Byte 12 of the head (`u32` 0/1).
     b12: u8,
+    /// Byte 8 of the head (`u32` 0/1): a cut that keeps what lies inside its profile and removes
+    /// the rest of the sweep ("flip side to cut"): BK12_nut's Cut-Extrude1, a circle of 22 mm
+    /// through the hexagon, trims its corners; SlotMount-Attachment, the Key Fob parts' Top Cut.
+    flip: bool,
 }
 
 /// End-condition-like objects in `[a, b)` (`feat.endspec_candidates`): class reference tag,
@@ -672,9 +676,9 @@ fn endspec_candidates(d: &[u8], a: usize, b: usize) -> Result<Vec<EndSpec>, Stri
         let Some(w) = d.get(i..i + 18) else { break };
         let matched = w.get(2..4) == Some(&[0, 0][..])
             && matches!(w.get(4), Some(0 | 1))
-            // Byte 12 (a `u32` 0/1, set on some cuts of the newer parts: Lock Collar
-            // Cut-Extrude2) is not read; the written direction vector says the direction.
-            && w.iter().enumerate().skip(5).all(|(k, &c)| c == 0 || (k == 12 && c == 1));
+            // Bytes 8 and 12 are `u32` flags 0/1: the flipped side of a cut and the reversed
+            // direction ([`EndSpec`]).
+            && w.iter().enumerate().skip(5).all(|(k, &c)| c == 0 || (matches!(k, 8 | 12) && c == 1));
         if !matched {
             i += 1;
             continue;
@@ -692,7 +696,8 @@ fn endspec_candidates(d: &[u8], a: usize, b: usize) -> Result<Vec<EndSpec>, Stri
         }
         let x = u32::from(*need(d.get(p + 4), "an end condition")?);
         let b12 = *need(d.get(p + 12), "an end condition")?;
-        out.push(EndSpec { cls: Some(t & 0x7fff), x, kind, flag, b12 });
+        let flip = *need(d.get(p + 8), "an end condition")? == 1;
+        out.push(EndSpec { cls: Some(t & 0x7fff), x, kind, flag, b12, flip });
         if out.len() > MAX_MATCHES {
             return Err("too many end conditions".into());
         }
@@ -711,7 +716,44 @@ fn endspec_decl(d: &[u8], a: usize, b: usize, name: &[u8]) -> Result<Option<EndS
     let kind = need(u32_at(d, p + 18), "an end condition")?;
     let flag = need(u32_at(d, p + 22), "an end condition")?;
     let b12 = *need(d.get(p + 12), "an end condition")?;
-    Ok(Some(EndSpec { cls: None, x, kind, flag, b12 }))
+    let flip = *need(d.get(p + 8), "an end condition")? == 1;
+    Ok(Some(EndSpec { cls: None, x, kind, flag, b12, flip }))
+}
+
+/// The end condition of an extrude whose direction is given by a reference (a
+/// `moDirectionSpec_c` holding a `moPlaneRef_w`: the sweep runs along the plane's normal).
+/// The direction object takes the place of the end spec's leading `u16 0`, so the usual fields
+/// (`u32 X, 10 x 00, u32 type, u32 flag`) follow the plane reference, after its closing
+/// `u32 3` (Bottom-Plate's Cut-Extrude3: up to a surface; V-Slot Rail_PIVOT's Cut-Extrude5: up
+/// to a vertex). The direction itself is not read: on the samples it is the sketch normal.
+fn endspec_directed(d: &[u8], a: usize, b: usize) -> Option<EndSpec> {
+    let i = find(d, b"\x11\x00moDirectionSpec_c", a, b)?;
+    find(d, b"moPlaneRef_w", i, (i + 64).min(b))?;
+    let mut p = i + 19;
+    while p + 26 <= b.min(i + 1200) {
+        let w = d.get(p..p + 26)?;
+        let ok = w.get(0..4) == Some(&[3, 0, 0, 0][..])
+            && matches!(w.get(4), Some(0 | 1))
+            && w.get(5..8) == Some(&[0, 0, 0][..])
+            && w.iter().enumerate().take(18).skip(8).all(|(k, &c)| c == 0 || (matches!(k, 8 | 12) && c == 1))
+            && w.get(18..20).is_some_and(|t| t.first().is_some_and(|&t| t <= 9) && t.get(1) == Some(&0))
+            && w.get(20..22) == Some(&[0, 0][..])
+            && matches!(w.get(22), Some(0 | 1))
+            && w.get(23..26) == Some(&[0, 0, 0][..]);
+        if ok {
+            // Laid out as [`endspec_candidates`] reads it, the `u32 3` in place of the tag.
+            return Some(EndSpec {
+                cls: None,
+                x: u32_at(d, p + 4)?,
+                kind: u32_at(d, p + 18)?,
+                flag: u32_at(d, p + 22)?,
+                b12: *d.get(p + 12)?,
+                flip: *d.get(p + 8)? == 1,
+            });
+        }
+        p += 1;
+    }
+    None
 }
 
 // --- sketches --------------------------------------------------------------------------------
@@ -2833,18 +2875,24 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     };
     let is_in = |cls: &Option<String>, set: &[&str]| cls.as_deref().is_some_and(|c| set.contains(&c));
     // The end-condition class: the most frequent end-condition-shaped class reference with
-    // X = 1 in solid features (ties: the first seen).
+    // X = 1 in solid features (ties: the first seen); with none, with X = 0 (SlotMount-Attachment:
+    // the boss declares the class, the one cut refers to it with X = 0).
     let mut counts: Vec<(u16, usize)> = Vec::new();
-    for n in &nodes {
-        if is_in(&n.cls, &EXTRUDE) || is_in(&n.cls, &REVOLVE) {
-            let (a, b) = span(n);
-            for c in endspec_candidates(rf, a, b)? {
-                let Some(cls) = c.cls.filter(|&k| k < 0x3000 && c.x == 1) else { continue };
-                match counts.iter_mut().find(|(k, _)| *k == cls) {
-                    Some((_, v)) => *v += 1,
-                    None => counts.push((cls, 1)),
+    for want_x in [1, 0] {
+        for n in &nodes {
+            if is_in(&n.cls, &EXTRUDE) || is_in(&n.cls, &REVOLVE) {
+                let (a, b) = span(n);
+                for c in endspec_candidates(rf, a, b)? {
+                    let Some(cls) = c.cls.filter(|&k| k < 0x3000 && c.x == want_x) else { continue };
+                    match counts.iter_mut().find(|(k, _)| *k == cls) {
+                        Some((_, v)) => *v += 1,
+                        None => counts.push((cls, 1)),
+                    }
                 }
             }
+        }
+        if !counts.is_empty() {
+            break;
         }
     }
     let es_cls: Option<u16> = counts
@@ -3028,8 +3076,11 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         };
         if is_in(&cls, &EXTRUDE) {
             let dec = endspec_decl(rf, a, b, b"moEndSpec_c")?;
-            let cands: Vec<EndSpec> =
+            let mut cands: Vec<EndSpec> =
                 dec.into_iter().chain(endspec_candidates(rf, a, b)?.into_iter().filter(in_es)).collect();
+            if cands.is_empty() {
+                cands.extend(endspec_directed(rf, a, b));
+            }
             let es = cands.first().copied();
             let mut ps = params(rf, a, b, nt)?;
             let op = op_for("moCut_c", solid);
@@ -3041,7 +3092,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             {
                 ps.push(v);
             }
+            // A cut of the flipped side keeps what its profile sweeps: through everything that is
+            // the common part with the sweep (the rebuild check says whether the part lay wholly
+            // on the swept side); a blind one would need the slab as well and is left unsupported.
+            let flip = op == "cut" && es.is_some_and(|e| e.flip);
             let end = match typ {
+                _ if flip && !matches!(typ, Some(1 | 2 | 9)) => "flip_side".to_string(),
                 Some(0) => "blind".to_string(),
                 Some(1 | 2) => "through_all?".to_string(),
                 Some(6) => "mid_plane".to_string(),
@@ -3195,9 +3251,13 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             js.insert("name".into(), json!(n.name));
             js.insert("sketch".into(), json!(last_sketch));
             js.insert("profiles".into(), json!("all"));
-            js.insert("operation".into(), json!(op));
+            js.insert("operation".into(), json!(if flip { "intersect" } else { op }));
             js.insert("target".into(), if op == "new" { Value::Null } else { json!(first_solid) });
             js.insert("sw_end_kind".into(), json!(end));
+            if flip && !through_all {
+                distance = None;
+                up_to = None;
+            }
             if let Some((pt, nf, off, reverse)) = up_to {
                 js.insert("end_condition".into(), json!("to_face"));
                 js.insert("face".into(), json!({"point": json_v3(pt), "normal": json_v3(nf)}));
