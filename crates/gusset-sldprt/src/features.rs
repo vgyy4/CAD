@@ -3925,7 +3925,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             }
         } else if matches!(cls.as_deref(), Some("moBlend_c" | "moBlendCut_c")) {
             // A loft: its sections are profile components naming their sketches by node id.
-            let sections = loft_sections(rf, a, b, &sketch_ids);
+            let sections = named_sketches(rf, a, b, &sketch_ids);
             let op = if !solid {
                 "new"
             } else if cls.as_deref() == Some("moBlendCut_c") {
@@ -3943,6 +3943,37 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             }
             if sections.len() < 2 {
                 js.insert("unresolved".into(), json!(true));
+            }
+            feats.push(Value::Object(js));
+            solid = true;
+            if first_solid.as_deref().is_none_or(str::is_empty) {
+                first_solid = Some(n.name.clone());
+            }
+        } else if matches!(cls.as_deref(), Some("moSweep_c" | "moSweepCut_c")) {
+            // A sweep: its profile sketch, then its path sketch, named as a loft's sections are.
+            let named = named_sketches(rf, a, b, &sketch_ids);
+            let op = if !solid {
+                "new"
+            } else if cls.as_deref() == Some("moSweepCut_c") {
+                "cut"
+            } else {
+                "join"
+            };
+            let mut js = Map::new();
+            js.insert("type".into(), json!("sweep"));
+            js.insert("name".into(), json!(n.name));
+            match named.as_slice() {
+                [profile, path, ..] => {
+                    js.insert("sketch".into(), json!(profile));
+                    js.insert("path".into(), json!(path));
+                }
+                _ => {
+                    js.insert("unresolved".into(), json!(true));
+                }
+            }
+            js.insert("operation".into(), json!(op));
+            if op != "new" {
+                js.insert("target".into(), json!(first_solid));
             }
             feats.push(Value::Object(js));
             solid = true;
@@ -3988,30 +4019,21 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     }))
 }
 
-/// The sketches a loft's sections are drawn in, in order. Each section is a profile component:
-/// a run of 16 `FF` bytes, then the sketch's node id as the first non-zero word, 8 bytes on in
-/// older files and after twelve more zero bytes (and the word `50 46 00 00`) in newer ones; a
-/// time stamp follows the id.
-fn loft_sections(d: &[u8], a: usize, b: usize, sketch_ids: &HashMap<u32, String>) -> Vec<String> {
+/// The sketches a loft or a sweep names, in order of first mention. Each is a profile
+/// component naming its sketch by node id: the id follows 8 zero bytes (or four and the word
+/// `50 46 00 00` in newer files) and is followed by a time stamp (shaft_stage_1's Loft1:
+/// `... 00 00 00 00 50 46 00 00 2d 00 00 00 c3 10 34 69`, Sketch4; Part3's:
+/// `00 x 8 22 00 00 00 19 c4 42 5f`, Sketch2).
+fn named_sketches(d: &[u8], a: usize, b: usize, sketch_ids: &HashMap<u32, String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let run = [0xffu8; 16];
-    let mut i = a;
-    while let Some(p) = find(d, &run, i, b) {
-        let mut e = p + 16;
-        while d.get(e) == Some(&0xff) {
-            e += 1;
-        }
-        i = e;
-        let Some(id) = (8..=28)
-            .step_by(4)
-            .filter_map(|k| u32_at(d, e + k))
-            .find(|&v| v != 0 && v != 0x4650)
-        else {
+    for i in a.saturating_add(8)..b.saturating_sub(8) {
+        let (Some(id), Some(stamp)) = (u32_at(d, i), u32_at(d, i + 4)) else { break };
+        let Some(name) = sketch_ids.get(&id) else { continue };
+        if !(0x3000_0000..0x8000_0000).contains(&stamp) {
             continue;
-        };
-        if let Some(name) = sketch_ids.get(&id)
-            && !out.contains(name)
-        {
+        }
+        let (Some(p0), Some(p1)) = (u32_at(d, i - 8), u32_at(d, i - 4)) else { continue };
+        if p0 == 0 && (p1 == 0 || p1 == 0x4650) && !out.contains(name) {
             out.push(name.clone());
         }
     }
@@ -4212,6 +4234,12 @@ fn check(tree: &Value) -> Result<(), String> {
                 solids += 1;
                 if f.get("unresolved").is_some() {
                     return Err(format!("{name}: the loft sections were not found"));
+                }
+            }
+            "sweep" => {
+                solids += 1;
+                if f.get("unresolved").is_some() {
+                    return Err(format!("{name}: the sweep's profile and path were not found"));
                 }
             }
             "hole" | "mirror" | "shell" if f.get("unresolved").is_some() => {
@@ -4782,18 +4810,20 @@ mod pattern_tests {
     }
 
     #[test]
-    fn loft_sections_are_the_sketch_ids_after_the_profile_runs() {
+    fn lofts_and_sweeps_name_their_sketches_by_id() {
         let comp = |pf: bool, id: u32| {
             let mut v = vec![0x2b, 0x80, 2, 0];
             v.extend([0xff; 16]);
             v.extend([0; 8]);
             if pf {
-                // Newer files: twelve more zero bytes and the word `50 46 00 00`.
+                // Newer files: more zero bytes and the word `50 46 00 00`.
                 v.extend([0; 8]);
                 v.extend(0x4650u32.to_le_bytes());
             }
             v.extend(id.to_le_bytes());
             v.extend(0x5f42_c419u32.to_le_bytes());
+            v.extend([0; 8]);
+            v.extend(0x65u32.to_le_bytes());
             v
         };
         let ids: HashMap<u32, String> = [(45, "Sketch4".into()), (49, "Sketch5".into())].into();
@@ -4804,7 +4834,10 @@ mod pattern_tests {
             d.extend(comp(pf, 49));
             d.extend(comp(pf, 45));
             d.extend(comp(pf, 49));
-            assert_eq!(loft_sections(&d, 0, d.len(), &ids), ["Sketch5", "Sketch4"]);
+            // An id without a time stamp after it is not a section.
+            d.extend([0, 0, 0, 0, 0, 0, 0, 0, 45, 0, 0, 0, 1, 0, 0, 0]);
+            assert_eq!(named_sketches(&d, 0, d.len(), &ids), ["Sketch5", "Sketch4"]);
+            assert_eq!(named_sketches(&d, 0, 40, &ids), Vec::<String>::new());
         }
     }
 }
