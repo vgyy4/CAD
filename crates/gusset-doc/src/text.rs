@@ -591,6 +591,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             if d.ruled {
                 args.push("ruled: true".into());
             }
+            if d.aligned {
+                args.push("aligned: true".into());
+            }
             args.push(format!("op: {}", d.op.keyword()));
             push_body(&mut args, &d.body);
             if let Some(b) = &d.body_name {
@@ -1817,13 +1820,14 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
     let mut orientation = Orientation::default();
     let mut twist = None;
     let mut ruled = false;
+    let mut aligned = false;
     let mut op = None;
     let mut body = None;
     let mut body_name = None;
     let mut refine = true;
     let allowed = match kw {
         "sweep" => "profile, path, orientation, twist, op, body, body_name, refine, label, group, suppressed",
-        _ => "profiles, ruled, op, body, body_name, refine, label, group, suppressed",
+        _ => "profiles, ruled, aligned, op, body, body_name, refine, label, group, suppressed",
     };
     parse_args(c, |key, c| {
         match (kw, key) {
@@ -1865,6 +1869,7 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
                 profiles = Some(list);
             }
             ("loft", "ruled") => ruled = parse_bool(c)?,
+            ("loft", "aligned") => aligned = parse_bool(c)?,
             (_, key) => return Err(unknown_arg(c, kw, key, allowed)),
         }
         Ok(())
@@ -1887,6 +1892,7 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
         _ => FeatureKind::Loft(LoftDef {
             profiles: profiles.ok_or_else(|| missing(c, kw, "profiles"))?,
             ruled,
+            aligned,
             op,
             body,
             body_name,

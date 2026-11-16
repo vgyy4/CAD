@@ -191,6 +191,7 @@ mod raw {
             sections: *const GsProfile,
             nsections: usize,
             ruled: i32,
+            aligned: i32,
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;

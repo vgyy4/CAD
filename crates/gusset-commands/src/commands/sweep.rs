@@ -152,7 +152,15 @@ impl Command for Loft {
                 let created = (op == BodyOp::New).then(|| body_name.clone().unwrap_or_else(|| name.clone()));
                 let f = Feature::new(
                     name.clone(),
-                    FeatureKind::Loft(LoftDef { profiles, ruled: self.ruled, op, body, body_name, refine: true }),
+                    FeatureKind::Loft(LoftDef {
+                        profiles,
+                        ruled: self.ruled,
+                        aligned: false,
+                        op,
+                        body,
+                        body_name,
+                        refine: true,
+                    }),
                 );
                 insert_feature(doc, rb, f);
                 Ok(json!({ "feature": name, "body": created }))

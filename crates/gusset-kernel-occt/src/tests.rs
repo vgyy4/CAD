@@ -1121,10 +1121,41 @@ fn sweep_golden_volumes_history_and_errors() {
     assert!(e.message.contains("connected") || e.message.contains("chain"), "{e}");
 }
 
+/// An aligned loft keeps the twist its sections' starts give: two circles of radius 10, 30
+/// apart, each drawn as two half arcs from a start point, the second start turned 60 degrees.
+/// Ruled lines from start to start make a hyperboloid: the mean of r squared along it is
+/// r^2 (1 - 2/3 sin^2(30 deg)). Without `aligned` the sections are untwisted: a cylinder.
+#[test]
+fn an_aligned_loft_keeps_the_twist_between_its_sections() {
+    let (r, h, turn) = (10.0f64, 30.0f64, 60f64.to_radians());
+    let halves = |a: f64| {
+        let p = [r * a.cos(), r * a.sin()];
+        let q = [-p[0], -p[1]];
+        let arc = |s: [f64; 2], e: [f64; 2], tag| ProfileEdge {
+            seg: Seg2::Arc { center: [0.0, 0.0], start: s, end: e, ccw: true },
+            tag,
+        };
+        Loop2 { edges: vec![arc(p, q, 1), arc(q, p, 2)] }
+    };
+    let disc = |a: f64, z: f64| Profile {
+        frame: Frame { origin: [0.0, 0.0, z], ..Frame::XY },
+        regions: vec![Region2 { outer: halves(a), holes: vec![] }],
+    };
+    let sections = [disc(0.0, 0.0), disc(turn, h)];
+    let vol = |aligned| {
+        let sh = k().loft(&sections, &LoftSpec { ruled: true, aligned }).unwrap().shape;
+        k().mass_properties(&sh).unwrap().volume
+    };
+    let pi = std::f64::consts::PI;
+    let twisted = pi * h * r * r * (1.0 - 2.0 / 3.0 * (turn / 2.0).sin().powi(2));
+    assert!(close(vol(true), twisted, 1e-6), "{} vs {twisted}", vol(true));
+    assert!(close(vol(false), pi * h * r * r, 1e-6), "{}", vol(false));
+}
+
 #[test]
 fn loft_golden_volumes_history_and_errors() {
     let up = Frame { origin: [0.0, 0.0, 15.0], ..Frame::XY };
-    let spec = LoftSpec { ruled: true };
+    let spec = LoftSpec { ruled: true, aligned: false };
     let r = k().loft(&[centred_square(10.0, Frame::XY), centred_square(5.0, up)], &spec).unwrap();
     let m = k().mass_properties(&r.shape).unwrap();
     assert!(close(m.volume, 3500.0, 1e-9), "{}", m.volume);
@@ -2557,7 +2588,7 @@ fn a_wound_face_beside_a_trimmed_spline_is_measured_face_by_face() {
     let disc =
         |r: f64, z: f64| Profile { frame: at(z), regions: vec![Region2 { outer: circle_loop(r, 1), holes: vec![] }] };
     let sections = [disc(12.0, -5.0), disc(11.6, -4.0), disc(10.4, -3.0), disc(9.6, -2.0)];
-    let lofted = k().loft(&sections, &LoftSpec { ruled: false }).unwrap().shape;
+    let lofted = k().loft(&sections, &LoftSpec { ruled: false, aligned: false }).unwrap().shape;
     let v = |sh: &Shape| k().mass_properties(sh).unwrap().volume;
     let whole = k().boolean(BoolOp::Intersect, &prism, &lofted).unwrap().shape;
     let nut = k().boolean(BoolOp::Intersect, &threaded, &lofted).unwrap().shape;

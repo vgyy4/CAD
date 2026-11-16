@@ -2135,7 +2135,7 @@ static bool similar_wires(const std::vector<TopoDS_Wire>& ws) {
   return true;
 }
 
-int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** out, GsBuf* origins) {
+int gs_loft(const GsProfile* sections, size_t nsections, int ruled, int aligned, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   if (!sections || !out || !origins) return fail("null argument");
   if (nsections < 2) return fail("a loft needs at least two profiles");
@@ -2167,7 +2167,9 @@ int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** ou
       if ((gp_Vec(normals[k]).Dot(d) >= 0) != first_fwd) wires[k].Reverse();
     }
   }
-  if (similar_wires(wires)) ts.CheckCompatibility(false);
+  // Aligned sections keep the twist their starts give (ThruSections would realign the origins
+  // of closed wires to untwist them).
+  if (aligned != 0 || similar_wires(wires)) ts.CheckCompatibility(false);
   for (const auto& w : wires) ts.AddWire(w);
   ts.Build();
   if (!ts.IsDone()) return fail("the profiles cannot be lofted (are they similar, in a sensible order and not twisted?)");

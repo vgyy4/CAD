@@ -325,13 +325,16 @@ pub fn sweep(p: &ProfileData, path: &SweepPath<'_>, follow: bool, twist: f64) ->
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
-/// Lofts through the sections (one region each).
-pub fn loft(sections: &[ProfileData], ruled: bool) -> ShimResult<OpOut> {
+/// Lofts through the sections (one region each); `aligned` keeps the sections' own alignment
+/// (their wires correspond from their starts) instead of realigning them.
+pub fn loft(sections: &[ProfileData], ruled: bool, aligned: bool) -> ShimResult<OpOut> {
     let raws: Vec<GsProfile> = sections.iter().map(ProfileData::raw).collect();
     let mut out = std::ptr::null_mut();
     let mut origins = GsBuf::default();
     // SAFETY: `raws` points into the sections' vectors, alive for the call.
-    let rc = unsafe { sys::gs_loft(raws.as_ptr(), raws.len(), i32::from(ruled), &mut out, &mut origins) };
+    let rc = unsafe {
+        sys::gs_loft(raws.as_ptr(), raws.len(), i32::from(ruled), i32::from(aligned), &mut out, &mut origins)
+    };
     check(rc)?;
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }

@@ -370,6 +370,7 @@ impl Command for GenerateGear {
                     FeatureKind::Loft(LoftDef {
                         profiles: vec![profile, ProfileRef { sketch: toe_sk, regions: vec![toe.region], face: None }],
                         ruled: true,
+                        aligned: false,
                         op: BodyOp::New,
                         body: None,
                         body_name: None,

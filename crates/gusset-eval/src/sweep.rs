@@ -214,7 +214,9 @@ impl Evaluator {
             sections.push(profile);
             sketches.push(p.sketch.clone());
         }
-        let res = k.loft(&sections, &LoftSpec { ruled: d.ruled }).map_err(|ke| kernel_err(name, "loft", ke))?;
+        let res = k
+            .loft(&sections, &LoftSpec { ruled: d.ruled, aligned: d.aligned })
+            .map_err(|ke| kernel_err(name, "loft", ke))?;
         let ctx = OpContext::Loft { feature: name, sketches: &sketches, edges: &edges };
         self.combine_refined(s, name, &ctx, res, d.op, (d.body.as_deref(), d.body_name.as_deref()), d.refine)
     }

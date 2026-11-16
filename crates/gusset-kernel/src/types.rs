@@ -344,6 +344,9 @@ pub struct LoftSpec {
     /// Ruled surfaces between neighbouring profiles (sharp transitions), else a smooth
     /// surface through all of them.
     pub ruled: bool,
+    /// The sections' outlines correspond edge for edge from their starts: their alignment (a
+    /// twist from one section to the next) is kept, not recomputed to untwist them.
+    pub aligned: bool,
 }
 
 /// A connected chain of curves in a plane: the path of a sweep. The edges run from the

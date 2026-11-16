@@ -166,6 +166,10 @@ pub(super) struct LoftF {
     sketches: Vec<LoftSection>,
     #[serde(default)]
     ruled: bool,
+    /// The sections correspond from their start points: their twist is kept (SolidWorks
+    /// lofts joined at their connectors).
+    #[serde(default)]
+    aligned: bool,
     #[serde(default)]
     operation: Option<String>,
     #[serde(default)]
@@ -1319,6 +1323,9 @@ pub(super) fn loft(g: &mut Gen, s: &Session, d: &LoftF) -> Result<(), String> {
     let mut args = vec![format!("profiles: [{}]", names.join(", "))];
     if d.ruled {
         args.push("ruled: true".into());
+    }
+    if d.aligned {
+        args.push("aligned: true".into());
     }
     args.push(format!("op: {op}"));
     if op != "new"

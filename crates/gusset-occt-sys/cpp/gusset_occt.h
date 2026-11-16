@@ -117,7 +117,9 @@ int gs_sweep(const GsProfile* p, const GsProfile* path_curves, const GsShape* pa
 int gs_sweep_helix(const GsProfile* p, const double* h, double pitch, double height, GsShape** out, GsBuf* origins);
 /* Lofts through `nsections` profiles (each one region without holes); ruled != 0 joins
  * neighbouring sections with ruled surfaces instead of a smooth interpolation. */
-int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** out, GsBuf* origins);
+// `aligned`: the wires already correspond edge for edge from their starts; their alignment
+// (a twist between sections) is kept instead of being recomputed.
+int gs_loft(const GsProfile* sections, size_t nsections, int ruled, int aligned, GsShape** out, GsBuf* origins);
 /* `refine` != 0 unifies coplanar faces and collinear edges of the result; 0 keeps the
  * boolean's own split faces (FreeCAD's Refine = false). */
 int gs_boolean(int op, const GsShape* target, const GsShape* tool, int refine, GsShape** out, GsBuf* origins);

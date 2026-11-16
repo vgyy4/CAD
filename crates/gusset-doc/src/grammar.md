@@ -420,7 +420,7 @@ revolve Revolve1 (profile: Sketch1, axis: Sketch1.l8, angle: 360 deg, op: new, b
 
 ```
 sweep <Name> (profile: <P>, path: <path>, [orientation: frenet|fixed], [twist: <angle>], [op: ...], [body: ...], [body_name: ...], [refine: false])
-loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [op: ...], [body: ...], [body_name: ...], [refine: false])
+loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [aligned: true], [op: ...], [body: ...], [body_name: ...], [refine: false])
 ```
 
 - `sweep` moves a closed profile along a path. `<path>` is a sketch (`Path`: all its curves must
@@ -440,7 +440,9 @@ loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [op: ...], [body: ...], 
 - `loft` joins two or more closed profiles on different planes (a sketch on a datum plane per
   profile; `Sketch.regions(l5)` picks the region). Each must select exactly one region without
   holes. `ruled: true` joins neighbours with straight (ruled) surfaces, else one smooth
-  surface passes through all of them.
+  surface passes through all of them. The sections are normally aligned to run untwisted;
+  `aligned: true` keeps them as drawn instead: their outlines correspond edge for edge from
+  their start points, so a twist between them stays (an imported loft joined that way).
 - Faces: both give `<Feature>/cap(start)` and `cap(end)`. Sweep sides are
   `<Feature>/side(<profile sketch>/<entity>)`, plus `_p1`, `_p2`, ... on the entity when the
   path has several edges (`side(Profile/c2_p1)` is the second path edge). Loft sides are named

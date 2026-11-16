@@ -1221,6 +1221,9 @@ pub struct LoftDef {
     pub profiles: Vec<ProfileRef>,
     /// Ruled surfaces between neighbouring profiles instead of one smooth surface.
     pub ruled: bool,
+    /// Keep the profiles' alignment: their outlines correspond from their start points, so a
+    /// twist between them stays (imported lofts whose source joins the sections that way).
+    pub aligned: bool,
     pub op: BodyOp,
     pub body: Option<String>,
     /// Name of the body this feature creates (`op: new` only); `None` = the feature name.

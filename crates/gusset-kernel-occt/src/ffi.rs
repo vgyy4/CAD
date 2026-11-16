@@ -63,8 +63,8 @@ pub(crate) fn sweep_helix(p: &ProfileData, h: &[f64; 10], pitch: f64, height: f6
     })
 }
 
-pub(crate) fn loft(sections: &[ProfileData], ruled: bool) -> KResult<OpOut> {
-    safe::loft(sections, ruled).map_err(|e| {
+pub(crate) fn loft(sections: &[ProfileData], ruled: bool, aligned: bool) -> KResult<OpOut> {
+    safe::loft(sections, ruled, aligned).map_err(|e| {
         let ke = err(KernelErrorKind::OperationFailed)(e);
         let hint = if ke.message.contains("no volume") {
             "put the profiles on different planes, for example sketches on datum planes at different offsets"

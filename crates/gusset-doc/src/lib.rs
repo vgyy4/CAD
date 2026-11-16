@@ -554,7 +554,7 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     #[test]
     fn sweep_and_loft_round_trip_and_are_validated() {
         let ok = format!(
-            "{SWEEP_BASE}sweep S1 (profile: P.regions(c2), path: Q.curves(l4, l5), orientation: frenet, twist: turn, op: new, body_name: Pipe)\n\nsweep S2 (profile: P, path: Q, orientation: fixed, op: add, body: S1)\n\nsweep S3 (profile: P, path: [edge(S1/cap(end), S1/side(P/c2)), edge(S1/cap(end), S1/side(P/c2_p1))], orientation: frenet, op: add, body: S1)\n\nloft L1 (profiles: [P, P.regions(c2)], ruled: true, op: new)\n"
+            "{SWEEP_BASE}sweep S1 (profile: P.regions(c2), path: Q.curves(l4, l5), orientation: frenet, twist: turn, op: new, body_name: Pipe)\n\nsweep S2 (profile: P, path: Q, orientation: fixed, op: add, body: S1)\n\nsweep S3 (profile: P, path: [edge(S1/cap(end), S1/side(P/c2)), edge(S1/cap(end), S1/side(P/c2_p1))], orientation: frenet, op: add, body: S1)\n\nloft L1 (profiles: [P, P.regions(c2)], ruled: true, aligned: true, op: new)\n"
         );
         let doc = Document::from_text(&ok).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(doc.to_text(), ok);

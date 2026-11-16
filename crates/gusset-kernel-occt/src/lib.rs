@@ -547,7 +547,7 @@ mod imp {
                 }
                 data.push(profile_data(s)?);
             }
-            op_result(ffi::loft(&data, spec.ruled)?)
+            op_result(ffi::loft(&data, spec.ruled, spec.aligned)?)
         }
 
         fn boolean(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {
