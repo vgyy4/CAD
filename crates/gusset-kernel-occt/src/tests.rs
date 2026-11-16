@@ -55,6 +55,24 @@ fn extrude_box_golden() {
     assert!(close(bb.size()[0], 40.0, 1e-6));
 }
 
+/// An open sheet encloses no volume: next to a solid it adds only its area, alone it measures
+/// none (the closed-solid formula gave a Solid Edge spindle's disc sheet -760 mm3).
+#[test]
+fn an_open_sheet_has_area_and_no_volume() {
+    let solid = k().extrude(&boxp(40.0, 20.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let frame = Frame { origin: [0.0, 0.0, 30.0], ..Frame::XY };
+    let sheet = k().patch(&Profile { frame, ..boxp(20.0, 10.0) }).unwrap();
+    let m = k().mass_properties(&sheet.shape).unwrap();
+    assert_eq!(m.volume, 0.0);
+    assert!(close(m.area, 200.0, 1e-9), "{}", m.area);
+    assert!(close(m.centroid[2], 30.0, 1e-9), "{:?}", m.centroid);
+    let both = k().compound(&[solid.shape.clone(), sheet.shape.clone()]).unwrap();
+    let m = k().mass_properties(&both.shape).unwrap();
+    assert!(close(m.volume, 8000.0, 1e-9), "{}", m.volume);
+    assert!(close(m.area, 2.0 * 800.0 + 120.0 * 10.0 + 200.0, 1e-9), "{}", m.area);
+    assert!(close(m.centroid[2], 5.0, 1e-9), "{:?}", m.centroid);
+}
+
 /// A loop that touches itself at a point (a notch whose corner meets the outline, as on a board of
 /// 2348) makes an edge four side faces share: closed and valid, so it builds.
 #[test]

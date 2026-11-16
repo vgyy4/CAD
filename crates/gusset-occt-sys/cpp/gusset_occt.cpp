@@ -5998,12 +5998,58 @@ int gs_topology(const GsShape* s, GsBuf* faces, GsBuf* edges, GsBuf* edge_adj, G
   GS_GUARD_END
 }
 
+namespace {
+// Adds the parts of `s` that enclose a volume (solids and closed shells) to `out`; returns
+// whether `s` also holds open sheets (open shells or loose faces), which enclose none.
+bool add_closed_parts(const TopoDS_Shape& s, BRep_Builder& b, TopoDS_Compound& out, bool& any) {
+  switch (s.ShapeType()) {
+    case TopAbs_SOLID:
+      b.Add(out, s);
+      any = true;
+      return false;
+    case TopAbs_SHELL:
+      if (BRep_Tool::IsClosed(s)) {
+        b.Add(out, s);
+        any = true;
+        return false;
+      }
+      return true;
+    case TopAbs_FACE:
+      return true;
+    case TopAbs_COMPOUND:
+    case TopAbs_COMPSOLID: {
+      bool open = false;
+      for (TopoDS_Iterator it(s); it.More(); it.Next()) open = add_closed_parts(it.Value(), b, out, any) || open;
+      return open;
+    }
+    default:
+      return false;
+  }
+}
+}  // namespace
+
 int gs_mass(const GsShape* s, GsBuf* mass) {
   GS_GUARD_BEGIN
   if (!s || !mass) return fail("null argument");
   GProp_GProps vol, area;
-  measured_props(s->s, vol, &area);
-  gp_Pnt c = vol.CentreOfMass();
+  BRep_Builder b;
+  TopoDS_Compound closed;
+  b.MakeCompound(closed);
+  bool any_closed = false;
+  // An open sheet encloses no volume: the closed-solid formula gave it a signed one (a
+  // Solid Edge spindle's disc sheet took -760 mm3 off its gear). Its area still counts.
+  if (add_closed_parts(s->s, b, closed, any_closed)) {
+    measured_props(s->s, vol, &area);
+    if (any_closed) {
+      vol = GProp_GProps();
+      measured_props(closed, vol, nullptr);
+    } else {
+      vol = GProp_GProps();
+    }
+  } else {
+    measured_props(s->s, vol, &area);
+  }
+  gp_Pnt c = any_closed ? vol.CentreOfMass() : area.CentreOfMass();
   std::vector<double> v = {vol.Mass(), area.Mass(), c.X(), c.Y(), c.Z()};
   to_buf(v, mass);
   return GS_OK;
