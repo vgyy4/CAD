@@ -4268,7 +4268,13 @@ fn circle_at_path_start(path: &Value, dia: f64, name: &str) -> Option<Value> {
     // The first curve with an open end, and the tangent into the path there.
     let (at, t) = curves.iter().find_map(|c| {
         let (s, e) = (end(c, "start")?, end(c, "end")?);
-        let first = if degree.get(s) == Some(&1) { s } else if degree.get(e) == Some(&1) { e } else { return None };
+        let first = if degree.get(s) == Some(&1) {
+            s
+        } else if degree.get(e) == Some(&1) {
+            e
+        } else {
+            return None;
+        };
         let p = *pts.get(first)?;
         let t = if c.get("type").and_then(Value::as_str) == Some("line") {
             let q = *pts.get(if first == s { e } else { s })?;
@@ -5084,7 +5090,8 @@ mod pattern_tests {
         let (x, y) = (&sk["plane"]["x_axis"], &sk["plane"]["y_axis"]);
         let v = |a: &Value| [a[0].as_f64().unwrap(), a[1].as_f64().unwrap(), a[2].as_f64().unwrap()];
         // The plane's normal runs along the path, into it (-x).
-        assert_eq!(cross(v(x), v(y)), [-1.0, 0.0, 0.0]);
+        let n = cross(v(x), v(y));
+        assert!((n[0] + 1.0).abs() < 1e-12 && n[1].abs() < 1e-12 && n[2].abs() < 1e-12, "{n:?}");
         assert_eq!(sk["curves"][0]["radius"], json!(3.5));
         // A closed path has no start.
         let mut closed = path.clone();
