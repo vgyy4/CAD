@@ -2524,9 +2524,43 @@ fn check_edges_resolve(s: &mut Session, ctx: &CmdCtx, refs: &[EdgeRef]) -> Resul
 
 /// Like [`check_edges_resolve`], for the face a sketch is placed on.
 fn check_face_resolves(s: &mut Session, ctx: &CmdCtx, r: &FaceRef) -> Result<(), CommandError> {
+    check_face_ref(s, ctx, r, false)
+}
+
+/// Like [`check_face_resolves`], for a feature that works on a face's surface (a thread): the
+/// pieces `r#k` a split left of the face stand for it too; the feature checks they share one
+/// surface (dogfooding F18-17).
+pub(crate) fn check_surface_resolves(s: &mut Session, ctx: &CmdCtx, r: &FaceRef) -> Result<(), CommandError> {
+    check_face_ref(s, ctx, r, true)
+}
+
+fn check_face_ref(s: &mut Session, ctx: &CmdCtx, r: &FaceRef, pieces: bool) -> Result<(), CommandError> {
     let ev = s.evaluate(&ctx.actor)?;
     if ev.bodies.iter().any(|b| b.names.face_index(r).is_some()) {
         return Ok(());
+    }
+    // A face split into pieces `r#k` by a later feature.
+    let split: Vec<String> = ev
+        .bodies
+        .iter()
+        .rev()
+        .find_map(|b| {
+            let p = b.names.face_pieces(r);
+            (!p.is_empty())
+                .then(|| p.iter().filter_map(|i| b.names.faces.get(*i as usize)).map(ToString::to_string).collect())
+        })
+        .unwrap_or_default();
+    if pieces && !split.is_empty() {
+        return Ok(());
+    }
+    if !split.is_empty() {
+        let candidates: Vec<String> = split.iter().take(MAX_CANDIDATES).cloned().collect();
+        return Err(CommandError::not_found(format!(
+            "face {r} was split into {} faces by a later feature; name one of them",
+            split.len()
+        ))
+        .hint(format!("e.g. {} (details.candidates lists the pieces)", candidates.first().map_or("", String::as_str)))
+        .details(json!({ "candidates": candidates })));
     }
     // Faces of the same feature first.
     let prefix = r.to_string().split('/').next().unwrap_or_default().to_string();
@@ -2542,6 +2576,7 @@ fn check_face_resolves(s: &mut Session, ctx: &CmdCtx, r: &FaceRef) -> Result<(),
         .unwrap_or_default();
     names.sort_by_key(|(near, n)| (!*near, n.clone()));
     let candidates: Vec<String> = names.into_iter().take(MAX_CANDIDATES).map(|(_, n)| n).collect();
+    // The names go in `details.candidates` only, not again in the hint (dogfooding F18-17).
     let mut hint = if candidates.is_empty() {
         "create a body first, or sketch on XY, XZ or YZ".to_string()
     } else {

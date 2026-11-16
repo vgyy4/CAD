@@ -1455,6 +1455,6 @@ reply under 600 bytes except lists).
 | F18-13 | Fixed: `not_found` listing the sketch's lines. |
 | F18-15 | Fixed: kicad-cli, overwrite and `toolset` wording. |
 | F18-16 | Fixed: plurals (`1 feature`, `1 body`, `1 is a state`), no doubled `fillet failed`, a perfect history says why it is perfect. The made-against-listed body count on the button remains a real warning to look into. |
-| F18-17 | Hint no longer repeats the candidate list (it points to `details.candidates`). Open: the face split after a modeled thread. |
+| F18-17 | Fixed: a thread takes the pieces `face#k` a split left as the face when they lie on one cylinder (ADR 0003 amendment), so a second thread on `Boss/side(Sketch2/c2)` builds; elsewhere the error says the face was split and lists its pieces once (in `details.candidates`, no longer in the hint). Tests `a_threaded_face_keeps_its_name_for_a_second_thread` (OCCT), `the_pieces_of_a_split_face_stand_for_it_only_on_one_cylinder`, `duplicate_names_get_geometric_indices`. |
 | F18-18 | Fixed: a track under its class's `min_track_width` is refused; a footprint placed or moved outside the outline is taken (parking parts beside the board is ordinary) and the result carries a `note` with the outline's extent (changed from a refusal on review). |
 | F18-19 | Fixed: `layers` takes a string or an array in `pcb_route` and `pcb_add_zone`. By design: `sch_netlist`/`sch_annotate` wrap names read from files as `user_text` (the sanitizer treats file text as untrusted). Kept: `neck` has no description (the pcb toolset is at its byte cap). |

@@ -10,6 +10,7 @@ use super::*;
 use gusset_doc::FaceThreadDef;
 use gusset_kernel::{
     Loop2, Mesh, Profile, ProfileEdge, Region2, Seg2, SweepOrientation, SweepPath, SweepSpec, TessellationParams, V3,
+    norm,
 };
 use gusset_naming::entity_tag;
 use std::f64::consts::{PI, TAU};
@@ -48,13 +49,13 @@ impl Evaluator {
         let k = self.kernel.as_ref();
         let bad = |msg: String, hint: &str| EvalError::new(name, ErrorCode::Expression, msg).with_hint(hint);
         let fmt = |v: f64| Quantity::mm(v).display(units);
-        let (bi, fi) = find_cylinder(name, &d.face, &s.bodies)?;
+        let (bi, faces) = find_cylinder(name, &d.face, &s.bodies)?;
         let body = s.bodies.get(bi).cloned().ok_or_else(|| EvalError::new(name, ErrorCode::NoTargetBody, "no body"))?;
         let along = d.along.as_ref().map(|a| ops::direction(name, a, params, units)).transpose()?;
         let mesh = k
             .tessellate(&body.shape, &TessellationParams { linear_deflection: 0.01, angular_deflection: 0.3 })
             .map_err(|ke| kernel_err(name, "face check", ke))?;
-        let cyl = measure(name, &body, fi, &mesh, along)?;
+        let cyl = measure(name, &body, &faces, &mesh, along)?;
 
         let len = |what: &str, e: &gusset_units::expr::Expr| -> Result<f64, EvalError> {
             let v = eval_expr(name, e, Dim::LENGTH, params, units)?;
@@ -332,21 +333,44 @@ fn volume(k: &dyn Kernel, name: &str, shape: &Shape) -> Result<f64, EvalError> {
     k.mass_properties(shape).map(|m| m.volume).map_err(|ke| kernel_err(name, "volume", ke))
 }
 
-/// The body and face index of a cylindrical face reference.
-fn find_cylinder(feature: &str, r: &FaceRef, bodies: &[Arc<Body>]) -> Result<(usize, u32), EvalError> {
+/// The body and faces of a cylindrical face reference: the face, or the pieces `face#k` an
+/// earlier operation split it into (an earlier thread's groove leaves its face in pieces) when
+/// they all lie on one cylinder, so that the face's name still names its surface (dogfooding
+/// F18-17). Pieces on different surfaces are not one face: the reference is then ambiguous.
+fn find_cylinder(feature: &str, r: &FaceRef, bodies: &[Arc<Body>]) -> Result<(usize, Vec<u32>), EvalError> {
+    let not_cyl = || {
+        EvalError::new(feature, ErrorCode::InvalidReference, format!("face {r} is not cylindrical"))
+            .with_hint("a thread goes on a shaft's side or a hole's wall")
+    };
     for (bi, b) in bodies.iter().enumerate().rev() {
         if let Some(fi) = b.names.face_index(r) {
             let kind = b.topology.faces.get(fi as usize).map(|f| f.kind);
             if kind != Some(SurfaceKind::Cylinder) {
-                return Err(EvalError::new(
+                return Err(not_cyl());
+            }
+            return Ok((bi, vec![fi]));
+        }
+        let pieces = b.names.face_pieces(r);
+        if pieces.is_empty() {
+            continue;
+        }
+        return match one_cylinder(&b.topology, &pieces) {
+            Some(true) => Ok((bi, pieces)),
+            Some(false) => Err(not_cyl()),
+            None => {
+                let names: Vec<String> =
+                    pieces.iter().filter_map(|i| b.names.faces.get(*i as usize)).map(ToString::to_string).collect();
+                let mut e = EvalError::new(
                     feature,
                     ErrorCode::InvalidReference,
-                    format!("face {r} is not cylindrical"),
+                    format!("face {r} was split into {} faces that are not on one cylinder", pieces.len()),
                 )
-                .with_hint("a thread goes on a shaft's side or a hole's wall"));
+                .with_hint("name one of its pieces with #k (query_body with names: true lists them)");
+                e.reference = Some(r.to_string());
+                e.suggestion = names.into_iter().next();
+                Err(e)
             }
-            return Ok((bi, fi));
-        }
+        };
     }
     let mut e = EvalError::new(feature, ErrorCode::MissingReference, format!("face {r} no longer exists"))
         .with_hint("re-select the cylindrical face the thread is on");
@@ -355,11 +379,55 @@ fn find_cylinder(feature: &str, r: &FaceRef, bodies: &[Arc<Body>]) -> Result<(us
     Err(e)
 }
 
+/// Whether `faces` lie on one cylinder: `Some(true)` if every face is a cylinder on the first
+/// one's axis whose edges all lie at the same distance from it, `Some(false)` if none is a
+/// cylinder, `None` otherwise.
+fn one_cylinder(topo: &Topology, faces: &[u32]) -> Option<bool> {
+    let infos: Vec<&gusset_kernel::FaceInfo> = faces.iter().filter_map(|i| topo.faces.get(*i as usize)).collect();
+    if infos.len() != faces.len() || infos.is_empty() {
+        return None;
+    }
+    let cyl = infos.iter().filter(|f| f.kind == SurfaceKind::Cylinder).count();
+    if cyl == 0 {
+        return Some(false);
+    }
+    if cyl != infos.len() {
+        return None;
+    }
+    let axis = infos.first()?.axis?;
+    let a = normalize(axis.dir)?;
+    let off = |q: V3| norm(cross(sub(q, axis.origin), a));
+    let mut radius: Option<f64> = None;
+    for (fi, f) in faces.iter().zip(&infos) {
+        let x = f.axis?;
+        if norm(cross(normalize(x.dir)?, a)) > 1e-9 || off(x.origin) > 1e-6 {
+            return None;
+        }
+        for e in topo.edges.iter().filter(|e| e.faces.contains(fi)) {
+            let pts = std::iter::once(e.midpoint)
+                .chain(e.vertices.iter().filter_map(|v| topo.vertices.get(*v as usize)).map(|v| v.point));
+            for q in pts {
+                let d = off(q);
+                match radius {
+                    None => radius = Some(d),
+                    Some(r0) if (d - r0).abs() > 1e-6 * (1.0 + r0) => return None,
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+    radius.map(|_| true)
+}
+
 /// The face's axis, radius, extent and side, from the body's topology (exact) and mesh (the
-/// side, from the normals, and the extent of faces whose edges are not circles).
-fn measure(name: &str, body: &Body, fi: u32, mesh: &Mesh, along: Option<V3>) -> Result<Cyl, EvalError> {
+/// side, from the normals, and the extent of faces whose edges are not circles). `faces` are
+/// the face or the pieces of a split one, all on one cylinder.
+fn measure(name: &str, body: &Body, faces: &[u32], mesh: &Mesh, along: Option<V3>) -> Result<Cyl, EvalError> {
     let bad = |m: &str| EvalError::new(name, ErrorCode::InvalidReference, m.to_string());
-    let info = body.topology.faces.get(fi as usize).ok_or_else(|| bad("the face is not on the body"))?;
+    let info = faces
+        .first()
+        .and_then(|fi| body.topology.faces.get(*fi as usize))
+        .ok_or_else(|| bad("the face is not on the body"))?;
     let axis = info.axis.ok_or_else(|| bad("the face has no axis"))?;
     let a = normalize(axis.dir).ok_or_else(|| bad("the face has no axis"))?;
     let o = axis.origin;
@@ -369,7 +437,8 @@ fn measure(name: &str, body: &Body, fi: u32, mesh: &Mesh, along: Option<V3>) -> 
         let r = sub(w, scale(a, dot(w, a)));
         dot(r, r).sqrt()
     };
-    let edges: Vec<&gusset_kernel::EdgeInfo> = body.topology.edges.iter().filter(|e| e.faces.contains(&fi)).collect();
+    let edges: Vec<&gusset_kernel::EdgeInfo> =
+        body.topology.edges.iter().filter(|e| e.faces.iter().any(|f| faces.contains(f))).collect();
     let mut pts: Vec<V3> = Vec::new();
     for e in &edges {
         pts.push(e.midpoint);
@@ -386,7 +455,7 @@ fn measure(name: &str, body: &Body, fi: u32, mesh: &Mesh, along: Option<V3>) -> 
     let radius = radius.filter(|r| *r > 1e-9).ok_or_else(|| bad("the face's radius is not known"))?;
     // The side and the mesh's extent.
     let (mut outward, mut tmin, mut tmax) = (0.0, f64::INFINITY, f64::NEG_INFINITY);
-    if let Some(range) = mesh.face_ranges.get(fi as usize) {
+    for range in faces.iter().filter_map(|fi| mesh.face_ranges.get(*fi as usize)) {
         for t in range.start as usize..range.end as usize {
             for &vi in mesh.indices.get(t * 3..t * 3 + 3).unwrap_or(&[]) {
                 let (Some(q), Some(n)) = (mesh.positions.get(vi as usize), mesh.normals.get(vi as usize)) else {
@@ -443,7 +512,7 @@ fn measure(name: &str, body: &Body, fi: u32, mesh: &Mesh, along: Option<V3>) -> 
             if !ts.iter().all(|t| (t - t_end).abs() < tol) {
                 continue;
             }
-            for f in e.faces.iter().filter(|f| **f != fi) {
+            for f in e.faces.iter().filter(|f| !faces.contains(f)) {
                 if let Some(nf) = body.topology.faces.get(*f as usize)
                     && dot(nf.normal, scale(a, out)) < -0.3
                 {
@@ -457,4 +526,57 @@ fn measure(name: &str, body: &Body, fi: u32, mesh: &Mesh, along: Option<V3>) -> 
         }
     }
     Ok(Cyl { start, dir, x, radius, len: tmax - tmin, internal: outward < 0.0, blocked })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gusset_kernel::{Axis3, CurveKind, EdgeInfo, FaceInfo, VertexInfo};
+
+    /// Faces on cylinders about Z at `(axis x, radius)`, each with one edge whose midpoint and
+    /// vertex lie on it, and a plane last.
+    fn topo(cyls: &[(f64, f64)]) -> Topology {
+        let mut t = Topology::default();
+        for (i, &(x, r)) in (0u32..).zip(cyls) {
+            let z = f64::from(i);
+            t.faces.push(FaceInfo {
+                kind: SurfaceKind::Cylinder,
+                area: 1.0,
+                centroid: [x + r, 0.0, z],
+                normal: [1.0, 0.0, 0.0],
+                axis: Some(Axis3 { origin: [x, 0.0, 0.0], dir: [0.0, 0.0, 1.0] }),
+            });
+            t.vertices.push(VertexInfo { point: [x, r, z] });
+            t.edges.push(EdgeInfo {
+                kind: CurveKind::Other,
+                length: 1.0,
+                midpoint: [x - r, 0.0, z + 0.5],
+                faces: vec![i],
+                vertices: vec![i],
+                circle: None,
+            });
+        }
+        t.faces.push(FaceInfo {
+            kind: SurfaceKind::Plane,
+            area: 1.0,
+            centroid: [0.0; 3],
+            normal: [0.0, 0.0, 1.0],
+            axis: None,
+        });
+        t
+    }
+
+    #[test]
+    fn the_pieces_of_a_split_face_stand_for_it_only_on_one_cylinder() {
+        // The pieces a thread's groove leaves: one axis, one radius.
+        assert_eq!(one_cylinder(&topo(&[(0.0, 5.0), (0.0, 5.0), (0.0, 5.0)]), &[0, 1, 2]), Some(true));
+        // Another radius or another axis: several faces, not one.
+        assert_eq!(one_cylinder(&topo(&[(0.0, 5.0), (0.0, 4.0)]), &[0, 1]), None);
+        assert_eq!(one_cylinder(&topo(&[(0.0, 5.0), (1.0, 5.0)]), &[0, 1]), None);
+        // A plane among them, or only planes.
+        assert_eq!(one_cylinder(&topo(&[(0.0, 5.0)]), &[0, 1]), None);
+        assert_eq!(one_cylinder(&topo(&[]), &[0]), Some(false));
+        // Faces the body does not have.
+        assert_eq!(one_cylinder(&topo(&[(0.0, 5.0)]), &[0, 7]), None);
+    }
 }

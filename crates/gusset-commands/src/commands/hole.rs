@@ -569,7 +569,7 @@ impl Command for Thread {
             return Err(CommandError::args("the thread designation must be 1 to 32 printable characters")
                 .hint("write it like \"M16x1\""));
         }
-        check_face_resolves(s, ctx, &face)?;
+        check_surface_resolves(s, ctx, &face)?;
         edit(s, ctx, "Thread", |doc, rb| {
             let name = feature_name(doc, self.name, "Thread")?;
             let def = FaceThreadDef {

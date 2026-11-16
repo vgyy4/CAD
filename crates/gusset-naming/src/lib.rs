@@ -429,6 +429,21 @@ impl BodyNames {
         self.faces.iter().position(|f| f == r).and_then(|i| u32::try_from(i).ok())
     }
 
+    /// The pieces `r#1`, `r#2`, ... a later operation split the face `r` into (ADR 0003 §1),
+    /// in face order, when `r` has no `#k` index and no face bears it whole; otherwise none.
+    /// The pieces are several faces: a caller that needs one face must not pick among them,
+    /// only a feature that works on the surface they share may take them all.
+    pub fn face_pieces(&self, r: &FaceRef) -> Vec<u32> {
+        if r.index.is_some() || self.face_index(r).is_some() {
+            return Vec::new();
+        }
+        (0u32..)
+            .zip(&self.faces)
+            .filter(|(_, f)| f.index.is_some() && f.feature == r.feature && f.key == r.key)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     /// Resolves an edge reference (ADR 0003 §5).
     pub fn resolve_edge(&self, r: &EdgeRef) -> Resolution {
         if let Some(i) = self.edges.iter().position(|e| e == r) {
@@ -638,6 +653,14 @@ mod tests {
         let n = name_body(&OpContext::Sweep { feature: "E", sketch: "S", regions: &[] }, &o, &topo).unwrap();
         assert_eq!(n.faces[1].index, Some(1));
         assert_eq!(n.faces[0].index, Some(2));
+        // The bare name names no face, but its pieces are known; an indexed name or a face
+        // that exists whole has none.
+        let bare = FaceRef::parse("E/side(S/l1)").unwrap();
+        assert_eq!(n.face_index(&bare), None);
+        assert_eq!(n.face_pieces(&bare), vec![0, 1]);
+        assert!(n.face_pieces(&n.faces[0]).is_empty());
+        assert!(n.face_pieces(&FaceRef::parse("E/side(S/l2)").unwrap()).is_empty());
+        assert!(named_box(40.0).face_pieces(&FaceRef::parse("Extrude1/cap(end)").unwrap()).is_empty());
     }
 
     #[test]

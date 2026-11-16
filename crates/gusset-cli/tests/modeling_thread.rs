@@ -260,3 +260,23 @@ fn rounds_at_a_threads_square_end_are_made_whatever_the_threads_phase() {
     let want = threaded + (rounded - plain);
     assert!((v - want).abs() < 1e-7 * want, "{v} vs {want}");
 }
+
+#[test]
+fn a_threaded_face_keeps_its_name_for_a_second_thread() {
+    // Dogfooding F18-17: the groove leaves the face in pieces `E/side(S/c2)#k`; the face's name
+    // still names the cylinder they lie on, so a second thread on it builds (here on the rod's
+    // lower part, below the first one).
+    let first = "thread T (face: E/side(S/c2), pitch: 1 mm, modeled: true, major: 16.4 mm, minor: 15.2 mm, length: 5 mm, offset: 7 mm, along: Z)";
+    let (ev, r) = eval(&format!("{ROD}\n{first}\n"));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let one = volume(&ev, &r, "E");
+    let names: Vec<String> = r.body("E").unwrap().names.faces.iter().map(ToString::to_string).collect();
+    let pieces = names.iter().filter(|n| n.starts_with("E/side(S/c2)#")).count();
+    assert!(pieces > 1 && !names.iter().any(|n| n == "E/side(S/c2)"), "{names:?}");
+    let second = "thread T2 (face: E/side(S/c2), pitch: 1 mm, modeled: true, major: 16.4 mm, minor: 15.2 mm, length: 4 mm, offset: 1 mm, along: Z)";
+    let (ev, r) = eval(&format!("{ROD}\n{first}\n{second}\n"));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let want = one - 4.0 * groove_per_mm(16.4, 15.2, 1.0, 60.0, false);
+    let v = volume(&ev, &r, "E");
+    assert!((v - want).abs() < 2e-5 * want, "{v} vs {want}");
+}

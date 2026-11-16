@@ -58,7 +58,12 @@ literature (Kripac 1997; Capoyleas, Chen & Hoffmann 1996). We never use indices.
      else +Z), so they follow parameter edits like any other reference.
    - Primitives: `<feature>/face(top|bottom|side...)`.
    - Faces carried through a boolean or modification keep their original name. Faces
-     the operation splits get `#k` suffixes, ordered by a *geometric* key (see 3).
+     the operation splits get `#k` suffixes, ordered by a *geometric* key (see 3). The
+     bare name then names no single face and is never resolved to one of the pieces. A
+     feature that works on a surface rather than on a face (a thread on a cylinder) takes
+     all the pieces `name#k` as the face when they lie on one surface, so a threaded face
+     can be threaded again by its name; anywhere else the error says the face was split
+     and lists its pieces (amended 2026-11-16, dogfooding F18-17).
 2. **Edges and vertices are named by their adjacent faces.** An edge is
    `edge{faceA, faceB}`, with the face names sorted, plus a disambiguation suffix when
    two faces share several edges. A vertex is named by its sorted set of incident
