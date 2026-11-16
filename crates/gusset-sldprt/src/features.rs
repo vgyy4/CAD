@@ -1609,14 +1609,50 @@ fn line_ref(d: &[u8], a: usize, b: usize) -> Option<(V3, V3)> {
     None
 }
 
-/// The point a feature names by a point reference (`moEndPointRef_w`, an end of an edge):
-/// `c7 cf ff ff c7 cf ff ff 00 00 00 00 f8 2a 00 00`, eight zero bytes, then the point in model
-/// coordinates (m). Returns it in mm.
+/// The point a feature names by a point reference (`moEndPointRef_w`, an end of an edge, or
+/// `moPointRef_w`): `c7 cf ff ff c7 cf ff ff 00 00 00 00`, a `u32` version word, then the point
+/// in model coordinates (m). Words 9000 and 11000 (r3 iso, V-Slot Rail_PIVOT) put eight zero
+/// bytes before the point; 6000 (V-Slot Actuator End Mount) none. Returns it in mm.
 fn point_ref(d: &[u8], a: usize, b: usize) -> Option<V3> {
-    const MARK: [u8; 16] = [0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0, 0xf8, 0x2a, 0, 0];
-    let i = find(d, &MARK, a, b)?;
-    let p = f64s_at::<3>(d, i + 24)?;
-    p.iter().all(|c| c.is_finite() && c.abs() < 100.0).then(|| p.map(mm))
+    const MARK: [u8; 12] = [0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0];
+    let mut from = a;
+    while let Some(i) = find(d, &MARK, from, b) {
+        from = i + 1;
+        let at = match u32_at(d, i + 12)? {
+            6000 => i + 16,
+            9000 | 11000 => i + 24,
+            _ => continue,
+        };
+        let p = f64s_at::<3>(d, at)?;
+        return p.iter().all(|c| c.is_finite() && c.abs() < 100.0).then(|| p.map(mm));
+    }
+    None
+}
+
+/// The plane a feature names by a plane reference (`moPlaneRef_w`: a reference plane or a
+/// planar face) when it has no face reference: the last `c7 cf ff ff c7 cf ff ff 00 00 00 00`
+/// with a `u32` version word in the span, then (after eight zero bytes for words 9000 and
+/// 11000) four extents, the plane's origin and its unit normal, in model coordinates (m).
+/// end_cap's Enlèv. mat.-Extru.1 ends on the Top plane (origin 0, normal +y). Returns the
+/// origin in mm.
+fn plane_ref(d: &[u8], a: usize, b: usize) -> Option<(V3, V3)> {
+    const MARK: [u8; 12] = [0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0];
+    let mut from = a;
+    let mut last = None;
+    while let Some(i) = find(d, &MARK, from, b) {
+        from = i + 1;
+        let at = match u32_at(d, i + 12) {
+            Some(6000) => i + 16,
+            Some(9000 | 11000) if f64_at(d, i + 16) == Some(0.0) => i + 24,
+            _ => continue,
+        };
+        let (Some(o), Some(n)) = (f64s_at::<3>(d, at + 32), f64s_at::<3>(d, at + 56)) else { continue };
+        let finite = o.iter().chain(&n).all(|c| c.is_finite() && c.abs() < 100.0);
+        if finite && (libm::sqrt(dot(n, n)) - 1.0).abs() < 1e-9 {
+            last = Some((o.map(mm), n.map(|c| round_to(c, 12) + 0.0)));
+        }
+    }
+    last
 }
 
 /// A full revolve an edge can name: the sketch (and its plane) and two points of the axis in
@@ -1963,6 +1999,38 @@ fn face_pick(
         unit(nrm),
         Region::Wall(*f, (pa.x, pa.y), (pb.x, pb.y)),
     ))
+}
+
+/// The plane of a cap (a point on it, mm, and its outward normal), without a point inside the
+/// face: for an end face [`face_pick`] cannot place.
+fn cap_plane(r: &Rep, swept: &HashMap<u32, Swept>, sketches: &[Geometry], cap_tags: &HashSet<u16>) -> Option<(V3, V3)> {
+    let f = swept.get(&r.fid).filter(|f| !f.through && f.distance.abs() > 1e-9)?;
+    let g = sketches.get(f.sketch)?;
+    let cap = cap_tags.contains(&r.tag) || !g.segs.iter().any(|s| s.a == r.idx && !s.construction);
+    if !cap || r.idx > 1 {
+        return None;
+    }
+    let sweep = if f.distance > 0.0 { 1.0 } else { -1.0 };
+    let o = if r.idx == 1 { sweep } else { -sweep };
+    Some((lift(f, 0.0, 0.0, cap_height(f, r.idx)), normal(f).map(|c| round_to(c * o, 12) + 0.0)))
+}
+
+/// The plane of a straight side of an extruded feature, through ones too (a point on it, mm,
+/// and a unit normal of either sense): for an end face [`face_pick`] cannot place.
+fn side_plane(r: &Rep, swept: &HashMap<u32, Swept>, sketches: &[Geometry]) -> Option<(V3, V3)> {
+    let f = swept.get(&r.fid)?;
+    let g = sketches.get(f.sketch)?;
+    let mut c = g.segs.iter().filter(|s| s.a == r.idx && !s.construction);
+    let (Some(s), None) = (c.next(), c.next()) else { return None };
+    if s.kind != SegKind::Line {
+        return None;
+    }
+    let (p0, p1) = (point(&g.pts, s.s)?, point(&g.pts, s.e)?);
+    let o = lift(f, p0.x * 1000.0, p0.y * 1000.0, 0.0);
+    let q = lift(f, p1.x * 1000.0, p1.y * 1000.0, 0.0);
+    let c = cross(sub(q, o), normal(f));
+    let l = libm::sqrt(dot(c, c));
+    (l > 1e-9).then(|| (o, c.map(|v| v / l)))
 }
 
 /// A point of a profile's inside next to the middle of its largest arc (m), when the profile
@@ -3214,6 +3282,37 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         }
                     }
                 }
+                // A cap the reader cannot place a point on (its profile does not read as closed:
+                // Back_sup_RT_upp's Boss-Extrude1), or the flat wall of a cut through all
+                // (z_motor_mount), still has its plane: a parallel one gives the distance, as an
+                // end on a face smaller than the profile does.
+                let end = match end_face_ref(rf, a, b) {
+                    Some(r) if face_pick(&r, &swept, &sketches, &cap_tags).is_none() => {
+                        cap_plane(&r, &swept, &sketches, &cap_tags)
+                            .or_else(|| side_plane(&r, &swept, &sketches).filter(|_| t == 4))
+                    }
+                    Some(_) => None,
+                    // A reference plane (or a face named as a plane) instead of a face.
+                    None => plane_ref(rf, a, b).filter(|_| t == 4),
+                };
+                if let Some(&(_, plane)) = sketch_by_name.get(sk)
+                    && let Some((pt, nf)) = end
+                {
+                    let n = cross(plane.x, plane.y);
+                    let den = dot(n, nf);
+                    let s_face = dot(sub(pt, plane.origin), nf) / den;
+                    if (den.abs() - 1.0).abs() < 1e-9 {
+                        let s = match (t, ps.first()) {
+                            (4, _) => Some(s_face),
+                            (_, Some(off)) => Some(s_face - mm(*off) / den),
+                            _ => None,
+                        };
+                        if let Some(s) = s.filter(|s| s.abs() > 1e-9) {
+                            distance = Some(round_to(s, 6) + 0.0);
+                            end_s = distance;
+                        }
+                    }
+                }
             }
             // A blind cut with a second length (`D2`, or `D<n+1>` after the `n` dimensions of its
             // own sketch) starts that far from its sketch plane. With an end spec of X 1 the start
@@ -4266,6 +4365,48 @@ mod end_face_tests {
         }
         assert_eq!(point_ref(&d, 0, d.len()), Some([-47.5, 20.0, 0.0]));
         assert_eq!(point_ref(&d[..30], 0, 30), None);
+        // Version word 6000 (V-Slot Actuator End Mount's moPointRef_w): no zero bytes.
+        let mut d = vec![0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0, 0x70, 0x17, 0, 0];
+        for v in [0.087, 0.0035, -0.0019] {
+            d.extend(f64::to_le_bytes(v));
+        }
+        assert_eq!(point_ref(&d, 0, d.len()), Some([87.0, 3.5, -1.9]));
+    }
+
+    /// A plane reference (end_cap's up-to-surface end on the Top plane): four extents, the
+    /// origin and the normal after the marker.
+    #[test]
+    fn a_plane_reference_gives_its_plane() {
+        let mut d = vec![0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0, 0x70, 0x17, 0, 0];
+        for v in [0.011, -0.011, 0.011, -0.011, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            d.extend(f64::to_le_bytes(v));
+        }
+        assert_eq!(plane_ref(&d, 0, d.len()), Some(([0.0; 3], [0.0, 1.0, 0.0])));
+        let mut d = vec![0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0, 0x28, 0x23, 0, 0];
+        for v in [0.0, -1.0, 1.0, 1.0, -1.0, 0.0975, 0.012, -0.001, 1.0, 0.0, 0.0] {
+            d.extend(f64::to_le_bytes(v));
+        }
+        assert_eq!(plane_ref(&d, 0, d.len()), Some(([97.5, 12.0, -1.0], [1.0, 0.0, 0.0])));
+        assert_eq!(plane_ref(&d[..40], 0, 40), None);
+    }
+
+    /// End specs: byte 8 flips the side of a cut (BK12_nut); a direction given by a plane
+    /// reference puts the fields after it (Bottom-Plate's Cut-Extrude3: up to a surface).
+    #[test]
+    fn end_specs_of_flipped_cuts_and_referenced_directions() {
+        let mut d = vec![0x97, 0x81, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+        let e = endspec_candidates(&d, 0, d.len()).unwrap();
+        let [e] = e.as_slice() else { panic!("{e:?}") };
+        assert!(e.flip && e.kind == 1 && e.flag == 0 && e.x == 1 && e.b12 == 0);
+        d.clear();
+        d.extend(b"\xf0\x87\xff\xff\x01\x00\x11\x00moDirectionSpec_c\x01\x00\x00\x00\x01\x00");
+        d.extend(b"\xff\xff\x01\x00\x0c\x00moPlaneRef_w");
+        d.extend([0u8; 40]);
+        d.extend([3, 0, 0, 0, 1, 0, 0, 0]);
+        d.extend([0u8; 10]);
+        d.extend([4, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let e = endspec_directed(&d, 0, d.len()).unwrap();
+        assert!(!e.flip && e.kind == 4 && e.flag == 0 && e.x == 1 && e.b12 == 0);
     }
 
     /// Node names inside the header of the node before them: a reused sketch's `Sketch3<3>` and
