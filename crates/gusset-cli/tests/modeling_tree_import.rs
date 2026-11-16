@@ -131,6 +131,26 @@ fn a_plate_with_a_through_hole_and_a_counterbore() {
     assert_vol(v, 8000.0 - pi * (90.0 + 40.0 + 36.0));
 }
 
+/// A cut up to a planar face that a through hole has pierced (3_way_cube_connector's
+/// counterbores): the face no longer covers the larger profile, so the cut ends on the face's
+/// plane (`plane_distance`), 3 mm short of it.
+#[test]
+fn a_cut_up_to_a_pierced_face_ends_on_its_plane() {
+    let pi = std::f64::consts::PI;
+    let (_, v) = import_v2(vec![
+        rect("Sketch1", plane_at(0.0), -10.0, -10.0, 20.0, 20.0),
+        extrude("Block", "Sketch1", 20.0, "new"),
+        disc("Sketch2", plane_at(20.0), 0.0, 0.0, 2.0),
+        extrude("Hole", "Sketch2", -50.0, "cut"),
+        disc("Sketch3", plane_at(20.0), 0.0, 0.0, 5.0),
+        json!({"type": "extrude", "name": "Bore", "sketch": "Sketch3", "profiles": "all", "operation": "cut",
+               "end_condition": "to_face", "face": {"point": [8, 8, 0], "normal": [0, 0, -1]}, "offset": -3.0,
+               "reverse": true, "plane_distance": -17.0}),
+    ]);
+    // The hole r 2 through 20 mm, the bore r 5 down to z = 3 (17 mm, less the hole within it).
+    assert_vol(v, 8000.0 - pi * 4.0 * 20.0 - pi * (25.0 - 4.0) * 17.0);
+}
+
 #[test]
 fn a_blind_hole_in_a_side_face() {
     // A hole on the +X face of a block: the face frame is not the XY one.
