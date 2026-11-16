@@ -1615,18 +1615,22 @@ fn line_ref(d: &[u8], a: usize, b: usize) -> Option<(V3, V3)> {
 /// bytes before the point; 6000 (V-Slot Actuator End Mount) none. Returns it in mm.
 fn point_ref(d: &[u8], a: usize, b: usize) -> Option<V3> {
     const MARK: [u8; 12] = [0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0];
+    // The last one: a direction given by a plane reference writes the same marker before it
+    // (V-Slot Rail_PIVOT's Cut-Extrude5).
     let mut from = a;
+    let mut last = None;
     while let Some(i) = find(d, &MARK, from, b) {
         from = i + 1;
-        let at = match u32_at(d, i + 12)? {
-            6000 => i + 16,
-            9000 | 11000 => i + 24,
+        let at = match u32_at(d, i + 12) {
+            Some(6000) => i + 16,
+            Some(9000 | 11000) => i + 24,
             _ => continue,
         };
-        let p = f64s_at::<3>(d, at)?;
-        return p.iter().all(|c| c.is_finite() && c.abs() < 100.0).then(|| p.map(mm));
+        if let Some(p) = f64s_at::<3>(d, at).filter(|p| p.iter().all(|c| c.is_finite() && c.abs() < 100.0)) {
+            last = Some(p.map(mm));
+        }
     }
-    None
+    last
 }
 
 /// The plane a feature names by a plane reference (`moPlaneRef_w`: a reference plane or a
