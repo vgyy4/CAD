@@ -953,3 +953,76 @@ it; HGR20, pulley_large, tekerlek and others entered it once they read whole), f
 keycaps, past their shells), lofts 12, up-to-surface ends 11, sketches without closed regions 4, mirror planes not
 resolved 4. RJ45-LED and Link_2 are skipped by the corpus driver as before. What is left divides into blockers of one to
 three parts each.
+
+## L16. Round 10 (sw5: fillet edges and extrude end conditions)
+Measured first against round sw4's logs (slip-pad 24, arig-revisions 15, zenodo 1, sw-more 223): 85 parts stopped first at
+fillet or chamfer edges not all resolved (51) or at an extrude end condition (34: up to surface 11, through all 7, no end
+spec found 7, up to vertex 5, offset from surface 3, blind without a depth 1), and 13 more at a fillet edge whose midpoint
+lies on no edge of the rebuilt model. Each was grouped by root cause from the sample bytes and a per-part dump of its
+references (feature, face number, the face's kind: line, arc, cap, through, or a face the reader does not model). Decoded:
+* **The cut flag of older files.** A node's flags word is `0x2_01ca` for a cut in newer files, `0x1ca` without bit 17 in
+  older ones; a boss has `0x140`. The reader compared all 20 low bits, so the cuts of older files whose names do not start
+  with "Cut" (`Enlèv. mat.-Extru.`, `Вырез-Вытянуть`, `Bore`, `Fix`) were read as joins (their "through all" then had
+  no length). Over the corpora `0x1ca` marks 46 cuts named Cut-... and 44 others, and no boss; the low 12 bits decide now.
+* **Up to a planar face the model no longer covers.** A cut up to (or offset from) a face parallel to its sketch whose
+  face was pierced since (3_way_cube_connector's counterbores end 3.5 mm above the bottom face their through holes cross)
+  failed in the kernel ("the face does not cover the whole extrusion"). The reader now writes `plane_distance` beside
+  `to_face`: the blind distance to the face's plane, offset included; the tree import uses it when the face does not
+  cover the sweep (SolidWorks extends a planar face, so the extrusion is the same).
+* **End planes without a face point.** A cap whose profile the reader cannot place a point inside, and the flat wall of a
+  cut through all, still give their plane; a parallel one gives the distance. An end on a reference plane (no face
+  reference; a `moPlaneRef_w`) reads the plane from its marker: `c7 cf ff ff c7 cf ff ff 00 00 00 00`, a `u32` version
+  word, eight zero bytes for words 9000 and 11000 (none for 6000), four extents, the origin and the unit normal (m).
+  end_cap's cut ends on the Top plane (origin 0, normal +y).
+* **Point references** (`moPointRef_w`, `moEndPointRef_w`) use the same marker and version words: 6000 writes the point
+  right after the word (V-Slot Actuator End Mount), 9000 and 11000 after eight zero bytes (r3 iso). The last marker in
+  the node is the point: a direction given by a plane reference writes one before it (V-Slot Rail_PIVOT Cut-Extrude5).
+* **Directions by reference.** An extrude whose direction is a reference writes a `moDirectionSpec_c` holding a
+  `moPlaneRef_w` where the end spec's leading null object reference is; the end spec's fields (`u32 X`, ten flag bytes,
+  `u32 type`, `u32 flag`) follow the plane reference, after its closing `u32 3` (Bottom-Plate Cut-Extrude3, V-Slot
+  Rail_PIVOT Cut-Extrude5). On the samples the direction is the sketch normal; it is not read.
+* **Flipped cuts.** Byte 8 of the end spec is a `u32` flag: a cut that keeps what its profile sweeps (BK12_nut's circle of
+  22 mm trims the hexagon's corners; SlotMount-Attachment, the Key Fob parts' Top Cut). Through all it is the common
+  part with the sweep (`intersect`); a blind one is refused (`flip_side`). A file whose only class reference to the end
+  spec has X = 0 learns the class from it.
+* **Edges where profile curves meet without crossing.** A line ending on an arc of another extrusion need not cross the
+  arc's polyline (Biyel Kolu's Radyus3); the ends of each curve lying on the other count. Where the two meet twice (a
+  lens of two arcs, Front_panel), the record's order decides: the first face lies on the left of the edge run from the
+  first vertex face to the second (cross product of the outward normals along the run; cut sides face into the profile).
+* **Up to a cylinder.** An end on the side an arc sweeps is written as `to_face` at the arc's middle and mid-height with
+  its outward normal; the sweep runs the written direction or the default one. Whether the face covers the sweep is left
+  to the kernel (housing, mid_shoulder_RT now stop later).
+
+**Coverage after the round** (rebuild check unchanged: every feature builds, volume within 2e-5, box within 1e-4; whole
+corpora through the corpus driver):
+
+| corpus | round sw4 | round sw5 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 223 / 1253 | **230** / 1253 |
+| all | 263 / 1352 | **270** / 1352 |
+
+Gained (sw-more): 3_way_cube_connector, 90 Degree Angle Corner Connector, 3 Way Cube Corner Connector - V-Slot, F688Z
+Bearing Shaft_TOP, end_cap, 4dd, Quick Release Peg (a volume mismatch before: an up-to-face that now ends on its plane).
+None lost. Of the 34 end-condition parts, 4 come in as history, 18 now stop at a later feature (fillets the kernel
+refuses, sketches that do not close, hole fit, a loft cut, combine, patterns of bodies) and 12 remain: through all on a
+boss after an imported body (GT2_Bobbin_Idler_v2, GT2_Spur_v2_18tooth), faces the reader does not model (a hole wizard's,
+a mirror copy's, a revolve's, an imported body's, an arc offset), an end spec with flag 2 (Raspberry Pi Case_TOP), a node
+whose span reads empty (lid), a point reference without the marker (GPIO_cover), a depth kept only in the configuration
+(8mm TR8_8 Leadscrew).
+
+**Fillet edges: what remains, with evidence.** Of the 64 fillet parts (51 unresolved, 13 midpoints off the model) one
+moved on (Biyel Kolu) and one advanced (Front_panel). The rest have no shared cause a decode reaches:
+* faces of earlier fillets or chamfers that are not corners of one profile (the reader models those only), named as an
+  edge's face or vertex face: about 22 parts (Lego Torso, Key Fob Cover, the Spacer and Arm_straight families,
+  dzwignia_bebenka_zamka L/R, Leadscrew Nut Mount, 126p parts, Ultrasonic Sensor, RobotSocketMotor, CIM Motor ...);
+* faces of imported bodies (GRIPPER, nippondensogearcoupler2, x55_Arm_Modified) and of pattern copies, a reference to the
+  pattern wrapping the seed face with an instance number (Spacer_*_square, NEMA23_stepper): 6;
+* face-to-face fillets (`moFaceBlendSurfIdRep_c`, 0 of 0 edges: Nylon Insert Hex Locknut M5, gear_stage_2, part 9): 3;
+* sides of features at right angles (a cut's cylinder across a boss's flat side: Battety), closed edges on tori or
+  saddles (Holder, Krank mili, EX +2.4), profile keys without a segment (top, GT2_20tooth, ARMBASE whose arc has lost its
+  end point): one part each;
+* midpoints off the model: the rebuilt profile differs from SolidWorks' there (Mount_split's rounded corners, TopTray's
+  sides); per-part sketch problems, not an edge rule.

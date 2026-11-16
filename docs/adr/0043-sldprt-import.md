@@ -547,3 +547,41 @@ one boolean against the stored body fails (2 parts left without one); the larger
 first boss (24), a later boss (12), material no feature adds (7), stored bodies (6): no shared cause. The remaining
 blockers each cover one to three parts: fillets on pattern copies, up-to-surface ends on faces not placed, mirror planes on
 plane features of the part, mirrors of mirror features, shells of several faces, variable fillets, lofts.
+
+## Amendment (2026-11-16): fillet edges and extrude end conditions (round sw5)
+
+Round sw5 measured the 85 parts that stopped first at fillet or chamfer edges (51) or at an extrude end condition (34),
+and the 13 whose fillet edge midpoints lie on no edge of the rebuilt model, and grouped them by root cause from the sample
+bytes (`docs/formats/solidworks-feature-tree.md` L16). Decoded:
+
+- **The cut flag of older files**: a node's flags `0x1ca` (without bit 17) marks a cut; localized cuts had been joins.
+- **Up to a planar face the model no longer covers**: the reader writes `plane_distance` (the blind distance to a
+  parallel face's plane) beside `to_face`; the tree import (ADR 0042) uses it when the face does not cover the sweep as
+  rebuilt, which is what SolidWorks does with a planar face.
+- **End planes** of caps without a point inside them, of the flat walls of cuts through all, and of reference planes
+  (`moPlaneRef_w`: four extents, origin, unit normal after the `c7 cf ff ff` marker and a version word); point
+  references with version words 6000 and 9000; the last point reference of the node is the vertex.
+- **End specs** after a `moDirectionSpec_c` (a direction by reference), byte 8 as a flipped cut (through all: the common
+  part with the sweep), the end-spec class learned from X = 0 references when no X = 1 one exists.
+- **Edges** where two profile curves meet without crossing (a line ending on an arc); of two meeting points, the one the
+  record's order puts the first face on the left of the run between the vertex faces.
+- **Up to a cylinder** an arc sweeps: `to_face` on it; the kernel and the rebuild check judge.
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4 of the diagonal), and so are
+the stored-body rules.
+
+**Coverage** (history / parts; whole corpora):
+
+| corpus | round sw4 | round sw5 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 223 / 1253 | **230** / 1253 |
+| all | 263 / 1352 | **270** / 1352 |
+
+No part lost its history. Of the 34 end-condition parts 4 rebuild, 18 stop later, 12 remain (faces the reader does not
+model, a through-all boss after an imported body, single-part layouts). The fillet edges have no shared cause within reach:
+about 22 parts name faces of earlier fillets or chamfers that are not profile corners, 6 faces of imported bodies or
+pattern copies, 3 are face-to-face fillets, the rest single geometric cases; the midpoints off the model are per-part
+sketch differences.
