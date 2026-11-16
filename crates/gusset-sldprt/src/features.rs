@@ -3952,6 +3952,22 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if sections.len() < 2 {
                 js.insert("unresolved".into(), json!(true));
             }
+            // A circle section starts where the loft's connector meets it: the sections twist
+            // against each other as SolidWorks joins them.
+            let mut aligned = sections.len() >= 2;
+            for sk in &sections {
+                let split = feats
+                    .iter_mut()
+                    .find(|f| {
+                        f.get("type").and_then(Value::as_str) == Some("sketch")
+                            && f.get("name").and_then(Value::as_str) == Some(sk.as_str())
+                    })
+                    .is_some_and(|f| split_circle_at_connector(f, rf, a, b));
+                aligned &= split;
+            }
+            if aligned {
+                js.insert("aligned".into(), json!(true));
+            }
             feats.push(Value::Object(js));
             solid = true;
             if first_solid.as_deref().is_none_or(str::is_empty) {
@@ -4046,6 +4062,80 @@ fn named_sketches(d: &[u8], a: usize, b: usize, sketch_ids: &HashMap<u32, String
         }
     }
     out
+}
+
+/// A loft section that is one circle, split into two half arcs at the loft's connector point
+/// on it: three doubles (m) in the loft's span that lie on the circle as placed in its sketch
+/// plane (shaft_stage_3's Loft1: (9.81, -11.34, 305) on the 15 mm circle at z = 305 and
+/// (12.76, -2.50, 330) on the 13 mm one, a twist of 38 degrees). Other sketches are left alone.
+fn split_circle_at_connector(sk: &mut Value, d: &[u8], a: usize, b: usize) -> bool {
+    let v3 = |v: Option<&Value>| -> Option<V3> {
+        let a = v?.as_array()?;
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+    };
+    let Some(pl) = sk.get("plane") else { return false };
+    let (Some(o), Some(x), Some(y)) = (v3(pl.get("origin")), v3(pl.get("x_axis")), v3(pl.get("y_axis"))) else {
+        return false;
+    };
+    let Some(curves) = sk.get("curves").and_then(Value::as_array) else { return false };
+    let profile: Vec<&Value> = curves.iter().filter(|c| c.get("construction").is_none()).collect();
+    let [circle] = profile.as_slice() else { return false };
+    if circle.get("type").and_then(Value::as_str) != Some("circle") {
+        return false;
+    }
+    let (Some(cid), Some(r), Some(id)) = (
+        circle.get("center").and_then(Value::as_str).map(str::to_owned),
+        circle.get("radius").and_then(Value::as_f64),
+        circle.get("id").and_then(Value::as_str).map(str::to_owned),
+    ) else {
+        return false;
+    };
+    let Some(points) = sk.get("points").and_then(Value::as_array) else { return false };
+    let Some(c) = points.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(cid.as_str())) else {
+        return false;
+    };
+    let (Some(cu), Some(cv)) = (c.get("x").and_then(Value::as_f64), c.get("y").and_then(Value::as_f64)) else {
+        return false;
+    };
+    let n = cross(x, y);
+    let tol = 1e-6 * (1.0 + r);
+    let mut hit = None;
+    for i in a..b.saturating_sub(23) {
+        let Some(p) = f64s_at::<3>(d, i) else { break };
+        if !p.iter().all(|v| v.is_finite() && v.abs() < 1e3) {
+            continue;
+        }
+        let q = sub(p.map(mm), o);
+        let (u, v) = (dot(q, x), dot(q, y));
+        if dot(q, n).abs() < tol && (libm::hypot(u - cu, v - cv) - r).abs() < tol && r > 1e-6 {
+            hit = Some((u, v));
+            break;
+        }
+    }
+    let Some((u, v)) = hit else { return false };
+    let used: Vec<u64> = points
+        .iter()
+        .chain(curves.iter())
+        .filter_map(|p| p.get("id").and_then(Value::as_str))
+        .filter_map(|s| s.get(1..).and_then(|t| t.parse().ok()))
+        .collect();
+    let next = used.iter().max().map_or(0, |m| m + 1);
+    let (pa, pb, ca, cb) = (format!("p{next}"), format!("p{}", next + 1), format!("c{next}"), format!("c{}", next + 1));
+    let r6 = |t: f64| round_to(t, 6) + 0.0;
+    let new_pts =
+        [json!({"id": pa, "x": r6(u), "y": r6(v)}), json!({"id": pb, "x": r6(2.0 * cu - u), "y": r6(2.0 * cv - v)})];
+    let arcs = [
+        json!({"type": "arc", "id": ca, "center": cid, "start": pa, "end": pb}),
+        json!({"type": "arc", "id": cb, "center": cid, "start": pb, "end": pa}),
+    ];
+    if let Some(Value::Array(ps)) = sk.get_mut("points") {
+        ps.extend(new_pts);
+    }
+    if let Some(Value::Array(cs)) = sk.get_mut("curves") {
+        cs.retain(|c| c.get("id").and_then(Value::as_str) != Some(id.as_str()));
+        cs.extend(arcs);
+    }
+    true
 }
 
 /// `p` reflected in the plane `(origin, unit normal)`.
