@@ -1894,11 +1894,13 @@ enum Region {
     Cap(Swept),
     /// A side: the line from `a` to `b` (m, in the sketch's axes), over the feature's height.
     Wall(Swept, (f64, f64), (f64, f64)),
+    /// A curved side (an arc's cylinder): whether it covers the sweep is left to the kernel.
+    Curved,
 }
 
 /// Whether the point `q` (mm) of the face's plane lies on the face, up to 0.01 mm.
 fn on_face(region: &Region, sketches: &[Geometry], q: V3) -> bool {
-    let (Region::Cap(f) | Region::Wall(f, ..)) = region;
+    let (Region::Cap(f) | Region::Wall(f, ..)) = region else { return true };
     let Some(g) = sketches.get(f.sketch) else { return false };
     let d = sub(q, f.plane.origin);
     let (u, v) = (dot(d, f.plane.x) / 1000.0, dot(d, f.plane.y) / 1000.0);
@@ -1923,6 +1925,7 @@ fn on_face(region: &Region, sketches: &[Geometry], q: V3) -> bool {
             };
             h >= lo - 0.01 && h <= hi + 0.01 && dist_to_segment((u, v), *a, *b) < 1e-5
         }
+        Region::Curved => true,
     }
 }
 
@@ -1992,6 +1995,14 @@ fn face_pick(
     }
     let mut c = g.segs.iter().filter(|s| s.a == r.idx && !s.construction);
     let (Some(s), None) = (c.next(), c.next()) else { return None };
+    // The side an arc sweeps (housing's Boss-Extrude4 ends on Boss-Extrude2's cylinder): the
+    // middle of the arc at mid-height, its normal out of the material.
+    if s.kind == SegKind::Arc {
+        let pts = seg_uv(g, s)?;
+        let &(u, v) = pts.get(pts.len() / 2)?;
+        let p = lift(f, u * 1000.0, v * 1000.0, f.distance / 2.0);
+        return Some((p, unit(side_out(f, g, s, p)?), Region::Curved));
+    }
     let (mid, out, _) = side(s)?;
     let (pa, pb) = (point(&g.pts, s.s)?, point(&g.pts, s.e)?);
     let (x, y) = (f.plane.x, f.plane.y);
@@ -3358,7 +3369,19 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                             })
                         })
                     };
-                    if t == 4 && den.abs() > 1e-9 {
+                    if t == 4 && matches!(region, Region::Curved) {
+                        // A curved face: the tangent plane does not say which way the sweep runs;
+                        // the written direction does, or the default one (a boss along its sketch
+                        // normal, a cut against it, byte 12 reversing either).
+                        let dir = extrude_direction(rf, a, b).and_then(|v| direction_agrees(n, 1.0, v)).map_or_else(
+                            || {
+                                let d = if op == "cut" { -1.0 } else { 1.0 };
+                                if es.is_some_and(|e| e.b12 == 1) { -d } else { d }
+                            },
+                            |agree| if agree { 1.0 } else { -1.0 },
+                        );
+                        up_to = Some((pt, nf, 0.0, dir < 0.0));
+                    } else if t == 4 && den.abs() > 1e-9 {
                         let dir = extrude_direction(rf, a, b)
                             .and_then(|v| direction_agrees(n, 1.0, v))
                             .map_or(s_face.signum(), |agree| if agree { 1.0 } else { -1.0 });
