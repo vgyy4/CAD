@@ -42,7 +42,11 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     arch="x64"; [ "${RUNNER_ARCH:-}" = "ARM64" ] && arch="ARM64"
     cmake -S "$work/src" -B "$work/build" -A "$arch" "${args[@]}"
-    cmake --build "$work/build" --config Release --parallel
+    # OCCT's projects already compile with /MP; MSBuild running projects in parallel on
+    # top of that starts cores x cores cl.exe processes, which the windows-arm64 runner
+    # cannot hold (cl D8040). Build one project at a time there.
+    jobs=(--parallel); [ "$arch" = "ARM64" ] && jobs=(--parallel 1)
+    cmake --build "$work/build" --config Release "${jobs[@]}"
     cmake --install "$work/build" --config Release
     ;;
   *)
