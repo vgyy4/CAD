@@ -143,12 +143,18 @@ pub(super) fn plan(mut p: PreparedImport) -> Plan {
     let Some(h) = p.history.take() else { return Plan::Commit(Box::new(p), None) };
     let class = h.info.class;
     let choice = p.choice;
+    // A perfect history has no reason to give; say what makes it perfect (dogfooding F18-16).
+    let why = if h.info.why.is_empty() && class == HistoryClass::Perfect {
+        "every feature rebuilds and the result matches the file's shape".to_string()
+    } else {
+        h.info.why.clone()
+    };
     let rebuild = match (choice, class) {
         (_, HistoryClass::None) => false,
         (HistoryChoice::Ask, _) => {
             return Plan::Ask(json!({
                 "choice_required": "history",
-                "history": { "class": class.keyword(), "why_user_text": h.info.why, "options": options(class) },
+                "history": { "class": class.keyword(), "why_user_text": why, "options": options(class) },
                 "features": [],
                 "hint": "import again with history: rebuild (the features; one undo step) or final (the file's shapes)",
             }));
@@ -180,7 +186,7 @@ pub(super) fn plan(mut p: PreparedImport) -> Plan {
         }
         _ => {}
     }
-    let report = json!({ "class": class.keyword(), "why_user_text": h.info.why, "imported": imported });
+    let report = json!({ "class": class.keyword(), "why_user_text": why, "imported": imported });
     Plan::Commit(Box::new(p), Some(report))
 }
 

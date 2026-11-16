@@ -3280,13 +3280,16 @@ fn fusion_states_check(
     };
     let inputs = if dropped_count > 0 {
         format!(
-            "; {dropped_count} are input bodies that Base Features drop (the file names them as inputs and not as outputs)"
+            "; {dropped_count} {} that Base Features drop (the file names them as inputs and not as outputs)",
+            if dropped_count == 1 { "is an input body" } else { "are input bodies" }
         )
     } else {
         String::new()
     };
     Ok(format!(
-        "the file stores the steps of the design, not its end result: {states} stored solids are states of the rebuilt model and {tools} are its cut tools{inputs}; {after}"
+        "the file stores the steps of the design, not its end result: of its stored solids, {states} {} of the rebuilt model and {tools} {}{inputs}; {after}",
+        if states == 1 { "is a state" } else { "are states" },
+        if tools == 1 { "is a cut tool" } else { "are cut tools" }
     ))
 }
 

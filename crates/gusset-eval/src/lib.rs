@@ -1445,7 +1445,14 @@ fn kernel_err(feature: &str, what: &str, ke: KernelError) -> EvalError {
         )
         .with_hint(CRASH_HINT);
     }
-    let mut e = EvalError::new(feature, ErrorCode::KernelFailure, format!("{what} failed: {}", ke.message));
+    // A kernel message that already says what failed is not prefixed again ("fillet failed:
+    // fillet failed", dogfooding F18-16).
+    let message = if ke.message.starts_with(&format!("{what} failed")) {
+        ke.message.clone()
+    } else {
+        format!("{what} failed: {}", ke.message)
+    };
+    let mut e = EvalError::new(feature, ErrorCode::KernelFailure, message);
     e.hint = ke.hint;
     e
 }

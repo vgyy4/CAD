@@ -1187,7 +1187,12 @@ pub fn apply_with(
     let ours: f64 = made_bodies.iter().filter_map(|b| k.mass_properties(&b.shape).ok()).map(|m| m.volume).sum();
     // A join the source did not apply (or the other way round) changes the count (F9-10).
     if !tree.bodies.is_empty() && made_bodies.len() != tree.bodies.len() {
-        g.warn(format!("the import made {} bodies; the source lists {}", made_bodies.len(), tree.bodies.len()));
+        let n = made_bodies.len();
+        g.warn(format!(
+            "the import made {n} {}; the source lists {}",
+            if n == 1 { "body" } else { "bodies" },
+            tree.bodies.len()
+        ));
     }
     let theirs: f64 = tree.bodies.iter().filter_map(|b| b.volume_mm3).sum();
     let mut out = json!({

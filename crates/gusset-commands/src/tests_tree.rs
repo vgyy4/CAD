@@ -392,7 +392,7 @@ fn a_body_count_unlike_the_sources_is_warned() {
         json!([{"name": "Body1", "volume_mm3": 4000.0}, {"name": "Body2", "volume_mm3": 4000.0}]),
     );
     let r = import(&mut s, "two.gtree.json", &t).unwrap();
-    assert!(r["warnings_user_text"].to_string().contains("made 1 bodies; the source lists 2"), "{r}");
+    assert!(r["warnings_user_text"].to_string().contains("made 1 body; the source lists 2"), "{r}");
     // Volumes agree, so that is the only warning.
     assert_eq!(r["warnings_user_text"].as_array().unwrap().len(), 1, "{r}");
 }
