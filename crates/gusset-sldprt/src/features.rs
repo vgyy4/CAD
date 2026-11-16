@@ -39,7 +39,7 @@ const PLANE_NAMES: [(u32, &str); 3] = [(2, "Front"), (3, "Top"), (4, "Right")];
 const EXTRUDE: [&str; 3] = ["moExtrusion_c", "moICE_c", "moCut_c"];
 const REVOLVE: [&str; 2] = ["moRevolution_c", "moRevCut_c"];
 /// Classes that carry nothing the tree needs (sketches are handled before this list).
-const SKIPPED: [&str; 36] = [
+const SKIPPED: [&str; 41] = [
     "moCommentsFolder_c",
     "moFavoriteFolder_c",
     "moHistoryFolder_c",
@@ -81,6 +81,14 @@ const SKIPPED: [&str; 36] = [
     "moRefAxis_c",
     "moCoordSys_c",
     "moFeatGraphicsBodyFolder_c",
+    // Round sw6: a configuration table (its configurations' values; the part's own are in its
+    // features), weldment cut lists and their folders, cosmetic weld beads (graphics only) and
+    // the folder of reference points.
+    "moNativeConfigurationTableFeature_c",
+    "moCosmeticWeldCutList_c",
+    "moCosmeticWeldSubFolder_c",
+    "moCosmeticWeldBead_c",
+    "moRefPointFtrFolder_c",
 ];
 
 /// The 46-byte block after a feature node's comment (older files, then newer ones).
