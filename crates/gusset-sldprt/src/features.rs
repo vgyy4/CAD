@@ -4058,14 +4058,33 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let mut js = Map::new();
             js.insert("type".into(), json!("sweep"));
             js.insert("name".into(), json!(n.name));
+            // A circular profile (SolidWorks 2016 on) has no sketch: its diameter is the
+            // dimension written before the `<MOD-DIAM>` text, the path is the one sketch named.
+            let circle = || -> Option<(Value, String)> {
+                let [path] = named.as_slice() else { return None };
+                let at = find(rf, &MOD_DIAM, a, b)?;
+                let dia = named_params(rf, a, at, nt).ok()?.last().map(|(_, v)| mm(*v)).filter(|v| *v > 0.0)?;
+                let sk = feats.iter().find(|f| {
+                    f.get("type").and_then(Value::as_str) == Some("sketch")
+                        && f.get("name").and_then(Value::as_str) == Some(path.as_str())
+                })?;
+                Some((circle_at_path_start(sk, dia, &format!("{}_Profile", n.name))?, path.clone()))
+            };
             match named.as_slice() {
                 [profile, path, ..] => {
                     js.insert("sketch".into(), json!(profile));
                     js.insert("path".into(), json!(path));
                 }
-                _ => {
-                    js.insert("unresolved".into(), json!(true));
-                }
+                _ => match circle() {
+                    Some((profile, path)) => {
+                        js.insert("sketch".into(), profile.get("name").cloned().unwrap_or(Value::Null));
+                        js.insert("path".into(), json!(path));
+                        feats.push(profile);
+                    }
+                    None => {
+                        js.insert("unresolved".into(), json!(true));
+                    }
+                },
             }
             js.insert("operation".into(), json!(op));
             if op != "new" {
@@ -4208,6 +4227,75 @@ fn split_circle_at_connector(sk: &mut Value, d: &[u8], a: usize, b: usize) -> bo
         cs.extend(arcs);
     }
     true
+}
+
+/// `<MOD-DIAM>` in UTF-16: the display text of a sweep's circular-profile diameter.
+const MOD_DIAM: [u8; 20] = *b"<\0M\0O\0D\0-\0D\0I\0A\0M\0>\0";
+
+/// A sketch of one circle of diameter `dia` (mm) square to the start of the open path that the
+/// sketch `path` (tree JSON) draws: the profile of a circular-profile sweep. The start is an
+/// end of the path (a point one curve meets), the circle's plane is square to the path there.
+fn circle_at_path_start(path: &Value, dia: f64, name: &str) -> Option<Value> {
+    let v3 = |v: Option<&Value>| -> Option<V3> {
+        let a = v?.as_array()?;
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+    };
+    let pl = path.get("plane")?;
+    let (o, x, y) = (v3(pl.get("origin"))?, v3(pl.get("x_axis"))?, v3(pl.get("y_axis"))?);
+    let pts: HashMap<&str, (f64, f64)> = path
+        .get("points")?
+        .as_array()?
+        .iter()
+        .filter_map(|p| Some((p.get("id")?.as_str()?, (p.get("x")?.as_f64()?, p.get("y")?.as_f64()?))))
+        .collect();
+    let curves: Vec<&Value> = path
+        .get("curves")?
+        .as_array()?
+        .iter()
+        .filter(|c| {
+            c.get("construction").is_none() && matches!(c.get("type").and_then(Value::as_str), Some("line" | "arc"))
+        })
+        .collect();
+    fn end<'a>(c: &'a Value, k: &str) -> Option<&'a str> {
+        c.get(k).and_then(Value::as_str)
+    }
+    let mut degree: HashMap<&str, usize> = HashMap::new();
+    for c in &curves {
+        for k in ["start", "end"] {
+            *degree.entry(end(c, k)?).or_default() += 1;
+        }
+    }
+    // The first curve with an open end, and the tangent into the path there.
+    let (at, t) = curves.iter().find_map(|c| {
+        let (s, e) = (end(c, "start")?, end(c, "end")?);
+        let first = if degree.get(s) == Some(&1) { s } else if degree.get(e) == Some(&1) { e } else { return None };
+        let p = *pts.get(first)?;
+        let t = if c.get("type").and_then(Value::as_str) == Some("line") {
+            let q = *pts.get(if first == s { e } else { s })?;
+            (q.0 - p.0, q.1 - p.1)
+        } else {
+            // Arcs run counter-clockwise from start to end.
+            let m = *pts.get(c.get("center")?.as_str()?)?;
+            let (dx, dy) = (p.0 - m.0, p.1 - m.1);
+            if first == s { (-dy, dx) } else { (dy, -dx) }
+        };
+        Some((p, t))
+    })?;
+    let len = libm::hypot(t.0, t.1);
+    if len < 1e-12 {
+        return None;
+    }
+    let along = comb(x, t.0 / len, y, t.1 / len);
+    let origin = comb(comb(o, 1.0, x, at.0), 1.0, y, at.1);
+    let nx = cross(x, y);
+    let ny = cross(along, nx);
+    let r6 = |v: V3| v.map(|c| round_to(c, 12) + 0.0);
+    Some(json!({
+        "type": "sketch", "name": name,
+        "plane": {"origin": r6(origin), "x_axis": r6(nx), "y_axis": r6(ny)},
+        "points": [{"id": "p0", "x": 0.0, "y": 0.0}],
+        "curves": [{"id": "c0", "type": "circle", "center": "p0", "radius": round_to(dia / 2.0, 9)}],
+    }))
 }
 
 /// `p` reflected in the plane `(origin, unit normal)`.
@@ -4977,6 +5065,31 @@ mod pattern_tests {
         let body = Some(patterns::Seeds { ptrs: vec![], bodies: 1 });
         let out = feature_pattern("P", true, body, &lines, (|_: &str| Some(3), |_: &str| None), names, &feats);
         assert_eq!(out[0]["why"], "a pattern of bodies");
+    }
+
+    #[test]
+    fn a_circular_sweep_profile_is_square_to_the_path_start() {
+        // An L path on the Front plane: a line from (183, 0) to (10, 0), a quarter arc about
+        // (10, -10) down to (0, -10), then a line to (0, -110).
+        let path = json!({"type": "sketch", "name": "P",
+            "plane": {"origin": [0.0, 0.0, 0.0], "x_axis": [1.0, 0.0, 0.0], "y_axis": [0.0, 1.0, 0.0]},
+            "points": [{"id": "p0", "x": 10.0, "y": -10.0}, {"id": "p1", "x": 183.0, "y": 0.0},
+                       {"id": "p3", "x": 10.0, "y": 0.0}, {"id": "p4", "x": 0.0, "y": -110.0},
+                       {"id": "p5", "x": 0.0, "y": -10.0}],
+            "curves": [{"id": "c0", "type": "line", "start": "p3", "end": "p1"},
+                       {"id": "c1", "type": "line", "start": "p5", "end": "p4"},
+                       {"id": "c2", "type": "arc", "center": "p0", "start": "p3", "end": "p5"}]});
+        let sk = circle_at_path_start(&path, 7.0, "S_Profile").unwrap();
+        assert_eq!(sk["plane"]["origin"], json!([183.0, 0.0, 0.0]));
+        let (x, y) = (&sk["plane"]["x_axis"], &sk["plane"]["y_axis"]);
+        let v = |a: &Value| [a[0].as_f64().unwrap(), a[1].as_f64().unwrap(), a[2].as_f64().unwrap()];
+        // The plane's normal runs along the path, into it (-x).
+        assert_eq!(cross(v(x), v(y)), [-1.0, 0.0, 0.0]);
+        assert_eq!(sk["curves"][0]["radius"], json!(3.5));
+        // A closed path has no start.
+        let mut closed = path.clone();
+        closed["curves"][0]["end"] = json!("p4");
+        assert!(circle_at_path_start(&closed, 7.0, "S").is_none());
     }
 
     #[test]
