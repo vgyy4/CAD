@@ -301,9 +301,7 @@ impl Command for PcbMoveFootprint {
             if at.iter().any(|v| !v.is_finite() || v.abs() > 10_000.0) {
                 return Err(CommandError::args("the place must be within 10 m"));
             }
-            if self.at.is_some() {
-                inside_outline(b, at)?;
-            }
+            let note = if self.at.is_some() { outside_outline_note(b, at) } else { None };
             let old = b.footprint_pads(i);
             let turned = angle - fp.angle;
             b.move_footprint(i, at, angle, &limits()).map_err(pcb_err)?;
@@ -318,7 +316,11 @@ impl Command for PcbMoveFootprint {
             };
             let fp = b.footprints.get(i).ok_or_else(no_board)?;
             let side = if fp.bottom { "bottom" } else { "top" };
-            Ok(json!({ "at": fp.at, "angle": fp.angle, "side": side, "ends_carried": carried }))
+            let mut out = json!({ "at": fp.at, "angle": fp.angle, "side": side, "ends_carried": carried });
+            if let (Some(n), Some(o)) = (note, out.as_object_mut()) {
+                o.insert("note".into(), json!(n));
+            }
+            Ok(out)
         })
     }
 }
@@ -408,10 +410,10 @@ pub(super) fn layer_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Optio
     }))
 }
 
-/// A place on the board: refused when the board has an outline and `at` lies outside its
-/// bounding box (a footprint placed or moved far off the board is nearly always a typo in
-/// the coordinates, F18-18). A board with no outline takes any place.
-pub(super) fn inside_outline(b: &gusset_pcb::Board, at: [f64; 2]) -> Result<(), CommandError> {
+/// A note when the board has an outline and `at` lies outside its bounding box (F18-18): a
+/// footprint parked beside the board is ordinary while laying out, so the place is taken and
+/// the result says where the board is, which also catches a typo in the coordinates.
+pub(super) fn outside_outline_note(b: &gusset_pcb::Board, at: [f64; 2]) -> Option<String> {
     let (loops, _) = gusset_pcb::geom::outline_loops(b, gusset_pcb::check::OUTLINE_TOL);
     let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
     for p in loops.iter().flat_map(|l| l.polygon(0.01)) {
@@ -420,10 +422,15 @@ pub(super) fn inside_outline(b: &gusset_pcb::Board, at: [f64; 2]) -> Result<(), 
     }
     if hi[0] >= lo[0] && (at[0] < lo[0] || at[0] > hi[0] || at[1] < lo[1] || at[1] > hi[1]) {
         let r = |v: f64| (v * 1000.0).round() / 1000.0;
-        return Err(CommandError::args(format!("the place [{}, {}] is outside the board outline", r(at[0]), r(at[1])))
-            .hint(format!("the outline spans x {} to {}, y {} to {} mm", r(lo[0]), r(hi[0]), r(lo[1]), r(hi[1]))));
+        return Some(format!(
+            "placed outside the board outline, which spans x {} to {}, y {} to {} mm",
+            r(lo[0]),
+            r(hi[0]),
+            r(lo[1]),
+            r(hi[1])
+        ));
     }
-    Ok(())
+    None
 }
 
 /// Adds a through via.

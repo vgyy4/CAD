@@ -79,7 +79,7 @@ fn a_hostile_rules_file_is_only_warnings() {
 }
 
 #[test]
-fn edits_the_rules_forbid_are_refused_not_left_for_the_drc() {
+fn a_narrow_track_is_refused_and_an_off_board_place_is_noted() {
     let mut s = session();
     run(&mut s, &u(1), "pcb.open", json!({"path": "board.kicad_pcb"}));
     run(&mut s, &u(2), "pcb.net_class", json!({"name": "Power", "min_track_width": 0.3, "nets": ["GND"]}));
@@ -90,11 +90,12 @@ fn edits_the_rules_forbid_are_refused_not_left_for_the_drc() {
     assert_eq!(e.code, "invalid_args", "{e:?}");
     assert!(e.message.contains("0.3"), "{e:?}");
     run(&mut s, &u(4), "pcb.add_track", json!({"start": [9, 10], "end": [9, 15], "width": 0.3, "net": "GND"}));
-    // A footprint far off the 40 x 20 mm board.
-    let e = execute(&mut s, &u(5), "pcb.move_footprint", json!({"footprint": "R1", "at": [100, 1]})).unwrap_err();
-    assert_eq!(e.code, "invalid_args", "{e:?}");
-    assert!(e.hint.as_deref().unwrap_or("").contains("x 0 to 40"), "{e:?}");
-    run(&mut s, &u(6), "pcb.move_footprint", json!({"footprint": "R1", "at": [30, 5]}));
+    // A footprint parked off the 40 x 20 mm board is placed, with a note saying where the
+    // board is (parking parts beside the board is ordinary while laying out).
+    let r = run(&mut s, &u(5), "pcb.move_footprint", json!({"footprint": "R1", "at": [100, 1]}));
+    assert!(r["note"].as_str().unwrap_or("").contains("x 0 to 40"), "{r}");
+    let r = run(&mut s, &u(6), "pcb.move_footprint", json!({"footprint": "R1", "at": [30, 5]}));
+    assert!(r.get("note").is_none(), "{r}");
     // Turning it without a new place is still fine.
     run(&mut s, &u(7), "pcb.move_footprint", json!({"footprint": "R1", "angle": 90}));
 }

@@ -604,7 +604,7 @@ impl Command for PcbAddFootprint {
             })?;
         let open = pcb_session::open_board(s, &ctx.actor)?.ok_or_else(no_board)?;
         let mut b = open.board.clone();
-        super::pcb_edit::inside_outline(&b, self.at)?;
+        let note = super::pcb_edit::outside_outline_note(&b, self.at);
         let reference = match &self.reference {
             Some(r) => r.clone(),
             None => (1..100_000).map(|n| format!("FP{n}")).find(|r| b.footprint_index(r).is_none()).unwrap_or_default(),
@@ -625,7 +625,10 @@ impl Command for PcbAddFootprint {
         }
         let pads = b.footprints.get(i).map_or(0, |f| f.pads.len());
         let label = format!("Place {}", crate::paths::display_name(&reference));
-        let extra = json!({ "footprint": i, "reference_user_text": reference, "pads": pads });
+        let mut extra = json!({ "footprint": i, "reference_user_text": reference, "pads": pads });
+        if let (Some(n), Some(o)) = (note, extra.as_object_mut()) {
+            o.insert("note".into(), json!(n));
+        }
         commit_board(s, ctx, &label, open.file.clone(), &b, None, extra)
     }
 }
