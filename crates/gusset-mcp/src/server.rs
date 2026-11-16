@@ -761,7 +761,7 @@ fn commands_result(args: &CommandsArgs, sets: &[Toolset]) -> Result<Value, Comma
                     .collect::<Vec<_>>(),
                 "hint": "a group is the command-name prefix (pcb_, sch_, sim_, cam_...); call commands with a group \
                          for its commands only, or a command name for its arguments, then run it with run. To list \
-                         a whole area as tools, call toolset (enable: pcb, sch, sim or cam)",
+                         a whole area as tools, call the toolset tool (callable though not in the list; enable: pcb, sch, sim or cam)",
             }))
         }
         Some(name) => {

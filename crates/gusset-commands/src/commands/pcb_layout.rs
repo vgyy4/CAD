@@ -105,7 +105,7 @@ pub struct PcbRoute {
     #[serde(default)]
     pub shove: Option<bool>,
     /// any or F.Cu,B.Cu
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::pcb_edit::layer_text")]
     pub layers: Option<String>,
     // false: full width near pads too (no description: the pcb toolset is at its cap).
     #[serde(default)]
@@ -681,7 +681,7 @@ impl Command for PcbExportStep {
         let full = crate::paths::export_target(s.project_dir.as_deref(), &self.file, &ctx.actor, &[ext])?;
         if full.exists() && !self.overwrite {
             return Err(CommandError::new("confirmation_required", format!("'{}' already exists", self.file))
-                .hint("pass overwrite: true to replace it"));
+                .hint("pass overwrite: true to replace it (an agent also needs the user's approval)"));
         }
         let bytes = s.kernel().export_step(&list).map_err(|e| CommandError::new("io", e.to_string()))?;
         let text = String::from_utf8(bytes).map_err(|_| CommandError::new("io", "the STEP writer gave binary data"))?;

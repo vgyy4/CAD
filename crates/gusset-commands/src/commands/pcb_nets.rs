@@ -327,7 +327,7 @@ pub struct PcbAddZone {
     #[serde(default)]
     pub more_outlines: Vec<Vec<[f64; 2]>>,
     /// Default ["F.Cu"].
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::pcb_edit::layer_list")]
     pub layers: Vec<String>,
     #[serde(default)]
     pub net: Option<String>,

@@ -38,7 +38,7 @@ const MAX_TIMEOUT_S: u64 = 3600;
 fn configured(s: &Session, ctx: &CmdCtx, what: &str) -> Result<pcb_session::KicadCli, CommandError> {
     let k = s.kicad_cli.clone().ok_or_else(|| {
         CommandError::new("not_available", "no kicad-cli is set up")
-            .hint("name your kicad-cli in the PCB tab's KiCad section; Gusset does not download or look for KiCad")
+            .hint("only the user names kicad-cli (app: PCB tab, KiCad section); without it use pcb_drc and sch_erc, Gusset's own checks")
     })?;
     // An agent starting a program on the user's machine needs the user's yes.
     if ctx.is_agent() && s.config.approvals_required && !ctx.approved {
@@ -369,7 +369,7 @@ impl Command for PcbKicadExport {
         if target.exists() {
             if !self.overwrite {
                 return Err(CommandError::new("confirmation_required", format!("'{}' already exists", self.path))
-                    .hint("pass overwrite: true to replace the file"));
+                    .hint("pass overwrite: true to replace the file (an agent also needs the user's approval)"));
             }
             if ctx.is_agent() && s.config.approvals_required && !ctx.approved {
                 return Err(CommandError::approval("overwriting an exported file"));

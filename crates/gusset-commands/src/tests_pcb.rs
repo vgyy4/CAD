@@ -125,6 +125,22 @@ fn routing_an_already_connected_pair_is_refused() {
 }
 
 #[test]
+fn layer_lists_are_a_string_or_an_array_everywhere() {
+    let mut s = session();
+    let ctx = CmdCtx::user(1);
+    run(&mut s, &ctx, "pcb.open", json!({"path": "board.kicad_pcb"}));
+    run(&mut s, &ctx, "pcb.delete", json!({"tracks": [0]}));
+    // pcb.route took a string, pcb.add_zone an array (F18-19): each takes both.
+    run(&mut s, &ctx, "pcb.route", json!({"points": [[9, 10], [35, 15]], "layers": ["F.Cu", "B.Cu"]}));
+    run(&mut s, &ctx, "pcb.delete", json!({"tracks": [0]}));
+    run(&mut s, &ctx, "pcb.route", json!({"points": [[9, 10], [35, 15]], "layers": "F.Cu,B.Cu"}));
+    let outline = json!([[1, 1], [10, 1], [10, 8], [1, 8]]);
+    let a = run(&mut s, &ctx, "pcb.add_zone", json!({"outline": outline, "layers": ["B.Cu"], "net": "GND"}));
+    let b = run(&mut s, &ctx, "pcb.add_zone", json!({"outline": outline, "layers": "B.Cu", "net": "GND"}));
+    assert_eq!(a["layers"], b["layers"], "{a} {b}");
+}
+
+#[test]
 fn pcb_import_adds_the_board_and_component_bodies() {
     let mut s = session();
     let r = run(&mut s, &CmdCtx::user(1), "pcb.import", json!({"path": "board.kicad_pcb", "component_height": "3 mm"}));

@@ -423,7 +423,7 @@ impl Command for ExportFlat {
         if path.exists() {
             if !self.overwrite {
                 return Err(CommandError::new("confirmation_required", format!("'{p}' already exists"))
-                    .hint("pass overwrite: true to replace it"));
+                    .hint("pass overwrite: true to replace it (an agent also needs the user's approval)"));
             }
             if ctx.is_agent() && s.config.approvals_required && !ctx.approved {
                 return Err(CommandError::approval("overwriting an exported file"));

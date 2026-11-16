@@ -94,7 +94,7 @@ pub(super) fn write_outputs(
         if full.exists() {
             if !overwrite {
                 return Err(CommandError::new("confirmation_required", format!("'{rel}' already exists"))
-                    .hint("pass overwrite: true to replace the files"));
+                    .hint("pass overwrite: true to replace the files (an agent also needs the user's approval)"));
             }
             if ctx.is_agent() && s.config.approvals_required && !ctx.approved {
                 return Err(CommandError::approval("overwriting exported files"));

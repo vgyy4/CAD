@@ -379,6 +379,35 @@ impl Command for PcbAddTrack {
     }
 }
 
+/// Layer names given as an array or as one comma-separated string (`pcb.route` took a string,
+/// `pcb.add_zone` an array: both take either now, F18-19).
+pub(super) fn layer_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Layers {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Layers::deserialize(d)? {
+        Layers::One(s) => s.split(',').map(str::trim).filter(|x| !x.is_empty()).map(String::from).collect(),
+        Layers::Many(v) => v,
+    })
+}
+
+/// [`layer_list`] for a text field: an array is joined with commas.
+pub(super) fn layer_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Layers {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(Option::<Layers>::deserialize(d)?.map(|l| match l {
+        Layers::One(s) => s,
+        Layers::Many(v) => v.join(","),
+    }))
+}
+
 /// A place on the board: refused when the board has an outline and `at` lies outside its
 /// bounding box (a footprint placed or moved far off the board is nearly always a typo in
 /// the coordinates, F18-18). A board with no outline takes any place.

@@ -3323,7 +3323,9 @@ fn rebuild_check(
     let skipped = r.get("skipped_user_text").and_then(Value::as_array).cloned().unwrap_or_default();
     if let Some(first) = skipped.first() {
         let first = first.as_str().map_or_else(|| first.to_string(), str::to_string);
-        return Err(format!("{} features could not be rebuilt, the first: {first}", skipped.len()));
+        let n = skipped.len();
+        let noun = if n == 1 { "feature" } else { "features" };
+        return Err(format!("{n} {noun} could not be rebuilt, the first: {first}"));
     }
     let got = r.pointer("/volume_mm3/imported").and_then(Value::as_f64).unwrap_or(f64::NAN);
     // Blends and sweeps are approximated surfaces, computed by another modeller (FreeCAD's
