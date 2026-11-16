@@ -41,12 +41,16 @@ args=(
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     arch="x64"; [ "${RUNNER_ARCH:-}" = "ARM64" ] && arch="ARM64"
-    cmake -S "$work/src" -B "$work/build" -A "$arch" "${args[@]}"
-    # OCCT's projects already compile with /MP; MSBuild running projects in parallel on
-    # top of that starts cores x cores cl.exe processes, which the windows-arm64 runner
-    # cannot hold (cl D8040). Build one project at a time there.
-    jobs=(--parallel); [ "$arch" = "ARM64" ] && jobs=(--parallel 1)
-    cmake --build "$work/build" --config Release "${jobs[@]}"
+    # MSVC 19.52's ARM64 code generator crashes inside cl on TKBRep's BRepGraph sources
+    # (D8040 with a CL!UtcBldCompileSerializedFile stack), so ARM64 builds with the
+    # v143 toolset when the image has it.
+    if [ "$arch" = "ARM64" ] && cmake -S "$work/src" -B "$work/build" -A "$arch" -T v143 "${args[@]}"; then
+      :
+    else
+      rm -rf "$work/build"
+      cmake -S "$work/src" -B "$work/build" -A "$arch" "${args[@]}"
+    fi
+    cmake --build "$work/build" --config Release --parallel
     cmake --install "$work/build" --config Release
     ;;
   *)
