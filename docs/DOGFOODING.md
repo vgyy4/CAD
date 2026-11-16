@@ -1455,6 +1455,6 @@ reply under 600 bytes except lists).
 | F18-13 | Fixed: `not_found` listing the sketch's lines. |
 | F18-15 | Fixed: kicad-cli, overwrite and `toolset` wording. |
 | F18-16 | Open except `1 feature could not be rebuilt` (the corpus tools read the other strings). |
-| F18-17 | Open (face split after a modeled thread). |
+| F18-17 | Hint no longer repeats the candidate list (it points to `details.candidates`). Open: the face split after a modeled thread. |
 | F18-18 | Fixed: a track under its class's `min_track_width` is refused; a footprint placed or moved outside the outline is taken (parking parts beside the board is ordinary) and the result carries a `note` with the outline's extent (changed from a refusal on review). |
 | F18-19 | Fixed: `layers` takes a string or an array in `pcb_route` and `pcb_add_zone`. Open: `neck` has no description, `sch_netlist`/`sch_annotate` wrapping. |

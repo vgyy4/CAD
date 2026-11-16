@@ -2509,7 +2509,10 @@ fn check_edges_resolve(s: &mut Session, ctx: &CmdCtx, refs: &[EdgeRef]) -> Resul
         let candidates: Vec<String> = names.into_iter().take(MAX_CANDIDATES).map(|(_, n)| n).collect();
         let hint = match (&suggestion, candidates.is_empty()) {
             (Some(sg), _) => format!("did you mean {sg}? (query_body with names: true lists every edge)"),
-            (None, false) => format!("candidates: {}", candidates.join("; ")),
+            // The names are in details.candidates; the hint does not repeat them (dogfooding F18-17).
+            (None, false) => {
+                "details.candidates lists the nearest edges; query_body with names: true lists every edge".to_string()
+            }
             (None, true) => "create a body first; query_body with names: true lists edges".to_string(),
         };
         return Err(CommandError::not_found(format!("edge {r} does not exist: {reason}"))
@@ -2542,7 +2545,7 @@ fn check_face_resolves(s: &mut Session, ctx: &CmdCtx, r: &FaceRef) -> Result<(),
     let mut hint = if candidates.is_empty() {
         "create a body first, or sketch on XY, XZ or YZ".to_string()
     } else {
-        format!("candidates: {}", candidates.join("; "))
+        "details.candidates lists the nearest faces; query_body with names: true lists every face".to_string()
     };
     // A name from before a bake (dogfooding F14-5): its feature is gone and the model holds
     // baked bodies, whose faces go by index.
