@@ -1813,6 +1813,8 @@ struct Swept {
     distance: f64,
     symmetric: bool,
     through: bool,
+    /// A cut: its sides face into the profile.
+    cut: bool,
 }
 
 type V3 = [f64; 3];
@@ -2507,6 +2509,69 @@ fn closed_edge(reps: &[Rep], m: &Model, work: &mut u64) -> Result<Option<V3>, St
     Ok(None)
 }
 
+/// A point `(u, v)` of a sketch (m) on the segment `s`, to 1e-7 m: on a line, or at the arc's
+/// radius within its sweep.
+fn on_seg(g: &Geometry, s: &Seg, u: f64, v: f64) -> bool {
+    let Some(pts) = seg_uv(g, s) else { return false };
+    if s.kind == SegKind::Line {
+        return matches!(pts.as_slice(), [a, b] if dist_to_segment((u, v), *a, *b) < 1e-7);
+    }
+    let (Some(c), Some(p)) = (point(&g.pts, s.c), point(&g.pts, s.s)) else { return false };
+    let r = libm::hypot(p.x - c.x, p.y - c.y);
+    let near = pts.windows(2).any(|w| matches!(w, [a, b] if dist_to_segment((u, v), *a, *b) < 0.01 * r));
+    (libm::hypot(u - c.x, v - c.y) - r).abs() < 1e-7 && near
+}
+
+/// The sketch coordinates (m) of a model point (mm) in a feature's sketch plane.
+fn uv_of(f: &Swept, p: V3) -> (f64, f64) {
+    let d = sub(p, f.plane.origin);
+    (dot(d, f.plane.x) / 1000.0, dot(d, f.plane.y) / 1000.0)
+}
+
+/// Where two profile curves of parallel extrusions meet without crossing: the ends of each that
+/// lie on the other (model points in the plane of the first's sketch, mm).
+fn touches(a: (&Swept, &Geometry, &Seg), b: (&Swept, &Geometry, &Seg)) -> Vec<V3> {
+    let mut out = Vec::new();
+    for ((f, g, s), (of, og, os)) in [(a, b), (b, a)] {
+        for i in [s.s, s.e] {
+            let Some(p) = point(&g.pts, i) else { continue };
+            let p3 = lift(f, p.x * 1000.0, p.y * 1000.0, 0.0);
+            let (u, v) = uv_of(of, p3);
+            if on_seg(og, os, u, v) {
+                // Onto the first one's sketch plane, along the extrusion.
+                let n = normal(a.0);
+                let h = dot(sub(p3, a.0.plane.origin), n);
+                out.push(comb(p3, 1.0, n, -h));
+            }
+        }
+    }
+    out
+}
+
+/// The outward normal of a side face at a model point on it (mm): out of the profile for a
+/// boss, into it for a cut. In the sketch plane, unit.
+fn side_out(f: &Swept, g: &Geometry, s: &Seg, at: V3) -> Option<V3> {
+    let (u, v) = uv_of(f, at);
+    let n2 = match s.kind {
+        SegKind::Line => {
+            let (p, q) = (point(&g.pts, s.s)?, point(&g.pts, s.e)?);
+            let l = libm::hypot(q.x - p.x, q.y - p.y);
+            (l > 1e-12).then(|| ((q.y - p.y) / l, -(q.x - p.x) / l))?
+        }
+        SegKind::Arc => {
+            let c = point(&g.pts, s.c)?;
+            let l = libm::hypot(u - c.x, v - c.y);
+            (l > 1e-12).then(|| ((u - c.x) / l, (v - c.y) / l))?
+        }
+        SegKind::Ellipse => return None,
+    };
+    let e = 1e-6;
+    let into = inside(g, u + n2.0 * e, v + n2.1 * e);
+    let sign = if into != f.cut { -1.0 } else { 1.0 };
+    let (x, y) = (f.plane.x, f.plane.y);
+    Some([0, 1, 2].map(|i| sign * (n2.0 * x.get(i).copied().unwrap_or(0.0) + n2.1 * y.get(i).copied().unwrap_or(0.0))))
+}
+
 fn midpoint_sketch(
     reps: &[Rep],
     swept: &HashMap<u32, Swept>,
@@ -2570,21 +2635,64 @@ fn midpoint_sketch(
         }
         ([Face::Side(ida, f, sa), Face::Side(idb, g, sb)], _) => {
             let (Some(gf), Some(gg)) = (geo(f), geo(g)) else { return Ok(None) };
-            let p0 = if ida == idb {
+            let mut cands: Vec<V3> = if ida == idb {
                 let mut common: Vec<usize> = [sa.s, sa.e].into_iter().filter(|v| *v == sb.s || *v == sb.e).collect();
+                common.sort_unstable();
                 common.dedup();
-                let [shared] = common.as_slice() else { return Ok(None) };
-                let Some(p) = point(&gf.pts, *shared) else { return Ok(None) };
-                lift(f, p.x * 1000.0, p.y * 1000.0, 0.0)
+                common
+                    .iter()
+                    .filter_map(|i| point(&gf.pts, *i))
+                    .map(|p| lift(f, p.x * 1000.0, p.y * 1000.0, 0.0))
+                    .collect()
             } else {
                 if (dot(normal(f), normal(g)).abs() - 1.0).abs() > 1e-9 {
                     return Ok(None);
                 }
                 let (Some(pa), Some(pb)) = (poly(f, gf, sa, work)?, poly(g, gg, sb, work)?) else { return Ok(None) };
                 let ts = cross_params(&pa, &pb, normal(f), work)?;
-                let [t] = ts.as_slice() else { return Ok(None) };
-                let Some(at) = point_at(&pa, *t) else { return Ok(None) };
-                snap(at, f, gf, sa)
+                let mut v: Vec<V3> =
+                    ts.iter().filter_map(|t| point_at(&pa, *t)).map(|at| snap(at, f, gf, sa)).collect();
+                // A curve that ends on the other (a line ending on an arc: Biyel Kolu's Radyus3)
+                // need not cross its polyline.
+                if v.is_empty() {
+                    v = touches((f, gf, sa), (g, gg, sb));
+                }
+                v
+            };
+            let mut uniq: Vec<V3> = Vec::new();
+            for p in cands.drain(..) {
+                if uniq.iter().all(|q| libm::sqrt(dot(sub(p, *q), sub(p, *q))) > 1e-6) {
+                    uniq.push(p);
+                }
+            }
+            let p0 = match uniq.as_slice() {
+                [p] => *p,
+                // Two meeting points (two arcs of a lens, an arc across a line): the record's
+                // order says which, the first face on the left of the edge run from the first
+                // vertex face to the second (cross of the outward normals along the run).
+                [p, q] => {
+                    let dir = normal(f);
+                    let h = |x: &Face| {
+                        face_plane(x, sketches).and_then(|(o, nv)| {
+                            let den = dot(dir, nv);
+                            (den.abs() > 1e-6).then(|| dot(sub(o, *p), nv) / den)
+                        })
+                    };
+                    let (Some(h0), Some(h1)) = (fc.as_ref().and_then(h), fd.as_ref().and_then(h)) else {
+                        return Ok(None);
+                    };
+                    let run = (h1 - h0).signum();
+                    let turn = |at: V3| -> Option<f64> {
+                        let (na, nb) = (side_out(f, gf, sa, at)?, side_out(g, gg, sb, at)?);
+                        Some(dot(cross(na, nb), dir) * run)
+                    };
+                    match (turn(*p), turn(*q)) {
+                        (Some(a), Some(b)) if a > 1e-9 && b < -1e-9 => *p,
+                        (Some(a), Some(b)) if b > 1e-9 && a < -1e-9 => *q,
+                        _ => return Ok(None),
+                    }
+                }
+                _ => return Ok(None),
             };
             // The ends where the two vertex faces cut the edge's line, when both are planes
             // across it: a cap, or a flat side of another feature (T-Nut-M4-DropIn's Fillet2: a
@@ -3388,7 +3496,17 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if let (Some(sk), Some(dist)) = (last_sketch.as_ref(), end_s.or(distance))
                 && let Some(&(i, plane)) = sketch_by_name.get(sk)
             {
-                swept.insert(n.id, Swept { sketch: i, plane, distance: dist, symmetric, through: through_all });
+                swept.insert(
+                    n.id,
+                    Swept {
+                        sketch: i,
+                        plane,
+                        distance: dist,
+                        symmetric,
+                        through: through_all,
+                        cut: op == "cut" && !flip,
+                    },
+                );
             }
             feats.push(Value::Object(js));
             solid = true;
@@ -3506,7 +3624,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         (None, None) => None,
                     };
                     if let Some((p, q)) = ends {
-                        let on = Swept { sketch: i, plane, distance: 0.0, symmetric: false, through: false };
+                        let on =
+                            Swept { sketch: i, plane, distance: 0.0, symmetric: false, through: false, cut: false };
                         revolved.insert(n.id, Revolved { on, axis: [p, q] });
                     }
                 }
@@ -4088,7 +4207,7 @@ mod end_face_tests {
             ellipse_axes: Vec::new(),
         };
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
-        let f = Swept { sketch: 0, plane, distance: 5.0, symmetric: false, through: false };
+        let f = Swept { sketch: 0, plane, distance: 5.0, symmetric: false, through: false, cut: false };
         (HashMap::from([(32, f)]), vec![g])
     }
 
@@ -4132,7 +4251,10 @@ mod end_face_tests {
         };
         let g = Geometry { pts: vec![pt(0.0, 0.0), pt(0.01, 0.0)], segs: vec![circle], ellipse_axes: Vec::new() };
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
-        let swept = HashMap::from([(40, Swept { sketch: 0, plane, distance: 5.0, symmetric: false, through: false })]);
+        let swept = HashMap::from([(
+            40,
+            Swept { sketch: 0, plane, distance: 5.0, symmetric: false, through: false, cut: false },
+        )]);
         let r = Rep { tag: 9, fid: 40, idx: 1, ext: false, ext2: false, via: None };
         let (p, n, _) = face_pick(&r, &swept, &[g], &HashSet::from([9u16])).unwrap();
         assert_eq!(n, [0.0, 0.0, 1.0]);
@@ -4162,7 +4284,7 @@ mod end_face_tests {
             ellipse_axes: Vec::new(),
         });
         let plane = JsonPlane { origin: [20.0, 0.0, 0.0], x: [0.0, 1.0, 0.0], y: [0.0, 0.0, 1.0] };
-        swept.insert(33, Swept { sketch: 1, plane, distance: -10.0, symmetric: false, through: false });
+        swept.insert(33, Swept { sketch: 1, plane, distance: -10.0, symmetric: false, through: false, cut: false });
         // A revolve about the y axis of the Front plane: line 4 at x = 5 mm sweeps a cylinder.
         sketches.push(Geometry {
             pts: vec![pt(0.005, 0.0), pt(0.005, 0.01)],
@@ -4175,6 +4297,7 @@ mod end_face_tests {
             distance: 0.0,
             symmetric: false,
             through: false,
+            cut: false,
         };
         let revolved = HashMap::from([(
             34,
@@ -4228,7 +4351,7 @@ mod end_face_tests {
             ellipse_axes: Vec::new(),
         });
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 0.0, 1.0] };
-        swept.insert(33, Swept { sketch: 1, plane, distance: -500.0, symmetric: false, through: true });
+        swept.insert(33, Swept { sketch: 1, plane, distance: -500.0, symmetric: false, through: true, cut: false });
         let cap_tags = HashSet::from([9u16]);
         let rep = |tag, fid, idx| Rep { tag, fid, idx, ext: false, ext2: false, via: None };
         let mut work = 0;
@@ -4371,6 +4494,45 @@ mod end_face_tests {
             d.extend(f64::to_le_bytes(v));
         }
         assert_eq!(point_ref(&d, 0, d.len()), Some([87.0, 3.5, -1.9]));
+    }
+
+    /// A line of one extrusion ending on a circle of another (Biyel Kolu's Radyus3) meets it
+    /// there although its polyline need not cross the circle's.
+    #[test]
+    fn a_line_ending_on_a_circle_touches_it() {
+        let pt = |x: f64, y: f64| Some(Pt { x, y, ext: false, id: 0, alone: 0 });
+        let seg = |kind, s, e, c| Seg {
+            kind,
+            id: 0,
+            a: 1,
+            s,
+            e,
+            c,
+            dir: 1,
+            construction: false,
+            centerline: false,
+            external: false,
+        };
+        let line = Geometry {
+            pts: vec![pt(-0.02, 0.0), pt(-0.01, 0.08)],
+            segs: vec![seg(SegKind::Line, 0, 1, 0)],
+            ..Default::default()
+        };
+        // The circle about (0, 0.08 + sqrt(0.019^2 - 0.01^2)) of radius 19 mm passes through the
+        // line's end (-0.01, 0.08).
+        let cy = 0.08 + libm::sqrt(0.019 * 0.019 - 0.0001);
+        let circle = Geometry {
+            pts: vec![pt(0.0, cy), pt(0.019, cy)],
+            segs: vec![seg(SegKind::Arc, 1, 1, 0)],
+            ..Default::default()
+        };
+        let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let f = Swept { sketch: 0, plane, distance: 12.0, symmetric: false, through: false, cut: false };
+        let g = Swept { sketch: 1, plane, distance: 24.0, symmetric: false, through: false, cut: false };
+        let t = touches((&f, &line, line.segs.first().unwrap()), (&g, &circle, circle.segs.first().unwrap()));
+        assert_eq!(t.len(), 1, "{t:?}");
+        let p = t.first().unwrap();
+        assert!((p[0] + 10.0).abs() < 1e-9 && (p[1] - 80.0).abs() < 1e-9 && p[2].abs() < 1e-9, "{p:?}");
     }
 
     /// A plane reference (end_cap's up-to-surface end on the Top plane): four extents, the
