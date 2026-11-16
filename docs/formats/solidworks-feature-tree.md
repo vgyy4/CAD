@@ -1026,3 +1026,85 @@ moved on (Biyel Kolu) and one advanced (Front_panel). The rest have no shared ca
   end point): one part each;
 * midpoints off the model: the rebuilt profile differs from SolidWorks' there (Mount_split's rounded corners, TopTray's
   sides); per-part sketch problems, not an edge rule.
+
+## L17. Round 11 (sw6: lofts, sweeps, aligned loft sections)
+Measured first against round sw5's logs (slip-pad 24, arig-revisions 15, zenodo 1, sw-more 230). For each feature kind the
+reader refused before any rebuild, a scratch build skipped that kind's nodes and the corpus driver ran the 108 parts it
+stopped: a part that then rebuilds or fails only the volume check "reaches the check" (the kind is its one reader-side
+blocker); the others stop at a later feature.
+
+| kind | parts | reach the check | stop later at |
+|---|---|---|---|
+| `moBlend_c` (loft, all languages) | 16 | 4 | fillet edges 4, patterns 3, open sketches 2, end conditions 2, chamfer edges 1 |
+| `moBlendCut_c` (loft cut) | 7 | 0 | `moMoveFace_c` 4, `moBossThin_c` 2 (Angle_support's revisions), a sketch plane 1 |
+| `moSweep_c` | 8 | 3 | shells 2, end conditions 2, no solid read 1 |
+| `moSplitBody_c` | 16 | 4 | no solid feature read 8, end conditions 2, fillet edges 1, a sketch plane 1 |
+| `moSplit_c` | 5 | 0 | chamfer and fillet edges 4, open sketches 1 |
+| `moHelix_c` | 8 | 0 | helical sweep cuts (`moSweepCut_c`) 5, composite curves 1, fillets 1, patterns 1 |
+| `moSweepThread_c` | 4 | 4 | (volume: the thread's groove is missing) |
+| `moRib_c` | 6 | 1 | fillet edges 3, `moMoveCopyBody_c` 1, a mirror 1 |
+| `moDraft_c` | 4 | 1 | 3D sketches, imported surfaces, patterns |
+| `moDome_c` | 4 | 3 | fillet edges 1 |
+| `VarFillet_c` | 18 | 0 | up-to-surface ends 13 (the r3 keycaps), open sketches 3, fillet edges 2 |
+| configuration table, weld cut list, reference point folder | 12 | 2 rebuild | mirrors 2, fillet edges 2, blind ends without a depth 2, the stored stock body only 2, a pattern 1, a weld bead 1 |
+
+Taken by parts per effort, decoded from the sample bytes:
+* **Sections and paths by node id.** A loft's sections and a sweep's profile and path are profile components
+  (`moCompProfile_c`, declared or by tag) that name a sketch node by its id: the id follows 8 zero bytes, or four and the
+  word `50 46 00 00` in newer files, and a time stamp follows it (shaft_stage_1's Loft1:
+  `00 00 00 00 50 46 00 00 2d 00 00 00 c3 10 34 69`, Sketch4 id 45; Part3's: `00 x 8 22 00 00 00 19 c4 42 5f`; 126p-throttle's,
+  an older file without the run of 16 FF bytes before it: `19 00 00 00 09 f6 d6 5d`). Only ids of sketches read count, in
+  order of first mention (the components are listed again after the guide data). A sweep's first sketch is its profile,
+  the second its path.
+* **Loft connectors.** After the components a loft writes `u32 1, u32 1`, 8 zero bytes and one point (three `f64`, m)
+  per section, on it: shaft_stage_3's Loft1 `(9.813, -11.345, 305)` on the 15 mm circle at z = 305 and
+  `(12.757, -2.500, 330)` on the 13 mm one at z = 330. The sections join at these points: SolidWorks' loft twists by the
+  angle between them (38 degrees there). OCCT's ThruSections realigns closed sections to run untwisted, so the untwisted
+  loft was 1085 mm3 heavy. A section that is one circle is now split into two half arcs at its connector and the opposite
+  point, and the loft is written `aligned` (Gusset's `loft (..., aligned: true)`: the shim skips the compatibility
+  pass, the wires correspond from their starts). Both lofts of shaft_stage_3, Part3's (19 degrees) and shaft_stage_1's
+  (23 degrees) then match exactly; output_shaft_stage_4's connectors are 2.7 degrees apart and its body is the untwisted
+  loft (4.9 mm3, 2.8e-5, off when twisted): no byte told the two apart (the byte 18 after the node block's `00 00 80 bf`
+  is 0 to 4 in both groups; the two `u32` after the points name nothing in the stream).
+* **Circular profiles.** A sweep with a circular profile names only its path sketch; it writes the text `<MOD-DIAM>` and,
+  before it, the diameter as a `ThreeDdiameterDim_c` parameter (`D3`, 7 mm in the 126p rods). The profile is a circle of
+  that diameter square to the path at an open end (the first curve with an end no other curve meets; the tangent of an
+  arc from its counter-clockwise run). The 126p rods' sweeps then leave nothing of their bodies missing; the rods stay
+  off by 29 mm3 where two blind cuts near one end differ from the body (y -105 to -83.5).
+* **No-op nodes.** `moNativeConfigurationTableFeature_c`, `moCosmeticWeldCutList_c`, `moCosmeticWeldSubFolder_c`,
+  `moCosmeticWeldBead_c` (graphics) and `moRefPointFtrFolder_c` are skipped; the rebuild check judges the part
+  (126p-sunshield-diy-top, 126p-visor-diy-top rebuild).
+* **A line drawn twice in one loop.** Pieces covered by two different sketch lines were all dropped as the shared wall of
+  two loops. shaft_stage_1's keyway draws its side and again half of it; shaft_stage_2's keyway bottom lies on a longer
+  projected line drawn again in two pieces. After pruning lines that lead nowhere, a run of shared pieces whose ends
+  would be left open without it keeps one copy (4bd rebuilds as well).
+
+Not taken, with the evidence:
+* **Split bodies** (`moSplitBody_c`, `Stock-<part>-1`): the part keeps no body of the part it was split from: no
+  `StockBodies` stream (V-Slot Connector_STRAIGHT_3mm: `Config-0-Partition` holds the final body only), so the features
+  after it have nothing to cut.
+* **Splits** (`moSplit_c`): split by a plane (Right Plane, user planes Plane1/Plane2/Plane3 named by id), but none of the
+  five parts would reach the check.
+* **Helices and threads.** `moHelix_c` names its base circle sketch and writes `D3` height, `D4` pitch, `D5` turns, `D7`
+  start angle (setScrew: 2.9 mm, 0.4 mm, 7.25, 90 degrees); the helical sweep cut names its profile sketch and the helix
+  by id. The hand was not found, and the rebuild check cannot tell a left-handed groove from a right-handed one (same
+  volume and box), so these stay refused. `moSweepThread_c` cuts a library profile not written in the part.
+* **Variable fillets**: the tree has no variable-radius fillet, and none of the 18 parts would reach the check.
+* **Domes, ribs, drafts**: no tree feature for domes or ribs; the drafts' faces are pattern copies or imported surfaces.
+
+**Coverage after the round** (rebuild check unchanged: every feature builds, volume within 2e-5, box within 1e-4; whole
+corpora through the corpus driver):
+
+| corpus | round sw5 | round sw6 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 230 / 1253 | **235** / 1253 |
+| all | 270 / 1352 | **275** / 1352 |
+
+Gained (sw-more): shaft_stage_1, shaft_stage_3 (aligned lofts), 126p-sunshield-diy-top, 126p-visor-diy-top (weld cut
+lists), 4bd (a line drawn twice). None lost. Lofts now read stop at: fillet edges (126p-rozetka-klamki,
+126p-wiper-axle-cap, 126p-window-handle-plug, three_camera_mount_tilt), sections that are faces or points (wheel ax,
+Dremel), a pattern of bodies, Part3's small boss (20 mm3 outside, not the loft), shaft_stage_2's second keyway cut (read with
+the first one's sketch), output_shaft_stage_4 (above).

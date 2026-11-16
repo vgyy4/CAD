@@ -585,3 +585,46 @@ model, a through-all boss after an imported body, single-part layouts). The fill
 about 22 parts name faces of earlier fillets or chamfers that are not profile corners, 6 faces of imported bodies or
 pattern copies, 3 are face-to-face fillets, the rest single geometric cases; the midpoints off the model are per-part
 sketch differences.
+
+## Amendment (2026-11-16): lofts, sweeps, aligned sections (round sw6)
+
+Round sw6 measured the feature kinds the reader refused before any rebuild (lofts 23, sweeps 8, split bodies 16, splits
+5, helices 8, threads 4, ribs 6, drafts 4, domes 4, variable fillets 18, three annotation folders 12): with each kind
+skipped in a scratch build, how many parts would reach the rebuild check and how many stop at a later blocker
+(`docs/formats/solidworks-feature-tree.md` L17). Decoded from the sample bytes:
+
+- **Sections by node id.** Lofts (`moBlend_c`, `moBlendCut_c`) and sweeps (`moSweep_c`, `moSweepCut_c`) name their
+  sketches in profile components: the sketch node's id after 8 zero bytes (or four and `50 46 00 00`), followed by a time
+  stamp. A loft lists its sections in order; a sweep its profile, then its path.
+- **Connectors.** A loft writes a point on each section; a section that is one circle is split into two half arcs there,
+  and the loft is written `aligned`: the sections twist as SolidWorks joins them.
+- **Circular profiles.** A sweep that names only its path sketch and writes `<MOD-DIAM>` sweeps a circle of the dimension
+  before that text, drawn square to the path at an open end.
+- **No-op nodes**: configuration tables, weldment cut lists and their folders, cosmetic weld beads, reference point folders.
+- **A line drawn twice in one sketch loop** keeps one copy (pieces two lines cover were all dropped as shared walls).
+
+Gusset gained one thing for this: `loft (..., aligned: true)` (document language, `LoftSpec`, the shim's `gs_loft`, the
+feature tree's loft): the sections' outlines correspond edge for edge from their starts and keep their twist, where
+OCCT's ThruSections would realign closed sections to untwist them. Only the SolidWorks reader writes it; Fusion and
+FreeCAD trees are unchanged.
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4 of the diagonal), and so are
+the stored-body rules.
+
+**Coverage** (history / parts; whole corpora):
+
+| corpus | round sw5 | round sw6 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 230 / 1253 | **235** / 1253 |
+| all | 270 / 1352 | **275** / 1352 |
+
+No part lost its history. Beyond reach this round, with evidence in L17: split bodies (the part keeps no body of the part
+it was split from: no `StockBodies` stream, only the final body), threads and helical sweep cuts (helix decoded: `D3`
+height, `D4` pitch, `D5` turns, `D7` start angle; the hand is not found in the bytes, and the rebuild check cannot tell a
+left-handed groove from a right-handed one), variable fillets (no tree support, and none of the 18 parts would reach the
+check: 13 stop at an up-to-surface end, 3 at open sketches, 2 at fillet edges), domes, ribs and drafts (one part each
+would reach the check). One loft (output_shaft_stage_4) rebuilds untwisted although its connectors are 2.7 degrees apart:
+the connector rule matches four lofts and misses this one.
