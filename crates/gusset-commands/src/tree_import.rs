@@ -260,6 +260,12 @@ struct SolidF {
     /// Extrude to a face: sweep against the source sketch's normal.
     #[serde(default)]
     reverse: bool,
+    /// Extrude to a planar face parallel to the sketch: the blind distance (signed as `distance`)
+    /// that reaches the face's plane, offset included. Used when the face does not cover the
+    /// sweep as the model is built here (a hole an earlier cut made in it): SolidWorks extends a
+    /// planar face to its plane, so the extrusion is the same.
+    #[serde(default)]
+    plane_distance: Option<f64>,
     /// Extrude: the side walls lean by this angle (degrees) from the sweep direction;
     /// negative narrows the solid away from its sketch (Fusion's taper angle).
     #[serde(default)]
@@ -1067,9 +1073,32 @@ pub fn apply_with(
             "sketch" => {
                 serde_json::from_value::<SketchF>(f.clone()).map_err(|e| e.to_string()).and_then(|d| sketch(&mut g, &d))
             }
-            "extrude" | "revolve" => serde_json::from_value::<SolidF>(f.clone())
-                .map_err(|e| e.to_string())
-                .and_then(|d| solid(&mut g, s, &d, kind == "revolve")),
+            "extrude" | "revolve" => {
+                serde_json::from_value::<SolidF>(f.clone()).map_err(|e| e.to_string()).and_then(|d| {
+                    let r = solid(&mut g, s, &d, kind == "revolve");
+                    match (r, d.plane_distance) {
+                        // Up to a planar face the model no longer covers: to its plane (`plane_distance`).
+                        (Err(why), Some(dist))
+                            if kind == "extrude" && d.end_condition.as_deref() == Some("to_face") && !d.symmetric =>
+                        {
+                            g.text.truncate(text_len);
+                            g.made.truncate(made_len);
+                            let blind = SolidF {
+                                end_condition: None,
+                                face: None,
+                                offset: None,
+                                offset_parameter: None,
+                                reverse: false,
+                                plane_distance: None,
+                                distance: Some(dist),
+                                ..d.clone()
+                            };
+                            solid(&mut g, s, &blind, false).map_err(|_| why)
+                        }
+                        (r, _) => r,
+                    }
+                })
+            }
             "fillet" | "chamfer" => serde_json::from_value::<EdgeF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| edges(&mut g, s, &d, kind == "fillet")),

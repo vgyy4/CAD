@@ -3207,6 +3207,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 if reverse {
                     js.insert("reverse".into(), json!(true));
                 }
+                // A face parallel to the sketch: its plane, should the face no longer cover the
+                // sweep when rebuilt (a hole cut through it since: 3_way_cube_connector's
+                // counterbores end 3.5 mm above the bottom face their through holes pierce).
+                if let Some(e) = end_s {
+                    js.insert("plane_distance".into(), json!(e));
+                }
             } else {
                 js.insert("distance".into(), json!(distance));
             }
