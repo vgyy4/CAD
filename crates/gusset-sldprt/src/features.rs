@@ -3145,6 +3145,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut node_index: Option<HashMap<u32, usize>> = None;
     // Mirror id -> its plane (origin mm, unit normal), for edges on the mirrored copy.
     let mut mirror_planes: HashMap<u32, (V3, V3)> = HashMap::new();
+    // Node id -> name of each sketch read (lofts name their sections by id).
+    let mut sketch_ids: HashMap<u32, String> = HashMap::new();
     for (ni, n) in nodes.iter().enumerate() {
         let mut cls = n.cls.clone();
         let (a, b) = span(n);
@@ -3244,6 +3246,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             feats.push(sk);
             sketches.push(geo);
             sketch_by_name.insert(n.name.clone(), (sketches.len() - 1, jp));
+            sketch_ids.insert(n.id, n.name.clone());
             last_sketch = Some(n.name.clone());
         } else if is_in(&cls, &REVOLVE)
             && endspec_decl(rf, a, b, b"moRevEndSpec_c")?.is_none()
@@ -3920,6 +3923,32 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if first_solid.as_deref().is_none_or(str::is_empty) {
                 first_solid = Some(n.name.clone());
             }
+        } else if matches!(cls.as_deref(), Some("moBlend_c" | "moBlendCut_c")) {
+            // A loft: its sections are profile components naming their sketches by node id.
+            let sections = loft_sections(rf, a, b, &sketch_ids);
+            let op = if !solid {
+                "new"
+            } else if cls.as_deref() == Some("moBlendCut_c") {
+                "cut"
+            } else {
+                "join"
+            };
+            let mut js = Map::new();
+            js.insert("type".into(), json!("loft"));
+            js.insert("name".into(), json!(n.name));
+            js.insert("sketches".into(), json!(sections));
+            js.insert("operation".into(), json!(op));
+            if op != "new" {
+                js.insert("target".into(), json!(first_solid));
+            }
+            if sections.len() < 2 {
+                js.insert("unresolved".into(), json!(true));
+            }
+            feats.push(Value::Object(js));
+            solid = true;
+            if first_solid.as_deref().is_none_or(str::is_empty) {
+                first_solid = Some(n.name.clone());
+            }
         } else if cls.as_deref() == Some("moShell_c") {
             let ps = params(rf, a, b, nt)?;
             let recs = edge_records(rf, a, b)?;
@@ -3957,6 +3986,36 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         "source": {"app": "solidworks", "file": file},
         "features": expand_holes(feats),
     }))
+}
+
+/// The sketches a loft's sections are drawn in, in order. Each section is a profile component:
+/// a run of 16 `FF` bytes, then the sketch's node id as the first non-zero word, 8 bytes on in
+/// older files and after twelve more zero bytes (and the word `50 46 00 00`) in newer ones; a
+/// time stamp follows the id.
+fn loft_sections(d: &[u8], a: usize, b: usize, sketch_ids: &HashMap<u32, String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let run = [0xffu8; 16];
+    let mut i = a;
+    while let Some(p) = find(d, &run, i, b) {
+        let mut e = p + 16;
+        while d.get(e) == Some(&0xff) {
+            e += 1;
+        }
+        i = e;
+        let Some(id) = (8..=28)
+            .step_by(4)
+            .filter_map(|k| u32_at(d, e + k))
+            .find(|&v| v != 0 && v != 0x4650)
+        else {
+            continue;
+        };
+        if let Some(name) = sketch_ids.get(&id)
+            && !out.contains(name)
+        {
+            out.push(name.clone());
+        }
+    }
+    out
 }
 
 /// `p` reflected in the plane `(origin, unit normal)`.
@@ -4149,6 +4208,12 @@ fn check(tree: &Value) -> Result<(), String> {
                 }
             }
             "stored_body" => solids += 1,
+            "loft" => {
+                solids += 1;
+                if f.get("unresolved").is_some() {
+                    return Err(format!("{name}: the loft sections were not found"));
+                }
+            }
             "hole" | "mirror" | "shell" if f.get("unresolved").is_some() => {
                 return Err(format!("{name}: the {} was not resolved", s("type")));
             }
@@ -4714,5 +4779,32 @@ mod pattern_tests {
         let body = Some(patterns::Seeds { ptrs: vec![], bodies: 1 });
         let out = feature_pattern("P", true, body, &lines, (|_: &str| Some(3), |_: &str| None), names, &feats);
         assert_eq!(out[0]["why"], "a pattern of bodies");
+    }
+
+    #[test]
+    fn loft_sections_are_the_sketch_ids_after_the_profile_runs() {
+        let comp = |pf: bool, id: u32| {
+            let mut v = vec![0x2b, 0x80, 2, 0];
+            v.extend([0xff; 16]);
+            v.extend([0; 8]);
+            if pf {
+                // Newer files: twelve more zero bytes and the word `50 46 00 00`.
+                v.extend([0; 8]);
+                v.extend(0x4650u32.to_le_bytes());
+            }
+            v.extend(id.to_le_bytes());
+            v.extend(0x5f42_c419u32.to_le_bytes());
+            v
+        };
+        let ids: HashMap<u32, String> = [(45, "Sketch4".into()), (49, "Sketch5".into())].into();
+        for pf in [false, true] {
+            let mut d = vec![1u8; 10];
+            // A solid-body component: its id is no sketch.
+            d.extend(comp(pf, 0x180fb));
+            d.extend(comp(pf, 49));
+            d.extend(comp(pf, 45));
+            d.extend(comp(pf, 49));
+            assert_eq!(loft_sections(&d, 0, d.len(), &ids), ["Sketch5", "Sketch4"]);
+        }
     }
 }
