@@ -1448,7 +1448,7 @@ reply under 600 bytes except lists).
 | F18-10 | Fixed for `extrude` (`a_face_profile_without_a_body_works_on_the_faces_own_body`); sweep and revolve open. |
 | F18-14 | Fixed, test in `crates/gusset-mcp/tests/mcp.rs`. |
 | F18-1 | Fixed: `pcb_info {list: footprints/pads/tracks/vias, ref, net}`, 100 entries and a `more` count; test `pcb_info_lists_footprints_pads_tracks_and_vias_bounded`. Bytes paid for by shorter `render_view` camera docs. |
-| F18-7 | Fixed for `pcb_route`: refused with `already_routed` (hint: `pcb_add_track`, `pcb_delete`); ADR 0047 Next. `pcb_route_pair` not checked yet. |
+| F18-7 | Fixed: `pcb_route` and `pcb_route_pair` refuse with `already_routed` (hint: `pcb_add_track`, `pcb_delete`); ADR 0047 Next. |
 | F18-10 | Fixed for sweep and revolve too (`modeling_face_body.rs`, `revolve_and_sweep_of_a_face_profile_store_no_latest_body`). |
 | F18-11 | Fixed in `commit_with_rollback`: a new or changed feature with only literal arguments and an `expression` error is `invalid_args`, nothing committed (all feature commands and `feature.add`). |
 | F18-12 | Fixed: the bend line's sketch on a plane parallel to the tab's (its face) is projected into the tab's frame (`modeling_sheet_bend.rs`). |

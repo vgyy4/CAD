@@ -65,6 +65,9 @@ fn a_pair_is_routed_with_its_class_width_and_gap_and_undone_in_one_step() {
     let pts = json!([[6, 10], [34, 10]]);
     let r = run(&mut s, &u(5), "pcb.route_pair", json!({"pair": "USB_N", "points": pts, "width": 0.2, "gap": 0.3}));
     assert_eq!((r["width"].as_f64(), r["gap"].as_f64()), (Some(0.2), Some(0.3)), "{r}");
+    // Routing the pair again would double its tracks (dogfooding F18-7).
+    let again = execute(&mut s, &u(60), "pcb.route_pair", json!({"pair": "USB", "points": pts})).unwrap_err();
+    assert_eq!(again.code, "already_routed", "{again:?}");
     run(&mut s, &u(6), "history.undo", json!({}));
     let bad = |s: &mut Session, t: u64, a: serde_json::Value| execute(s, &u(t), "pcb.route_pair", a).unwrap_err().code;
     assert_eq!(bad(&mut s, 7, json!({"pair": "SIG", "points": pts})), "not_found");

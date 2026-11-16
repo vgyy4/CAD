@@ -150,6 +150,18 @@ fn pieces(pts: &[Pt]) -> Vec<Seg> {
 }
 
 /// The pad of `net` on `layer` nearest to `at`, within [`FAN_REACH`].
+/// Whether copper of the pair already joins, for both nets, the pads nearest the two ends
+/// of a centre line (the pads [`route_pair`] would fan out to).
+pub fn already_joined(board: &Board, pair: &Pair, layer: &str, points: &[Pt]) -> bool {
+    let (Some(&a), Some(&z)) = (points.first(), points.last()) else { return false };
+    [&pair.p, &pair.n].iter().all(|n| match (nearest_pad(board, n, layer, a), nearest_pad(board, n, layer, z)) {
+        (Some(pa), Some(pz)) => {
+            libm::hypot(pa[0] - pz[0], pa[1] - pz[1]) > 1e-9 && crate::ratsnest::connected(board, n, pa, pz)
+        }
+        _ => false,
+    })
+}
+
 fn nearest_pad(board: &Board, net: &str, layer: &str, at: Pt) -> Option<Pt> {
     board
         .pads

@@ -419,6 +419,15 @@ impl Command for PcbRoutePair {
         if !(width.is_finite() && width > 0.0 && width <= 100.0 && gap.is_finite() && (0.0..=100.0).contains(&gap)) {
             return Err(CommandError::args("the width is above 0 and the gap 0 or more, both at most 100 mm"));
         }
+        // Like pcb_route: a pair whose pads copper already joins is not routed again, which
+        // would double its tracks (dogfooding F18-7).
+        if pair::already_joined(b, &pr, &layer, &self.points) {
+            return Err(CommandError::new(
+                "already_routed",
+                "copper already joins the pads at both ends, for both nets",
+            )
+            .hint("pcb_lengths shows them; delete the tracks first (pcb_delete) to route the pair again"));
+        }
         let r = pair::route_pair(b, &open.rules, &layer, &pr, &self.points, width, gap)
             .map_err(|m| CommandError::not_found(m).hint("move the points, or route on another layer"))?;
         let mut nb = b.clone();
