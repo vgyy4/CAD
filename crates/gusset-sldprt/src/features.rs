@@ -39,7 +39,7 @@ const PLANE_NAMES: [(u32, &str); 3] = [(2, "Front"), (3, "Top"), (4, "Right")];
 const EXTRUDE: [&str; 3] = ["moExtrusion_c", "moICE_c", "moCut_c"];
 const REVOLVE: [&str; 2] = ["moRevolution_c", "moRevCut_c"];
 /// Classes that carry nothing the tree needs (sketches are handled before this list).
-const SKIPPED: [&str; 41] = [
+const SKIPPED: [&str; 42] = [
     "moCommentsFolder_c",
     "moFavoriteFolder_c",
     "moHistoryFolder_c",
@@ -89,6 +89,9 @@ const SKIPPED: [&str; 41] = [
     "moCosmeticWeldSubFolder_c",
     "moCosmeticWeldBead_c",
     "moRefPointFtrFolder_c",
+    // Round sw10: a 3D sketch, curves only (500 Hex Hub's, which no feature uses; a sweep along
+    // one finds no path and is refused).
+    "mo3DProfileFeature_c",
 ];
 
 /// The 46-byte block after a feature node's comment (older files, then newer ones).
@@ -3546,6 +3549,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut mirror_planes: HashMap<u32, (V3, V3)> = HashMap::new();
     // Node id -> name of each sketch read (lofts name their sections by id).
     let mut sketch_ids: HashMap<u32, String> = HashMap::new();
+    // Node id -> name of each helix read, and the helix (round sw10): sweeps run along them.
+    let mut helix_ids: HashMap<u32, String> = HashMap::new();
+    let mut helices: HashMap<String, Option<Helix>> = HashMap::new();
     // The sketches read, in order, and the child indices of the features that used them.
     let mut sketch_order: Vec<String> = Vec::new();
     let mut sketch_seen: Vec<(u16, String)> = Vec::new();
@@ -4498,10 +4504,24 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 })?;
                 Some((circle_at_path_start(sk, dia, &format!("{}_Profile", n.name))?, path.clone()))
             };
-            match named.as_slice() {
-                [profile, path, ..] => {
+            // A path that is a helix: the sweep names the helix node as it names its sketches.
+            let along = named_sketches(rf, a, b, &helix_ids).into_iter().next();
+            match (named.as_slice(), along) {
+                ([profile, path, ..], _) => {
                     js.insert("sketch".into(), json!(profile));
                     js.insert("path".into(), json!(path));
+                }
+                ([profile], Some(hn)) => {
+                    let h = helices.get(&hn).cloned().flatten();
+                    match h.and_then(|h| helix_sweep(&mut feats, profile, &h)) {
+                        Some(hx) => {
+                            js.insert("sketch".into(), json!(profile));
+                            js.insert("helix".into(), hx);
+                        }
+                        None => {
+                            js.insert("unresolved".into(), json!(true));
+                        }
+                    }
                 }
                 _ => match circle() {
                     Some((profile, path)) => {
@@ -4523,6 +4543,23 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if first_solid.as_deref().is_none_or(str::is_empty) {
                 first_solid = Some(n.name.clone());
             }
+        } else if cls.as_deref() == Some("moHelix_c") {
+            // A helix is a curve: it adds nothing to the part until a sweep runs along it.
+            // Its base sketch, a circle, is its child as an extrude's sketch is.
+            let base = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used);
+            if let (Some(r), Some(sk)) = (n.child, &base) {
+                sketch_seen.push((r, sk.clone()));
+                sketch_used.insert(sk.clone());
+            }
+            let sk = base.as_ref().and_then(|nm| {
+                feats.iter().find(|f| {
+                    f.get("type").and_then(Value::as_str) == Some("sketch")
+                        && f.get("name").and_then(Value::as_str) == Some(nm.as_str())
+                })
+            });
+            let h = sk.and_then(|sk| helix_of(sk, helix_record(rf, a, b)?));
+            helix_ids.insert(n.id, n.name.clone());
+            helices.insert(n.name.clone(), h);
         } else if cls.as_deref() == Some("moShell_c") {
             let ps = params(rf, a, b, nt)?;
             let recs = edge_records(rf, a, b)?;
@@ -4730,6 +4767,184 @@ fn circle_at_path_start(path: &Value, dia: f64, name: &str) -> Option<Value> {
         "points": [{"id": "p0", "x": 0.0, "y": 0.0}],
         "curves": [{"id": "c0", "type": "circle", "center": "p0", "radius": round_to(dia / 2.0, 9)}],
     }))
+}
+
+/// A helix (`moHelix_c`, round sw10) as placed in the part: about the normal of its sketch
+/// plane through the centre of the sketch's circle (mm).
+#[derive(Debug, Clone)]
+struct Helix {
+    centre: V3,
+    /// Unit normal of the base sketch's plane (its x axis cross its y axis).
+    normal: V3,
+    radius: f64,
+    clockwise: bool,
+    reversed: bool,
+    height: f64,
+    pitch: f64,
+}
+
+/// The helix record of a `moHelix_c` span: `06 00 00 00`, six zero bytes, then the start angle
+/// (rad), the clockwise and reverse-direction flags (`u32`, 0 or 1), the height and the pitch
+/// (m) and the revolutions; the height is the pitch times the revolutions (all 15 helices of
+/// the corpus). Returns (clockwise, reversed, height mm, pitch mm).
+fn helix_record(d: &[u8], a: usize, b: usize) -> Option<(bool, bool, f64, f64)> {
+    let mut at = a;
+    while let Some(i) = find(d, &[6, 0, 0, 0, 0, 0, 0, 0, 0, 0], at, b) {
+        at = i + 1;
+        let o = i + 10;
+        let (Some(angle), Some(cw), Some(rev)) = (f64_at(d, o), u32_at(d, o + 8), u32_at(d, o + 12)) else {
+            continue;
+        };
+        let (Some(h), Some(p), Some(n)) = (f64_at(d, o + 16), f64_at(d, o + 24), f64_at(d, o + 32)) else {
+            continue;
+        };
+        let pos = |v: f64| v.is_finite() && v > 0.0;
+        let flags = cw < 2 && rev < 2;
+        if angle.is_finite()
+            && angle.abs() <= 2.0 * TAU
+            && flags
+            && pos(h)
+            && pos(p)
+            && pos(n)
+            && (h - p * n).abs() <= 1e-9 * h
+        {
+            return Some((cw == 1, rev == 1, mm(h), mm(p)));
+        }
+    }
+    None
+}
+
+/// The helix on the base sketch `sk` (tree JSON) with the record's flags and sizes: the sketch's
+/// circles (all one circle, drawn once or more) give its centre and radius.
+fn helix_of(sk: &Value, (clockwise, reversed, height, pitch): (bool, bool, f64, f64)) -> Option<Helix> {
+    let (o, x, y) = sketch_frame(sk)?;
+    let pts = sketch_points(sk)?;
+    let mut circle: Option<((f64, f64), f64)> = None;
+    for c in sk.get("curves")?.as_array()? {
+        if c.get("type").and_then(Value::as_str) != Some("circle") {
+            continue;
+        }
+        let at = *pts.get(c.get("center")?.as_str()?)?;
+        let r = c.get("radius")?.as_f64()?;
+        match circle {
+            None => circle = Some((at, r)),
+            Some((p, q)) if (p.0 - at.0).abs() < 1e-9 && (p.1 - at.1).abs() < 1e-9 && (q - r).abs() < 1e-9 => {}
+            Some(_) => return None,
+        }
+    }
+    let ((u, v), radius) = circle.filter(|(_, r)| *r > 0.0)?;
+    Some(Helix {
+        centre: comb(comb(o, 1.0, x, u), 1.0, y, v),
+        normal: cross(x, y),
+        radius,
+        clockwise,
+        reversed,
+        height,
+        pitch,
+    })
+}
+
+/// A sketch's plane (origin, x axis, y axis) in its tree JSON.
+fn sketch_frame(sk: &Value) -> Option<(V3, V3, V3)> {
+    let v3 = |v: Option<&Value>| -> Option<V3> {
+        let a = v?.as_array()?;
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+    };
+    let pl = sk.get("plane")?;
+    Some((v3(pl.get("origin"))?, v3(pl.get("x_axis"))?, v3(pl.get("y_axis"))?))
+}
+
+/// A sketch's points by id in its tree JSON.
+fn sketch_points(sk: &Value) -> Option<HashMap<&str, (f64, f64)>> {
+    Some(
+        sk.get("points")?
+            .as_array()?
+            .iter()
+            .filter_map(|p| Some((p.get("id")?.as_str()?, (p.get("x")?.as_f64()?, p.get("y")?.as_f64()?))))
+            .collect(),
+    )
+}
+
+/// The tree's `helix` of a sweep of the sketch `profile` along `h`. The helix climbs from its
+/// base plane along the plane's normal when reversed, against it when not, turning clockwise
+/// (seen with the normal towards the viewer) or not (the Shaft Couplers' helix: reversed,
+/// clockwise, its sweep profile on the helix past its end, 6 to 15.2 mm up and turning from
+/// 135 to 99 degrees; the gears' RH helix: clockwise, not reversed). The profile runs the helix
+/// from the end it lies at (within a turn), the tree's helix from the profile. The tree's
+/// helix climbs a world axis through the origin; one that climbs the other way runs along a
+/// construction line added to the profile sketch on the axis.
+fn helix_sweep(feats: &mut [Value], profile: &str, h: &Helix) -> Option<Value> {
+    let up = if h.reversed { h.normal } else { h.normal.map(|c| -c) };
+    let left_handed = h.clockwise == h.reversed;
+    let sk = feats.iter_mut().find(|f| {
+        f.get("type").and_then(Value::as_str) == Some("sketch")
+            && f.get("name").and_then(Value::as_str) == Some(profile)
+    })?;
+    let (o, x, y) = sketch_frame(sk)?;
+    // The profile's level on the axis: the middle of its curves' points.
+    let level = {
+        let pts = sketch_points(sk)?;
+        let mut used: Vec<&str> = Vec::new();
+        for c in sk.get("curves")?.as_array()? {
+            if c.get("construction").is_some() {
+                continue;
+            }
+            for k in ["start", "end", "center"] {
+                if let Some(id) = c.get(k).and_then(Value::as_str) {
+                    used.push(id);
+                }
+            }
+        }
+        let lv: Vec<f64> = used
+            .iter()
+            .filter_map(|id| pts.get(id))
+            .map(|&(u, v)| dot(sub(comb(comb(o, 1.0, x, u), 1.0, y, v), h.centre), up))
+            .collect();
+        let lo = lv.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = lv.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        (lo + hi) / 2.0
+    };
+    let climb = if level.abs() <= h.pitch {
+        up
+    } else if (level - h.height).abs() <= h.pitch {
+        up.map(|c| -c)
+    } else {
+        return None;
+    };
+    let k = climb.iter().position(|c| (c.abs() - 1.0).abs() < 1e-9)?;
+    if h.centre.iter().enumerate().any(|(i, c)| i != k && c.abs() > 1e-6) {
+        return None;
+    }
+    let mut hx = json!({
+        "origin": json_v3(h.centre.map(|c| c + 0.0)),
+        "axis": json_v3(climb.map(|c| c.round() + 0.0)),
+        "radius": h.radius,
+        "pitch": round_to(h.pitch, 9),
+        "height": round_to(h.height, 9),
+        "left_handed": left_handed,
+    });
+    if climb.get(k).is_some_and(|c| *c > 0.0) {
+        return Some(hx);
+    }
+    let n = cross(x, y);
+    let mut ends = Vec::new();
+    for p in [h.centre, comb(h.centre, 1.0, climb, 10.0)] {
+        let q = sub(p, o);
+        if dot(q, n).abs() > 1e-6 {
+            return None;
+        }
+        ends.push((round_to(dot(q, x), 9) + 0.0, round_to(dot(q, y), 9) + 0.0));
+    }
+    let [(u0, v0), (u1, v1)] = ends.as_slice() else { return None };
+    sk.get_mut("points")?.as_array_mut()?.extend([
+        json!({"id": "helix_axis_start", "x": u0, "y": v0, "construction": true}),
+        json!({"id": "helix_axis_end", "x": u1, "y": v1, "construction": true}),
+    ]);
+    sk.get_mut("curves")?.as_array_mut()?.push(json!({
+        "id": "helix_axis", "type": "line", "start": "helix_axis_start", "end": "helix_axis_end", "construction": true,
+    }));
+    hx.as_object_mut()?.insert("line".into(), json!("helix_axis"));
+    Some(hx)
 }
 
 /// `p` reflected in the plane `(origin, unit normal)`.
@@ -5580,6 +5795,78 @@ mod pattern_tests {
         let mut closed = path.clone();
         closed["curves"][0]["end"] = json!("p4");
         assert!(circle_at_path_start(&closed, 7.0, "S").is_none());
+    }
+
+    #[test]
+    fn a_helix_record_gives_its_flags_height_and_pitch() {
+        // The Shaft Couplers' record: start 135 degrees, clockwise, reversed, 9.2 mm of 5.1 turns.
+        let mut d = vec![0xaa; 7];
+        d.extend([6, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        d.extend((0.75 * core::f64::consts::PI).to_le_bytes());
+        d.extend([1, 0, 0, 0, 1, 0, 0, 0]);
+        let pitch = 0.0092 / 5.1;
+        for v in [0.0092, pitch, 5.1] {
+            d.extend(f64::to_le_bytes(v));
+        }
+        let (cw, rev, h, p) = helix_record(&d, 0, d.len()).unwrap();
+        assert!(cw && rev);
+        assert!((h - 9.2).abs() < 1e-9 && (p - pitch * 1000.0).abs() < 1e-6, "{h} {p}");
+        // A height that is not pitch times turns is no record.
+        let at = d.len() - 8;
+        d.splice(at.., 5.2f64.to_le_bytes());
+        assert!(helix_record(&d, 0, d.len()).is_none());
+    }
+
+    #[test]
+    fn a_helix_sweep_runs_from_the_end_its_profile_lies_at() {
+        // The Shaft Couplers: the helix on a circle of 11.25 mm at z = 6, climbing 9.2 mm up
+        // (reversed: along its plane's normal), clockwise; the slot profile on the Right plane
+        // at z = 15.1 .. 15.4, at the helix's top end. The tree's helix climbs down from the
+        // profile, along a line added to its sketch; a clockwise turn up the normal is left-handed.
+        let base = json!({"type": "sketch", "name": "B",
+            "plane": {"origin": [0.0, 0.0, 6.0], "x_axis": [1.0, 0.0, 0.0], "y_axis": [0.0, 1.0, 0.0]},
+            "points": [{"id": "p0", "x": 0.0, "y": 0.0}],
+            "curves": [{"id": "c0", "type": "circle", "center": "p0", "radius": 11.25}]});
+        let h = helix_of(&base, (true, true, 9.2, 9.2 / 5.1)).unwrap();
+        let profile = json!({"type": "sketch", "name": "P",
+            "plane": {"origin": [0.0, 0.0, 0.0], "x_axis": [0.0, 0.0, -1.0], "y_axis": [0.0, 1.0, 0.0]},
+            "points": [{"id": "p0", "x": -15.1, "y": 12.5}, {"id": "p1", "x": -15.4, "y": 12.5},
+                       {"id": "p2", "x": -15.4, "y": 1.1}, {"id": "p3", "x": -15.1, "y": 1.1}],
+            "curves": [{"id": "c0", "type": "line", "start": "p0", "end": "p1"},
+                       {"id": "c1", "type": "line", "start": "p1", "end": "p2"},
+                       {"id": "c2", "type": "line", "start": "p2", "end": "p3"},
+                       {"id": "c3", "type": "line", "start": "p3", "end": "p0"}]});
+        let mut feats = vec![base, profile.clone()];
+        let hx = helix_sweep(&mut feats, "P", &h).unwrap();
+        assert_eq!(hx["axis"], json!([0.0, 0.0, -1.0]));
+        assert_eq!(hx["left_handed"], json!(true));
+        assert_eq!(hx["line"], json!("helix_axis"));
+        let line = feats[1]["curves"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(line["construction"], json!(true));
+        // The line runs from the axis at z = 6 down the axis (sketch x is -z).
+        assert_eq!(feats[1]["points"][4]["x"], json!(-6.0));
+        assert_eq!(feats[1]["points"][5]["x"], json!(4.0));
+        // At the helix's start the profile climbs it up the world axis, with no line.
+        let mut low = profile.clone();
+        for p in low["points"].as_array_mut().unwrap() {
+            let x = p["x"].as_f64().unwrap();
+            p["x"] = json!(x + 9.2);
+        }
+        let mut feats = vec![low];
+        let hx = helix_sweep(&mut feats, "P", &h).unwrap();
+        assert_eq!(hx["axis"], json!([0.0, 0.0, 1.0]));
+        assert!(hx.get("line").is_none());
+        // Not reversed, the same helix climbs down from z = 6 and turns the other way round it.
+        let h2 = Helix { reversed: false, ..h.clone() };
+        let mut feats = vec![profile.clone()];
+        assert!(helix_sweep(&mut feats, "P", &h2).is_none(), "the profile is at neither end");
+        // A profile half way up lies at neither end.
+        let mut mid = profile;
+        for p in mid["points"].as_array_mut().unwrap() {
+            let x = p["x"].as_f64().unwrap();
+            p["x"] = json!(x + 4.6);
+        }
+        assert!(helix_sweep(&mut [mid], "P", &h).is_none());
     }
 
     #[test]
