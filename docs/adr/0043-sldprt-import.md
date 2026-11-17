@@ -668,3 +668,27 @@ No part lost its history. 86 parts still rebuild to a different volume. Beyond r
 contour choosers whose boxes and segments describe another state of the sketch than the one the bytes hold (the
 V-Slot family, the Connecting Plates and a dozen others keep their whole sketch), zsCAD parts whose stored bodies
 already lie outside the part, and single-part causes (a chamfer record, hole wizards, patterns of bodies).
+
+## Amendment (2026-11-17): partitions past 1 MiB, bodies kept in an import feature (round sw8)
+
+Round sw8 took the 14 parts whose embedded Parasolid failed to read (`docs/formats/solidworks-feature-tree.md` L19).
+Decoded from the sample bytes:
+
+- **Continuation chunks.** A partition block whose data inflates to more than 1 MiB holds a 1 MiB zlib stream and then
+  further chunks inside the block's length (`u32` inflated size, `u32` deflated size, zlib data), ended by two zero
+  sizes: the layout already read for `LocalBodies` blocks. The partition reader stopped after the first 1 MiB, so six
+  parts "ended early" just under byte 1048576 and the three gears of one gearbox (chunks of 4 kB after the first MiB)
+  read a node count past the cut. Both readers now share one continuation reader under the same limits (every chunk
+  counts against the stream and file budgets and the inflate ratio).
+- **Bodies of an imported body feature** (`moMBimport_c`) in a part without a `LocalBodies` stream lie in the feature's
+  own record in the lowest configuration's `ResolvedFeatures`, as a block of the partition's kind (the tag every block
+  carries, `23 1d d5 71 ...`); the final partition then holds no body. `named_local_bodies` falls back to those
+  blocks; a partition or deltas transmit found there is not taken as a body. Three parts of the corpora have such a
+  feature; the fallback applies to the two without `LocalBodies`.
+
+The rebuild check and the stored-body rules are unchanged. History stays at 286 of 1352 (no part gained or lost it);
+11 of the 14 parts now import as bodies, each stopping its history at a feature the reader does not build (surface
+extrude/revolve, emboss, helix, split line, the imported body alone, an unresolved fillet edge). The other 3 are
+correct refusals or out of scope: ignition-device-screw has no feature beyond the default planes,
+cable_chain_sketch is a sketch only, and multispec_camera_mount_tilt is one graphics mesh body
+(`moMeshBodyFeature_c`, data in `MeshData/Config-0-Mesh-27`, a format not decoded), not a B-rep.

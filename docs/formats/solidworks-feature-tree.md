@@ -1183,3 +1183,28 @@ hole of L11; RjDranzer's Part3 now stops at a kernel boolean on Cut-Extrude2, 4a
   (2.9 against 6.2 mm3): half its edges, or another distance; one record type, not decoded.
 * hole wizards cutting where the body has material (Link_1v2, Link_4), patterns and mirrors of bodies (HGR20 Mirror2,
   Link 3 CirPattern1, Link 5), output_shaft_stage_4's untwisted loft (L17), and the 126p rods' two cuts (L17).
+
+## L19. Round 13 (sw8: Parasolid bodies that failed to read)
+Measured against round sw7's logs (286 of 1352 as history): the 14 parts whose embedded Parasolid failed.
+* **Partitions past 1 MiB** (9 parts). Every "binary data ends early" offset lay just under 1048576. The partition
+  block (length, tag, inflated and deflated sizes, zlib) holds a zlib stream of exactly 1 MiB, then continuation
+  chunks inside the block's length: `u32` inflated size, `u32` deflated size, zlib data, ..., `00000000 00000000`
+  (8 trailing bytes). Dremel Body 4000: 1 MiB, then one chunk of 236709 bytes. The helical/spur gears of
+  Imkhalied's gearbox: 1 MiB, then 4096-byte chunks to 2051291 bytes; cut at 1 MiB, a node's element count ran past
+  the cut ("a node claims 1872 elements"). The same layout as the `LocalBodies` chunks of GT2_Spur (L12); the
+  partition reader now reads them too. All 9 bodies now read: the surface practice models stop at
+  Surface-Revolve1/Surface-Extrude1 (`moRevolvRefSurf_c`, `moExtruRefSurface_c`), Coca Cola Bottle at an unresolved
+  fillet edge, SG90 at an emboss (`moEmboss_c`), the gears at a helix (`moHelix_c`), Dremel Body at a split line
+  (`moPLine_c`).
+* **Imported body features without `LocalBodies`** (F688ZZ Bearing from a STEP, prop_12x6 from a CATPart). The
+  final partition is the empty schema-only transmit (~560 bytes); the body is a block with the partition's tag in the
+  `moMBimport_c` record of `Config-0-ResolvedFeatures`, after the source path (`FF FE FF n` UTF-16) and
+  `01 00 00 00 00 <u32> 00`; its transmit is a plain `TRANSMIT FILE` (no "(partition)"). Read now as the part's
+  bodies; both parts are that feature alone, so there is no history to rebuild. Over the corpora 3 parts have
+  `moMBimport_c`; 13941029 Combination has a `LocalBodies` stream and a non-empty partition and is unchanged.
+* **Correct refusals.** ignition-device-screw: the partition is the empty transmit and ResolvedFeatures names only
+  the default planes and folders (an empty part). cable_chain_sketch: a sketch (`moProfileFeature_c`) and no solid
+  feature. multispec_camera_mount_tilt: one `moMeshBodyFeature_c`, the mesh in `MeshData/Config-0-Mesh-27` (249 kB,
+  doubles after three `u32` 1s; not decoded): a graphics mesh, not a B-rep.
+
+History 286 of 1352 before and after; none lost; 11 of the 14 now import as bodies.
