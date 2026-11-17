@@ -1699,3 +1699,96 @@ fn local_bodies_keep_their_names_and_chunks_past_one_mib() {
         let _ = named_local_bodies(&f, &Limits::default(), &Default::default());
     }
 }
+
+/// A block of the partition's kind with the tag every sample carries.
+fn tagged_block(plain: &[u8]) -> Vec<u8> {
+    let mut b = block(plain);
+    b[4..20].copy_from_slice(&BLOCK_TAG);
+    b
+}
+
+#[test]
+fn an_imported_body_feature_keeps_its_body_in_resolved_features() {
+    // Round sw8 (F688ZZ Bearing, prop_12x6): no `LocalBodies` stream, the body lies in the
+    // `moMBimport_c` record of the lowest configuration's ResolvedFeatures; a partition
+    // block there is not a body.
+    let body = xt("imp", 500);
+    let mut rf = b"\xff\xff\x01\x00\x0c\x00moMBimport_c junk ".to_vec();
+    rf.extend([0x23, 0x1d, 0xd5, 0x71]); // a stray start of the tag
+    rf.extend([0xff, 0xfe, 0xff, 3]);
+    rf.extend("a.x".encode_utf16().flat_map(u16::to_le_bytes));
+    rf.extend([1, 0, 0, 0, 0, 9, 9, 0, 0]);
+    rf.extend(tagged_block(&body));
+    rf.extend([0u8; 12]);
+    rf.extend(tagged_block(&xt("partition", 20)));
+    let other = {
+        let mut r = vec![0u8; 40];
+        r.extend(tagged_block(&xt("other", 30)));
+        r
+    };
+    for f in [
+        chunk_file(&[
+            record(KEY, "Contents/Config-10-ResolvedFeatures", &other, None),
+            record(KEY, "Contents/Config-2-ResolvedFeatures", &rf, None),
+            record(KEY, "Contents/Config-2-Partition", &partition_stream(10), None),
+        ]),
+        ole(&[("Config-10-ResolvedFeatures", &other), ("Config-2-ResolvedFeatures", &rf)]),
+    ] {
+        let got = named_local_bodies(&f, &Limits::default(), &Default::default()).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].name.as_str(), &got[0].xt), ("a.x", &body));
+    }
+    // A `LocalBodies` stream still wins.
+    let mut local = 1u32.to_le_bytes().to_vec();
+    local.extend(block(&xt("local", 10)));
+    let f = ole(&[("Config-0-ResolvedFeatures", &rf), ("LocalBodies", &local)]);
+    let got = local_bodies(&f, &Limits::default(), &Default::default()).unwrap();
+    assert_eq!(got, vec![xt("local", 10)]);
+}
+
+/// A block whose data goes on in continuation chunks after its first zlib stream.
+fn chunked_block(plain: &[u8], first: usize, step: usize) -> Vec<u8> {
+    let (a, mut rest) = plain.split_at(first);
+    let za = compress_to_vec_zlib(a, 6);
+    let mut body = Vec::new();
+    body.extend((a.len() as u32).to_le_bytes());
+    body.extend((za.len() as u32).to_le_bytes());
+    body.extend(&za);
+    while !rest.is_empty() {
+        let (c, r) = rest.split_at(step.min(rest.len()));
+        let zc = compress_to_vec_zlib(c, 6);
+        body.extend((c.len() as u32).to_le_bytes());
+        body.extend((zc.len() as u32).to_le_bytes());
+        body.extend(&zc);
+        rest = r;
+    }
+    body.extend([0u8; 8]);
+    let mut b = ((16 + body.len()) as u32).to_le_bytes().to_vec();
+    b.extend([0x23u8; 16]);
+    b.extend(body);
+    b
+}
+
+#[test]
+fn a_partition_past_one_mib_reads_its_continuation_chunks() {
+    // Round sw8: a partition over 1 MiB is a 1 MiB zlib stream, then further chunks
+    // (`Dremel Body 4000`: one of 237 kB; the helical gears: many of 4 kB).
+    let mut part = xt("partition", 9000);
+    // A compressible tail, so the stream itself stays under the tight limit below.
+    part.extend([b'A'; 20000]);
+    for (first, step) in [(2000, 30000), (1500, 700)] {
+        let mut s = chunked_block(&part, first, step);
+        s.extend(block(&xt("deltas", 40)));
+        let f = chunk_file(&[record(KEY, "Contents/Config-0-Partition", &s, None)]);
+        assert_eq!(extract_xt(&f, &Limits::default()).unwrap().xt, part);
+        let o = ole(&[("Config-0-Partition", &s)]);
+        assert_eq!(extract_xt(&o, &Limits::default()).unwrap().xt, part);
+        // The continuation counts against the limits.
+        let tight = Limits { max_stream_bytes: part.len() - 1, ..Limits::default() };
+        assert!(matches!(extract_xt(&f, &tight), Err(SldprtError::TooLarge(_))));
+        for cut in [40, s.len() / 2, s.len() - 3] {
+            let f = chunk_file(&[record(KEY, "Contents/Config-0-Partition", &s[..cut], None)]);
+            let _ = extract_xt(&f, &Limits::default());
+        }
+    }
+}

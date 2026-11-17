@@ -94,7 +94,8 @@ pub const MAX_LOCAL_BODIES: usize = 4096;
 /// each. The stream is a count and, per body, a short name record followed by a block of
 /// the partition's kind (a length, a 16-byte tag shared by all blocks, the inflated and
 /// deflated sizes and a zlib stream). Derived from a sample with no other reader consulted.
-/// Empty when the file has no such stream.
+/// Without that stream, the bodies an imported body feature keeps in its own record of the
+/// lowest configuration's `ResolvedFeatures` (round sw8). Empty when there are none.
 ///
 /// # Errors
 /// [`SldprtError`] for unknown containers and damaged or over-limit files.
@@ -124,26 +125,57 @@ pub fn named_local_bodies(
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Vec<LocalBody>, SldprtError> {
     let is_local = |n: &str| n.ends_with("LocalBodies") && (n == "LocalBodies" || n.contains("-FeatureBodies/"));
-    let stream = match detect(bytes).ok_or(SldprtError::NotSldprt)? {
+    let local = match detect(bytes).ok_or(SldprtError::NotSldprt)? {
         Container::Ole2 => {
             let f = cfb::Cfb::open(bytes, limits)?;
             match f.streams.iter().position(|e| is_local(&e.name)) {
-                Some(i) => f.read(i, limits)?,
-                None => return Ok(Vec::new()),
+                Some(i) => Some(f.read(i, limits)?),
+                None => None,
+            }
+        }
+        Container::Chunks => one_stream(bytes, limits, is_local, str::to_string)?,
+    };
+    if let Some(stream) = local {
+        return local_blocks(&stream, limits, cancel, false);
+    }
+    // Round sw8: an imported body feature (`moMBimport_c`) of a part without a
+    // `LocalBodies` stream keeps its body inside the feature's own record in the lowest
+    // configuration's `ResolvedFeatures`, as a block of the partition's kind (F688ZZ
+    // Bearing, prop_12x6); the final partition then holds no body.
+    let is_resolved = |n: &str| stream_config(n, "-ResolvedFeatures").is_some();
+    let key = |n: &str| format!("{:010}", stream_config(n, "-ResolvedFeatures").unwrap_or(u32::MAX));
+    match one_stream(bytes, limits, is_resolved, key)? {
+        Some(stream) => local_blocks(&stream, limits, cancel, true),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// The stream `wanted` accepts that sorts first by `key`, read and inflated; `None` when
+/// the file has none.
+fn one_stream(
+    bytes: &[u8],
+    limits: &Limits,
+    wanted: impl Fn(&str) -> bool,
+    key: impl Fn(&str) -> String,
+) -> Result<Option<Vec<u8>>, SldprtError> {
+    Ok(match detect(bytes).ok_or(SldprtError::NotSldprt)? {
+        Container::Ole2 => {
+            let f = cfb::Cfb::open(bytes, limits)?;
+            let chosen =
+                f.streams.iter().enumerate().filter(|(_, e)| wanted(&e.name)).min_by_key(|(_, e)| key(&e.name));
+            match chosen {
+                Some((i, _)) => Some(f.read(i, limits)?),
+                None => None,
             }
         }
         Container::Chunks => {
             // The name first (no inflating), then only that record (security review T2).
-            let Some(chosen) = chunks::names(bytes, limits, is_local).into_iter().min() else {
-                return Ok(Vec::new());
+            let Some(chosen) = chunks::names(bytes, limits, wanted).into_iter().min_by_key(|n| key(n)) else {
+                return Ok(None);
             };
-            match chunks::streams(bytes, limits, |n| n == chosen)?.pop() {
-                Some(st) => st.data,
-                None => return Ok(Vec::new()),
-            }
+            chunks::streams(bytes, limits, |n| n == chosen)?.pop().map(|st| st.data)
         }
-    };
-    local_blocks(&stream, limits, cancel)
+    })
 }
 
 /// The name of the record that ends just before the block at `at`: `FF FE FF <n>`, n UTF-16
@@ -170,11 +202,53 @@ fn record_name(stream: &[u8], at: usize) -> String {
     String::new()
 }
 
+/// Appends a block's continuation chunks to `xt`. A block whose data inflates to more than
+/// 1 MiB goes on after its first zlib stream in further chunks (`u32` inflated size, `u32`
+/// deflated size, zlib data), ended by two zero sizes, all inside the block's length:
+/// GT2_Spur's imported gear (1 MiB, then 582 kB) and, round sw8, the final partitions of
+/// large parts (`Dremel Body 4000`: 1 MiB, then 237 kB; the helical gears: 1 MiB, then
+/// 4 kB chunks). `c` is where the first zlib stream ends, `end` the block's end.
+fn continuation(
+    stream: &[u8],
+    mut c: usize,
+    end: usize,
+    xt: &mut Vec<u8>,
+    limits: &Limits,
+    spent: &mut usize,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), SldprtError> {
+    let u32_at = |off: usize| -> Option<usize> {
+        usize::try_from(u32::from_le_bytes(stream.get(off..off.checked_add(4)?)?.try_into().ok()?)).ok()
+    };
+    while let (Some(p2), Some(d2)) = (u32_at(c), u32_at(c.saturating_add(4))) {
+        if p2 == 0 || c.saturating_add(8).saturating_add(d2) > end {
+            break;
+        }
+        *spent = spent.saturating_add(p2);
+        if xt.len().saturating_add(p2) > limits.max_stream_bytes
+            || *spent > limits.max_total_bytes
+            || p2 / limits.max_ratio.max(1) > d2
+        {
+            return Err(SldprtError::TooLarge("a block inflates beyond the limit".into()));
+        }
+        if cancel.is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed)) {
+            return Err(SldprtError::TooLarge("cancelled".into()));
+        }
+        let data = stream.get(c + 8..c + 8 + d2).unwrap_or_default();
+        let more = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, p2.saturating_add(1))
+            .map_err(|e| SldprtError::Malformed(format!("a block's continuation does not inflate ({:?})", e.status)))?;
+        xt.extend(more);
+        c += 8 + d2;
+    }
+    Ok(())
+}
+
 /// The Parasolid transmits of a `LocalBodies` stream.
 fn local_blocks(
     stream: &[u8],
     limits: &Limits,
     cancel: &std::sync::atomic::AtomicBool,
+    in_features: bool,
 ) -> Result<Vec<LocalBody>, SldprtError> {
     let u32_at = |off: usize| -> Option<usize> {
         usize::try_from(u32::from_le_bytes(stream.get(off..off.checked_add(4)?)?.try_into().ok()?)).ok()
@@ -186,7 +260,19 @@ fn local_blocks(
         (len >= 24usize.checked_add(deflated)? && end <= stream.len() && stream.get(at + 28) == Some(&0x78))
             .then_some((end, plain, deflated))
     };
-    let Some(first) = (0..stream.len().min(4096)).find(|i| block(*i).is_some()) else { return Ok(Vec::new()) };
+    // A `LocalBodies` stream starts with its first block; in a feature stream the first
+    // block lies anywhere and is found by the tag every partition block carries.
+    let first = if in_features {
+        stream
+            .windows(BLOCK_TAG.len())
+            .enumerate()
+            .filter(|(_, w)| *w == BLOCK_TAG)
+            .filter_map(|(i, _)| i.checked_sub(4))
+            .find(|i| block(*i).is_some())
+    } else {
+        (0..stream.len().min(4096)).find(|i| block(*i).is_some())
+    };
+    let Some(first) = first else { return Ok(Vec::new()) };
     let Some(tag) = stream.get(first + 4..first + 20) else { return Ok(Vec::new()) };
     let mut out = Vec::new();
     let (mut at, mut spent) = (first, 0usize);
@@ -208,33 +294,16 @@ fn local_blocks(
         {
             return Err(SldprtError::TooLarge("the bodies inflate beyond the limit".into()));
         }
-        let inflate = |data: &[u8], plain: usize| {
-            miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, plain.saturating_add(1))
-                .map_err(|e| SldprtError::Malformed(format!("a body block does not inflate ({:?})", e.status)))
-        };
-        let mut xt = inflate(stream.get(at + 28..at + 28 + deflated).unwrap_or_default(), plain)?;
-        // A body over 1 MiB goes on in further chunks of the same block (`u32` inflated
-        // size, `u32` deflated size, zlib data), ended by two zero sizes (GT2_Spur's
-        // imported gear: 1 MiB, then 582 kB).
-        let mut c = at + 28 + deflated;
-        while let (Some(p2), Some(d2)) = (u32_at(c), u32_at(c + 4)) {
-            if p2 == 0 || c.saturating_add(8).saturating_add(d2) > end {
-                break;
-            }
-            spent = spent.saturating_add(p2);
-            if xt.len().saturating_add(p2) > limits.max_stream_bytes
-                || spent > limits.max_total_bytes
-                || p2 / limits.max_ratio.max(1) > d2
-            {
-                return Err(SldprtError::TooLarge("the bodies inflate beyond the limit".into()));
-            }
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err(SldprtError::TooLarge("cancelled".into()));
-            }
-            xt.extend(inflate(stream.get(c + 8..c + 8 + d2).unwrap_or_default(), p2)?);
-            c += 8 + d2;
-        }
-        if xt.get(..2) == Some(b"PS") {
+        let mut xt = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
+            stream.get(at + 28..at + 28 + deflated).unwrap_or_default(),
+            plain.saturating_add(1),
+        )
+        .map_err(|e| SldprtError::Malformed(format!("a body block does not inflate ({:?})", e.status)))?;
+        continuation(stream, at + 28 + deflated, end, &mut xt, limits, &mut spent, Some(cancel))?;
+        // In a feature stream, a partition or its deltas is not a body.
+        let head = xt.get(..80.min(xt.len())).unwrap_or_default();
+        let state = [PARTITION_TAG, b": TRANSMIT FILE (deltas)"].iter().any(|t| head.windows(t.len()).any(|w| w == *t));
+        if xt.get(..2) == Some(b"PS") && !(in_features && state) {
             out.push(LocalBody { name: record_name(stream, at), xt });
         }
         // The next block: after its name record, carrying the same tag.
@@ -270,6 +339,11 @@ const CUT_SHORT: &str = "the file ends early (an incomplete download or copy?): 
 
 const PARTITION_TAG: &[u8] = b": TRANSMIT FILE (partition)";
 
+/// The 16-byte tag every block of a partition, `LocalBodies` or feature stream carries (the
+/// same in all samples).
+const BLOCK_TAG: [u8; 16] =
+    [0x23, 0x1d, 0xd5, 0x71, 0xda, 0x81, 0x48, 0xa2, 0xa8, 0x58, 0x98, 0xb2, 0x1b, 0x89, 0xef, 0x99];
+
 /// Splits a partition stream into its blocks and returns the first Parasolid partition.
 fn partition_block(stream: &[u8], limits: &Limits, spent: &mut usize) -> Result<Vec<u8>, SldprtError> {
     let u32_at = |off: usize| -> Option<usize> {
@@ -290,10 +364,11 @@ fn partition_block(stream: &[u8], limits: &Limits, spent: &mut usize) -> Result<
             return Err(SldprtError::TooLarge("a partition block inflates beyond the limit".into()));
         }
         let data = stream.get(at + 28..at + 28 + deflated).unwrap_or_default();
-        let xt = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, plain.saturating_add(1))
+        let mut xt = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, plain.saturating_add(1))
             .map_err(|e| SldprtError::Malformed(format!("partition block does not inflate ({:?})", e.status)))?;
         let head = xt.get(..80.min(xt.len())).unwrap_or_default();
         if xt.get(..2) == Some(b"PS") && head.windows(PARTITION_TAG.len()).any(|w| w == PARTITION_TAG) {
+            continuation(stream, at + 28 + deflated, end, &mut xt, limits, spent, None)?;
             return Ok(xt);
         }
         at = end;
