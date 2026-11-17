@@ -404,6 +404,10 @@ struct Node {
     id: u32,
     post: usize,
     head_len: usize,
+    /// The end of the node's name (where its flags word starts, 4 bytes on).
+    name_end: usize,
+    /// Suppressed in the configuration read (round sw7, [`mark_suppressed`]).
+    suppressed: bool,
 }
 
 /// The feature nodes (`nodes2.feature_nodes`): a node-name object followed within 1500 bytes
@@ -454,12 +458,59 @@ fn feature_nodes(d: &[u8], nt: [u8; 2]) -> Result<Vec<Node>, String> {
                 _ => return Err(format!("feature node '{name}' has no class")),
             }
         };
-        out.push(Node { start, cls, tag, name, flags, id, post, head_len: k - (e + 12).min(k) });
+        out.push(Node {
+            start,
+            cls,
+            tag,
+            name,
+            flags,
+            id,
+            post,
+            head_len: k - (e + 12).min(k),
+            name_end: e,
+            suppressed: false,
+        });
         if out.len() > MAX_NODES {
             return Err(format!("more than {MAX_NODES} feature nodes"));
         }
     }
     Ok(out)
+}
+
+/// The first node block (either version) in `d[from..to]`.
+fn node_block(d: &[u8], from: usize, to: usize) -> Option<usize> {
+    let hay = d.get(from..to.min(d.len()))?;
+    hay.windows(NODE_BLOCK.len()).position(|w| w == NODE_BLOCK || w == NODE_BLOCK3).map(|i| from + i)
+}
+
+/// Round sw7: marks the nodes suppressed in the configuration whose stream is read. The `u32` 47
+/// bytes before a node's own 18-byte block is 1 for a suppressed feature and 0 otherwise
+/// (8020-1010 X 12's Cut-Extrude1: 1 in the eleven configurations whose body has no cut, 0 in
+/// Config-12, whose body has it; 200mm 250mm Top Platform's Platform Pivot and Cut-Extrude8, whose
+/// removed volume is exactly what the rebuild had too little of). A node that nests others (a cut
+/// that reuses its sketch, a revolve with its cosmetic thread) shares its first block with them
+/// and owns the block after theirs. The word is read only where the block follows the empty
+/// string and the word after it is 0; anything else counts as not suppressed.
+fn mark_suppressed(d: &[u8], nodes: &mut [Node]) {
+    let keys: Vec<(usize, usize)> = nodes.iter().map(|n| (n.post, n.start)).collect();
+    for n in nodes.iter_mut() {
+        let nested = keys.iter().filter(|&&(p, s)| p == n.post && s > n.start).count();
+        // The node's own block lies before the next node that does not nest in it.
+        let to = keys.iter().filter(|&&(p, s)| p != n.post && s > n.start).map(|&(_, s)| s).min().unwrap_or(d.len());
+        let mut at = n.name_end;
+        let mut own = None;
+        for _ in 0..=nested {
+            own = node_block(d, at, to);
+            match own {
+                Some(k) => at = k + 1,
+                None => break,
+            }
+        }
+        let Some(k) = own.filter(|&k| k >= n.name_end + 47) else { continue };
+        let word = u32_at(d, k - 47);
+        let after = u32_at(d, k - 43);
+        n.suppressed = word == Some(1) && after == Some(0) && d.get(k - 4..k - 1) == Some(&UTF16_MARK[..]);
+    }
 }
 
 /// The sketch objects (`sgSketch`) a configuration stream keeps, as `(body, end)` for
@@ -3135,6 +3186,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let uc = if chunk { unit_component_tag(rf) } else { unit_component_index(c0) };
     let nt = node_tag(rf).ok_or("the feature stream has no node names")?;
     let mut nodes = feature_nodes(rf, nt)?;
+    mark_suppressed(rf, &mut nodes);
     classify(rf, &mut nodes);
     drop_nested(&mut nodes);
     let mut starts: Vec<usize> = nodes.iter().map(|n| n.start).collect();
@@ -3238,6 +3290,11 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 *slot = finish_hole(h);
             }
         }
+        // A suppressed feature adds nothing; a suppressed sketch still takes its place among the
+        // configuration stream's sketches below.
+        if n.suppressed && cls.as_deref() != Some("moProfileFeature_c") {
+            continue;
+        }
         if cls.as_deref() == Some("moHoleWzd_c") {
             let mut j = ni + 1;
             while nodes.get(j).is_some_and(|m| m.cls.as_deref() == Some("moProfileFeature_c")) {
@@ -3264,6 +3321,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 (true, Some(it)) => it.next().and_then(|(body, end)| parse_sketch(c0, body, end)),
                 _ => h.checked_sub(14).and_then(|body| parse_sketch(rf, body, eb)),
             };
+            if n.suppressed {
+                continue;
+            }
             let Some(geo) = geo else {
                 last_sketch = None;
                 if let Some(h) = hole.as_mut() {
@@ -4958,6 +5018,36 @@ mod end_face_tests {
     /// Node names inside the header of the node before them: a reused sketch's `Sketch3<3>` and
     /// an attribute go; a hole wizard's nested sketch stays.
     #[test]
+    fn suppressed_features_are_marked_by_their_own_block() {
+        // Writes a node block at `k` with the suppression word `w` 47 bytes before it.
+        let put = |d: &mut Vec<u8>, k: usize, w: u32| {
+            d[k - 47..k - 43].copy_from_slice(&w.to_le_bytes());
+            d[k - 4..k - 1].copy_from_slice(&UTF16_MARK);
+            d[k..k + 18].copy_from_slice(&NODE_BLOCK);
+        };
+        let mut d = vec![0u8; 1000];
+        put(&mut d, 100, 1); // a suppressed cut (name ends at 20)
+        put(&mut d, 300, 1); // a cosmetic thread nested in a revolve, suppressed
+        put(&mut d, 500, 0); // the revolve's own block, after the thread's
+        put(&mut d, 800, 7); // not a suppression word
+        let node = |start: usize, name_end: usize, k: usize| Node {
+            start,
+            cls: None,
+            tag: None,
+            name: String::new(),
+            flags: 0,
+            id: 0,
+            post: k + 56,
+            head_len: 0,
+            name_end,
+            suppressed: false,
+        };
+        let mut nodes = vec![node(0, 20, 100), node(200, 210, 300), node(220, 230, 300), node(700, 720, 800)];
+        mark_suppressed(&d, &mut nodes);
+        assert_eq!(nodes.iter().map(|n| n.suppressed).collect::<Vec<_>>(), [true, false, true, false]);
+    }
+
+    #[test]
     fn nested_names_do_not_cut_a_feature_short() {
         let node = |start: usize, post: usize, cls: &str, name: &str| Node {
             start,
@@ -4968,6 +5058,8 @@ mod end_face_tests {
             id: 0,
             post,
             head_len: 0,
+            name_end: 0,
+            suppressed: false,
         };
         let mut nodes = vec![
             node(100, 300, "moExtrusion_c", "Boss-Extrude2"),
@@ -5029,6 +5121,8 @@ mod pattern_tests {
             id,
             post: start,
             head_len: 0,
+            name_end: 0,
+            suppressed: false,
         };
         // Furo4 declares moHoleWzd_c; Furo1 and Furo2 name it as class 709.
         let nodes = vec![
