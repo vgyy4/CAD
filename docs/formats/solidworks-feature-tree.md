@@ -1108,3 +1108,78 @@ lists), 4bd (a line drawn twice). None lost. Lofts now read stop at: fillet edge
 126p-wiper-axle-cap, 126p-window-handle-plug, three_camera_mount_tilt), sections that are faces or points (wheel ax,
 Dremel), a pattern of bodies, Part3's small boss (20 mm3 outside, not the loft), shaft_stage_2's second keyway cut (read with
 the first one's sketch), output_shaft_stage_4 (above).
+
+## L18. Round 12 (sw7: volume mismatches)
+Measured against round sw6's logs (275 of 1352 as history): the 98 parts (all sw-more) whose features all rebuild but
+whose volume differs from the part's body. The scratch harness of L13 (one rebuild per feature, the solid outside the
+body and the body missing after each) named, per part, the feature where either jumps; the parts were then grouped by
+what that feature had in common and decoded from the bytes. Of the 98, 46 write a contour chooser (against 29 of the
+275 that rebuild), 9 extrude a sketch that is not the last one read, 9 are zsCAD parts with imported bodies, 3 have
+suppressed features. Decoded:
+* **Suppressed features.** The `u32` 47 bytes before a node's own 18-byte block is 1 for a feature suppressed in the
+  configuration whose stream is read, 0 otherwise (always followed by a zero `u32`, the block by the empty string).
+  8020-1010 X 12 has twelve configurations: Cut-Extrude1 writes 1 in the eleven whose body has no cut and 0 in
+  Config-12, whose partition is the larger one. 200mm 250mm Top Platform's Platform Pivot and Cut-Extrude8 write 1,
+  and the volume the rebuild lacked is exactly what they removed (1392 + 360 mm3). A node that nests others (a cut
+  that reuses its sketch, a revolve with its cosmetic thread) shares its first block with them; its own is the block
+  after theirs (M6_bolt's Revolve1 writes 0 there, its nested cosmetic thread 1). Over the corpora 345 nodes write 1;
+  among the 275 parts that rebuilt only a cosmetic thread did. FrameBracket_v2's Cut-Extrude3, the "no-op cut" of L11,
+  is suppressed. Suppressed features are left out of the tree.
+* **Cut flags with bit 2.** The zsCAD parts' extrudes named `拉伸` write the flags word `0x2_01ce`: the cut flags with
+  bit 2, which no boss has (18 nodes, all of them zsCAD); they were read as joins. A cut in a part with several
+  imported bodies now cuts all of them (SolidWorks' default feature scope): 5bq's two extrudes remove exactly the
+  3200 mm3 where they overlap its four bodies.
+* **Contour choosers.** A feature that extrudes only some regions of its sketch writes a `moContourChooser_c`: a `u16`
+  count, then that many `moOneContour_c` (by declaration or class word, then a `u16` count of chains). 26 bytes after
+  the contour's class word its first chain writes the sentinel pair, then references to the sketch's segments
+  (`XX 8X 00 00 XX 8X ?? ??`, the sketch's node id, a time stamp, the segment's key, the `u32` eight bytes before
+  its entity header), then a box object `01 00 TT 8X 01 00 00 00` with the region's bounding-box centre and diagonal in model
+  space (m). Power Supply base's cut chooses the four r 1.5 circles of a sketch that also draws a 67 x 141 rectangle:
+  boxes centred on the circles, diagonal 3 sqrt 2 mm; the cut removes 4 x 7.07 x 3 = 84.8 mm3, the rebuild of the whole
+  sketch 28341. The sketch lists its own contours the same way, each after a `u32` key from 100000 (the first after
+  the list's key and count). A chooser lies in its sketch's span before the feature, or in the feature's own span
+  after a nested sketch. The reader writes a feature's profiles as picks by box (`{"bbox": [x, y, z, diagonal]}`, mm)
+  when the chooser names fewer contours than the sketch lists, the box centres lie on the sketch's plane, the
+  segments named are drawn and the box fits within them; the tree import takes the region whose outline has that box
+  (closest within 2 % of the diagonal and three times closer than any other) and keeps the whole sketch when a box
+  singles out no region. Many choosers do not describe the sketch as read: V-Slot Extrusion 175mm's contours lie
+  25 mm off its sketch plane, Bearing Shaft_LEFT's boxes are 7.9 and 8.9 mm circles where the sketch draws 4 and 6.75,
+  Connecting Plate_BOTTOM's are triangles at y = 3 where the sketch draws hexagons at y = 5. These keep their whole
+  sketch, and the parts their mismatch.
+* **An extrude's sketch by its child index.** A feature node's header writes, after the flags, the id and zeros (and
+  the empty string newer files add), a `u16` count of children, each an archive index or a nested object; an
+  extrude's child is its sketch. The reader took the last sketch read, but a sketch is written where it was made:
+  back_shoulder_LT's Boss-Extrude2 refers to 0x22c, below Cut-Extrude1's 0x3d2, and extrudes Sketch2, read before
+  Cut-Extrude1's Sketch3. Indices grow with the stream, so an index seen before names the same sketch, and one below
+  an index seen names the one sketch not yet used between the sketches of the nearest indices seen (gear box side1's
+  Boss-Extrude5 uses Sketch5, before the Sketch10 of Cut-Extrude3). Anything else keeps the last sketch.
+
+**Coverage after the round** (rebuild check unchanged: every feature builds, volume within 2e-5, box within 1e-4; whole
+corpora through the corpus driver):
+
+| corpus | round sw6 | round sw7 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 235 / 1253 | **246** / 1253 |
+| all | 275 / 1352 | **286** / 1352 |
+
+Gained (sw-more): 8020-1010 X 12, 200mm 250mm Top Platform, 47065T177_3in-90plate (suppressed features); 4cq, 5ad,
+5bq (zsCAD cuts); Power Supply base, Wall Mount A5 (contour choosers); back_shoulder_LT, gear box side2, gear core 1-2
+(sketches by child index). None lost. FrameBracket_v2 drops its suppressed Cut-Extrude3 but still stops at the CSK
+hole of L11; RjDranzer's Part3 now stops at a kernel boolean on Cut-Extrude2, 4ad at its box only.
+
+**What remains of the volume mismatches** (86 parts), by the feature where the rebuild leaves the body:
+* contour choosers that do not describe the sketch as read (boxes off the sketch plane or larger than the segments
+  they name; the whole sketch is kept): the V-Slot family (Extrusion 175mm, Rail_EXTENSION, Rail_PIVOT, the Wheels),
+  Connecting Plate_BOTTOM/_TOP/_M3, MAIN ARM PART1 (one listed contour for two overlapping rectangles, its box fitting
+  neither), Raspberry Pi Case_BOTTOM, PLATFORM/PLATFORM2, Part1/Part3 (RjDranzer). Their regions are not those of
+  the bytes' current sketch, so no decode of the chooser reaches them; the sketches themselves (or the configuration
+  that drives them) would have to be read first.
+* zsCAD parts with imported bodies whose bodies already lie outside the part (4aq, 4bq, 5aq, 5cq, 5cd: the truth is one
+  body, the stored bodies four).
+* the four Hecatron bearings: the chamfer of 0.2 mm on eight edges removes about twice the volume the body lacks
+  (2.9 against 6.2 mm3): half its edges, or another distance; one record type, not decoded.
+* hole wizards cutting where the body has material (Link_1v2, Link_4), patterns and mirrors of bodies (HGR20 Mirror2,
+  Link 3 CirPattern1, Link 5), output_shaft_stage_4's untwisted loft (L17), and the 126p rods' two cuts (L17).

@@ -628,3 +628,43 @@ left-handed groove from a right-handed one), variable fillets (no tree support, 
 check: 13 stop at an up-to-surface end, 3 at open sketches, 2 at fillet edges), domes, ribs and drafts (one part each
 would reach the check). One loft (output_shaft_stage_4) rebuilds untwisted although its connectors are 2.7 degrees apart:
 the connector rule matches four lofts and misses this one.
+
+## Amendment (2026-11-17): suppressed features, contour choosers, sketches by child index (round sw7)
+
+Round sw7 took the 98 parts whose features all rebuilt but whose volume differed from the part's body and grouped them by
+the feature where the rebuilt solid first leaves the body or misses it (`docs/formats/solidworks-feature-tree.md` L18).
+Decoded from the sample bytes:
+
+- **Suppressed features.** The `u32` 47 bytes before a feature node's own block is 1 when the feature is suppressed in
+  the configuration read (the one whose body is compared); such features are left out. A node that nests others owns
+  the block after theirs.
+- **Cut flags with bit 2** (`0x2_01ce`, the zsCAD parts) mark cuts too; a cut in a part with several imported bodies
+  cuts all of them.
+- **Contour choosers.** A feature that extrudes only some regions of its sketch lists them, each with its sketch
+  segments and its bounding box in model space. The reader writes such profiles as picks by box; the tree import
+  takes the region with that box.
+- **An extrude's sketch** is its node's first child, by archive index; an index below one already seen names an
+  earlier, unused sketch.
+
+Gusset gained one thing for this: a feature tree's profile pick may name a region by its bounding box
+(`{"bbox": [x, y, z, diagonal]}`, mm, model space) instead of a point; the closest region within 2 % of the diagonal and
+three times closer than any other is taken, and a box that singles out no region keeps the whole sketch. Only the
+SolidWorks reader writes it; Fusion and FreeCAD trees (point picks) are unchanged.
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4 of the diagonal), and so are
+the stored-body rules.
+
+**Coverage** (history / parts; whole corpora):
+
+| corpus | round sw6 | round sw7 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 235 / 1253 | **246** / 1253 |
+| all | 275 / 1352 | **286** / 1352 |
+
+No part lost its history. 86 parts still rebuild to a different volume. Beyond reach this round, with evidence in L18:
+contour choosers whose boxes and segments describe another state of the sketch than the one the bytes hold (the
+V-Slot family, the Connecting Plates and a dozen others keep their whole sketch), zsCAD parts whose stored bodies
+already lie outside the part, and single-part causes (a chamfer record, hole wizards, patterns of bodies).
