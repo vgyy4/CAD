@@ -1000,7 +1000,20 @@ fn a_fillet_edge_between_two_side_faces_is_picked_by_its_midpoint() {
         let f = t["features"].as_array().unwrap().last().unwrap();
         assert_eq!(f["type"], "fillet", "{t}");
         assert_eq!(f["radius"].as_f64(), Some(1.0));
-        assert_eq!(f["edges"], serde_json::json!([{"midpoint": [10.0, 0.0, 2.5]}]), "{f}");
+        // With the midpoint, the edge's faces and end faces by the features that made them
+        // (round sw9): sides by sketch curve and plane, caps by plane.
+        let side = |c: &str, n: [f64; 3], p: [f64; 3]| {
+            serde_json::json!({"feature": "Boss-Extrude1", "kind": "side", "sketch": "Sketch1", "curves": [c],
+                "point": p, "normal": n})
+        };
+        let cap = |z: f64, n: f64| serde_json::json!({"feature": "Boss-Extrude1", "kind": "cap", "point": [0.0, 0.0, z], "normal": [0.0, 0.0, n]});
+        let want = serde_json::json!([{
+            "midpoint": [10.0, 0.0, 2.5],
+            "faces": [side("c0", [0.0, -1.0, 0.0], [0.0, 0.0, 0.0]), side("c1", [1.0, 0.0, 0.0], [10.0, 0.0, 0.0])],
+            "ends": [cap(0.0, -1.0), cap(5.0, 1.0)],
+            "selection": 1
+        }]);
+        assert_eq!(f["edges"], want, "{f}");
         assert!(f.get("edges_unresolved").is_none());
     }
     // A record that starts with a face of the fillet itself (Power Supply Unit's Fillet1):
@@ -1020,7 +1033,9 @@ fn a_fillet_edge_between_two_side_faces_is_picked_by_its_midpoint() {
     let t = history(&feature_stream(&v)).unwrap().unwrap();
     let f = t["features"].as_array().unwrap().last().unwrap();
     assert_eq!(f["name"], "Fillet2", "{t}");
-    assert_eq!(f["edges"], serde_json::json!([{"midpoint": [10.0, 0.0, 2.5]}]), "{f}");
+    assert_eq!(f["edges"][0]["midpoint"], serde_json::json!([10.0, 0.0, 2.5]), "{f}");
+    assert_eq!(f["edges"][0]["faces"][1]["curves"], serde_json::json!(["c1"]), "{f}");
+    assert_eq!(f["edges"].as_array().map(Vec::len), Some(1), "{f}");
     // A reference to a face of no known feature is unresolved, naming the fillet.
     let mut fillet = feature_node("Fillet_c", "Fillet1", 30);
     let refs = [face_ref(0x50, 99, 1), face_ref(0x50, 99, 2), face_ref(0x51, 99, 0), face_ref(0x51, 99, 1)];
@@ -1058,6 +1073,44 @@ fn a_shell_removes_the_first_face_of_its_last_record() {
     assert!(why.contains("Shell1") && why.contains("not resolved"), "{why}");
 }
 
+/// A variable fillet whose vertex radii are all one value is a constant fillet; one whose radii
+/// differ stays unsupported (Gusset has no variable fillet). A later fillet names a face of the
+/// first by its selection number (round sw9).
+#[test]
+fn a_variable_fillet_of_one_radius_is_a_fillet_and_its_faces_are_named() {
+    let refs = [face_ref(0x50, 7, 1), face_ref(0x50, 7, 2), face_ref(0x51, 7, 0), face_ref(0x51, 7, 1)];
+    let var = |radii: &[(&str, f64)]| {
+        let mut v = feature_node("VarFillet_c", "VarFillet1", 30);
+        v.extend(edge_record(&refs, 0));
+        v.extend([0u8; 4]);
+        for (n, r) in radii {
+            v.extend(parameter(n, *r));
+        }
+        v
+    };
+    let t = history(&feature_stream(&var(&[("D0", 0.001), ("D01", 0.001)]))).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap().last().unwrap();
+    assert_eq!((f["type"].as_str(), f["radius"].as_f64()), (Some("fillet"), Some(1.0)), "{f}");
+    let why = history(&feature_stream(&var(&[("D0", 0.001), ("D01", 0.002)]))).unwrap_err();
+    assert!(why.contains("VarFillet1 (VarFillet_c) is not supported"), "{why}");
+    // Fillet2's edge: face 1 of VarFillet1 (id 30) and side 3, between the caps.
+    let mut s = var(&[("D0", 0.001), ("D01", 0.001)]);
+    let mut f2 = feature_node("Fillet_c", "Fillet2", 31);
+    f2.extend(edge_record(
+        &[face_ref(0x52, 30, 1), face_ref(0x50, 7, 3), face_ref(0x51, 7, 0), face_ref(0x51, 7, 1)],
+        0,
+    ));
+    f2.extend([0u8; 4]);
+    f2.extend(parameter("D1", 0.0005));
+    s.extend(f2);
+    let t = history(&feature_stream(&s)).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap().last().unwrap();
+    assert_eq!(f["name"], "Fillet2", "{t}");
+    let e = &f["edges"][0];
+    assert_eq!(e["faces"][0], serde_json::json!({"feature": "VarFillet1", "kind": "blend", "index": 1}), "{f}");
+    assert_eq!(e["faces"][1]["curves"], serde_json::json!(["c2"]), "{f}");
+}
+
 #[test]
 fn a_distance_angle_chamfer_is_a_chamfer_with_angle_and_a_face() {
     // The corner edge of the fillet test above, with D2 an angle: 70 degrees is written as
@@ -1074,7 +1127,9 @@ fn a_distance_angle_chamfer_is_a_chamfer_with_angle_and_a_face() {
         let f = t["features"].as_array().unwrap().last().unwrap();
         assert_eq!(f["type"], "chamfer", "{t}");
         assert_eq!(f["distance"].as_f64(), Some(1.0));
-        assert_eq!(f["edges"], serde_json::json!([{"midpoint": [10.0, 0.0, 2.5]}]), "{f}");
+        let edges = f["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 1, "{f}");
+        assert_eq!(edges[0]["midpoint"], serde_json::json!([10.0, 0.0, 2.5]), "{f}");
         assert_eq!(f.get("angle").and_then(serde_json::Value::as_f64), angle, "{f}");
         assert_eq!(f.get("face").is_some(), angle.is_some(), "{f}");
     }
