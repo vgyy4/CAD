@@ -481,6 +481,143 @@ fn feature_nodes(d: &[u8], nt: [u8; 2]) -> Result<Vec<Node>, String> {
     Ok(out)
 }
 
+/// A contour of a sketch (round sw7): a region of the sketch, as SolidWorks lists them for the
+/// sketch (`listed`) and for a feature that extrudes only some of them (a contour chooser).
+#[derive(Debug, Clone)]
+struct Contour {
+    at: usize,
+    /// The sketch's node id (its segment references name it).
+    fid: u32,
+    listed: bool,
+    /// The region's bounding box in model space: centre and diagonal (m).
+    bbox: [f64; 4],
+    /// The keys of the sketch segments around it.
+    segs: Vec<u32>,
+}
+
+/// The declaration of the contour class.
+const ONE_CONTOUR_DECL: &[u8] = b"\xff\xff\x01\x00\x0e\x00moOneContour_c";
+
+/// The contours in the stream (`moOneContour_c`, by declaration or class word). Each starts
+/// with its class word and a `u16` count of chains; 26 bytes on, the first chain writes the
+/// sentinel pair, then references to the sketch's segments (`XX 8X 00 00 XX 8X ?? ??`, the sketch's
+/// node id, a stamp, the segment's key), then a box object `01 00 TT 8X 01 00 00 00` with the
+/// region's box centre and diagonal in model space (Power Supply base's four r 1.5 circles:
+/// their centres and 3 sqrt 2 mm). A contour of the sketch's own list follows its `u32` key
+/// (100000 on) right before its class word, or before the list's count before the declaration;
+/// a chooser's contours do not. Contours whose references name no node (the sketch's own list in
+/// some files writes longer references) are not returned.
+fn contours(d: &[u8], ids: &HashSet<u32>) -> Vec<Contour> {
+    let mut pair = [0u8; 16];
+    pair[..8].copy_from_slice(&SENTINEL);
+    pair[8..].copy_from_slice(&SENTINEL);
+    let key = |at: usize| u32_at(d, at).is_some_and(|k| (100_000..200_000).contains(&k));
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(s) = find(d, &pair, i, d.len()) {
+        i = s + 16;
+        let decl = rfind(d, ONE_CONTOUR_DECL, s.saturating_sub(60), s);
+        let Some(e) = decl.or_else(|| s.checked_sub(26)) else { continue };
+        if decl.is_none() && !(d.get(e + 1).is_some_and(|b| b & 0x80 != 0) && u16_at(d, e + 2).is_some_and(|m| m > 0)) {
+            continue;
+        }
+        // The box: the first box object after the chain with a plausible box.
+        let mut bx = None;
+        let mut k = s + 16;
+        let to = (s + 6000).min(d.len());
+        while let Some(q) = (k..to.saturating_sub(40)).find(|&q| {
+            d.get(q..q + 2) == Some(&[1, 0][..])
+                && d.get(q + 3).is_some_and(|b| b & 0x80 != 0)
+                && d.get(q + 4..q + 8) == Some(&[1, 0, 0, 0][..])
+        }) {
+            k = q + 1;
+            if let Some(v) = f64s_at::<4>(d, q + 8)
+                && v.iter().all(|x| x.is_finite() && x.abs() < 10.0)
+                && v[3] > 0.0
+            {
+                bx = Some((q, v));
+                break;
+            }
+        }
+        let Some((q, bbox)) = bx else { continue };
+        // The sketch the chain's references name (one only).
+        let mut fid = None;
+        let mut mixed = false;
+        let mut segs: Vec<u32> = Vec::new();
+        let mut r = s + 16;
+        while r + 20 <= q {
+            let w = d.get(r..r + 8).unwrap_or_default();
+            let refers = matches!(w, [_, h1, 0, 0, _, h2, _, _] if h1 & 0x80 != 0 && h2 & 0x80 != 0);
+            if refers && let Some(f) = u32_at(d, r + 8).filter(|f| ids.contains(f)) {
+                mixed |= fid.is_some_and(|x| x != f);
+                fid = Some(f);
+                // Key 0 names the sketch itself; a key is written once per chain end.
+                if let Some(a) = u32_at(d, r + 16).filter(|&a| a != 0 && !segs.contains(&a) && segs.len() < 4096) {
+                    segs.push(a);
+                }
+                r += 20;
+                continue;
+            }
+            r += 1;
+        }
+        i = q + 40;
+        let (Some(fid), false) = (fid, mixed) else { continue };
+        let listed = key(e.saturating_sub(4)) || key(e.saturating_sub(6));
+        out.push(Contour { at: e, fid, listed, bbox, segs });
+    }
+    out
+}
+
+/// The profiles of an extrude or revolve that uses only some contours of its sketch (round sw7):
+/// the chooser's contours of sketch `fid` in `[lo, hi)` (the feature's span and the stretch since
+/// the previous one: a chooser is written in the sketch's span before the feature, or in the
+/// feature's own span after a nested sketch), whose box centres lie on the sketch's plane. Each
+/// becomes a profile pick by its box (centre and diagonal, mm); a chooser that names as many
+/// contours as the sketch lists is all of them (`None`).
+fn chosen_profiles(
+    cs: &[Contour],
+    used: &mut HashSet<usize>,
+    (fid, g, plane): (u32, &Geometry, &JsonPlane),
+    lo: usize,
+    hi: usize,
+) -> Option<Value> {
+    let n = cross(plane.x, plane.y);
+    let on_plane = |c: &Contour| {
+        let p = [c.bbox[0] * 1000.0, c.bbox[1] * 1000.0, c.bbox[2] * 1000.0];
+        dot(sub(p, plane.origin), n).abs() < 1e-3
+    };
+    let chosen: Vec<&Contour> =
+        cs.iter().filter(|c| !c.listed && c.fid == fid && (lo..hi).contains(&c.at) && !used.contains(&c.at)).collect();
+    if chosen.is_empty() {
+        return None;
+    }
+    used.extend(chosen.iter().map(|c| c.at));
+    let listed = cs.iter().filter(|c| c.listed && c.fid == fid).count();
+    // The chooser must fit the sketch as read: its segments drawn, its box within theirs (a
+    // sketch whose stored contours belong to other dimensions keeps its whole profile).
+    let fits = |c: &Contour| {
+        let keys = &c.segs;
+        let mut lo = [f64::INFINITY; 2];
+        let mut hi = [f64::NEG_INFINITY; 2];
+        for &k in keys {
+            let Some(s) = g.segs.iter().find(|s| s.a == k && !s.construction) else { return false };
+            for (u, v) in seg_uv(g, s).unwrap_or_default() {
+                lo = [lo[0].min(u), lo[1].min(v)];
+                hi = [hi[0].max(u), hi[1].max(v)];
+            }
+        }
+        let span = libm::hypot(hi[0] - lo[0], hi[1] - lo[1]);
+        span.is_finite() && c.bbox[3] <= span * (1.0 + 1e-6) + 1e-9
+    };
+    if (listed > 0 && chosen.len() >= listed) || !chosen.iter().all(|c| on_plane(c) && fits(c)) {
+        return None;
+    }
+    let mm = |v: f64| round_to(v * 1000.0, 9);
+    Some(Value::Array(
+        chosen.iter().map(|c| json!({"bbox": [mm(c.bbox[0]), mm(c.bbox[1]), mm(c.bbox[2]), mm(c.bbox[3])]})).collect(),
+    ))
+}
+
 /// The first node block (either version) in `d[from..to]`.
 fn node_block(d: &[u8], from: usize, to: usize) -> Option<usize> {
     let hay = d.get(from..to.min(d.len()))?;
@@ -3285,6 +3422,27 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut mirror_planes: HashMap<u32, (V3, V3)> = HashMap::new();
     // Node id -> name of each sketch read (lofts name their sections by id).
     let mut sketch_ids: HashMap<u32, String> = HashMap::new();
+    // The contours the stream lists and chooses (round sw7), and those taken by a feature.
+    let all_contours = contours(rf, &nodes.iter().map(|n| n.id).collect());
+    let mut used_contours: HashSet<usize> = HashSet::new();
+    // Where the stretch of the next extrude or revolve begins (the end of the previous one).
+    let mut feat_lo = 0usize;
+    let mut chosen = |last_sketch: &Option<String>,
+                      sketch_ids: &HashMap<u32, String>,
+                      sketch_by_name: &HashMap<String, (usize, JsonPlane)>,
+                      sketches: &[Geometry],
+                      feat_lo: &mut usize,
+                      b: usize|
+     -> Value {
+        let lo = std::mem::replace(feat_lo, b);
+        let pick = (|| {
+            let sk = last_sketch.as_ref()?;
+            let fid = sketch_ids.iter().find(|(_, v)| *v == sk).map(|(k, _)| *k)?;
+            let (i, plane) = sketch_by_name.get(sk)?;
+            chosen_profiles(&all_contours, &mut used_contours, (fid, sketches.get(*i)?, plane), lo, b)
+        })();
+        pick.unwrap_or_else(|| json!("all"))
+    };
     for (ni, n) in nodes.iter().enumerate() {
         let mut cls = n.cls.clone();
         let (a, b) = span(n);
@@ -3633,7 +3791,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             js.insert("type".into(), json!("extrude"));
             js.insert("name".into(), json!(n.name));
             js.insert("sketch".into(), json!(last_sketch));
-            js.insert("profiles".into(), json!("all"));
+            js.insert(
+                "profiles".into(),
+                chosen(&last_sketch, &sketch_ids, &sketch_by_name, &sketches, &mut feat_lo, b),
+            );
             js.insert("operation".into(), json!(if flip { "intersect" } else { op }));
             // A cut reaches every body (SolidWorks' default scope): with several imported bodies
             // it names them all (5bq's two extrudes cut all four of its bodies).
@@ -3706,7 +3867,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             js.insert("type".into(), json!("revolve"));
             js.insert("name".into(), json!(n.name));
             js.insert("sketch".into(), json!(last_sketch));
-            js.insert("profiles".into(), json!("all"));
+            js.insert(
+                "profiles".into(),
+                chosen(&last_sketch, &sketch_ids, &sketch_by_name, &sketches, &mut feat_lo, b),
+            );
             js.insert("operation".into(), json!(op));
             js.insert("angle".into(), json!(ang.map_or(360.0, |v| round_to(v.to_degrees(), 9))));
             if op != "new" {

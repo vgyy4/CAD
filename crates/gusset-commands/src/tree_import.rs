@@ -163,7 +163,14 @@ struct SketchF {
 
 #[derive(Debug, Clone, Deserialize)]
 struct ProfilePick {
-    point: [f64; 2],
+    /// A point inside the region, in the source sketch's coordinates.
+    #[serde(default)]
+    point: Option<[f64; 2]>,
+    /// Or the region's bounding box in model space: centre and diagonal (mm). SolidWorks' contour
+    /// choosers name a feature's regions this way; the region whose outline has that box is
+    /// taken.
+    #[serde(default)]
+    bbox: Option<[f64; 4]>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -758,6 +765,85 @@ impl SketchMap {
         ];
         let d = sub(w, self.origin);
         [dot(d, self.x), dot(d, self.y)]
+    }
+}
+
+/// The region whose outer loop has the bounding box `bx` in model space (centre and diagonal,
+/// mm; lines and arcs exactly, other curves sampled): the closest, within 2 % of the diagonal and
+/// three times closer than any other. Two regions with that box (a square cut along a diagonal)
+/// are refused.
+fn region_by_box(sm: &SketchMap, ids: &[String], outlines: &[Vec<Region2>], bx: [f64; 4]) -> Result<String, String> {
+    let [cx, cy, cz, diag] = bx;
+    if !bx.iter().all(|v| v.is_finite()) || diag <= 0.0 {
+        return Err("a profile box is not finite".into());
+    }
+    let mut hits: Vec<(f64, String)> = Vec::new();
+    for (id, rs) in ids.iter().zip(outlines) {
+        for r in rs {
+            let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            let mut add = |p: [f64; 2]| {
+                let w = [0, 1, 2].map(|i| {
+                    sm.origin.get(i).copied().unwrap_or(0.0)
+                        + p[0] * sm.x.get(i).copied().unwrap_or(0.0)
+                        + p[1] * sm.y.get(i).copied().unwrap_or(0.0)
+                });
+                for i in 0..3 {
+                    if let (Some(l), Some(h), Some(v)) = (lo.get_mut(i), hi.get_mut(i), w.get(i)) {
+                        *l = l.min(*v);
+                        *h = h.max(*v);
+                    }
+                }
+            };
+            for e in &r.outer.edges {
+                match e.seg {
+                    Seg2::Line { a, b } => {
+                        add(a);
+                        add(b);
+                    }
+                    _ => loop_points(std::slice::from_ref(e)).into_iter().chain(arc_extremes(e)).for_each(&mut add),
+                }
+            }
+            let c = [0, 1, 2].map(|i| (lo.get(i).copied().unwrap_or(0.0) + hi.get(i).copied().unwrap_or(0.0)) / 2.0);
+            let dg = norm(sub(hi, lo));
+            let err = (norm(sub(c, [cx, cy, cz])) + (dg - diag).abs()) / diag;
+            if err.is_finite() {
+                hits.push((err, id.clone()));
+            }
+        }
+    }
+    hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let best = hits.first().filter(|(e, _)| *e <= 0.02);
+    let next = hits.iter().find(|(_, id)| best.is_some_and(|(_, b)| b != id));
+    match (best, next) {
+        (Some((e, id)), next) if next.is_none_or(|(n, _)| *n > 3.0 * e + 1e-9) => Ok(id.clone()),
+        (Some(_), _) => Err(format!("several regions of its sketch have the profile box {bx:?}")),
+        (None, _) => Err(format!("no region of its sketch has the profile box {bx:?}")),
+    }
+}
+
+/// The points where an arc or circle reaches its extremes along the sketch axes (a sampled
+/// loop misses them by up to 0.2 % of the radius).
+fn arc_extremes(e: &gusset_kernel::ProfileEdge) -> Vec<[f64; 2]> {
+    let quarter = |c: [f64; 2], r: f64| {
+        (0..4).map(move |k| {
+            let t = std::f64::consts::FRAC_PI_2 * f64::from(k);
+            (t, [c[0] + r * libm::cos(t), c[1] + r * libm::sin(t)])
+        })
+    };
+    match e.seg {
+        Seg2::Circle { center, radius } => quarter(center, radius).map(|(_, p)| p).collect(),
+        Seg2::Arc { center, start, end, ccw } => {
+            let r = libm::hypot(start[0] - center[0], start[1] - center[1]);
+            let tau = std::f64::consts::TAU;
+            let a0 = libm::atan2(start[1] - center[1], start[0] - center[0]);
+            let a1 = libm::atan2(end[1] - center[1], end[0] - center[0]);
+            // The sweep from the start, counter-clockwise, to the end; the other way for clockwise.
+            let (from, sweep) = if ccw { (a0, (a1 - a0).rem_euclid(tau)) } else { (a1, (a0 - a1).rem_euclid(tau)) };
+            let mut out = vec![end];
+            out.extend(quarter(center, r).filter(|(t, _)| (t - from).rem_euclid(tau) <= sweep).map(|(_, p)| p));
+            out
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -1625,17 +1711,28 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
             let polys: Vec<Vec<RegionPolys>> =
                 outlines.iter().map(|rs| rs.iter().map(RegionPolys::new).collect()).collect();
             let mut ids = Vec::new();
+            // Boxes that do not single out the sketch's regions (Gusset joins regions SolidWorks
+            // keeps apart, or the boxes belong to other dimensions) leave the whole sketch.
+            let mut whole = false;
             for pk in picks {
-                let p = sm.map(pk.point[0], pk.point[1]);
+                if let Some(bx) = pk.bbox {
+                    match region_by_box(&sm, &all, &outlines, bx) {
+                        Ok(id) => ids.push(id),
+                        Err(_) => whole = true,
+                    }
+                    continue;
+                }
+                let Some(pt) = pk.point else { return Err("a profile pick has no point".into()) };
+                let p = sm.map(pt[0], pt[1]);
                 let hit = all.iter().zip(&polys).find(|(_, rs)| rs.iter().any(|r| r.holds(p)));
                 match hit {
                     Some((id, _)) => ids.push(id.clone()),
-                    None => return Err(format!("no region of its sketch holds the profile point {:?}", pk.point)),
+                    None => return Err(format!("no region of its sketch holds the profile point {pt:?}")),
                 }
             }
             ids.sort();
             ids.dedup();
-            format!("{sk_name}.regions({})", ids.join(", "))
+            if whole { sk_name.clone() } else { format!("{sk_name}.regions({})", ids.join(", ")) }
         }
     };
     let op = match d.operation.as_deref().unwrap_or("new") {

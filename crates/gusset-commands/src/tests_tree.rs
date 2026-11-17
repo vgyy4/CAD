@@ -124,6 +124,35 @@ fn a_sketch_on_an_offset_downward_plane_becomes_a_datum_plane() {
 }
 
 #[test]
+fn a_profile_picked_by_its_box_extrudes_that_region_only() {
+    // A 20 x 10 mm rectangle split in two at x = 10, on a plane at y = 3; SolidWorks' contour
+    // chooser names the right half by its box (centre and diagonal in model space).
+    let plane = json!({"origin": [0, 3, 0], "x_axis": [1, 0, 0], "y_axis": [0, 0, -1]});
+    let mut sk = rect("Sk", plane, 20.0, 10.0);
+    sk["points"]
+        .as_array_mut()
+        .unwrap()
+        .extend([json!({"id": "q1", "x": 10, "y": 0}), json!({"id": "q2", "x": 10, "y": 10})]);
+    sk["curves"].as_array_mut().unwrap().push(json!({"id": "m", "type": "line", "start": "q1", "end": "q2"}));
+    let diag = 10.0 * std::f64::consts::SQRT_2;
+    let t = tree(
+        json!([]),
+        json!([sk, {"type": "extrude", "name": "Ex", "sketch": "Sk", "profiles": [{"bbox": [15, 3, -5, diag]}],
+             "distance": 10, "operation": "new"}]),
+        json!([]),
+    );
+    let mut s = session();
+    import(&mut s, "box.gtree.json", &t).unwrap();
+    assert!((volume(&mut s) - 1000.0).abs() < 1e-6, "{}", volume(&mut s));
+    // A box no region has leaves the whole sketch.
+    let mut t2 = t.clone();
+    t2["features"][1]["profiles"] = json!([{"bbox": [50, 3, -50, diag]}]);
+    let mut s = session();
+    import(&mut s, "box2.gtree.json", &t2).unwrap();
+    assert!((volume(&mut s) - 2000.0).abs() < 1e-6, "{}", volume(&mut s));
+}
+
+#[test]
 fn a_tree_that_is_not_one_is_refused() {
     let mut s = session();
     let e = import(&mut s, "x.json", &json!({"format": "something-else", "version": 1})).unwrap_err();
