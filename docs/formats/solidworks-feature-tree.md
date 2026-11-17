@@ -1208,3 +1208,61 @@ Measured against round sw7's logs (286 of 1352 as history): the 14 parts whose e
   doubles after three `u32` 1s; not decoded): a graphics mesh, not a B-rep.
 
 History 286 of 1352 before and after; none lost; 11 of the 14 now import as bodies.
+
+## L20. Round 14 (sw9: fillet edges by face names)
+Measured against round sw8's logs (286 of 1352 as history): 104 parts stopped at a fillet (57 "N of M fillet edges
+resolved", 22 an edge midpoint off the model, 16 the kernel's fillet, 18 a variable fillet; some overlap). For each
+unresolved record the faces it names were listed with the kind of feature that made them (`sw_unresolved`): the
+largest group names faces of earlier fillets beyond the rounded-profile-corner case (Lego Torso, Leadscrew Nut Mount,
+the Spacer/Arm families, dzwignia, V-Slot Door Handle, 2 Hole Joining Strip Plate ...), then caps and sides whose
+midpoint the reader's model of the part places wrongly, then whole-circle edges.
+
+* **Edge records by face names.** Rather than a midpoint, each record's faces are written as the features that made
+  them: `{"feature", "kind": "side", "sketch", "curves"}` (the curves whose sketch key `a` is the reference's face
+  number; a line `normalize_lines` split keeps its id with a `_n` suffix), `{"feature", "kind": "cap", "point",
+  "normal"}` (`cap_plane`), `{"feature", "kind": "blend", "index"}` (a face of an earlier fillet or chamfer node:
+  index = the 1-based number of its edge in that fillet's selection, L9), straight sides with their plane too;
+  the first two references are the edge's faces, the next two its end faces (`ends`, null for faces the reader
+  cannot name). Every pick carries its `selection` number. Mirror-copy faces (`via`) are not named.
+* **Import.** The midpoint still decides first. Otherwise the edge between faces whose Gusset names hold the two
+  (`Torso/5` -> `Torso/side(Sketch2/l..)`, `Fillet1/4` -> `Fillet1/blend(<the edge Fillet1's 4th pick resolved
+  to>)`), then flat faces on the given planes (a coplanar face of a later join may carry the later feature's
+  name in Gusset), the end faces sorting several, and pieces Gusset cut from one closed edge taken
+  together (Lock Collar's set-screw hole meets the collar in three pieces).
+* **Superseded selections** stay optional (left out where the model has no edge between the faces): the idler arms'
+  records of keys 15-19 (L8) are such, and an earlier build without this lost them.
+* **Variable fillets.** `VarFillet_c` writes one radius per vertex (`D0`, `D01`, ...). The r3 keycap family's are
+  0.4 and 2 mm alternating, 126p-visor-mount's 1 mm and 0, OeMga's bottom/middle/top all 1 mm. Gusset has no
+  variable fillet, so only the last are read, as constant fillets.
+
+**Coverage after the round** (rebuild check unchanged):
+
+| corpus | round sw8 | round sw9 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 246 / 1253 | **250** / 1253 |
+| all | 286 / 1352 | **290** / 1352 |
+
+Gained (sw-more): IMU Arm Mount 3D, FR8ZZ Hex Bearing (fillets named by faces; FR8ZZ's six edges were all
+"stale"), Motor, BK12_nut (chamfer edges whose midpoints were off the model, found by their faces). None lost.
+
+**What remains of the 104** (where each stops now):
+* 27: OCCT does not build the fillet SolidWorks built (Holder: r 12 at a 3.5 mm rod meeting a flange; Bottom-Plate:
+  r 2 on corners 1 mm apart; 2 Hole Joining Strip Plate: r 0.15 on the miter edge of two fillets). Two
+  (Spacer_short_base_triangular and its mirror) crash OCCT's fillet (`BRepBlend_SurfRstConstRad`) in the test
+  harness's in-process kernel; the application runs the kernel in a worker.
+* 26: records the reader cannot name: faces of pattern copies (`LPattern1/33569`: a reference to the pattern that
+  nests the seed face, no instance number found), of imported bodies (GRIPPER, nippondensogearcoupler2, O2C Top
+  Layer: the SolidWorks face number is not the Parasolid face order as read), of lofts (three_camera_mount_tilt,
+  the 126p lofts), of angle chamfers (written as several chamfers; arm_idler_single_v4), feature ids that no node
+  read carries (Spacer_long_base_triangular, Vice Base, combined_mount), sketch keys the sketch as read does not
+  draw (200mm Dock Fixed Base: the right-hand arcs; the r3 family's Chamfer1), records that start with the
+  fillet's own faces in other orders (CIM Motor, Ultrasonic Sensor, Battety), Key Fob Cover's `Base` faces
+  (keys 1-6 on a six-line sketch whose keys differ).
+* 15: true variable fillets (above).
+* 14: the edge's faces exist but do not meet in the rebuild: an earlier feature is placed differently (3D Base
+  Update's Boss-Extrude2 extrudes the other way), not a fillet rule.
+* 5 rebuild every feature and miss the volume: Lock Collar by 3.5e-5 (OCCT's round of the saddle curve), the GT3
+  pulleys and 200mm Dock bases by what earlier cuts or the unnamed arcs leave.

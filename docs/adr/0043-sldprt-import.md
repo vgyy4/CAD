@@ -692,3 +692,37 @@ extrude/revolve, emboss, helix, split line, the imported body alone, an unresolv
 correct refusals or out of scope: ignition-device-screw has no feature beyond the default planes,
 cable_chain_sketch is a sketch only, and multispec_camera_mount_tilt is one graphics mesh body
 (`moMeshBodyFeature_c`, data in `MeshData/Config-0-Mesh-27`, a format not decoded), not a B-rep.
+
+## Amendment (2026-11-17): fillet edges named by their faces (round sw9)
+
+Round sw9 took the 104 parts that stopped at a fillet (`docs/formats/solidworks-feature-tree.md` L20). Grouped
+by why an edge failed, the largest cause was the reader's model of the faces: an edge record names the edge's two
+faces and its two end faces by feature and face number, and the reader turned that into a midpoint only for faces
+it can draw (extrude sides and caps, rounded profile corners). Faces of earlier fillets, edges whose
+midpoint the reader's model puts off Gusset's model, and edges that are whole circles were left unresolved.
+
+- **Edges by face names.** The reader now writes each record's faces as the features it read made them (an extrude
+  or revolve side by the sketch curves of its key, an extrude cap with its plane, a straight side with its plane,
+  the face a fillet or chamfer made from its k-th selected edge) and the record's selection number. The tree
+  import (ADR 0042 amendment "edges named by their faces"; additive and optional, other sources unchanged) takes
+  the midpoint first and, where it names no edge or there is none, the edge between faces whose Gusset names hold
+  the two (`side(sketch/entity)`, `cap(...)`, `blend(<the edge that selection number resolved to>)`), then flat
+  faces on the given planes (Gusset names a merged coplanar face after either feature), the end faces sorting
+  several candidates; pieces Gusset cut from one closed edge count as one. The selection-number rule for fillet
+  faces is the one round 3 found (L9).
+- **Superseded selections** (records of known features whose edge the reader could not place, dropped since round
+  3) are written by their faces and marked optional: left out where the model has no such edge, as before.
+- **Variable fillets** (`VarFillet_c`): the radii are the node's `D0`, `D01`, ... parameters, one per vertex.
+  Gusset has no variable-radius fillet (neither the kernel trait nor the document language), so only a variable
+  fillet whose radii are all one value is read, as a constant fillet: OeMga's bottom, middle and top (eight or
+  three radii of 1 mm; they now stop at later sketches without closed regions and, middle, at two edges of the
+  variable fillet the reader cannot name). The r3 keycaps (0.4 / 2 mm alternating) and 126p-visor-mount (1 mm and 0) stay refused.
+
+The rebuild check is unchanged. History 286 -> 290 of 1352, none lost: IMU Arm Mount 3D, FR8ZZ Hex Bearing (fillet
+edges by face names), Motor, BK12_nut (chamfer edges whose midpoints were off the model). Of the 104, 27 now stop
+where OCCT cannot build the fillet SolidWorks built (radius large against an edge, fillets meeting on short edges;
+two crash the in-process kernel of the test harness), 26 still have edges the reader cannot name (faces of
+pattern copies, imported bodies, lofts and chamfers written as angle chamfers, features the node list does not
+hold, sketch entities that SolidWorks mirrored or derived and the reader does not read), 15 are truly variable
+fillets, 14 have an edge whose faces the rebuild places elsewhere (an earlier feature differs), 5 rebuild every
+feature and differ in volume.

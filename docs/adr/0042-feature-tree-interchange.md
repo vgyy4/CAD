@@ -628,3 +628,27 @@ history to import.
 - A `sweep` may take `path_edges` (edge picks by `midpoint`, as a fillet's) instead of `path`:
   the model's edges with those middles (within 0.01 mm, all on one body) are the path.
 - For a component placed by its occurrence these picks move with the component.
+
+## Amendment (2026-11-17): edges named by their faces
+
+A fillet or chamfer edge pick may name the edge by the faces that made it, for sources that
+record edges so (SolidWorks: ADR 0043, round sw9). All fields are optional; a pick without them
+is resolved as before, so other sources are unchanged.
+
+- `faces`: the edge's two faces; `ends`: the faces at its two ends (either may be `null`).
+  A face is `{"feature": <tree name>, "kind": "side", "sketch": <tree sketch>, "curves":
+  [curve ids]}` (a side of an extrude or revolve swept from those curves), `{"feature", "kind":
+  "cap"}` (a cap of an extrude) or `{"feature", "kind": "blend", "index": k}` (the face a fillet
+  or chamfer made from the edge whose `selection` was `k`). A flat side or cap may add its plane,
+  `"point"` and `"normal"` (mm).
+- `selection`: the pick's 1-based number in the source feature's selection.
+- `midpoint` becomes optional when `faces` is given. The midpoint decides first, as before;
+  where it names no edge, or there is none, the importer takes the edge between faces whose
+  Gusset names (`feature/side(sketch/entity)`, `cap(...)`, `blend(<edge>)`) hold the two
+  faces, and then, for faces given with a plane, flat faces of the model on those planes
+  (Gusset merges a later coplanar face into an earlier one and names it after either). Where
+  several edges qualify, the end faces must touch the edge's ends. Pieces joined at vertices
+  where only the two faces meet (a closed curve Gusset cut at its seam) are one edge. More than
+  one candidate left is an error, as is none.
+- `optional: true` (with `faces` and no `midpoint`): a source selection that may be superseded;
+  where the model has no such edge the pick is left out.
