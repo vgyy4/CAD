@@ -4,6 +4,7 @@
 //! (version 2), generated as code-view text and validated like any edit. Anything else is
 //! reported per feature.
 
+mod named;
 mod v2;
 
 use crate::{CmdCtx, CommandError, Session};
@@ -293,11 +294,29 @@ pub(super) fn refine_default() -> bool {
 
 #[derive(Debug, Clone, Deserialize)]
 struct EdgePick {
-    midpoint: [f64; 3],
+    /// Required unless `faces` names the edge.
+    #[serde(default)]
+    midpoint: Option<[f64; 3]>,
     /// Points along the source edge, when a source may merge several of Gusset's edges into
     /// one (FreeCAD's refine): the model's edges lying on it stand in for it.
     #[serde(default)]
     path: Vec<[f64; 3]>,
+    /// The edge's two faces, by the features that made them (`named`): where the midpoint
+    /// names no edge, or there is none, the one edge between such faces.
+    #[serde(default)]
+    faces: Vec<named::FaceSel>,
+    /// The faces at the edge's two ends (either may be null), to tell apart several edges
+    /// between the same two faces.
+    #[serde(default)]
+    ends: Vec<Option<named::FaceSel>>,
+    /// The 1-based number of this edge in the source feature's selection: a later edge names
+    /// the face the blend made from it by that number.
+    #[serde(default)]
+    selection: Option<u32>,
+    /// A pick by `faces` alone that may be a superseded selection of the source: left out
+    /// where the model has no edge between its faces.
+    #[serde(default)]
+    optional: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -966,6 +985,9 @@ struct Gen {
     /// Cylindrical faces an offset moved: (body feature, axis origin, axis, radius before,
     /// radius after), for later blends whose edges were recorded where the face was.
     moved: Vec<(String, V3, V3, f64, f64)>,
+    /// Per source fillet or chamfer: the number of each edge in its selection, the blend made
+    /// on it and the edge's name then (later edges name its faces so: `named`).
+    blends: HashMap<String, Vec<(u32, String, String)>>,
     /// One evaluator for the whole import: its cache keeps every feature built so far, so
     /// each trial build only builds what the new feature adds.
     evaluator: gusset_eval::Evaluator,
@@ -1083,6 +1105,7 @@ pub fn apply_with(
         entities: 0,
         started: std::time::Instant::now(),
         moved: Vec::new(),
+        blends: HashMap::new(),
         evaluator: std::mem::replace(evaluator, gusset_eval::Evaluator::new(s.kernel().clone())),
     };
     // Parameters go after the header lines; each is evaluated with those before it, so one
@@ -1942,7 +1965,10 @@ fn face_revolve(g: &mut Gen, s: &Session, d: &SolidF, pick: &v2::FacePick) -> Re
         let dir =
             Some(dir).filter(|v| v.iter().all(|c| c.is_finite())).ok_or("the revolve's direction is not finite")?;
         let ev = g.evaluate(s).map_err(|e| e.message)?;
-        let along = edge_line(&ev, edge.midpoint).ok_or("the revolve's axis is not a straight edge of the model")?;
+        let along = edge
+            .midpoint
+            .and_then(|m| edge_line(&ev, m))
+            .ok_or("the revolve's axis is not a straight edge of the model")?;
         // The document's edge axis: towards +X, else +Y, else +Z.
         let flip = along.iter().find(|c| c.abs() > 1e-6).is_some_and(|c| *c < 0.0);
         let canonical = if flip { along.map(|c| -c) } else { along };
@@ -2212,24 +2238,24 @@ fn on_path_edges(ev: &gusset_eval::Evaluation, path: &[[f64; 3]]) -> Vec<(String
 /// path (Fusion's) is held by the model's edges its midpoint lies on, away from their ends:
 /// Fusion keeps the two blend faces of a used-up side apart where Gusset's are one (2315's posts,
 /// rounded across their 4 mm ends by 2 mm); the state check rejects a wrong guess.
-fn containing_edges(ev: &gusset_eval::Evaluation, pick: &EdgePick) -> Vec<(String, String)> {
+fn containing_edges(ev: &gusset_eval::Evaluation, pick: &EdgePick, mid: V3) -> Vec<(String, String)> {
     let pts: Vec<V3> = match (pick.path.first().copied(), pick.path.last().copied()) {
-        (Some(first), Some(last)) => vec![pick.midpoint, first, last],
-        _ => vec![pick.midpoint],
+        (Some(first), Some(last)) => vec![mid, first, last],
+        _ => vec![mid],
     };
-    let out = edges_holding(ev, pick, &pts);
+    let out = edges_holding(ev, pick, mid, &pts);
     // Fusion's path ends can lie off the curve its other points run on (858's Fillet3: ends
     // 0.016 mm inside the r 14 mm circle, at the lines that cut it): the points next to them.
     if out.is_empty()
         && pick.path.len() >= 4
         && let (Some(a), Some(b)) = (pick.path.get(1).copied(), pick.path.get(pick.path.len() - 2).copied())
     {
-        return edges_holding(ev, pick, &[pick.midpoint, a, b]);
+        return edges_holding(ev, pick, mid, &[mid, a, b]);
     }
     out
 }
 
-fn edges_holding(ev: &gusset_eval::Evaluation, pick: &EdgePick, pts: &[V3]) -> Vec<(String, String)> {
+fn edges_holding(ev: &gusset_eval::Evaluation, pick: &EdgePick, mid: V3, pts: &[V3]) -> Vec<(String, String)> {
     let interior = pick.path.is_empty();
     let mut out = Vec::new();
     for b in &ev.bodies {
@@ -2238,7 +2264,7 @@ fn edges_holding(ev: &gusset_eval::Evaluation, pick: &EdgePick, pts: &[V3]) -> V
             let ends: Vec<V3> =
                 e.vertices.iter().filter_map(|v| t.vertices.get(*v as usize)).map(|v| v.point).collect();
             if edge_holds(e.kind, &ends, e.midpoint, e.circle, pts)
-                && (!interior || ends.iter().all(|v| norm(sub(*v, pick.midpoint)) > 0.01))
+                && (!interior || ends.iter().all(|v| norm(sub(*v, mid)) > 0.01))
                 && let Some(n) = b.names.edges.get(i)
             {
                 out.push((b.feature.clone(), n.to_string()));
@@ -2417,11 +2443,12 @@ fn moved_picks(g: &Gen, ev: &gusset_eval::Evaluation, d: &EdgeF) -> EdgeF {
         return out;
     }
     for pick in &mut out.edges {
-        if b.topology.edges.iter().any(|e| norm(sub(e.midpoint, pick.midpoint)) <= 0.01) {
+        let Some(mid) = pick.midpoint else { continue };
+        if b.topology.edges.iter().any(|e| norm(sub(e.midpoint, mid)) <= 0.01) {
             continue;
         }
         let rho = |q: V3, o: V3, a: V3| norm(cross(sub(q, o), a));
-        let all: Vec<V3> = std::iter::once(pick.midpoint).chain(pick.path.iter().copied()).collect();
+        let all: Vec<V3> = std::iter::once(mid).chain(pick.path.iter().copied()).collect();
         let Some(&&(_, o, a, _, to)) =
             moves.iter().find(|(_, o, a, r, _)| all.iter().all(|q| (rho(*q, *o, *a) - r).abs() < 1e-4))
         else {
@@ -2433,7 +2460,7 @@ fn moved_picks(g: &Gen, ev: &gusset_eval::Evaluation, d: &EdgeF) -> EdgeF {
             let r = norm(w);
             if r > 0.0 { add3(foot, scale3(w, to / r)) } else { q }
         };
-        pick.midpoint = shift(pick.midpoint);
+        pick.midpoint = Some(shift(mid));
         for q in &mut pick.path {
             *q = shift(*q);
         }
@@ -2463,14 +2490,32 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
     let d = &moved;
     // Each edge: the nearest one of the model as built so far, within 0.01 mm; of the bodies
     // `only` names alone, if given.
-    let collect = |only: Option<&str>| -> Result<BTreeMap<String, Vec<String>>, String> {
+    // With each edge, the number of its pick in the source selection (`blends`).
+    type Picked = (BTreeMap<String, Vec<String>>, Vec<(u32, String, String)>);
+    let collect = |only: Option<&str>| -> Result<Picked, String> {
         let mut by_body: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut numbered: Vec<(u32, String, String)> = Vec::new();
         let mine = |body: &str| only.is_none_or(|o| o == body);
         for pick in &d.edges {
+            let by_faces = || named::named_edge(g, &ev, pick).filter(|(body, _)| mine(body));
+            let mut take = |body: String, n: String| {
+                if let Some(k) = pick.selection {
+                    numbered.push((k, body.clone(), n.clone()));
+                }
+                by_body.entry(body).or_default().push(n);
+            };
+            let Some(mid) = pick.midpoint else {
+                match by_faces() {
+                    Some((body, n)) => take(body, n),
+                    None if pick.optional => {}
+                    None => return Err("no edge of the model lies between the faces an edge names".into()),
+                }
+                continue;
+            };
             let mut best: Option<(f64, String, String)> = None;
             for b in ev.bodies.iter().filter(|b| mine(&b.feature)) {
                 for (i, e) in b.topology.edges.iter().enumerate() {
-                    let dd = norm(sub(e.midpoint, pick.midpoint));
+                    let dd = norm(sub(e.midpoint, mid));
                     if best.as_ref().is_none_or(|x| dd < x.0)
                         && let Some(n) = b.names.edges.get(i)
                     {
@@ -2479,11 +2524,15 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
                 }
             }
             match best {
-                Some((dd, body, n)) if dd <= 0.01 => by_body.entry(body).or_default().push(n),
+                Some((dd, body, n)) if dd <= 0.01 => take(body, n),
                 _ => {
+                    if let Some((body, n)) = by_faces() {
+                        take(body, n);
+                        continue;
+                    }
                     let mut on_path = on_path_edges(&ev, &pick.path);
                     if on_path.is_empty() {
-                        on_path = containing_edges(&ev, pick);
+                        on_path = containing_edges(&ev, pick, mid);
                     }
                     if on_path.is_empty() {
                         on_path = spline_edges_at_ends(&ev, pick);
@@ -2492,25 +2541,25 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
                     if on_path.is_empty() {
                         let near =
                             best.as_ref().map_or(String::new(), |b| format!(" (the nearest is {:.3} mm away)", b.0));
-                        return Err(format!("no edge of the model has its midpoint at {:?}{near}", pick.midpoint));
+                        return Err(format!("no edge of the model has its midpoint at {mid:?}{near}"));
                     }
                     for (body, n) in on_path {
-                        by_body.entry(body).or_default().push(n);
+                        take(body, n);
                     }
                 }
             }
         }
-        Ok(by_body)
+        Ok((by_body, numbered))
     };
-    let mut by_body = collect(None)?;
+    let (mut by_body, mut numbered) = collect(None)?;
     // A pick whose nearest edge lies in more than one body (a magnet's rim on its pocket's): the
     // nearest-edge search keeps the first body's, whichever the source means.
     let shared = || {
         d.edges.iter().any(|pick| {
+            let Some(mid) = pick.midpoint else { return false };
             let mut nearest: Vec<(f64, &str)> = Vec::new();
             for b in &ev.bodies {
-                let dd =
-                    b.topology.edges.iter().map(|e| norm(sub(e.midpoint, pick.midpoint))).fold(f64::INFINITY, f64::min);
+                let dd = b.topology.edges.iter().map(|e| norm(sub(e.midpoint, mid))).fold(f64::INFINITY, f64::min);
                 if dd <= 0.01 {
                     nearest.push((dd, b.feature.as_str()));
                 }
@@ -2527,7 +2576,7 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         && let Some(t) = &d.on_body
     {
         let tb = g.body_named(t, "body")?;
-        by_body = collect(Some(&tb))?;
+        (by_body, numbered) = collect(Some(&tb))?;
     }
     if by_body.is_empty() {
         return Err("no edges".into());
@@ -2536,6 +2585,7 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
     // with the same size.
     let (kw, key) = if fillet { ("fillet", "radius") } else { ("chamfer", "distance") };
     let mut made = Vec::new();
+    let mut blend_of: HashMap<String, String> = HashMap::new();
     for (body, mut names) in by_body {
         // Several source pieces of one edge of the model name it once.
         let mut seen = HashSet::new();
@@ -2544,6 +2594,7 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         let second = if fillet { String::new() } else { chamfer_second(g, s, d, &body, &names)? };
         let line = format!("\n{kw} {name} (edges: [{}], {key}: {} mm{second})\n", names.join(", "), num(size));
         g.text.push_str(&line);
+        blend_of.insert(body, name.clone());
         made.push(name);
     }
     let ev = g.evaluate(s).map_err(|e| e.message)?;
@@ -2553,6 +2604,11 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
     // The tree's name stands for the first; the others are only made.
     if let Some(first) = made.first() {
         g.features.insert(d.name.clone(), first.clone());
+    }
+    let blends: Vec<(u32, String, String)> =
+        numbered.into_iter().filter_map(|(k, body, n)| Some((k, blend_of.get(&body)?.clone(), n))).collect();
+    if !blends.is_empty() {
+        g.blends.insert(d.name.clone(), blends);
     }
     g.made.extend(made);
     Ok(())

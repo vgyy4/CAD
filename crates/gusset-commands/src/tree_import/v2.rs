@@ -1224,7 +1224,7 @@ pub(super) fn edge_path(g: &mut Gen, s: &Session, picks: &[super::EdgePick]) -> 
     let mut body: Option<&str> = None;
     let mut names: Vec<String> = Vec::new();
     for pick in picks {
-        let m = finite3(pick.midpoint, "a path edge's middle")?;
+        let m = finite3(pick.midpoint.ok_or("a path edge has no midpoint")?, "a path edge's middle")?;
         let mut best: Option<(f64, &str, String)> = None;
         for b in &ev.bodies {
             for (i, e) in b.topology.edges.iter().enumerate() {

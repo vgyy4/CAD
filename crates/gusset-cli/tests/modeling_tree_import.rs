@@ -1766,3 +1766,23 @@ fn a_cut_that_cuts_a_piece_off_makes_it_a_body_of_its_own() {
     let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap();
     assert!(r["skipped_user_text"].to_string().contains("runs through the body"), "{r}");
 }
+
+/// Edges named by their faces (round sw9 of ADR 0043): a fillet's edge by its side and cap,
+/// then a second fillet's by a face the first one made (by its selection number) and a side.
+#[test]
+fn edges_named_by_their_faces_and_by_blend_faces() {
+    let side = |c: &str| json!({"feature": "Block", "kind": "side", "sketch": "Base", "curves": [c]});
+    let top = json!({"feature": "Block", "kind": "cap", "point": [0, 0, 5], "normal": [0, 0, 1]});
+    let (r, v) = import_v2(vec![
+        rect("Base", plane_at(0.0), 0.0, 0.0, 20.0, 10.0),
+        extrude("Block", "Base", 5.0, "new"),
+        json!({"type": "fillet", "name": "Fillet1", "radius": 1,
+            "edges": [{"faces": [side("l2"), top], "ends": [side("l1"), side("l3")], "selection": 1}]}),
+        json!({"type": "fillet", "name": "Fillet2", "radius": 0.5,
+            "edges": [{"faces": [{"feature": "Fillet1", "kind": "blend", "index": 1}, side("l1")], "selection": 1}]}),
+    ]);
+    // Fillet1 takes (1 - pi/4) 10 mm3 off the 1000 mm3 block; Fillet2 rounds the arc and the
+    // edges tangent to it (0.25 (1 - pi/4) mm2 along about 24 mm).
+    let after1 = 1000.0 - (1.0 - core::f64::consts::FRAC_PI_4) * 10.0;
+    assert!(v < after1 - 1.0 && v > after1 - 1.6, "volume {v}: {r}");
+}

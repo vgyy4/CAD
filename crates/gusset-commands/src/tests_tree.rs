@@ -485,3 +485,23 @@ fn points_on_a_circle_keep_the_circles_digits() {
     assert!(text.contains("point(3.01020814, 0)"), "{text}");
     assert!(text.contains("point(9.123457, 9)"), "{text}");
 }
+
+/// An edge named by its two faces (no midpoint) is the one edge between them (round sw9 of
+/// ADR 0043): it is found, and the mock kernel then refuses to round it; a face no feature
+/// made names nothing. (Blend faces: `modeling_tree_import`, with OCCT.)
+#[test]
+fn edges_named_by_their_faces_resolve() {
+    let mut s = session();
+    let side = |c: &str| json!({"feature": "Block", "kind": "side", "sketch": "Base", "curves": [c]});
+    let top = json!({"feature": "Block", "kind": "cap", "point": [0, 0, 5], "normal": [0, 0, 1]});
+    let mut f = box_features(20.0, 10.0, 5.0);
+    f.push(json!({"type": "fillet", "name": "Fillet1", "radius": 1,
+        "edges": [{"faces": [side("l2"), top.clone()], "ends": [side("l1"), side("l3")], "selection": 1}]}));
+    let r = import(&mut s, "named.gtree.json", &tree2(json!(f))).unwrap();
+    assert!(skipped(&r).iter().any(|(n, why)| n == "Fillet1" && why.contains("mock kernel")), "{r}");
+    let mut s = session();
+    let mut f = box_features(20.0, 10.0, 5.0);
+    f.push(json!({"type": "fillet", "name": "Fillet1", "radius": 1, "edges": [{"faces": [side("l9"), top]}]}));
+    let r = import(&mut s, "named.gtree.json", &tree2(json!(f))).unwrap();
+    assert!(skipped(&r).iter().any(|(n, why)| n == "Fillet1" && why.contains("between the faces")), "{r}");
+}

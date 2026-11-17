@@ -815,6 +815,13 @@ fn params(d: &[u8], a: usize, b: usize, nt: [u8; 2]) -> Result<Vec<f64>, String>
     Ok(named_params(d, a, b, nt)?.into_iter().map(|(_, v)| v).collect())
 }
 
+/// Whether a variable-radius fillet's radii (`D0`, `D01`, ...: one per vertex) are all one
+/// positive value: then it is a constant fillet (OeMga's bottom/middle/top: eight of 1 mm),
+/// which Gusset rebuilds; Gusset has no variable fillet for the others (round sw9).
+fn constant_radius(ps: &[f64]) -> bool {
+    ps.first().is_some_and(|r| *r > 0.0 && ps.iter().all(|v| (v - r).abs() <= 1e-12 * r))
+}
+
 /// The same with each parameter's name (the hole wizard's are told apart by name).
 fn named_params(d: &[u8], a: usize, b: usize, nt: [u8; 2]) -> Result<Vec<(String, f64)>, String> {
     param_slots(d, a, b, nt)?.into_iter().map(|(name, at)| Ok((name, need(f64_at(d, at), "a parameter")?))).collect()
@@ -3064,6 +3071,78 @@ fn midpoint_sketch(
     }
 }
 
+/// What [`face_sel`] needs to name a face by the feature that made it.
+struct Named<'a> {
+    nodes: &'a [Node],
+    swept: &'a HashMap<u32, Swept>,
+    revolved: &'a HashMap<u32, Revolved>,
+    /// Fillets and chamfers written as such (their faces are blends of their edges).
+    blends: &'a HashSet<u32>,
+    sketches: &'a [Geometry],
+    /// Index into `sketches` -> the sketch's name.
+    sketch_names: &'a HashMap<usize, String>,
+    feats: &'a [Value],
+    cap_tags: &'a HashSet<u16>,
+}
+
+/// The tree's description of a face an edge record names (`EdgePick.faces` of the tree
+/// import): a side of an extrude or revolve by the sketch curves the key `idx` drew (lines
+/// the sketch cleaning split keep their curve id with a suffix), an extrude's cap with its
+/// plane where it is known, or the face a fillet or chamfer made from its `idx`-th edge.
+/// `None` for faces of other features and mirror copies.
+fn face_sel(r: &Rep, m: &Named) -> Option<Value> {
+    if r.via.is_some() {
+        return None;
+    }
+    let name = &m.nodes.iter().find(|q| q.id == r.fid)?.name;
+    if m.blends.contains(&r.fid) {
+        return Some(json!({"feature": name, "kind": "blend", "index": r.idx}));
+    }
+    let f = m.swept.get(&r.fid).or_else(|| m.revolved.get(&r.fid).map(|v| &v.on))?;
+    let g = m.sketches.get(f.sketch)?;
+    let keyed: Vec<usize> =
+        g.segs.iter().enumerate().filter(|(_, s)| s.a == r.idx && !s.construction).map(|(k, _)| k).collect();
+    let extruded = m.swept.contains_key(&r.fid);
+    if extruded && (m.cap_tags.contains(&r.tag) || (keyed.is_empty() && r.idx <= 1)) {
+        let mut o = json!({"feature": name, "kind": "cap"});
+        if let Some((p, n)) = cap_plane(r, m.swept, m.sketches, m.cap_tags)
+            && let Some(map) = o.as_object_mut()
+        {
+            map.insert("point".into(), json_v3(p));
+            map.insert("normal".into(), json_v3(n));
+        }
+        return Some(o);
+    }
+    let sketch = m.sketch_names.get(&f.sketch)?;
+    let sk = m.feats.iter().find(|v| {
+        v.get("type").and_then(Value::as_str) == Some("sketch") && v.get("name").and_then(Value::as_str) == Some(sketch)
+    })?;
+    let curves: Vec<&str> = sk
+        .get("curves")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|c| c.get("id").and_then(Value::as_str))
+        .filter(|id| {
+            keyed.iter().any(|k| {
+                let base = format!("c{k}");
+                *id == base || id.strip_prefix(&base).is_some_and(|rest| rest.starts_with('_'))
+            })
+        })
+        .collect();
+    if curves.is_empty() {
+        return None;
+    }
+    let mut o = json!({"feature": name, "kind": "side", "sketch": sketch, "curves": curves});
+    if extruded
+        && let Some((p, n)) = side_plane(r, m.swept, m.sketches)
+        && let Some(map) = o.as_object_mut()
+    {
+        map.insert("point".into(), json_v3(p.map(|v| round_to(v, 6) + 0.0)));
+        map.insert("normal".into(), json_v3(n.map(|v| round_to(v, 12) + 0.0)));
+    }
+    Some(o)
+}
+
 // --- the tree --------------------------------------------------------------------------------
 
 /// The part's feature history as a Gusset feature tree (`gusset-feature-tree` version 2).
@@ -3425,6 +3504,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut swept: HashMap<u32, Swept> = HashMap::new();
     let mut rounds: HashMap<u32, Vec<Option<Round>>> = HashMap::new();
     let mut revolved: HashMap<u32, Revolved> = HashMap::new();
+    // Fillets and chamfers written as such: later edge records name their faces (`face_sel`).
+    let mut blend_ids: HashSet<u32> = HashSet::new();
     let mut hole: Option<HoleState> = None;
     // Sketch nodes without entities take the configuration stream's sketch objects in order,
     // when there are as many of each.
@@ -4141,8 +4222,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 }
             }
             feats.push(Value::Object(js));
-        } else if matches!(cls.as_deref(), Some("Fillet_c" | "Chamfer_c")) {
-            let fillet = cls.as_deref() == Some("Fillet_c");
+        } else if matches!(cls.as_deref(), Some("Fillet_c" | "Chamfer_c"))
+            || (cls.as_deref() == Some("VarFillet_c") && constant_radius(&params(rf, a, b, nt)?))
+        {
+            let fillet = cls.as_deref() != Some("Chamfer_c");
             let ps = params(rf, a, b, nt)?;
             let mirror_ids: HashSet<u32> = mirror_planes.keys().copied().collect();
             let sel = selection(edge_records_to(rf, a, b, &mirror_ids)?);
@@ -4163,11 +4246,26 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     .collect();
                 names.join(" ")
             };
-            for (_, reps) in &sel {
+            let sketch_names: HashMap<usize, String> =
+                sketch_by_name.iter().map(|(k, (i, _))| (*i, k.clone())).collect();
+            let names = Named {
+                nodes: &nodes,
+                swept: &swept,
+                revolved: &revolved,
+                blends: &blend_ids,
+                sketches: &sketches,
+                sketch_names: &sketch_names,
+                feats: &feats,
+                cap_tags: &cap_tags,
+            };
+            // Edges named by their faces alone (no midpoint found).
+            let mut by_faces = 0usize;
+            for (k, (_, reps)) in sel.iter().enumerate() {
+                let number = k + 1;
                 if let Some((m, path)) = revolve_circle(reps, &revolved, &sketches) {
                     mids.push(Some(m));
                     made.push(None);
-                    edges.push(json!({"midpoint": m, "path": path}));
+                    edges.push(json!({"midpoint": m, "path": path, "selection": number}));
                     continue;
                 }
                 // A record that starts with a face of this very fillet names its edge as
@@ -4199,13 +4297,46 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 };
                 mids.push(m);
                 made.push(ps.first().filter(|_| fillet).and_then(|r| round_of(reps, &swept, &sketches, &cap_tags, *r)));
+                // The edge's faces and end faces, for the importer to find it by name where
+                // the midpoint is off the model or not known (round sw9).
+                let faces = match reps {
+                    [a, b, rest @ ..] => face_sel(a, &names).zip(face_sel(b, &names)).map(|(a, b)| {
+                        let ends: Vec<Value> =
+                            rest.iter().take(2).map(|r| face_sel(r, &names).unwrap_or(Value::Null)).collect();
+                        (vec![a, b], ends)
+                    }),
+                    _ => None,
+                };
+                let pick = |mid: Option<V3>| {
+                    let mut o = Map::new();
+                    if let Some(m) = mid {
+                        o.insert("midpoint".into(), json!(m));
+                    }
+                    if let Some((f, e)) = &faces {
+                        o.insert("faces".into(), json!(f));
+                        o.insert("ends".into(), json!(e));
+                    }
+                    o.insert("selection".into(), json!(number));
+                    Value::Object(o)
+                };
+                // A record of faces the features read made whose edge was not placed may be a
+                // superseded selection (the idler arms' keys 15-19): named by its faces, it is
+                // optional, and left out where the model has no such edge.
+                let superseded = reps.iter().all(|r| {
+                    swept.contains_key(&r.fid) || rounds.contains_key(&r.fid) || revolved.contains_key(&r.fid)
+                });
                 match m {
-                    Some(m) => edges.push(json!({"midpoint": m})),
+                    Some(m) => edges.push(pick(Some(m))),
+                    None if faces.is_some() => {
+                        by_faces += 1;
+                        let mut p = pick(None);
+                        if superseded && let Some(o) = p.as_object_mut() {
+                            o.insert("optional".into(), json!(true));
+                        }
+                        edges.push(p);
+                    }
                     // References to faces the sketch no longer has are superseded selections.
-                    None if reps.iter().all(|r| {
-                        swept.contains_key(&r.fid) || rounds.contains_key(&r.fid) || revolved.contains_key(&r.fid)
-                    }) =>
-                    {
+                    None if superseded => {
                         stale += 1;
                         if missed.len() < 8 {
                             missed.push(format!("stale: {}", describe(reps)));
@@ -4226,6 +4357,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             // A distance-angle chamfer; 45 degrees is an equal one, 90 has no tangent.
             if !fillet
                 && !unresolved
+                && by_faces == 0
                 && let (Some(&d1), Some(&angle)) = (ps.first(), ps.get(1))
                 && angle > 0.1
                 && (angle - TAU / 8.0).abs() > 1e-6
@@ -4241,6 +4373,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             // and the bevel is a cylinder). On the circle edges of a revolve that is two distances.
             if !fillet
                 && !unresolved
+                && by_faces == 0
                 && let (Some(&d1), Some(&angle)) = (ps.first(), ps.get(1))
                 && (angle - TAU / 4.0).abs() < 1e-6
                 && let Some(chs) = square_chamfer(&n.name, mm(d1), &sel, &revolved, &sketches)
@@ -4261,6 +4394,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 js.insert("edges_selected".into(), json!(sel.len()));
                 js.insert("sw_unresolved".into(), json!(missed));
             }
+            blend_ids.insert(n.id);
             feats.push(Value::Object(js));
         } else if matches!(cls.as_deref(), Some("moLPattern_c" | "moCirPattern_c")) {
             let index = node_index.get_or_insert_with(|| node_indices(rf, &nodes, &span));
