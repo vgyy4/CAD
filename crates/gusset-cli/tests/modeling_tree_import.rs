@@ -533,6 +533,38 @@ fn a_helical_cut_removes_a_groove() {
 }
 
 #[test]
+fn a_helix_climbs_down_a_line_of_its_profile_sketch() {
+    // SolidWorks' helices climb either way (round sw10): the coil climbs world -Z from the
+    // profile at z = 0 along a construction line of the profile sketch, cut from a block (z = -22
+    // to 2) that holds all of it only if it climbs down (to z = -21).
+    let mut wire = wire_through_the_axis();
+    wire["points"].as_array_mut().unwrap().extend([
+        json!({"id": "a0", "x": 0, "y": 0, "construction": true}),
+        json!({"id": "a1", "x": 0, "y": -10, "construction": true}),
+    ]);
+    wire["curves"].as_array_mut().unwrap().push(json!({"id": "ax", "type": "line", "start": "a0", "end": "a1",
+        "construction": true}));
+    let mut f = vec![rect("Base", plane_at(-22.0), -12.0, -12.0, 24.0, 24.0), extrude("Block", "Base", 24.0, "new")];
+    f.extend(helix_sweep(
+        wire,
+        helix(json!({"axis": [0, 0, -1], "line": "ax"})),
+        json!({"operation": "cut", "target": "Block"}),
+    ));
+    let (r, v) = import_v2(f);
+    assert!(r["features"].to_string().contains("Coil"), "{r}");
+    assert_vol(v, 24.0 * 24.0 * 24.0 - 4.0 * std::f64::consts::PI * 2.0 * std::f64::consts::PI * 10.0);
+    // Not a line of the profile sketch: refused.
+    let mut f = vec![rect("Base", plane_at(-22.0), -12.0, -12.0, 24.0, 24.0), extrude("Block", "Base", 24.0, "new")];
+    f.extend(helix_sweep(
+        wire_through_the_axis(),
+        helix(json!({"axis": [0, 0, -1], "line": "nope"})),
+        json!({"operation": "cut", "target": "Block"}),
+    ));
+    let (_, r) = import_into_session(f);
+    assert!(r["skipped_user_text"].to_string().contains("axis line"), "{r}");
+}
+
+#[test]
 fn bad_helical_sweeps_are_skipped_with_a_reason() {
     let path = json!({
         "type": "sketch", "name": "Path", "plane": {"origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 0, 1]},

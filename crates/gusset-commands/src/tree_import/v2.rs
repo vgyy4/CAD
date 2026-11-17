@@ -231,6 +231,11 @@ pub(super) struct HelixF {
     /// Degrees; only 0 (a cylindrical helix) is supported.
     #[serde(default)]
     taper_angle: Option<f64>,
+    /// A line of the profile sketch (curve id) as the axis, climbing from its start to its end:
+    /// for a helix that climbs no world axis in its positive direction (SolidWorks, round sw10).
+    /// `origin` and `axis` then only describe it.
+    #[serde(default)]
+    line: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1163,7 +1168,15 @@ pub(super) fn sweep(g: &mut Gen, s: &Session, d: &SweepF) -> Result<(), String> 
             if !d.path_curves.is_empty() {
                 return Err("path_curves belong to a path sketch, not a helix".into());
             }
-            helix_path(h)?
+            let line = match &h.line {
+                None => None,
+                Some(l) => {
+                    let sm = g.sketches.get(&d.sketch).ok_or("the profile sketch was not imported")?;
+                    let id = sm.ids.get(l).filter(|id| id.starts_with('l'));
+                    Some(format!("{profile}.{}", id.ok_or_else(|| format!("unknown helix axis line '{}'", short(l)))?))
+                }
+            };
+            helix_path(h, line)?
         }
         (Some(path), None) => {
             let pm = g.sketches.get(path).ok_or_else(|| format!("its path '{}' was not imported", short(path)))?;
@@ -1252,25 +1265,33 @@ pub(super) fn edge_path(g: &mut Gen, s: &Session, picks: &[super::EdgePick]) -> 
 }
 
 /// The document's `helix(...)` path of a tree helix. The document's helix climbs a world axis
-/// (`X`, `Y` or `Z` through the origin) in its positive direction; its radius and start come
-/// from the profile, and it is cylindrical.
-fn helix_path(h: &HelixF) -> Result<String, String> {
+/// (`X`, `Y` or `Z` through the origin) in its positive direction, or `line` (a line of the
+/// profile sketch, from its start to its end); its radius and start come from the profile, and
+/// it is cylindrical.
+fn helix_path(h: &HelixF, line: Option<String>) -> Result<String, String> {
     finite3(h.origin, "the helix origin")?;
     finite3(h.axis, "the helix axis")?;
     let a = unit(h.axis).ok_or("the helix axis has no direction")?;
-    let (name, k) = [("X", 0), ("Y", 1), ("Z", 2)]
-        .into_iter()
-        .find(|(_, k)| a.iter().enumerate().all(|(i, c)| (c - if i == *k { 1.0 } else { 0.0 }).abs() < 1e-9))
-        .ok_or("a helix climbs a world axis in its positive direction (X, Y or Z)")?;
-    // The origin must lie on that axis line.
-    if h.origin.iter().enumerate().any(|(i, c)| i != k && c.abs() > 1e-6) {
-        return Err(format!("the helix axis must pass through the origin (world {name})"));
-    }
+    let name = match line {
+        // A sketch line: the evaluator places the helix on it.
+        Some(l) => l,
+        None => {
+            let (name, k) = [("X", 0), ("Y", 1), ("Z", 2)]
+                .into_iter()
+                .find(|(_, k)| a.iter().enumerate().all(|(i, c)| (c - if i == *k { 1.0 } else { 0.0 }).abs() < 1e-9))
+                .ok_or("a helix climbs a world axis in its positive direction (X, Y or Z)")?;
+            // The origin must lie on that axis line.
+            if h.origin.iter().enumerate().any(|(i, c)| i != k && c.abs() > 1e-6) {
+                return Err(format!("the helix axis must pass through the origin (world {name})"));
+            }
+            name.to_string()
+        }
+    };
     positive(Some(h.radius), "the helix radius")?;
     if let Some(x) = h.x {
         finite3(x, "the helix start direction")?;
         let n = norm(x);
-        if n.is_nan() || n <= 1e-9 || x.get(k).is_some_and(|c| c.abs() > 1e-6 * n) {
+        if n.is_nan() || n <= 1e-9 || dot(x, a).abs() > 1e-6 * n {
             return Err("the helix start direction must be across the axis".into());
         }
     }
