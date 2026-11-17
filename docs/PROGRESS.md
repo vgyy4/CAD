@@ -11,7 +11,7 @@ Phase 3 has started (see Next).
 ## Done
 - Importer status (2026-11-14), feature history that rebuilds under the unchanged strict check:
   Fusion 277 of 318 (paused after rounds 33-34 gained none; docs/formats/fusion-corpus-tally.md);
-  SolidWorks 290 of 1352 (rounds sw1-sw9, ADR 0043; was 85; sw9 names fillet edges by their faces); Inventor 562 of 1639 on the new corpus
+  SolidWorks 292 of 1352 (rounds sw1-sw10, ADR 0043; was 85; sw10 reads helices and helical sweeps); Inventor 562 of 1639 on the new corpus
   and 28 of 47 on the old (rounds ipt1-ipt3, ADR 0046 amendments 8-10; was 263 and 25); Solid Edge 28
   of 184 ordered parts (round se1, ADR 0046 amendment 11; first history import). Sample corpora are
   openly licensed downloads kept in scratch, never committed. Two in-process import crashes fixed (an

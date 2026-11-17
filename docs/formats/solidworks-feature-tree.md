@@ -1266,3 +1266,53 @@ Gained (sw-more): IMU Arm Mount 3D, FR8ZZ Hex Bearing (fillets named by faces; F
   Update's Boss-Extrude2 extrudes the other way), not a fillet rule.
 * 5 rebuild every feature and miss the volume: Lock Collar by 3.5e-5 (OCCT's round of the saddle curve), the GT3
   pulleys and 200mm Dock bases by what earlier cuts or the unnamed arcs leave.
+## L21. Round 15 (sw10: helices, helical sweeps; threads, drafts, ribs, domes measured)
+Targets from round sw9's logs (290 of 1352): `moHelix_c` 11 parts, `moRib_c` 6, `moSweepThread_c` 4, `moDraft_c`
+4, `moDome_c` 4.
+
+* **Helix record.** In every helix span: `06 00 00 00`, six zero bytes, then `f64` start angle (rad), `u32`
+  clockwise (0/1), `u32` reverse direction (0/1), `f64` height, `f64` pitch (m), `f64` revolutions; height = pitch x
+  revolutions in all 15 helices of the corpus (the gears' "height and revolutions" helices have no `D3`/`D4`
+  parameters but the record carries both). The display parameters are `D3` height, `D4` pitch, `D5` revolutions
+  (or a named one: the spring's "Body Coils"), `D7` start angle. The base sketch is the node's child (one circle,
+  drawn once or more).
+* **Flags.** gear_stage_*'s HelixRH and HelixLH differ only in the clockwise word (1 for RH, not reversed). The
+  Shaft Couplers' helix (circle r 11.25 at z = 6 on a plane with normal +z; clockwise, reversed; 9.2 mm, 5.1
+  turns, start 135 degrees) has its height dimension drawn from z = 6 to 15.2, and its sweep profile (Right plane,
+  z 15.1-15.4, at 90 degrees) lies where the helix, running clockwise from 135 degrees, passes 90 degrees just
+  after its end at 99 degrees. Hence: reversed = climbs along the base plane's normal; clockwise = the angle in the
+  base sketch's axes decreases as the helix climbs (seen with the normal towards the viewer) when reversed, so a
+  right-handed screw is clockwise and not reversed, or counter-clockwise and reversed. The spring's helices
+  (normal +z, not reversed at z = -0.58 going up 0.58, reversed at -0.58 and -11.56 going down 10.97 and 0.58)
+  fit the same reading only if their plane normal is read as -z; they stop at a composite curve anyway.
+* **Sweep along a helix.** The sweep names the helix node by id as it names its sketches (`named_sketches`
+  against the helix ids). The profile runs the helix from the end it lies at (the middle of its curves' points,
+  within one pitch of an end along the axis); the tree's helix starts at the profile and climbs one way only, so a
+  helix climbing down is written along a construction line `helix_axis` added to the profile sketch (the profile
+  plane must hold the axis). Prefix builds of the Shaft Coupler confirm the direction: the slot built downward
+  from the profile gives the stored volume once the counterbore cuts (6432.2 - 245.2 = 6187.0 against 6187.5),
+  upward it does not; the counterbore's boolean is what fails (OCCT returns the body uncut; the same counterbore
+  cuts when the slot starts 3 mm higher).
+* **3D sketches** (`mo3DProfileFeature_c`) are skipped as curves. 500 Hex Hub's then stops at its pattern.
+* **Threads** (`moSweepThread_c`): nodes of 44-69 bytes with no parameters; the thread's data is elsewhere (not
+  found this round) and it cuts a profile from SolidWorks' thread library, which Gusset's `thread` would have to
+  match to 2e-5 in volume. Not attempted.
+* **Drafts** (`moDraft_c`): the angle is `D1`; the faces and neutral plane are in edge records (Hex Spacer: 24
+  records naming the hex sides of Boss-Extrude1 and the fillet faces of Fillet1; the HTD pulley: 36 naming
+  pattern copies). Two of the four could be candidates (Hex Spacer, HTD pulley; the Lego arm and the SHARP
+  sensor stop at a 3D-sketch loft and imported surfaces); the face/neutral-plane/pull-direction decoding was not
+  done this round.
+* **Ribs and domes**: Gusset's document has no rib (an open profile thickened and extended to the part) and no
+  dome; neither is expressible faithfully with existing operations, so both stay refused.
+
+**Coverage after the round** (rebuild check unchanged):
+
+| corpus | round sw9 | round sw10 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 250 / 1253 | **252** / 1253 |
+| all | 290 / 1352 | **292** / 1352 |
+
+Gained (sw-more): Nut Block 8mm Acme, 5mm Low Profile Socket Head Screw (helices no feature uses). None lost.

@@ -726,3 +726,36 @@ pattern copies, imported bodies, lofts and chamfers written as angle chamfers, f
 hold, sketch entities that SolidWorks mirrored or derived and the reader does not read), 15 are truly variable
 fillets, 14 have an edge whose faces the rebuild places elsewhere (an earlier feature differs), 5 rebuild every
 feature and differ in volume.
+
+## Amendment (2026-11-17): helices and helical sweeps (round sw10)
+
+Round sw10 took the features SolidWorks parts stop at that Gusset's document can already build (L21 in
+`docs/formats/solidworks-feature-tree.md`): helices (11 parts), threads (4), drafts (4), ribs (6), domes (4).
+
+- **Helix** (`moHelix_c`). The node's record (`06 00 00 00`, six zero bytes, then the start angle, the clockwise and
+  reverse-direction flags as `u32`, the height, pitch and revolutions; the height is the pitch times the
+  revolutions in every helix of the corpus) and its base sketch (its child, as an extrude's: one circle) give the
+  helix. A helix is a curve: it adds nothing to the part, so a helix no feature uses no longer stops the history.
+- **Helical sweep.** A sweep whose path is a helix names the helix node as it names its sketches. The helix climbs
+  from its base plane along the plane's normal when reversed, against it when not; clockwise is seen with the normal
+  towards the viewer; the profile runs the helix from the end it lies at (within a turn). Evidence: the Shaft
+  Couplers' slot profile lies on their reversed clockwise helix just past its top end (6 to 15.2 mm, 135 to 99
+  degrees), and the gears' helices named RH and LH differ only in the clockwise flag. Written as the tree's
+  `helix`; a helix that climbs no world axis in its positive direction runs along a construction line the reader
+  adds to the profile sketch on the axis, which the tree import now takes (`helix.line`, ADR 0042 tree format;
+  additive, other sources unchanged).
+- **3D sketches** (`mo3DProfileFeature_c`) are curves too and are skipped like sketches (a feature that needs one
+  finds no path and is refused).
+
+Not done, and why: threads (`moSweepThread_c`) keep their data outside the node and cut a library profile that
+Gusset's `thread` would have to match exactly; drafts need their faces, neutral plane and pull direction decoded
+from edge records (the two candidates draft faces next to fillets); ribs and domes have no Gusset operation
+(a rib extends an open profile to the part, a dome is a surface fit), so they stay refused.
+
+The rebuild check is unchanged. History 290 -> 292 of 1352, none lost: Nut Block 8mm Acme and 5mm Low Profile
+Socket Head Screw (helices no feature uses). The helical sweeps are read but no part gains by them yet: the two
+Shaft Couplers rebuild their slot, then OCCT's boolean of the later counterbore (a 4 mm cylinder, floor at z = 10)
+with the 5.1-turn B-spline helicoids of the slot returns a valid solid that cut nothing (volume unchanged, area
+up; the same slot built from a profile 3 mm higher cuts correctly): a kernel robustness problem, not a reading
+one. The other helix parts stop elsewhere (a composite-curve spring, a fillet edge, the bottle cap's thread-end
+sweeps, the gears' tooth-cut patterns, a `moBoss_c`).
