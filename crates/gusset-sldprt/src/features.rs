@@ -113,8 +113,12 @@ const UTF16_MARK: [u8; 3] = [0xff, 0xfe, 0xff];
 /// The low 12 bits of a feature node's flags word that mark a cut (a boss has `0x140`). Newer
 /// files add bit 17 (`0x2_01ca`); older ones write `0x1ca` alone (the French, Russian and Spanish
 /// parts whose cuts are not named "Cut-...": 46 cuts and 44 localized ones over the corpora, and
-/// no boss).
+/// no boss). Bit 2 may be set too (`0x2_01ce`, round sw7): the zsCAD parts' extrudes named
+/// "拉伸" that cut their imported bodies (5bq's two remove exactly the 3200 mm3 where they
+/// overlap the bodies); no boss has it.
 const CUT_FLAGS: u32 = 0x1ca;
+/// The bits of the flags word compared with [`CUT_FLAGS`].
+const CUT_MASK: u32 = 0xffb;
 const PARAM_CSTRING: [u8; 4] = [0xff, 0xfe, 0xff, 0];
 const IDENT: [f64; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
@@ -3236,6 +3240,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut last_sketch: Option<String> = None;
     let mut solid = false;
     let mut first_solid: Option<String> = None;
+    // The imported bodies so far: a cut reaches all of them (round sw7, the zsCAD parts).
+    let mut imported: Vec<String> = Vec::new();
     let mut swept: HashMap<u32, Swept> = HashMap::new();
     let mut rounds: HashMap<u32, Vec<Option<Round>>> = HashMap::new();
     let mut revolved: HashMap<u32, Revolved> = HashMap::new();
@@ -3400,7 +3406,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if !solid {
                 "new"
             } else if cls.as_deref() == Some(cut_class)
-                || n.flags & 0xfff == CUT_FLAGS
+                || n.flags & CUT_MASK == CUT_FLAGS
                 || n.name.to_lowercase().starts_with("cut")
             {
                 "cut"
@@ -3629,7 +3635,16 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             js.insert("sketch".into(), json!(last_sketch));
             js.insert("profiles".into(), json!("all"));
             js.insert("operation".into(), json!(if flip { "intersect" } else { op }));
-            js.insert("target".into(), if op == "new" { Value::Null } else { json!(first_solid) });
+            // A cut reaches every body (SolidWorks' default scope): with several imported bodies
+            // it names them all (5bq's two extrudes cut all four of its bodies).
+            let mut bodies: Vec<&String> = first_solid.iter().chain(&imported).collect();
+            bodies.dedup();
+            let target = match op {
+                "new" => Value::Null,
+                "cut" if !flip && bodies.len() > 1 => json!(bodies),
+                _ => json!(first_solid),
+            };
+            js.insert("target".into(), target);
             js.insert("sw_end_kind".into(), json!(end));
             if flip && !through_all {
                 distance = None;
@@ -4059,6 +4074,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             // An imported body: the part keeps it, as imported, in its `LocalBodies` stream
             // under the node's name; the importer hands it over as a stored body.
             feats.push(json!({"type": "stored_body", "name": n.name, "body": 0, "local_body": n.name}));
+            imported.push(n.name.clone());
             solid = true;
             if first_solid.as_deref().is_none_or(str::is_empty) {
                 first_solid = Some(n.name.clone());
