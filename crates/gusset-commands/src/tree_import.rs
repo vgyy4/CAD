@@ -2497,7 +2497,10 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         let mut numbered: Vec<(u32, String, String)> = Vec::new();
         let mine = |body: &str| only.is_none_or(|o| o == body);
         for pick in &d.edges {
-            let by_faces = || named::named_edge(g, &ev, pick).filter(|(body, _)| mine(body));
+            let by_faces = || -> Vec<(String, String)> {
+                let found = named::named_edge(g, &ev, pick);
+                if found.iter().all(|(body, _)| mine(body)) { found } else { Vec::new() }
+            };
             let mut take = |body: String, n: String| {
                 if let Some(k) = pick.selection {
                     numbered.push((k, body.clone(), n.clone()));
@@ -2505,10 +2508,12 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
                 by_body.entry(body).or_default().push(n);
             };
             let Some(mid) = pick.midpoint else {
-                match by_faces() {
-                    Some((body, n)) => take(body, n),
-                    None if pick.optional => {}
-                    None => return Err("no edge of the model lies between the faces an edge names".into()),
+                let found = by_faces();
+                if found.is_empty() && !pick.optional {
+                    return Err("no edge of the model lies between the faces an edge names".into());
+                }
+                for (body, n) in found {
+                    take(body, n);
                 }
                 continue;
             };
@@ -2526,8 +2531,11 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
             match best {
                 Some((dd, body, n)) if dd <= 0.01 => take(body, n),
                 _ => {
-                    if let Some((body, n)) = by_faces() {
-                        take(body, n);
+                    let found = by_faces();
+                    if !found.is_empty() {
+                        for (body, n) in found {
+                            take(body, n);
+                        }
                         continue;
                     }
                     let mut on_path = on_path_edges(&ev, &pick.path);

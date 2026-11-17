@@ -29,9 +29,21 @@ pub(super) struct FaceSel {
 
 /// What a [`FaceSel`] stands for in the document's names.
 enum Want {
-    Side { feature: String, sketch: String, entities: Vec<String>, plane: Option<(V3, V3)> },
-    Cap { feature: String, plane: Option<(V3, V3)> },
-    Blend { fillet: String, edge: String },
+    Side {
+        feature: String,
+        sketch: String,
+        entities: Vec<String>,
+        plane: Option<(V3, V3)>,
+    },
+    Cap {
+        feature: String,
+        plane: Option<(V3, V3)>,
+    },
+    /// The blends made on the edges of that selection number, with those edges' names (one
+    /// source edge may be several of Gusset's).
+    Blend {
+        fillet: Vec<(String, String)>,
+    },
 }
 
 /// Most source curves one side face may name.
@@ -55,9 +67,9 @@ fn want(g: &Gen, f: &FaceSel) -> Option<Want> {
         "cap" => Some(Want::Cap { feature, plane }),
         "blend" => {
             let k = f.index?;
-            let (fillet, edge) =
-                g.blends.get(&f.feature)?.iter().find(|b| b.0 == k).map(|b| (b.1.clone(), b.2.clone()))?;
-            Some(Want::Blend { fillet, edge })
+            let fillet: Vec<(String, String)> =
+                g.blends.get(&f.feature)?.iter().filter(|b| b.0 == k).map(|b| (b.1.clone(), b.2.clone())).collect();
+            (!fillet.is_empty()).then_some(Want::Blend { fillet })
         }
         _ => None,
     }
@@ -83,37 +95,43 @@ fn holds(w: &Want, r: &FaceRef, info: Option<&FaceInfo>, loose: bool) -> bool {
         Want::Cap { feature, plane } => {
             r.feature == *feature && matches!(r.key, FaceKey::Cap { .. }) && plane.is_none_or(|pl| on_plane(info, pl))
         }
-        Want::Blend { fillet, edge } => {
-            r.feature == *fillet && matches!(&r.key, FaceKey::Blend(e) if e.to_string() == *edge)
-        }
+        Want::Blend { fillet } => match &r.key {
+            FaceKey::Blend(e) => {
+                let e = e.to_string();
+                fillet.iter().any(|(f, edge)| r.feature == *f && e == *edge)
+            }
+            _ => false,
+        },
     }
 }
 
-/// The model's edge a pick names by its faces, as (body feature, edge name): the one edge
+/// The model's edges a pick names by its faces, as (body feature, edge name): the edge
 /// between faces that hold the pick's two faces, its ends touching the end faces where
-/// several do; by Gusset's names first, then flat faces by their planes. `None` when the pick
-/// names no faces, a face is not one the importer made, or no single edge fits.
-pub(super) fn named_edge(g: &Gen, ev: &gusset_eval::Evaluation, pick: &EdgePick) -> Option<(String, String)> {
-    let [a, b] = pick.faces.as_slice() else { return None };
-    let (wa, wb) = (want(g, a)?, want(g, b)?);
+/// several do; by Gusset's names first, then flat faces by their planes. Gusset may split
+/// what the source keeps as one edge (a closed curve cut at its seam): pieces joined at
+/// vertices where only those two faces meet count as one edge. Empty when the pick names no
+/// faces, a face is not one the importer made, or no single edge fits.
+pub(super) fn named_edge(g: &Gen, ev: &gusset_eval::Evaluation, pick: &EdgePick) -> Vec<(String, String)> {
+    let [a, b] = pick.faces.as_slice() else { return Vec::new() };
+    let (Some(wa), Some(wb)) = (want(g, a), want(g, b)) else { return Vec::new() };
     let ends: Vec<Option<Want>> = pick.ends.iter().take(2).map(|e| e.as_ref().and_then(|e| want(g, e))).collect();
     let strict = edge_between(ev, (&wa, &wb), &ends, false);
-    let found = if strict.is_empty() { edge_between(ev, (&wa, &wb), &ends, true) } else { strict };
-    match found.as_slice() {
-        [one] => Some(one.clone()),
-        _ => None,
+    let mut found = if strict.is_empty() { edge_between(ev, (&wa, &wb), &ends, true) } else { strict };
+    match found.len() {
+        1 => found.pop().unwrap_or_default(),
+        _ => Vec::new(),
     }
 }
 
-/// The edges between faces that `wa` and `wb` hold, their ends touching the end faces where
-/// several edges are.
+/// The edges between faces that `wa` and `wb` hold, in runs that are one source edge, those
+/// whose ends touch the end faces where there are several.
 fn edge_between(
     ev: &gusset_eval::Evaluation,
     (wa, wb): (&Want, &Want),
     ends: &[Option<Want>],
     loose: bool,
-) -> Vec<(String, String)> {
-    let mut found: Vec<(String, String)> = Vec::new();
+) -> Vec<Vec<(String, String)>> {
+    let mut found: Vec<Vec<(String, String)>> = Vec::new();
     for body in &ev.bodies {
         let t = &body.topology;
         let face_holds = |w: &Want, f: u32| {
@@ -134,10 +152,45 @@ fn edge_between(
                 here.push(i);
             }
         }
-        if here.len() > 1 && ends.iter().any(Option::is_some) {
-            here.retain(|&i| {
-                let Some(e) = t.edges.get(i) else { return false };
-                let at: Vec<Vec<u32>> = e.vertices.iter().map(|v| around(*v)).collect();
+        if here.len() > MAX_RUN_EDGES {
+            continue;
+        }
+        // Runs: edges joined at a vertex where only faces of the two meet.
+        let inner = |v: u32| around(v).iter().all(|f| face_holds(wa, *f) || face_holds(wb, *f));
+        let mut runs: Vec<Vec<usize>> = Vec::new();
+        for &i in &here {
+            let verts = t.edges.get(i).map(|e| e.vertices.clone()).unwrap_or_default();
+            let joined: Vec<usize> = (0..runs.len())
+                .filter(|&r| {
+                    runs.get(r).is_some_and(|run| {
+                        run.iter().any(|&j| {
+                            t.edges.get(j).is_some_and(|e| e.vertices.iter().any(|v| verts.contains(v) && inner(*v)))
+                        })
+                    })
+                })
+                .collect();
+            let mut run = vec![i];
+            for r in joined.into_iter().rev() {
+                if r < runs.len() {
+                    run.extend(runs.remove(r));
+                }
+            }
+            runs.push(run);
+        }
+        // A run's ends: the vertices only one of its edges has.
+        let run_ends = |run: &[usize]| -> Vec<u32> {
+            let all: Vec<u32> = run.iter().filter_map(|&i| t.edges.get(i)).flat_map(|e| e.vertices.clone()).collect();
+            let mut once: Vec<u32> =
+                all.iter().copied().filter(|v| all.iter().filter(|w| *w == v).count() == 1).collect();
+            // A single closed edge has one vertex, listed once.
+            if run.len() == 1 && once.len() == 1 {
+                once.push(once.first().copied().unwrap_or_default());
+            }
+            once
+        };
+        if runs.len() > 1 && ends.iter().any(Option::is_some) {
+            runs.retain(|run| {
+                let at: Vec<Vec<u32>> = run_ends(run).iter().map(|v| around(*v)).collect();
                 let touches = |w: &Option<Want>, k: usize| {
                     w.as_ref().is_none_or(|w| at.get(k).is_some_and(|fs| fs.iter().any(|f| face_holds(w, *f))))
                 };
@@ -148,11 +201,16 @@ fn edge_between(
                 }
             });
         }
-        for i in here {
-            if let Some(n) = body.names.edges.get(i) {
-                found.push((body.feature.clone(), n.to_string()));
-            }
+        for run in runs {
+            let names: Vec<(String, String)> = run
+                .iter()
+                .filter_map(|&i| body.names.edges.get(i).map(|n| (body.feature.clone(), n.to_string())))
+                .collect();
+            found.push(names);
         }
     }
     found
 }
+
+/// Most edges between one pair of faces looked at.
+const MAX_RUN_EDGES: usize = 256;
