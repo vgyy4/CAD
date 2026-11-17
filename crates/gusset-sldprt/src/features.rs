@@ -412,6 +412,9 @@ struct Node {
     name_end: usize,
     /// Suppressed in the configuration read (round sw7, [`mark_suppressed`]).
     suppressed: bool,
+    /// The archive index of the node's first child (an extrude's: its sketch), when the header
+    /// refers to it rather than writing it there.
+    child: Option<u16>,
 }
 
 /// The feature nodes (`nodes2.feature_nodes`): a node-name object followed within 1500 bytes
@@ -473,6 +476,7 @@ fn feature_nodes(d: &[u8], nt: [u8; 2]) -> Result<Vec<Node>, String> {
             head_len: k - (e + 12).min(k),
             name_end: e,
             suppressed: false,
+            child: child_ref(d, e),
         });
         if out.len() > MAX_NODES {
             return Err(format!("more than {MAX_NODES} feature nodes"));
@@ -616,6 +620,45 @@ fn chosen_profiles(
     Some(Value::Array(
         chosen.iter().map(|c| json!({"bbox": [mm(c.bbox[0]), mm(c.bbox[1]), mm(c.bbox[2]), mm(c.bbox[3])]})).collect(),
     ))
+}
+
+/// The first child of a node, by archive index (round sw7): after the name, the flags, the id
+/// and zeros (and the empty string newer files write), a `u16` count of children, each an index
+/// or a nested object. An extrude's child is its sketch (back_shoulder_LT's Boss-Extrude2 refers
+/// to 0x22c, before Cut-Extrude1's 0x3d2: it extrudes Sketch2, not the later Sketch3).
+fn child_ref(d: &[u8], e: usize) -> Option<u16> {
+    let c0 = if d.get(e + 16..e + 19) == Some(&UTF16_MARK[..]) { e + 26 } else { e + 22 };
+    let n = u16_at(d, c0)?;
+    let r = u16_at(d, c0 + 2)?;
+    ((1..=8).contains(&n) && r != 0 && r & 0x8000 == 0).then_some(r)
+}
+
+/// The sketch an extrude or revolve uses (round sw7). Normally the last sketch read; a child
+/// index already seen names the same sketch; an index below one seen names the one sketch not yet
+/// used between the sketches of the nearest indices seen (gear box side1's Boss-Extrude5 uses
+/// Sketch5, read before the Sketch10 that Cut-Extrude3 used).
+fn feature_sketch(
+    child: Option<u16>,
+    last: &Option<String>,
+    order: &[String],
+    seen: &[(u16, String)],
+    used: &HashSet<String>,
+) -> Option<String> {
+    let Some(r) = child else { return last.clone() };
+    if let Some((_, s)) = seen.iter().find(|(k, _)| *k == r) {
+        return Some(s.clone());
+    }
+    let pos = |name: &str| order.iter().position(|s| s == name);
+    let Some(hi) = seen.iter().filter(|(k, _)| *k > r).min_by_key(|(k, _)| *k).and_then(|(_, s)| pos(s)) else {
+        return last.clone();
+    };
+    let lo = seen.iter().filter(|(k, _)| *k < r).max_by_key(|(k, _)| *k).and_then(|(_, s)| pos(s));
+    let from = lo.map_or(0, |p| p + 1);
+    let free: Vec<&String> = order.get(from..hi).unwrap_or_default().iter().filter(|s| !used.contains(*s)).collect();
+    match free.as_slice() {
+        [one] => Some((*one).clone()),
+        _ => last.clone(),
+    }
 }
 
 /// The first node block (either version) in `d[from..to]`.
@@ -3422,6 +3465,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut mirror_planes: HashMap<u32, (V3, V3)> = HashMap::new();
     // Node id -> name of each sketch read (lofts name their sections by id).
     let mut sketch_ids: HashMap<u32, String> = HashMap::new();
+    // The sketches read, in order, and the child indices of the features that used them.
+    let mut sketch_order: Vec<String> = Vec::new();
+    let mut sketch_seen: Vec<(u16, String)> = Vec::new();
+    let mut sketch_used: HashSet<String> = HashSet::new();
     // The contours the stream lists and chooses (round sw7), and those taken by a feature.
     let all_contours = contours(rf, &nodes.iter().map(|n| n.id).collect());
     let mut used_contours: HashSet<usize> = HashSet::new();
@@ -3552,6 +3599,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             sketch_by_name.insert(n.name.clone(), (sketches.len() - 1, jp));
             sketch_ids.insert(n.id, n.name.clone());
             last_sketch = Some(n.name.clone());
+            sketch_order.push(n.name.clone());
         } else if is_in(&cls, &REVOLVE)
             && endspec_decl(rf, a, b, b"moRevEndSpec_c")?.is_none()
             && endspec_candidates(rf, a, b)?.iter().any(in_es)
@@ -3573,6 +3621,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             }
         };
         if is_in(&cls, &EXTRUDE) {
+            let picked = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used);
+            if let (Some(r), Some(sk)) = (n.child, &picked) {
+                sketch_seen.push((r, sk.clone()));
+                sketch_used.insert(sk.clone());
+            }
+            let last_sketch = &picked;
             let dec = endspec_decl(rf, a, b, b"moEndSpec_c")?;
             let mut cands: Vec<EndSpec> =
                 dec.into_iter().chain(endspec_candidates(rf, a, b)?.into_iter().filter(in_es)).collect();
@@ -3791,10 +3845,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             js.insert("type".into(), json!("extrude"));
             js.insert("name".into(), json!(n.name));
             js.insert("sketch".into(), json!(last_sketch));
-            js.insert(
-                "profiles".into(),
-                chosen(&last_sketch, &sketch_ids, &sketch_by_name, &sketches, &mut feat_lo, b),
-            );
+            js.insert("profiles".into(), chosen(last_sketch, &sketch_ids, &sketch_by_name, &sketches, &mut feat_lo, b));
             js.insert("operation".into(), json!(if flip { "intersect" } else { op }));
             // A cut reaches every body (SolidWorks' default scope): with several imported bodies
             // it names them all (5bq's two extrudes cut all four of its bodies).
@@ -3860,6 +3911,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 first_solid = Some(n.name.clone());
             }
         } else if is_in(&cls, &REVOLVE) {
+            let picked = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used);
+            if let (Some(r), Some(sk)) = (n.child, &picked) {
+                sketch_seen.push((r, sk.clone()));
+                sketch_used.insert(sk.clone());
+            }
+            let last_sketch = &picked;
             let ps = params(rf, a, b, nt)?;
             let ang = ps.iter().find(|v| v.abs() <= TAU + 1e-9);
             let op = op_for("moRevCut_c", solid);
@@ -3867,10 +3924,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             js.insert("type".into(), json!("revolve"));
             js.insert("name".into(), json!(n.name));
             js.insert("sketch".into(), json!(last_sketch));
-            js.insert(
-                "profiles".into(),
-                chosen(&last_sketch, &sketch_ids, &sketch_by_name, &sketches, &mut feat_lo, b),
-            );
+            js.insert("profiles".into(), chosen(last_sketch, &sketch_ids, &sketch_by_name, &sketches, &mut feat_lo, b));
             js.insert("operation".into(), json!(op));
             js.insert("angle".into(), json!(ang.map_or(360.0, |v| round_to(v.to_degrees(), 9))));
             if op != "new" {
@@ -5198,6 +5252,24 @@ mod end_face_tests {
     /// Node names inside the header of the node before them: a reused sketch's `Sketch3<3>` and
     /// an attribute go; a hole wizard's nested sketch stays.
     #[test]
+    fn an_extrude_takes_the_sketch_its_child_index_names() {
+        let order: Vec<String> = ["Sketch1", "Sketch2", "Sketch3"].map(String::from).to_vec();
+        let last = Some("Sketch3".to_string());
+        let mut seen = vec![(0xd8u16, "Sketch1".to_string()), (0x3d2, "Sketch3".to_string())];
+        let mut used: HashSet<String> = seen.iter().map(|(_, s)| s.clone()).collect();
+        // Between Sketch1's index and Sketch3's: the one sketch not yet used.
+        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used).as_deref(), Some("Sketch2"));
+        // An index seen names its sketch again; a larger one, or none, the last sketch.
+        assert_eq!(feature_sketch(Some(0xd8), &last, &order, &seen, &used).as_deref(), Some("Sketch1"));
+        assert_eq!(feature_sketch(Some(0x500), &last, &order, &seen, &used).as_deref(), Some("Sketch3"));
+        assert_eq!(feature_sketch(None, &last, &order, &seen, &used).as_deref(), Some("Sketch3"));
+        // Two free sketches in between: the last sketch, as before.
+        seen.retain(|(_, s)| s != "Sketch1");
+        used.remove("Sketch1");
+        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used).as_deref(), Some("Sketch3"));
+    }
+
+    #[test]
     fn suppressed_features_are_marked_by_their_own_block() {
         // Writes a node block at `k` with the suppression word `w` 47 bytes before it.
         let put = |d: &mut Vec<u8>, k: usize, w: u32| {
@@ -5221,6 +5293,7 @@ mod end_face_tests {
             head_len: 0,
             name_end,
             suppressed: false,
+            child: None,
         };
         let mut nodes = vec![node(0, 20, 100), node(200, 210, 300), node(220, 230, 300), node(700, 720, 800)];
         mark_suppressed(&d, &mut nodes);
@@ -5240,6 +5313,7 @@ mod end_face_tests {
             head_len: 0,
             name_end: 0,
             suppressed: false,
+            child: None,
         };
         let mut nodes = vec![
             node(100, 300, "moExtrusion_c", "Boss-Extrude2"),
@@ -5303,6 +5377,7 @@ mod pattern_tests {
             head_len: 0,
             name_end: 0,
             suppressed: false,
+            child: None,
         };
         // Furo4 declares moHoleWzd_c; Furo1 and Furo2 name it as class 709.
         let nodes = vec![
