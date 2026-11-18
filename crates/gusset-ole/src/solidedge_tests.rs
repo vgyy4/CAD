@@ -1183,3 +1183,49 @@ fn a_chamfer_with_several_reference_faces_is_one_chamfer_per_face() {
     assert_eq!(f[3]["edges"][0]["midpoint"], json!([10.0, 0.0, 0.0]));
     assert_eq!(f[3]["face"]["surface"]["origin"], json!([0.0, 0.0, 0.0]));
 }
+
+#[test]
+fn a_blind_hole_with_a_drill_point_cuts_a_cone_below_it() {
+    // A value with a unit lists its features 12 bytes later: `f64`, `02 00 9d 00`, `u32 1`, 8
+    // zero bytes, `u32 3`, the count and the entries.
+    let mut angle = 2.0f64.to_le_bytes().to_vec();
+    angle.extend([2, 0, 0x9d, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 30, 0, 0, 0, 9, 0]);
+    assert_eq!(value(&obj(36, 27, &angle)), Some(2.0));
+    // The hole of the test above, 2 mm deep (slot 7: 13, 9: the depth) with a point of 2 rad.
+    let mut more = obj(6, 21, &plane_payload([0.0, 0.0, 0.005], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]));
+    let mut prof = func("JProfileRecomputeEx", &[&[21], &[22]]);
+    prof.extend(23u32.to_le_bytes());
+    prof.push(9 * 8);
+    prof.extend("Profile2d".encode_utf16().flat_map(u16::to_le_bytes));
+    more.extend(obj(26, 22, &prof));
+    let mut p2 = 1u32.to_le_bytes().to_vec();
+    p2.extend(24u32.to_le_bytes());
+    more.extend(obj(65, 23, &p2));
+    more.extend(obj(9, 24, &hole2d([0.01, 0.005], 0.004)));
+    more.extend(obj(36, 25, &small(13.0)));
+    more.extend(obj(36, 26, &small(1.0)));
+    more.extend(obj(36, 27, &angle));
+    more.extend(obj(36, 28, &small(0.002)));
+    more.extend(obj(
+        38,
+        30,
+        &func(
+            "JMHoleFunction",
+            &[&[30], &[12], &[22], &[0], &[0], &[0], &[0], &[25], &[26], &[28], &[0], &[0], &[0], &[0], &[0], &[27]],
+        ),
+    ));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = t["features"].as_array().unwrap();
+    assert_eq!((&f[3]["type"], &f[3]["distance"]), (&json!("extrude"), &json!(-2.0)), "{t}");
+    let (sk, cone) = (&f[4], &f[5]);
+    assert_eq!((&cone["type"], &cone["operation"], &cone["angle"]), (&json!("revolve"), &json!("cut"), &json!(360.0)));
+    // The section's plane: through the hole's centre, x across, y down the hole.
+    assert_eq!(
+        sk["plane"],
+        json!({"origin": [10.0, 5.0, 5.0], "x_axis": [1.0, 0.0, 0.0], "y_axis": [0.0, 0.0, -1.0]}),
+        "{t}"
+    );
+    let tip = 2.0 / libm::tan(1.0);
+    let ys: Vec<f64> = sk["points"].as_array().unwrap().iter().map(|p| p["y"].as_f64().unwrap()).collect();
+    assert!(ys.iter().any(|y| (y - (2.0 + tip)).abs() < 1e-6), "{sk}");
+}

@@ -505,11 +505,16 @@ pub(crate) fn axis_line(b: &[u8]) -> Option<(V3, V3)> {
 }
 
 /// The value of a scalar: a small value object (`f64` at +8; one shared by many features lists
-/// them after it: `u32` count at +24, then a serial and `u16` each) or a dimension relation,
+/// them after it: `u32 3`, a count, then a serial and `u16` each) or a dimension relation,
 /// where `u32 1, u32 k` near +0x88 is followed later by `k` again and the value.
 pub(crate) fn value(b: &[u8]) -> Option<f64> {
-    let listed =
-        u32_at(b, 24).and_then(|n| usize::try_from(n).ok()).is_some_and(|n| n < 10_000 && b.len() == 28 + 6 * n);
+    // The list starts after `u32 3` at +20 (+32 for a value with a unit: 12 more bytes).
+    let listed = [20, 32].iter().any(|&at| {
+        u32_at(b, at) == Some(3)
+            && u32_at(b, at + 4)
+                .and_then(|n| usize::try_from(n).ok())
+                .is_some_and(|n| n < 10_000 && b.len() == at + 8 + 6 * n)
+    });
     let v = if b.len() <= 64 || listed {
         f64_at(b, 8)?
     } else {
@@ -2429,6 +2434,42 @@ fn hole(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), String> {
     }
     s.out.push(sk);
     s.out.push(j);
+    // A blind hole's drill point (slot 15, the point's angle in radians): a cone below each
+    // circle, cut by a revolve of its half section about the hole's axis.
+    if let (false, Some(point)) = (through, small(15)) {
+        if !(point.is_finite() && point > 1e-3 && point < core::f64::consts::PI - 1e-3) {
+            return Err("the hole's point angle is out of range".into());
+        }
+        let way = depth.signum();
+        for (k, (p, c)) in profiles.iter().flat_map(|p| p.curves.iter().map(move |c| (p, c))).enumerate() {
+            let &Curve2::Circle(c2, r) = c else { continue };
+            let y = p.y();
+            let d = [p.normal[0] * way, p.normal[1] * way, p.normal[2] * way];
+            let centre = [
+                p.origin[0] + c2[0] * p.x[0] + c2[1] * y[0],
+                p.origin[1] + c2[0] * p.x[1] + c2[1] * y[1],
+                p.origin[2] + c2[0] * p.x[2] + c2[1] * y[2],
+            ];
+            let (h, tip) = (depth.abs() / MM, r / libm::tan(point / 2.0));
+            let section = Profile {
+                origin: centre,
+                normal: cross(p.x, d),
+                x: p.x,
+                curves: vec![
+                    Curve2::Line([0.0, h], [r, h]),
+                    Curve2::Line([r, h], [0.0, h + tip]),
+                    Curve2::Line([0.0, h + tip], [0.0, h]),
+                ],
+                turned: false,
+                backwards: vec![false; 3],
+            };
+            let point_name = format!("{name}_Point{}", k + 1);
+            let sketch = format!("{point_name}_Sketch");
+            s.out.push(sketch_json(&sketch, &[section], Some(([0.0, 0.0], [0.0, 1.0])))?);
+            s.out.push(json!({"type": "revolve", "name": point_name, "sketch": sketch, "profiles": "all",
+                              "operation": "cut", "target": target, "axis": {"line": "axis"}, "angle": 360.0}));
+        }
+    }
     Ok(())
 }
 
