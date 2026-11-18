@@ -270,16 +270,47 @@ pub(crate) fn resolve(
     // still one when the member's row shrinks the line to nothing); last to a looser tolerance
     // (a line shrunk to nothing leaves the solve singular there, and it closes in slowly).
     let mut first = None;
+    // Point-to-point distances: the points keep their order, as the lines keep their way.
+    let pairs: Vec<(usize, usize)> = cons
+        .iter()
+        .filter(|c| c.kind == Kind::Distance && !c.driven)
+        .filter_map(|c| match c.ents.as_slice() {
+            [a, b] if dc.role(*a) == Role::SkPoint && dc.role(*b) == Role::SkPoint => Some((*a, *b)),
+            _ => None,
+        })
+        .collect();
     // Each first holding the lines that run along the sketch's axes as they do (a sketch the
     // file leaves free to turn keeps its way round, as Inventor's solve keeps it), then not.
-    let tries = [(false, 1e-10), (true, 1e-10), (true, LOOSE)].into_iter().flat_map(|t| [(t, true), (t, false)]);
-    for ((by_radius, tolerance), hold) in tries {
+    // Last, each line that ends tangent on an arc shrunk to nothing in turn (an iPart's formula
+    // can make the arc reach the line's far end: the solve is then singular at the shape).
+    let t = topo(sk);
+    let shrink: Vec<Option<usize>> = std::iter::once(None)
+        .chain(sk.curves.iter().filter_map(|c| match *c {
+            Curve::Line { id, .. } if tangent_end(&t, &cons, id).is_some() => Some(Some(id)),
+            _ => None,
+        }))
+        .collect();
+    let tries = shrink.iter().flat_map(|&collapse| {
+        let modes: &[(bool, f64)] = if collapse.is_none() {
+            &[(false, 1e-10), (true, 1e-10), (true, LOOSE)]
+        } else {
+            &[(true, 1e-10), (true, LOOSE)]
+        };
+        modes.iter().flat_map(move |&m| [(m, true, collapse), (m, false, collapse)])
+    });
+    for ((by_radius, tolerance), hold, collapse) in tries {
         let max_iterations = if tolerance >= LOOSE { 1000 } else { 100 };
-        let (g, ids) = system(dc, sk, &cons, moved, projected, by_radius, hold)?;
+        let (g, ids) = system(dc, sk, &cons, moved, projected, Mode { by_radius, hold, collapse })?;
         let r =
             gusset_sketch::solve_continued(&g, &SolveOptions { tolerance, max_iterations, ..SolveOptions::default() });
         if r.status != SolveStatus::Failed && r.conflicting.is_empty() {
-            return solved(sk, &ids, &r.sketch).map(Some);
+            let out = solved(sk, &ids, &r.sketch)?;
+            // A solve that turns a line round found another shape than Inventor's.
+            if !turned(sk, &out, &pairs) {
+                return Ok(Some(out));
+            }
+            first.get_or_insert_with(|| "it turns a line round".to_string());
+            continue;
         }
         if first.is_none() {
             let conflict = r.conflicting.first().and_then(|&k| g.constraint(k)).map(|k| {
@@ -293,6 +324,24 @@ pub(crate) fn resolve(
         }
     }
     Err(format!("its sketch does not solve for the member's row: {}", first.unwrap_or_default()))
+}
+
+/// Whether a line of the solved sketch, or one of the point pairs `pairs`, runs the other way
+/// than in the saved one.
+fn turned(before: &Sketch, after: &Sketch, pairs: &[(usize, usize)]) -> bool {
+    let at = |sk: &Sketch| -> HashMap<usize, P2> { sk.points.iter().map(|&(i, u, v, _)| (i, (u, v))).collect() };
+    let (p0, p1) = (at(before), at(after));
+    let lines = after.curves.iter().filter_map(|c| match *c {
+        Curve::Line { a, b, .. } => Some((a, b)),
+        _ => None,
+    });
+    lines.chain(pairs.iter().copied()).any(|(a, b)| match (p0.get(&a), p0.get(&b), p1.get(&a), p1.get(&b)) {
+        (Some(a0), Some(b0), Some(a1), Some(b1)) => {
+            let (u, w) = ((b0.0 - a0.0, b0.1 - a0.1), (b1.0 - a1.0, b1.1 - a1.1));
+            libm::hypot(u.0, u.1) > NOTHING && libm::hypot(w.0, w.1) > NOTHING && u.0 * w.0 + u.1 * w.1 < 0.0
+        }
+        _ => false,
+    })
 }
 
 /// The saved sketch with the solved places: points, circle radii; lines the row shrank to
@@ -330,9 +379,9 @@ fn system(
     cons: &[Con],
     moved: &HashMap<usize, P2>,
     projected: &dyn Fn(usize) -> bool,
-    by_radius: bool,
-    hold: bool,
+    mode: Mode,
 ) -> Result<(Gs, HashMap<usize, EntityId>), String> {
+    let Mode { by_radius, hold, collapse } = mode;
     let (mut g, ids) = to_gs(sk)?;
     // Projected points the row moves start (and are fixed) where they move to.
     let mut order: Vec<(&usize, &P2)> = moved.iter().collect();
@@ -370,7 +419,17 @@ fn system(
             }
         }
     }
+    if let Some(l) = collapse {
+        let &(a, b) = t.line.get(&l).ok_or("a shrunk line is missing")?;
+        push(&mut g, Constraint::Coincident(id(a)?, id(b)?))?;
+    }
     for c in cons {
+        // A line shrunk to nothing has no way to run: what holds its way goes.
+        let ways =
+            matches!(c.kind, Kind::Parallel | Kind::Perpendicular | Kind::Horizontal | Kind::Vertical | Kind::Tangent);
+        if ways && collapse.is_some_and(|l| c.ents.contains(&l)) {
+            continue;
+        }
         if c.driven {
             // Read all the same: the member's row holds its measured value.
             let _ = c.param.and_then(|p| dc.param(p));
@@ -565,7 +624,7 @@ fn system(
     if hold {
         for c in &sk.curves {
             let Curve::Line { id: l, a, b, .. } = *c else { continue };
-            if projected(a) && projected(b) {
+            if (projected(a) && projected(b)) || collapse == Some(l) {
                 continue;
             }
             let (p, q) = (saved.p(a)?, saved.p(b)?);
@@ -583,6 +642,27 @@ fn system(
     Ok((g, ids))
 }
 
+/// How [`system`] states the sketch: angles of lines that end tangent on an arc by the arc's
+/// radius line; lines along the sketch's axes held so; one line shrunk to nothing.
+#[derive(Clone, Copy)]
+struct Mode {
+    by_radius: bool,
+    hold: bool,
+    collapse: Option<usize>,
+}
+
+/// The arc a line ends tangent on (a tangent constraint names both and the line's end is one
+/// of the arc's): the arc and that end.
+fn tangent_end(t: &Topo, cons: &[Con], l: usize) -> Option<(usize, usize)> {
+    let &(la, lb) = t.line.get(&l)?;
+    cons.iter().filter(|c| c.kind == Kind::Tangent && c.ents.contains(&l)).find_map(|c| {
+        c.ents.iter().find_map(|arc| {
+            let (s, e) = t.circle.get(arc)?.1?;
+            [la, lb].into_iter().find(|&p| p == s || p == e).map(|end| (*arc, end))
+        })
+    })
+}
+
 /// The radius line of the arc a line ends tangent on (a tangent constraint names both and the
 /// line's end is one of the arc's), drawn from the arc's centre to that end as construction,
 /// with its turn from the line in the saved sketch.
@@ -593,19 +673,13 @@ fn radius_line(
     id: &dyn Fn(usize) -> Result<EntityId, String>,
     l: usize,
 ) -> Result<Option<(EntityId, f64)>, String> {
-    let Some(&(la, lb)) = saved.t.line.get(&l) else { return Ok(None) };
-    for c in cons.iter().filter(|c| c.kind == Kind::Tangent && c.ents.contains(&l)) {
-        for arc in &c.ents {
-            let Some(&(cen, Some((s, e)))) = saved.t.circle.get(arc) else { continue };
-            let Some(end) = [la, lb].into_iter().find(|&p| p == s || p == e) else { continue };
-            let (o, q) = (saved.p(cen)?, saved.p(end)?);
-            let h = g.add_line_between(id(cen)?, id(end)?).map_err(|x| format!("its sketch is not usable: {x}"))?;
-            g.set_construction(h, true).map_err(|x| format!("its sketch is not usable: {x}"))?;
-            let turn = wrap(libm::atan2(q.1 - o.1, q.0 - o.0) - saved.angle(l)?);
-            return Ok(Some((h, turn)));
-        }
-    }
-    Ok(None)
+    let Some((arc, end)) = tangent_end(saved.t, cons, l) else { return Ok(None) };
+    let &(cen, _) = saved.t.circle.get(&arc).ok_or("a tangent arc is missing")?;
+    let (o, q) = (saved.p(cen)?, saved.p(end)?);
+    let h = g.add_line_between(id(cen)?, id(end)?).map_err(|x| format!("its sketch is not usable: {x}"))?;
+    g.set_construction(h, true).map_err(|x| format!("its sketch is not usable: {x}"))?;
+    let turn = wrap(libm::atan2(q.1 - o.1, q.0 - o.0) - saved.angle(l)?);
+    Ok(Some((h, turn)))
 }
 
 /// Adds a constraint to the copy.
@@ -714,4 +788,68 @@ pub(crate) fn map_pick(before: &Sketch, after: &Sketch, p: P2) -> Option<P2> {
     let region = a0.profiles.iter().filter(|pr| inside(pr)).min_by(|x, y| x.area.total_cmp(&y.area))?;
     let found = a1.profiles.iter().find(|pr| pr.pieces == region.pieces)?;
     Some((found.label[0], found.label[1]))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::float_cmp)]
+    use super::*;
+
+    /// A rectangle `w` x `h` (mm) split by a vertical line at `x`: points 1..=6, lines 11..=17.
+    fn split_box(w: f64, h: f64, x: f64) -> Sketch {
+        let points = vec![
+            (1, 0.0, 0.0, false),
+            (2, w, 0.0, false),
+            (3, w, h, false),
+            (4, 0.0, h, false),
+            (5, x, 0.0, false),
+            (6, x, h, false),
+        ];
+        let line = |id, a, b| Curve::Line { id, a, b, con: false };
+        let curves = vec![
+            line(11, 1, 5),
+            line(12, 5, 2),
+            line(13, 2, 3),
+            line(14, 3, 6),
+            line(15, 6, 4),
+            line(16, 4, 1),
+            line(17, 5, 6),
+        ];
+        Sketch { name: "S".into(), m: [0.0; 16], points, curves, before: None }
+    }
+
+    #[test]
+    fn angles_wrap_into_a_half_turn_either_way() {
+        let pi = std::f64::consts::PI;
+        assert!((wrap(3.0 * pi / 2.0) + pi / 2.0).abs() < 1e-12);
+        assert!((wrap(-pi) - pi).abs() < 1e-12);
+        assert_eq!(wrap(0.25), 0.25);
+    }
+
+    /// A pick on the saved sketch lands in the same region of the solved one, found by the
+    /// curves around it, wherever the region moved.
+    #[test]
+    fn a_pick_follows_its_region() {
+        let (before, after) = (split_box(20.0, 10.0, 5.0), split_box(40.0, 10.0, 30.0));
+        let right = map_pick(&before, &after, (15.0, 5.0)).unwrap();
+        assert!(right.0 > 30.0 && right.0 < 40.0, "{right:?}");
+        let left = map_pick(&before, &after, (2.0, 5.0)).unwrap();
+        assert!(left.0 > 0.0 && left.0 < 30.0, "{left:?}");
+        assert_eq!(map_pick(&before, &after, (25.0, 5.0)), None);
+    }
+
+    /// A solve that runs a line, or a dimensioned pair of points, the other way is not
+    /// Inventor's shape.
+    #[test]
+    fn a_line_or_a_pair_that_turns_round_is_noticed() {
+        let before = split_box(20.0, 10.0, 5.0);
+        assert!(!turned(&before, &split_box(40.0, 10.0, 30.0), &[(1, 5)]));
+        // The split line moves past the right side: line 12 (5 -> 2) runs back.
+        assert!(turned(&before, &split_box(20.0, 10.0, 25.0), &[]));
+        let mut flipped = before.clone();
+        flipped.curves.clear();
+        flipped.points[4].1 = -5.0;
+        assert!(turned(&before, &flipped, &[(1, 5)]));
+        assert!(!turned(&before, &flipped, &[]));
+    }
 }
