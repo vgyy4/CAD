@@ -4,8 +4,8 @@
 use crate::fixtures::ole;
 use crate::solidedge_features::{
     Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, close_on_axis, close_open, copy_frame, curve,
-    edge_pick, edge_set, face_pick, face_set, feature_tree, history, key_point_angle, key_point_reach, parse_func,
-    plane, reach_in_box, stored_box, value, vertex_set,
+    edge_pick, edge_set, face_pick, face_set, feature_tree, history, hole_circle, key_point_angle, key_point_reach,
+    parse_func, plane, reach_in_box, stored_box, value, vertex_set,
 };
 use serde_json::json;
 
@@ -1035,4 +1035,56 @@ fn a_sketch_spline_comes_into_the_profile_plane() {
     );
     // Off the plane: not in it.
     assert_eq!(e.flat([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]), None);
+}
+
+/// A hole's 2D member: centre, two words of -1, the diameter, `u16 0` and its circle.
+fn hole2d(c: [f64; 2], d: f64) -> Vec<u8> {
+    let mut v = f64s(&[c[0], c[1], -1.0, -1.0, d]);
+    v.extend([0, 0]);
+    v.extend(f64s(&[c[0], c[1], d / 2.0, 0.0, 1.0]));
+    v.extend([1, 0, 0, 0, 0, 1, 0, 0, 0x80]);
+    v
+}
+
+#[test]
+fn a_hole_cuts_its_circle() {
+    assert_eq!(hole_circle(&obj(9, 1, &hole2d([0.01, 0.005], 0.004))), Some(Curve2::Circle([0.01, 0.005], 0.002)));
+    let mut wrong = hole2d([0.01, 0.005], 0.004);
+    wrong[38] ^= 0x10;
+    assert_eq!(hole_circle(&obj(9, 1, &wrong)), None);
+    // The protrusion part, then a hole through all against the normal (slot 7: 14, 8: 1)
+    // whose profile on the box's top plane lists a key point, an empty slot and the hole. The
+    // extent's value object lists the features that share it (`u32` count at +24).
+    let mut more = obj(6, 21, &plane_payload([0.0, 0.0, 0.005], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]));
+    let mut prof = func("JProfileRecomputeEx", &[&[21], &[22]]);
+    prof.extend(23u32.to_le_bytes());
+    prof.push(9 * 8);
+    prof.extend("Profile2d".encode_utf16().flat_map(u16::to_le_bytes));
+    more.extend(obj(26, 22, &prof));
+    let mut p2 = 2u32.to_le_bytes().to_vec();
+    for m in [0xffff_fffdu32, 24] {
+        p2.extend(m.to_le_bytes());
+    }
+    more.extend(obj(65, 23, &p2));
+    more.extend(obj(9, 24, &hole2d([0.01, 0.005], 0.004)));
+    let mut through = 14.0f64.to_le_bytes().to_vec();
+    through.extend([1, 0, 1, 0, 3, 0, 0, 0, 2, 0, 0, 0, 30, 0, 0, 0, 9, 0, 31, 0, 0, 0, 9, 0]);
+    more.extend(obj(36, 25, &through));
+    more.extend(obj(36, 26, &small(1.0)));
+    more.extend(obj(
+        38,
+        30,
+        &func("JMHoleFunction", &[&[30], &[12], &[22], &[0], &[0], &[0], &[0], &[25], &[26], &[0]]),
+    ));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = &t["features"][3];
+    assert_eq!(
+        (&f["type"], &f["operation"], &f["through_all"], &f["target"]),
+        (&json!("extrude"), &json!("cut"), &json!(true), &json!("Protrusion_1")),
+        "{t}"
+    );
+    assert!(f["distance"].as_f64().unwrap() < 0.0);
+    let sk = &t["features"][2];
+    assert_eq!(sk["curves"].as_array().unwrap().len(), 1, "{t}");
+    assert_eq!(sk["curves"][0]["radius"], json!(2.0));
 }

@@ -504,10 +504,13 @@ pub(crate) fn axis_line(b: &[u8]) -> Option<(V3, V3)> {
     Some((p, unit(d)?))
 }
 
-/// The value of a scalar: a small value object (`f64` at +8) or a dimension relation, where
-/// `u32 1, u32 k` near +0x88 is followed later by `k` again and the value.
+/// The value of a scalar: a small value object (`f64` at +8; one shared by many features lists
+/// them after it: `u32` count at +24, then a serial and `u16` each) or a dimension relation,
+/// where `u32 1, u32 k` near +0x88 is followed later by `k` again and the value.
 pub(crate) fn value(b: &[u8]) -> Option<f64> {
-    let v = if b.len() <= 64 {
+    let listed =
+        u32_at(b, 24).and_then(|n| usize::try_from(n).ok()).is_some_and(|n| n < 10_000 && b.len() == 28 + 6 * n);
+    let v = if b.len() <= 64 || listed {
         f64_at(b, 8)?
     } else {
         let start =
@@ -1145,6 +1148,24 @@ fn not_a_curve(class: &str) -> bool {
         && !["JLine2d", "JArc2d", "JCircle2d", "JEllipArc2d", "JEllipse2d", "JBspCurve2d", "JPoint2d"].contains(&c)
 }
 
+/// The circle of a hole's 2D member (a hole profile lists it with its key points): the
+/// centre at +8, the diameter at +40, then `u16 0` and the circle laid out as a circle
+/// member's numbers (centre, radius, `0.0, 1.0`).
+pub(crate) fn hole_circle(b: &[u8]) -> Option<Curve2> {
+    let f = |k: usize| f64_at(b, k).filter(|v| v.is_finite() && v.abs() < 1e6);
+    let (cx, cy, dia) = (f(8)?, f(16)?, f(40)?);
+    let (x, y, r) = (f(50)?, f(58)?, f(66)?);
+    let same = |a: f64, b: f64| (a - b).abs() <= 1e-12 * (1.0 + a.abs());
+    (u16_at(b, 48)? == 0
+        && f(74)? == 0.0
+        && f(82)? == 1.0
+        && r > 0.0
+        && same(cx, x)
+        && same(cy, y)
+        && same(dia, 2.0 * r))
+    .then_some(Curve2::Circle([x, y], r))
+}
+
 /// A profile: its plane and curves.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Profile {
@@ -1219,6 +1240,12 @@ fn members(st: &Store, b: &[u8], at: usize, n: u32, plane: Option<(V3, V3, V3)>)
             backwards.push(false);
             continue;
         };
+        // A hole's circle (a hole profile's member).
+        if let Some(c) = hole_circle(mb) {
+            curves.push(c);
+            backwards.push(false);
+            continue;
+        }
         // A dimension or relation listed with the curves (not shaped as a curve: a curve's
         // byte at +8 is 0).
         if mb.get(8) != Some(&0) {
@@ -1704,6 +1731,8 @@ enum Kind {
     /// A helical protrusion or cutout (`JMHelix*Function`).
     HelixProtrusion,
     HelixCutout,
+    /// A hole (`JMHoleFunction`).
+    Hole,
     /// A mirror copy of features (`JMMirrorCopyFunction`, `JMFastMirrorFunction`).
     Mirror,
     /// A cosmetic thread: no geometry.
@@ -1725,6 +1754,7 @@ fn kind(class: &str) -> Kind {
         "JMLoftedProtrusionFunction" => Kind::LoftedProtrusion,
         "JMLoftedCutoutFunction" => Kind::LoftedCutout,
         "JMChamferFunction" => Kind::Chamfer,
+        "JMHoleFunction" => Kind::Hole,
         "JMThreadFunction" => Kind::Thread,
         "JMThinwallAssocFunctionNew" => Kind::ThinWall,
         "JMMirrorCopyFunction" | "JMFastMirrorFunction" => Kind::Mirror,
@@ -2258,6 +2288,50 @@ fn thin_wall(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), Stri
     Ok(())
 }
 
+/// A hole (`JMHoleFunction`) as a cut of its circles: slot 2 the profiles (each lists the hole's
+/// 2D member, see [`hole_circle`]), 7 the extent (13 finite, 14 through all), 8 the side (as
+/// an extrude's), 9 the depth. Only plain holes rebuild to the part: a counterbore or
+/// countersink shows in the rebuild check.
+fn hole(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), String> {
+    let target = s.first_body.clone().ok_or("a hole before any body")?;
+    let profiles: Vec<Profile> =
+        f.list(2).iter().filter(|&&p| p != 0).map(|&p| profile(st, p)).collect::<Result<_, _>>()?;
+    if profiles.is_empty() || profiles.iter().any(|p| p.curves.is_empty()) {
+        return Err("the hole has no circle".into());
+    }
+    if profiles.iter().flat_map(|p| &p.curves).any(|c| !matches!(c, Curve2::Circle(..))) {
+        return Err("a hole profile with other curves than its circle".into());
+    }
+    let small = |i: usize| f.slot(i).and_then(|v| st.obj(v)).and_then(value);
+    let code = |i: usize| small(i).filter(|v| v.fract() == 0.0 && v.abs() < 1e6).map(|v| v as i64);
+    let (depth, through) = match code(7) {
+        Some(13) => {
+            let d = small(9)
+                .map(|v| v * MM)
+                .filter(|v| v.is_finite() && *v > 1e-9)
+                .ok_or("the hole depth is not readable")?;
+            (d, false)
+        }
+        Some(14) => (THROUGH, true),
+        other => return Err(format!("hole extent {other:?} (not read)")),
+    };
+    let depth = match code(8) {
+        Some(1) => -depth,
+        Some(2) => depth,
+        other => return Err(format!("hole side {other:?} (not read)")),
+    };
+    let sketch = format!("{name}_Sketch");
+    let sk = sketch_json(&sketch, &profiles, None)?;
+    let mut j = json!({"type": "extrude", "name": name, "sketch": sketch, "profiles": "all", "operation": "cut",
+                       "target": target, "distance": rnd(depth), "symmetric": false});
+    if through {
+        put(&mut j, "through_all", json!(true));
+    }
+    s.out.push(sk);
+    s.out.push(j);
+    Ok(())
+}
+
 /// A mirror copy of features (`JMMirrorCopyFunction`, `JMFastMirrorFunction`): slot 2 the
 /// mirror plane, 3 the features copied; each built again, reflected, into the first body.
 fn mirror(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), String> {
@@ -2343,6 +2417,13 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             }
             Kind::ThinWall => {
                 if let Err(why) = thin_wall(&st, &mut s, func, &name) {
+                    s.out.push(unsupported(&name, what, &why));
+                }
+            }
+            Kind::Hole => {
+                let before = s.out.len();
+                if let Err(why) = hole(&st, &mut s, func, &name) {
+                    s.out.truncate(before);
                     s.out.push(unsupported(&name, what, &why));
                 }
             }
