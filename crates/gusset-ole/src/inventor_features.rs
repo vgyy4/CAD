@@ -1051,6 +1051,9 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                         put(&mut j, "end_condition", json!("to_face"));
                         put(&mut j, "face", face);
                         put(&mut j, "reverse", json!(d < 0.0));
+                        // The face's surface extended (ADR 0061): where the face does not cover
+                        // the profile, Inventor's result ran to its extension.
+                        put(&mut j, "extend", json!(true));
                         put(&mut j, "_blind", json!(rnd(d)));
                     }
                     None => put(&mut j, "distance", json!(rnd(d))),
