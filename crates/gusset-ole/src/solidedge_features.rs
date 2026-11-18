@@ -1632,6 +1632,9 @@ enum Kind {
     LoftedProtrusion,
     LoftedCutout,
     ThinWall,
+    /// A helical protrusion or cutout (`JMHelix*Function`).
+    HelixProtrusion,
+    HelixCutout,
     /// A mirror copy of features (`JMMirrorCopyFunction`, `JMFastMirrorFunction`).
     Mirror,
     /// A cosmetic thread: no geometry.
@@ -1656,6 +1659,8 @@ fn kind(class: &str) -> Kind {
         "JMThreadFunction" => Kind::Thread,
         "JMThinwallAssocFunctionNew" => Kind::ThinWall,
         "JMMirrorCopyFunction" | "JMFastMirrorFunction" => Kind::Mirror,
+        "JMHelixProtrusionFunction" => Kind::HelixProtrusion,
+        "JMHelixCutoutFunction" => Kind::HelixCutout,
         "JMBodyFeatureAssocFunc" => Kind::BaseBody,
         _ => Kind::Other,
     }
@@ -2006,6 +2011,52 @@ fn sweep(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     Ok(())
 }
 
+/// A helical protrusion or cutout (`JMHelix*Function`): slot 2 the axis (a line object whose
+/// range is the helix's length), 4 the cross section's profile, 8 the turns; the profile is
+/// carried along the axis by the screw motion.
+fn helix(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), String> {
+    let small = |i: usize| f.slot(i).and_then(|v| st.obj(v)).and_then(value);
+    let section = f.slot(4).ok_or("the helix has no cross section")?;
+    let section = profile(st, section)?;
+    let b = f.slot(2).and_then(|a| st.obj(a)).ok_or("the helix axis is missing")?;
+    let (p, d) = axis_line(b).ok_or("the helix axis is not readable")?;
+    let (t0, t1) =
+        (f64_at(b, 61).ok_or("the helix axis is cut short")?, f64_at(b, 69).ok_or("the helix axis is cut short")?);
+    let height = (t1 - t0) * MM;
+    let turns = small(8).ok_or("the helix turns are not readable")?;
+    if !(height.is_finite() && height > 1e-6 && turns.is_finite() && turns > 1e-6 && turns < 2000.0) {
+        return Err("the helix height or turns are out of range".into());
+    }
+    let left = match small(7) {
+        Some(0.0) => false,
+        Some(1.0) => true,
+        other => return Err(format!("helix hand {other:?} (not read)")),
+    };
+    let origin = [p[0] + d[0] * t0, p[1] + d[1] * t0, p[2] + d[2] * t0];
+    let op = if k == Kind::HelixCutout {
+        "cut"
+    } else if s.first_body.is_none() {
+        "new"
+    } else {
+        "join"
+    };
+    let sketch = format!("{name}_Sketch");
+    let sj = sketch_json(&sketch, std::slice::from_ref(&section), None)?;
+    let mut j = json!({"type": "sweep", "name": name, "sketch": sketch, "operation": op,
+                       "helix": {"origin": arr_mm(origin), "axis": arr(d), "radius": 1.0,
+                                 "pitch": rnd(height / turns), "height": rnd(height), "left_handed": left}});
+    if op != "new" {
+        let fb = s.first_body.clone().ok_or("a cut before any body")?;
+        put(&mut j, "target", json!(fb));
+    }
+    s.out.push(sj);
+    s.out.push(j);
+    if s.first_body.is_none() {
+        s.first_body = Some(name.to_string());
+    }
+    Ok(())
+}
+
 /// A loft (`JMLofted*Function`): slot 2 the cross sections in order, each a sketch of its own.
 /// The ends' conditions (slots 11 to 16) are not read: the rebuild check tells.
 fn loft(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), String> {
@@ -2169,10 +2220,17 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
                     solids += 1;
                 }
             }
-            Kind::SweptProtrusion | Kind::SweptCutout | Kind::LoftedProtrusion | Kind::LoftedCutout => {
+            Kind::SweptProtrusion
+            | Kind::SweptCutout
+            | Kind::LoftedProtrusion
+            | Kind::LoftedCutout
+            | Kind::HelixProtrusion
+            | Kind::HelixCutout => {
                 let before = s.out.len();
                 let made = if matches!(k, Kind::SweptProtrusion | Kind::SweptCutout) {
                     sweep(&st, &mut s, func, &name, k)
+                } else if matches!(k, Kind::HelixProtrusion | Kind::HelixCutout) {
+                    helix(&st, &mut s, func, &name, k)
                 } else {
                     loft(&st, &mut s, func, &name, k)
                 };
