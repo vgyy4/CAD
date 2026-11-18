@@ -170,17 +170,17 @@ mod tests {
             .unwrap();
         assert_eq!(d.file, "AN806.ipt");
         assert!(!d.member);
-        assert_eq!(d.scale, 1.0);
+        assert!((d.scale - 1.0).abs() < 1e-12);
         assert!(d.own_features.is_empty(), "{:?}", d.own_features);
         let id: [f64; 16] = std::array::from_fn(|k| if k % 5 == 0 { 1.0 } else { 0.0 });
-        assert_eq!(d.transform, id);
+        assert!(d.transform.iter().zip(&id).all(|(a, b)| (a - b).abs() < 1e-12), "{:?}", d.transform);
         // A mirrored part's placement turns z round; an iPart member says so.
         let m = derived_base(&inventor_derived_part("rev1 corners.ipt", true, true, true), &Limits::default())
             .unwrap()
             .unwrap();
         assert!(m.member);
         assert_eq!(m.file, "rev1 corners.ipt");
-        assert_eq!(m.transform[10], -1.0);
+        assert!(m.transform.get(10).is_some_and(|v| (v + 1.0).abs() < 1e-12));
         assert_eq!(m.own_features, vec!["Extrusion1".to_string()]);
         let p = parameters(&inventor_derived_part("a.ipt", true, false, false), &Limits::default()).unwrap();
         assert_eq!(p, vec![("d0".to_string(), 1.0)]);

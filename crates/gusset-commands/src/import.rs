@@ -1962,7 +1962,9 @@ fn derive_features(
     let r = [[at(0), at(1), at(2)], [at(4), at(5), at(6)], [at(8), at(9), at(10)]].map(|row| row.map(|v| v / d.scale));
     let t = [at(3), at(7), at(11)];
     let unit = |i: usize, j: usize| if i == j { 1.0 } else { 0.0 };
-    let identity = (0..3).all(|i| (0..3).all(|j| close(r[i][j], unit(i, j))));
+    let rm = |i: usize, j: usize| r.get(i).and_then(|row| row.get(j)).copied().unwrap_or(0.0);
+    let el = |v: &[f64; 3], i: usize| v.get(i).copied().unwrap_or(0.0);
+    let identity = (0..3).all(|i| (0..3).all(|j| close(rm(i, j), unit(i, j))));
     let mut out = Vec::new();
     let tag = format!("Derive{level}");
     if !close(d.scale, 1.0) {
@@ -1982,16 +1984,17 @@ fn derive_features(
         return Ok(out);
     }
     // A reflection is I - 2 n n^T: n from the diagonal entry furthest below 1, then checked.
-    let j = (0..3).max_by(|&a, &b| (1.0 - r[a][a]).total_cmp(&(1.0 - r[b][b]))).unwrap_or(0);
-    let len = (0.5 * (1.0 - r[j][j])).max(0.0).sqrt();
-    let n = [0, 1, 2].map(|i| if i == j { len } else { -r[i][j] / (2.0 * len).max(1e-12) });
-    let reflection = len > 1e-6 && (0..3).all(|i| (0..3).all(|k| close(r[i][k], unit(i, k) - 2.0 * n[i] * n[k])));
+    let j = (0..3).max_by(|&a, &b| (1.0 - rm(a, a)).total_cmp(&(1.0 - rm(b, b)))).unwrap_or(0);
+    let len = (0.5 * (1.0 - rm(j, j))).max(0.0).sqrt();
+    let n = [0, 1, 2].map(|i| if i == j { len } else { -rm(i, j) / (2.0 * len).max(1e-12) });
+    let reflection =
+        len > 1e-6 && (0..3).all(|i| (0..3).all(|k| close(rm(i, k), unit(i, k) - 2.0 * el(&n, i) * el(&n, k))));
     if !reflection {
         return Err("the derive turns the base part's body, which is not read yet".into());
     }
     // x' = R x + t is a mirror in a plane only when t runs along the normal: the plane is t/2 off.
-    let along = t[0] * n[0] + t[1] * n[1] + t[2] * n[2];
-    if (0..3).any(|i| (t[i] - along * n[i]).abs() > 1e-9) {
+    let along: f64 = t.iter().zip(&n).map(|(a, b)| a * b).sum();
+    if t.iter().zip(&n).any(|(a, b)| (a - along * b).abs() > 1e-9) {
         return Err("the derive mirrors and shifts the base part's body, which is not read yet".into());
     }
     let origin = n.map(|c| 0.5 * along * c);
@@ -5506,11 +5509,11 @@ mod inventor_base_tests {
         let mut s2 = id.map(|v| 2.0 * v);
         (s2[10], s2[15]) = (-2.0, 1.0);
         let scaled = gusset_ole::inventor_derived::DerivedBase { scale: 2.0, ..base(s2) };
-        let f = derive_features(&mut vec!["E1".to_string()], &scaled, 1).unwrap();
+        let f = derive_features(&mut ["E1".to_string()], &scaled, 1).unwrap();
         let kinds: Vec<&str> = f.iter().map(|x| x["type"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["scale_body", "mirror", "remove_body"]);
         assert_eq!(f[1]["plane"]["normal"], json!([0.0, 0.0, 1.0]));
-        assert!(derive_features(&mut vec!["E1".to_string()], &base(s2), 1).is_err());
+        assert!(derive_features(&mut ["E1".to_string()], &base(s2), 1).is_err());
         // A shift moves; a turn is not read.
         let mut t = id;
         t[3] = 5.0;
