@@ -578,3 +578,35 @@ spans to 5e-9.
 
 **Open.** `query.body` measures a sheet with the closed-shell formula (the spindles' discs read -760 and
 -226 mm3); SPS_Injector's sphere edges.
+
+## Amendment (2026-11-18, 15): Inventor round ipt4 - coils, embosses, combines, splits, sheet-metal faces
+
+Round 4 took the features the reader did not export (notes AI to AN of
+`docs/formats/inventor-feature-tree.md`, with a table of what each unexported GUID is). The largest,
+`8e29cbee` (201 parts), is a derived part or iPart member: the file holds only the body of another file,
+so there is nothing to rebuild. What the reader now does:
+
+- **Coils** (`b41914da`, AI): a helical sweep of the profile (ADR 0034) with the kind, hand, axis
+  direction, pitch, height and turns read; flat ends, tapers, spirals and sections across the axis are
+  refused. The coil parts of both corpora stop at other features, so none gains yet.
+- **Embosses and engraves from the face** (`285e398c`, AJ): an extrude of the profile by the depth,
+  against or along the stored direction.
+- **Combines** (`c0236733`, AK): the bodies are those the features made (their `0e6870ae` body lists); a
+  feature that makes a combine's tool keeps its own body.
+- **Splits** (`8371a8ba`, AL): a trim is a split at its work plane and the removal of one side; split faces
+  are left out.
+- **Sheet-metal faces** (`55585fc6`, AM) of unfolded plates: the sketch is found from the loop's history
+  body, the face is an extrude by the thickness on the side the result shows.
+
+Only `gusset-ole` changed (Inventor reader); no shared code. Every new reading is a candidate only: the
+rebuild check (volume 2e-5, box) is unchanged and decides. Results (parts as history; OCCT corpus test,
+one part per process):
+
+| corpus | parts | history before | after | without a solid |
+|---|---|---|---|---|
+| first (Zenodo) | 47 | 28 | 28 | 0 |
+| second (57 sources) | 1639 | 562 | 574 | 46 |
+
+No part of either corpus went from history to body. The 12 gained: 3 combines, 3 embosses, 2 splits, 4
+sheet-metal faces. Lofts were tried (the sections found as for the sheet-metal faces) and left out:
+Inventor pairs a square and a circle differently from a ruled loft (7e-5 in volume).

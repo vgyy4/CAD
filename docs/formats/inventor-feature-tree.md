@@ -625,3 +625,82 @@ lies between a flat cone and a sphere); 31 parts that start from an imported bod
 feature `73d72559`); 12 coils (`b41914da`); 9 extents 4/7 with faces on both sides of the sketch and 9 whose
 faces are gone; 9 sweeps not read; 6 shells whose rims do not count; 6 unequal chamfers on several
 edges; 3 extents 12 (from a face).
+
+# Round ipt4 (2026-11-18): coils, embosses, combines, splits, sheet-metal faces
+
+Same corpora and harness as rounds ipt1 to ipt3. The target was the features the reader did not
+export (round ipt3: 340 parts stopped at one). Each kind's records were read from the samples and the
+Corliss `spec__` fixtures; every rule below is a candidate the whole-part rebuild check decides.
+
+What the unexported kinds are (parts of the second corpus that stopped at one, round ipt3):
+
+| GUID | kind | parts | read now |
+|---|---|---|---|
+| `8e29cbee` (+ `dfdb99e8`) | derived part / iPart member: "Solid1::AN806.ipt", the body of another file | 201 | no: the features live in the other file (the AN fitting members' factories are in the corpus, the members hold only the derived body) |
+| none (`?`) | Design Accelerator sub-features, iFeature parts | 28 | no |
+| `55585fc6` | sheet-metal face (plate) | 30 | unfolded plates (AM) |
+| `b41914da` | coil | 14 | yes (AI); the parts stop at other features |
+| `285e398c` | emboss / engrave | 10 | from the face (AJ) |
+| `2f54efe0` | loft | 10 | no (see AN) |
+| `8371a8ba` | split | 9 | trim and split faces (AL) |
+| `d3166e68` | delete face | 7 | no |
+| `c0236733` | combine | 6 | yes (AK) |
+| `7ba16b06` | iFeature (a Design Accelerator spur gear's teeth, parameters `iFeature1:1:...`) | 4 | no |
+| `d968d1e0` | rib (`rb_*` fixtures) | 3 | no |
+| `4c37ffe8` | sheet-metal fold (angle, bend radius) | with the plates | no |
+| `4cf758f2`, `6880587f`, `9310f2aa` | sheet-metal flange, corner, flat pattern | with the plates | no |
+
+## AI. Coils `b41914da`
+Laid out as a revolve: slot 0 the operation (tail: 1 new, 2 cut, 3 join), slot 1 the profile loops, slot 2
+the axis (the revolve's work-axis record: a point and a direction, cm). Slot 3's last byte turns the axis
+round, slot 4's last byte is the hand (1 right, 0 left; checked on the `helix_int_cur` curves of the result
+bodies: sign of (major x minor) . pitch), slot 5's third body byte the kind (0 pitch and turns, 1 turns
+and height, 2 pitch and height, 3 spiral), slots 6/7/8 pitch (cm), height (cm) and turns, slot 9 the taper,
+slots 10 and 13 the start and end (last byte 0 natural, 1 flat with a transition and flat angle in 11/12
+and 14/15). Confirmed on the result helices of 15 parts (pitch, turns, axis direction). Read as a helical
+sweep of the profile (ADR 0034: the document starts the helix at the profile), on a world axis when the
+climb is +X/+Y/+Z through the origin, else on a construction line of the profile sketch. Refused: flat
+ends, tapers, spirals, a profile across its axis (the screw rotors' twisted sections: the document's
+helical sweep takes a section through the axis), and an axis record in the packed form (one part). No
+part gained by coils alone: the coil parts stop at fillets (`rb_blend_spl_sur` blends), a Design
+Accelerator worm's unknown sub-feature, tapers (Demo-Status) or, in the two bearing clamps, a volume
+difference not found yet (the coil adds 47.6 mm3 where 25.3 are missing).
+
+## AJ. Embosses `285e398c`
+Slot 0 the kind (3 emboss from the face, 2 engrave from the face; 1, from a plane, not read), slot 1 the
+profile loops, slot 2 a direction record whose last three doubles point into the material, slot 5 the
+depth (cm), slot 6 the taper, slot 9 the face of a wrapped emboss (refused). The emboss's faces carry no
+tag with its id in the result body, so the reach is not measured: an emboss rises against the direction,
+an engrave cuts along it (`em_emboss`, `em_engrave`, `em_flip`: slot 3 set in `em_flip` does not change
+the side). Most other embosses are sketch text, which is not read.
+
+## AK. Combines `c0236733`
+Slot 0 the base body, slot 1 the tool bodies (lists of `90874d47` solid-body records), slot 2 the
+operation (2 cut, 3 join, 4 intersect), slot 3 keeps the tools (refused when set). Every feature lists the
+bodies it made or changed in a `0e6870ae` slot (an extrude's slot 26): a feature that makes a body a later
+combine takes as a tool keeps it as a body of its own (the reader otherwise joins every new solid to the
+first body, as before). The axle part's base body comes from an imported solid (not read).
+
+## AL. Splits `8371a8ba`
+Slot 0 the kind (1 trim the part, 2 split faces, 3 split the body), slot 5 the work plane (a
+`ce52df42` record, read as the mirror's), slot 6 the side a trim keeps (last byte 1: the side the plane's
+normal points to). A trim is a split at the plane and the removal of the other side; split faces change
+no shape and are left out (listed in the warnings). Splits by a surface or sketch (slot 5 empty) are not
+read.
+
+## AM. Sheet-metal faces `55585fc6`
+Slot 0 names the profile only through the loop's history body (`cc0f7521`, no profile or sketch record),
+slot 1 a direction, slot 3 the thickness (cm), slot 16 the operation. The sketch is the one whose curves
+the loop runs along (several sketches share a plane), its regions those the loop surrounds; the face is
+an extrude of them by the thickness, on the side its faces lie in the result body. Folded plates (folds
+`4c37ffe8`, flanges, corners) do not match and are refused.
+
+## AN. Left after this round
+Second corpus (1639 parts): 574 as history (was 562), 1019 bodies, 46 without a solid, no part lost;
+first corpus 28 of 47. Unexported features left: 201 derived parts and iPart members (nothing to
+rebuild in the file), 29 unknown (Design Accelerator), 10 lofts (the loft's sections name loop bodies as
+the sheet-metal face does; tried with the same sketch matching: `lf_basic`, a square to a circle, is
+7e-5 off in volume because Inventor pairs the sections' points differently from the kernel's ruled loft,
+and the others need open or multi-region sections), 7 delete faces, 4 iFeatures, 3 face drafts
+(`f4fa0900`), 3 ribs. The 31 "cut or join before any body" parts start from an imported base body (STEP
+translator parts, McMaster framing): not a rebuild.
