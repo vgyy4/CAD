@@ -722,6 +722,9 @@ pub(crate) struct SetFace {
     pub(crate) normal: V3,
     pub(crate) x: V3,
     pub(crate) loops: Vec<Vec<SetCurve>>,
+    /// A cylinder face (type 23): its radius; `origin` is then a point of its axis, `normal`
+    /// the axis.
+    pub(crate) cylinder: Option<f64>,
 }
 
 /// Most boundary loops of one face.
@@ -750,21 +753,36 @@ pub(crate) fn face_set(b: &[u8]) -> Result<Vec<SetFace>, String> {
         if b.get(q + 5..q + 16) != Some(&SET_CURVE[..]) {
             return Err("a face of the set is not readable".into());
         }
-        match b.get(q + 16) {
-            Some(14) => {}
-            Some(t) => return Err(format!("a face of the set lies on a surface of type {t} (not read)")),
-            None => return Err("the face set is cut short".into()),
-        }
         let at = q + 17;
         let v3 = |i: usize| v3_at(b, at + 8 * i).filter(|v| finite3(*v) && v.iter().all(|c| c.abs() < 1e6));
-        let (Some(origin), Some(normal), Some(x)) = (v3(0), v3(3).and_then(unit), v3(6).and_then(unit)) else {
-            return Err("a face plane of the set is not readable".into());
+        // A plane: origin, normal, x direction. A cylinder: a point of its axis, the axis,
+        // the radius as a vector across it, the minor to major ratio (1) and a direction.
+        let (origin, normal, x, cylinder, len) = match b.get(q + 16) {
+            Some(14) => {
+                let (Some(origin), Some(normal), Some(x)) = (v3(0), v3(3).and_then(unit), v3(6).and_then(unit)) else {
+                    return Err("a face plane of the set is not readable".into());
+                };
+                (origin, normal, x, None, 72)
+            }
+            Some(23) => {
+                let (Some(origin), Some(axis), Some(major)) = (v3(0), v3(3).and_then(unit), v3(6)) else {
+                    return Err("a face cylinder of the set is not readable".into());
+                };
+                let r = dot(major, major).sqrt();
+                let ratio = f64_at(b, at + 72);
+                if !(r > 1e-9 && dot(major, axis).abs() < 1e-9 * (1.0 + r) && ratio == Some(1.0)) {
+                    return Err("a face cylinder of the set is not round".into());
+                }
+                (origin, axis, unit(major).ok_or("a face cylinder of the set has no radius")?, Some(r), 96)
+            }
+            Some(t) => return Err(format!("a face of the set lies on a surface of type {t} (not read)")),
+            None => return Err("the face set is cut short".into()),
         };
-        let nl = u32_at(b, at + 72).ok_or("the face set is cut short")?;
+        let nl = u32_at(b, at + len).ok_or("the face set is cut short")?;
         if nl == 0 || nl > MAX_LOOPS {
             return Err("a face of the set has no boundary or too many loops".into());
         }
-        q = at + 76;
+        q = at + len + 4;
         let mut loops = Vec::new();
         for _ in 0..nl {
             let m = u32_at(b, q).ok_or("the face set is cut short")?;
@@ -781,7 +799,7 @@ pub(crate) fn face_set(b: &[u8]) -> Result<Vec<SetFace>, String> {
             }
             loops.push(curves);
         }
-        out.push(SetFace { origin, normal, x, loops });
+        out.push(SetFace { origin, normal, x, loops, cylinder });
         if k + 1 < n {
             q = (q..=q + 64)
                 .find(|&o| b.get(o + 5..o + 16) == Some(&SET_CURVE[..]))
@@ -828,6 +846,9 @@ fn curve_points(c: &SetCurve) -> Result<Vec<V3>, String> {
 /// each stretch inside its boundary (even-odd over all its loops).
 pub(crate) fn face_inside_points(f: &SetFace) -> Result<Vec<V3>, String> {
     const LINES: usize = 8;
+    if let Some(r) = f.cylinder {
+        return cylinder_inside_points(f, r);
+    }
     let y = cross(f.normal, f.x);
     let mut segs: Vec<([f64; 2], [f64; 2])> = Vec::new();
     for c in f.loops.iter().flatten() {
@@ -875,13 +896,67 @@ pub(crate) fn face_inside_points(f: &SetFace) -> Result<Vec<V3>, String> {
     Ok(out)
 }
 
-/// The tree's pick of a stored plane face: points inside it and its plane (mm).
+/// Points well inside a stored cylinder face bounded by two whole circles about its axis
+/// (a band): halfway between them, at eight turns about the axis.
+fn cylinder_inside_points(f: &SetFace, r: f64) -> Result<Vec<V3>, String> {
+    let mut heights = Vec::new();
+    for c in f.loops.iter().flatten() {
+        let SetCurve::Conic(cn, n, major, ratio, None) = c else {
+            return Err("a cylinder face of the set is not bounded by whole circles".into());
+        };
+        let d = [cn[0] - f.origin[0], cn[1] - f.origin[1], cn[2] - f.origin[2]];
+        let h = dot(d, f.normal);
+        let off = [d[0] - h * f.normal[0], d[1] - h * f.normal[1], d[2] - h * f.normal[2]];
+        let round = (*ratio - 1.0).abs() < 1e-9 && (dot(*major, *major).sqrt() - r).abs() < 1e-9 * (1.0 + r);
+        if !(round && dot(off, off).sqrt() < 1e-9 && (dot(*n, f.normal).abs() - 1.0).abs() < 1e-9) {
+            return Err("a cylinder face of the set is not bounded by circles about its axis".into());
+        }
+        heights.push(h);
+    }
+    let [h0, h1] = heights.as_slice() else {
+        return Err("a cylinder face of the set is not a band between two circles".into());
+    };
+    if (h1 - h0).abs() < 1e-9 {
+        return Err("a cylinder face of the set has no height".into());
+    }
+    let h = (h0 + h1) / 2.0;
+    let y = cross(f.normal, f.x);
+    Ok((0..8)
+        .map(|k| {
+            let a = core::f64::consts::TAU * (k as f64 + 0.123) / 8.0;
+            let (c, s) = (r * libm::cos(a), r * libm::sin(a));
+            [
+                f.origin[0] + h * f.normal[0] + c * f.x[0] + s * y[0],
+                f.origin[1] + h * f.normal[1] + c * f.x[1] + s * y[1],
+                f.origin[2] + h * f.normal[2] + c * f.x[2] + s * y[2],
+            ]
+        })
+        .collect())
+}
+
+/// Whether a point (mm) lies on a stored face's plane or cylinder (within 1 um).
+fn on_face_surface(f: &SetFace, p: V3) -> bool {
+    let d = [p[0] / MM - f.origin[0], p[1] / MM - f.origin[1], p[2] / MM - f.origin[2]];
+    let h = dot(d, f.normal);
+    match f.cylinder {
+        None => h.abs() < 1e-6,
+        Some(r) => {
+            let off = [d[0] - h * f.normal[0], d[1] - h * f.normal[1], d[2] - h * f.normal[2]];
+            (dot(off, off).sqrt() - r).abs() < 1e-6
+        }
+    }
+}
+
+/// The tree's pick of a stored face: points inside it and its plane or cylinder (mm).
 pub(crate) fn face_pick(f: &SetFace) -> Result<Value, String> {
     let mm = |p: V3| json!([rnd(p[0] * MM), rnd(p[1] * MM), rnd(p[2] * MM)]);
     let points: Vec<Value> = face_inside_points(f)?.into_iter().map(mm).collect();
     let first = points.first().cloned().ok_or("a face of the set has no inside")?;
-    Ok(json!({"point": first, "points": points,
-              "surface": {"type": "plane", "origin": mm(f.origin), "normal": arr(f.normal)}}))
+    let surface = match f.cylinder {
+        Some(r) => json!({"type": "cylinder", "origin": mm(f.origin), "axis": arr(f.normal), "radius": rnd(r * MM)}),
+        None => json!({"type": "plane", "origin": mm(f.origin), "normal": arr(f.normal)}),
+    };
+    Ok(json!({"point": first, "points": points, "surface": surface}))
 }
 
 /// A point of a B-spline (order, poles, flat knots) at `t` (de Boor).
@@ -2229,19 +2304,44 @@ fn blend(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
         put(&mut j, "vertex_radii", json!(vertices));
     }
     if !round && code(2) == Some(42) {
-        // Setback and angle: the setback runs along the reference face (slot 3, a face set
-        // of one face), the angle (slot 6, radians) is taken from it.
+        // Setback and angle: the setback runs along the reference face (slot 3, a face set),
+        // the angle (slot 6, radians) is taken from it. With several reference faces, each
+        // edge's is the one it lies on: one chamfer per face, of its edges.
         let a = small(6)
             .map(f64::to_degrees)
             .filter(|a| *a > 1e-9 && *a < 90.0 - 1e-9)
             .ok_or("the chamfer angle is not readable")?;
         let faces = f.slot(3).and_then(|v| st.obj(v)).ok_or("the chamfer's reference face set is missing")?;
-        let face = match face_set(faces)?.as_slice() {
-            [one] => face_pick(one)?,
-            other => return Err(format!("a chamfer with {} reference faces", other.len())),
-        };
+        let faces = face_set(faces)?;
         put(&mut j, "angle", json!(rnd(a)));
-        put(&mut j, "face", face);
+        if let [one] = faces.as_slice() {
+            put(&mut j, "face", face_pick(one)?);
+        } else {
+            let mut groups: Vec<Vec<Value>> = vec![Vec::new(); faces.len()];
+            for p in &picks {
+                let m = p.get("midpoint").and_then(Value::as_array).and_then(|m| {
+                    let v: Vec<f64> = m.iter().filter_map(Value::as_f64).collect();
+                    <[f64; 3]>::try_from(v).ok()
+                });
+                let m = m.ok_or("a chamfer edge has no middle")?;
+                let on: Vec<usize> =
+                    (0..faces.len()).filter(|&i| faces.get(i).is_some_and(|fc| on_face_surface(fc, m))).collect();
+                match on.as_slice() {
+                    [i] => groups.get_mut(*i).ok_or("a chamfer edge's face is missing")?.push(p.clone()),
+                    _ => return Err("a chamfer edge lies on none or several of its reference faces".into()),
+                }
+            }
+            for (k, (fc, edges)) in faces.iter().zip(groups).filter(|(_, g)| !g.is_empty()).enumerate() {
+                let mut one = j.clone();
+                put(&mut one, "edges", json!(edges));
+                put(&mut one, "face", face_pick(fc)?);
+                if k > 0 {
+                    put(&mut one, "name", json!(format!("{name}_{k}")));
+                }
+                s.out.push(one);
+            }
+            return Ok(());
+        }
     }
     s.out.push(j);
     Ok(())

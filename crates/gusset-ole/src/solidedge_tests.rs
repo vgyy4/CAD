@@ -1088,3 +1088,98 @@ fn a_hole_cuts_its_circle() {
     assert_eq!(sk["curves"].as_array().unwrap().len(), 1, "{t}");
     assert_eq!(sk["curves"][0]["radius"], json!(2.0));
 }
+
+/// A face set of faces of any type: type byte, numbers, loops (as [`face_set_bytes`]).
+fn typed_face_set_bytes(faces: &[(u8, Vec<f64>, Vec<Vec<(u8, Vec<f64>)>>)]) -> Vec<u8> {
+    let mut v = b"\x14\x00\x00\x00JMGetSmoothFaceSeq\0".to_vec();
+    v.push(0xff);
+    v.extend([0xf0, 0xcb, 0xaa, 0xf5, 0x51, 0xd1]);
+    v.extend([0xcd, 0x11, 0x8b, 0xa4, 0x08, 0x00, 0x36, 0x24, 0xfc, 0x01]);
+    v.extend(1u32.to_le_bytes());
+    v.extend((faces.len() as u32).to_le_bytes());
+    v.extend(0u32.to_le_bytes());
+    v.push(2);
+    for (t, nums, loops) in faces {
+        v.extend([0x76, 0xe3, 0xfe, 0x7c, 0x16]);
+        v.extend([0x3a, 0xce, 0x11, 0x9a, 0x5e, 0x08, 0x00, 0x36, 0x9b, 0x41, 0x02]);
+        v.push(*t);
+        v.extend(f64s(nums));
+        v.extend((loops.len() as u32).to_le_bytes());
+        for l in loops {
+            v.extend((l.len() as u32).to_le_bytes());
+            v.extend([2, 0]);
+            for (ct, cn) in l {
+                v.push(*ct);
+                v.extend(f64s(cn));
+            }
+        }
+        v.extend([0u8; 6]);
+    }
+    v.extend([2, 0, 0, 0]);
+    v
+}
+
+#[test]
+fn a_cylinder_face_is_picked_halfway_up_its_band() {
+    // A cylinder of 3 mm about z between circles at z = 0 and 5 mm (type 23: a point of the
+    // axis, the axis, the radius across it, the ratio 1 and two more numbers).
+    let circle = |z: f64| (15u8, vec![0.0, 0.0, z, 0.0, 0.0, 1.0, 0.003, 0.0, 0.0, 1.0]);
+    let cyl = (
+        23u8,
+        vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.003, 0.0, 0.0, 1.0, 0.0, -1.0],
+        vec![vec![circle(0.0)], vec![circle(0.005)]],
+    );
+    let set = face_set(&typed_face_set_bytes(&[cyl])).unwrap();
+    let p = face_pick(&set[0]).unwrap();
+    assert_eq!(
+        p["surface"],
+        json!({"type": "cylinder", "origin": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "radius": 3.0})
+    );
+    for q in p["points"].as_array().unwrap() {
+        let q: Vec<f64> = q.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        assert!((libm::hypot(q[0], q[1]) - 3.0).abs() < 1e-6 && (q[2] - 2.5).abs() < 1e-9, "{p}");
+    }
+    // A band whose boundary is not two circles about the axis is not picked.
+    let off = (
+        23u8,
+        vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.003, 0.0, 0.0, 1.0, 0.0, -1.0],
+        vec![vec![(15u8, vec![0.001, 0.0, 0.0, 0.0, 0.0, 1.0, 0.003, 0.0, 0.0, 1.0])], vec![circle(0.005)]],
+    );
+    assert!(face_pick(&face_set(&typed_face_set_bytes(&[off])).unwrap()[0]).is_err());
+}
+
+#[test]
+fn a_chamfer_with_several_reference_faces_is_one_chamfer_per_face() {
+    // The box (z 0..5 mm), a setback-and-angle chamfer of its edges along x at y = 0 on the
+    // bottom and the top; the reference faces listed top first: each edge goes with the face
+    // it lies on.
+    let edges = edge_set_bytes(
+        &[(3, vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.02]), (3, vec![0.0, 0.0, 0.005, 1.0, 0.0, 0.0, 0.0, 0.02])],
+        false,
+    );
+    let side = |p: [f64; 2], d: [f64; 2], len: f64, z: f64| (3u8, vec![p[0], p[1], z, d[0], d[1], 0.0, 0.0, len]);
+    let rect = |z: f64| {
+        vec![
+            side([0.0, 0.0], [1.0, 0.0], 0.02, z),
+            side([0.02, 0.0], [0.0, 1.0], 0.01, z),
+            side([0.02, 0.01], [-1.0, 0.0], 0.02, z),
+            side([0.0, 0.01], [0.0, -1.0], 0.01, z),
+        ]
+    };
+    let top = (14u8, vec![0.0, 0.0, 0.005, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0], vec![rect(0.005)]);
+    let bottom = (14u8, vec![0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0], vec![rect(0.0)]);
+    let mut more = obj(40, 21, &edges);
+    more.extend(obj(40, 22, &typed_face_set_bytes(&[top, bottom])));
+    more.extend(obj(36, 23, &small(42.0)));
+    more.extend(obj(36, 24, &small(0.0005)));
+    more.extend(obj(36, 25, &small(core::f64::consts::FRAC_PI_6)));
+    more.extend(obj(38, 26, &func("JMChamferFunction", &[&[26], &[12], &[23], &[22], &[21], &[24], &[25]])));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = t["features"].as_array().unwrap();
+    assert_eq!(f.len(), 4, "{t}");
+    assert_eq!((&f[2]["name"], &f[3]["name"]), (&json!("Chamfer_1"), &json!("Chamfer_1_1")));
+    assert_eq!(f[2]["edges"][0]["midpoint"], json!([10.0, 0.0, 5.0]));
+    assert_eq!(f[2]["face"]["surface"]["origin"], json!([0.0, 0.0, 5.0]));
+    assert_eq!(f[3]["edges"][0]["midpoint"], json!([10.0, 0.0, 0.0]));
+    assert_eq!(f[3]["face"]["surface"]["origin"], json!([0.0, 0.0, 0.0]));
+}
