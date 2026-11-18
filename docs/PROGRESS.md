@@ -11,11 +11,13 @@ Phase 3 has started (see Next).
 ## Done
 - Importer status (2026-11-14), feature history that rebuilds under the unchanged strict check:
   Fusion 277 of 318 (paused after rounds 33-34 gained none; docs/formats/fusion-corpus-tally.md);
-  SolidWorks 293 of 1352 (rounds sw1-sw11, ADR 0043; was 85; sw11 reads drafts and fillet edges on pattern copies); Inventor 622 of 1639 on the new corpus
-  and 28 of 47 on the old (rounds ipt1-ipt6, ADR 0046 amendments 8-10, 15-17; was 263 and 25; ipt4 reads coils,
+  SolidWorks 293 of 1352 (rounds sw1-sw11, ADR 0043; was 85; sw11 reads drafts and fillet edges on pattern copies); Inventor 635 of 1639 on the new corpus
+  and 28 of 47 on the old (rounds ipt1-ipt7, ADR 0046 amendments 8-10, 15-18; was 263 and 25; ipt4 reads coils,
   embosses, combines, splits and unfolded sheet-metal faces; ipt5 rebuilds derived parts and iPart members
   from their base part in the same folder; ipt6 solves an iPart factory's sketches again for a member's
-  row); Solid Edge 28
+  row; ipt7 names features through their owned name record, reads body moves and scales, leaves surfaces
+  out, fixes trimmed-torus and seam-split blend picks and the order record; left: Design Accelerator gear
+  teeth, surface consumers, blends whose supports were used up); Solid Edge 28
   of 184 ordered parts (round se1, ADR 0046 amendment 11; first history import). Sample corpora are
   openly licensed downloads kept in scratch, never committed. Two in-process import crashes fixed (an
   unbounded face in mass properties, OCCT patch gusset-0005; the hole fit check meshes only the hole's

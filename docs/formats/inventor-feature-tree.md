@@ -779,3 +779,36 @@ on an offset work plane whose offset the row changes (AN818 `d16`); 4 MS20819 me
 shrunk line leaves the solve stuck (the dimension continuation passes through shapes where the line would
 run backwards, and with the line shrunk the in-between shapes do not exist); the AN816 factory, which does
 not rebuild itself. Result: 35 of the 71 members (AN924 11, AN806 10, AN871 7, MS20819 7).
+
+## AQ. Owned names, body transforms, surfaces, the order record's entries (round ipt7)
+Confirmed on the 74 target parts (and, for the order record, the 1686 parts of both corpora):
+
+- A part-feature record whose name word (offset 6) points at a record of another class (`903f453f` for
+  surface features, `48cf71ca` for direct edits, `b6482af8`, `475e7861`) is named by the typed name
+  record (`2b48a42b` with a type GUID) whose owner word (offset 14, or 18 in the newer header) is the
+  feature. Each of the 34 such features had exactly one.
+- Surface feature types: `e597a4f0` extrusion surface (the extrude's record layout), `36ed6f3a`
+  revolution surface, `cc424542` sweep surface, `a82cf09e` offset surface, `8a94bf8f` boundary patch.
+  Their bodies are surface bodies (`Srf1`); consumers seen: thicken, trim `4ce8373a`, stitch `9ea38b60`,
+  replace face `7e2b04da`, delete face `d3166e68`, the Design Accelerator gear `73d72559`.
+- Move Bodies `2b839fe9`, direct-edit Move `8fa6a6de` and Scale `5bcb6fff` share a layout: slot 0 a body
+  list `0e6870ae` (the solid bodies `90874d47`), slot 1 a `0800fe29` record pointing at a placement
+  `90874d18` (mask-compressed 4x4, cm), slot 2 a `d83ef271` record. A move's matrix is a turn and a
+  shift. A scale's diagonal is the factor and its shift column is the base point it keeps (`de_scale`:
+  1.5 about (3, 3.5, 2) cm, the top face centre of the 4 x 3 x 2 cm block; a plain affine reading puts
+  the block 45 mm off). The chess set's scale also turns (0.645 with a turn); not read. The direct-edit
+  Move of `de_move` has 13 slots and moves faces (`24bcb2f1` selection): not read. `466e3199` is the
+  direct-edit Size (a face's size, `d7`): not read.
+- The order record `452121b6` lists each feature as `0x80000003, id` (u32 each). Reading an id at any
+  offset matched list headers: feature id 256 read the bytes `00 01 00 00` of the record's first list
+  (`InventorNativeCentralControl`'s Chamfer1 came before the revolve), and ids 0x400 and 0x230 matched
+  inside other words (a hole and an extrude moved earlier). 28 parts of the corpora change order; none
+  lost, 5 gained.
+- Blend faces (not layout, the reader's geometry): a torus blend trimmed by a later cut across the axis
+  has the cut's floor as a long side; the supports are the neighbours its profile circle touches (lines
+  a minor radius off, circles at the sum or difference of the radii), each surface once (a slot splits a
+  dome into two faces). Spheres centred on the axis are supports (the M1.4 screws' domed heads).
+
+Left: Design Accelerator gear teeth `73d72559` (and `36628967` in newer gears) with their many parameters;
+supports a blend or a later blend used up (a wall shorter than the two radii rounding it, a chamfer as
+wide as its step: the reconstructed edge lands on the wrong surface pair).

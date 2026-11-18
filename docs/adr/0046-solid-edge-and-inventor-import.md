@@ -683,3 +683,51 @@ MS20819 7) and the two iPart members of `iPartSample` (MetaReader samples). Left
 family (its factory does not rebuild itself), AN818 (an offset work plane the row moves, and a sketch that
 projects intersections of faces), 4 MS20819 members whose shrunk line leaves the solve stuck and one
 AN806 member 0.07 % off in volume.
+
+## Amendment (2026-11-18, 18): Inventor round ipt7 - owned names, body moves and scales, blend picks
+
+The 74 target parts of this round stopped at an unknown `FeatureN` (34) or at a fillet or chamfer pick
+that no model edge matched (40). Measured first (notes AQ of `docs/formats/inventor-feature-tree.md`):
+
+- Every unknown `FeatureN` is a feature whose name word points at a record of another class
+  (`903f453f`, `48cf71ca`, `b6482af8`, `475e7861`); its name is the typed name record whose owner word is
+  the feature. Behind them: 21 surface features (extrusion, revolution, sweep and offset surfaces,
+  boundary patches; 11 of them the Design Accelerator's "Pitch Diameter"), 9 direct-edit scales, 2 moves
+  (direct edit and Move Bodies), 2 extrudes and 1 hole.
+- The pick failures have many causes, each in one to four parts: a torus blend trimmed by a later cut
+  across the axis (the screws' slots) read the cut's floor as a support; an arc that crosses a revolved
+  face's seam is two edges in Gusset's model and one in Inventor's; supports used up by the blend or by a
+  later blend (a 3 mm wall rounded 2 mm at both ends, a chamfer as wide as its step); a feature the
+  order record put first by a stray byte match; and, in about a third, an earlier feature that leaves the
+  model wrong (an iPart row, sketch geometry) so the blend has nothing to find.
+
+Decisions:
+
+- A feature named through its owned name record is read as its type says. Surface features make no
+  solid and are left out with the reason; a later feature that needs the surface refuses on its own.
+- Move Bodies (`2b839fe9`) and the direct edits Move (`8fa6a6de`) and Scale (`5bcb6fff`) of whole bodies
+  become `move_body` / `scale_body` (existing Gusset operations). The scale's matrix keeps the base point
+  in the shift's place (the `de_scale` sample: the scaled block's top face centre). A scale that also
+  turns (the chess set) and a move of faces are refused with the reason.
+- Blend edges: a trimmed torus blend's supports are the neighbour curves it touches, once each (a sphere
+  on the axis counts); the importer takes the two model edges that meet at a pick's midpoint and run
+  either way along its path (a seam split); a mirror that copies a hole and the pattern of it makes the
+  pattern again of the copies; a rectangular pattern skips a cosmetic thread that was left out.
+- The order record is read by its entries (`0x80000003`, id); the loose reading stays for a record
+  whose entries are not all found so.
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4).
+
+| corpus | parts | history before | after | without a solid |
+|---|---|---|---|---|
+| first (Zenodo) | 47 | 28 | 28 | 0 |
+| second (57 sources) | 1639 | 622 | 635 | 46 |
+
+No part went from history to body. Of the 74 targets 6 came in (`de_scale`, two screws, the gun box and
+its old version, `CoverStyrofoam`); 7 more parts outside them (5 by the order record). Left: the Design
+Accelerator gear tooth features `73d72559`/`36628967` (9 parts; Inventor's tooth profile with its
+corrections and root fillets would have to be generated exactly, which Gusset's gear operation does not);
+6 chess parts (a scale that turns, of bodies imported without features); surfaces consumed by thicken,
+trim, stitch, replace face and delete face (no Gusset operation reads them as features); 32 pick failures
+of the kinds above, 4 fillets that the kernel cannot build (the M1.4 screws: a lemon-shaped torus), and 2
+parts whose features before the scale already differ in volume.
