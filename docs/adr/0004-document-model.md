@@ -268,6 +268,8 @@ up-to types used to be translated to a computed distance, which broke when the t
   `commands`/`run`.
 - **Not done.** No GUI form yet; curved target faces other than cylinders are cut at their own
   parametric bounds; `symmetric` and "up to next / up to body / through all" are not covered.
+- **Later (ADR 0061).** `extend: true` extends the face's surface past its edges (the end may lie
+  outside the face); fillets take radii at vertices (`at: [vertex(...) = <r>]`).
 
 ## Amendment (2026-11-10): `scale` and `remove`
 

@@ -345,6 +345,10 @@ like a negative `distance`; the importer combines it with the sketch's orientati
 `distance` is ignored with a warning; `symmetric`, a missing or unresolvable face, a face behind the
 profile or too small to cover it skip the feature with the reason. `operation` and `target` work
 as for a blind extrude (a pocket up to a face is `"operation": "cut"`).
+`"extend": true` (ADR 0061) extends the face's surface past its edges, so a face smaller than the
+profile still ends it. A `fillet` may carry `"vertex_radii": [{"point": [x, y, z], "radius": r}]`
+(ADR 0061): the radius at the model's vertex at that point (within 0.01 mm), `radius` elsewhere; a
+point on no vertex of the model skips the fillet.
 
 ### Amendment: whole-body edits `move_body`, `scale_body`, `remove_body`, `draft` (2026-11-10)
 
