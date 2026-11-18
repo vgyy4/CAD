@@ -691,9 +691,10 @@ that no model edge matched (40). Measured first (notes AQ of `docs/formats/inven
 
 - Every unknown `FeatureN` is a feature whose name word points at a record of another class
   (`903f453f`, `48cf71ca`, `b6482af8`, `475e7861`); its name is the typed name record whose owner word is
-  the feature. Behind them: 21 surface features (extrusion, revolution, sweep and offset surfaces,
-  boundary patches; 11 of them the Design Accelerator's "Pitch Diameter"), 9 direct-edit scales, 2 moves
-  (direct edit and Move Bodies), 2 extrudes and 1 hole.
+  the feature. The first such feature of each part: 20 surface features (extrusion, revolution, sweep
+  and offset surfaces; 11 of them the Design Accelerator's "Pitch Diameter"), 9 direct-edit scales, 1
+  direct-edit move, 1 direct-edit size, `co_mesh`'s `Surface2` (`e34d8f79`) and, in the gun box, a hole
+  (its pattern then refused a cosmetic thread).
 - The pick failures have many causes, each in one to four parts: a torus blend trimmed by a later cut
   across the axis (the screws' slots) read the cut's floor as a support; an arc that crosses a revolved
   face's seam is two edges in Gusset's model and one in Inventor's; supports used up by the blend or by a
@@ -730,4 +731,5 @@ corrections and root fillets would have to be generated exactly, which Gusset's 
 6 chess parts (a scale that turns, of bodies imported without features); surfaces consumed by thicken,
 trim, stitch, replace face and delete face (no Gusset operation reads them as features); 32 pick failures
 of the kinds above, 4 fillets that the kernel cannot build (the M1.4 screws: a lemon-shaped torus), and 2
-parts whose features before the scale already differ in volume.
+parts with a scale whose features do not give the part's volume (`pedal`, `Arm_3`: the box matches, the
+volume is 3 to 6 % off; the cause is not found).
