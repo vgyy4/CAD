@@ -719,9 +719,63 @@ Confirmed on the 203 parts of the second corpus that hold one (201 derived parts
 - An iPart member stores its row as its own parameters, under the factory's names (`d0`, `d1`, ...,
   user parameters, plus `ScaleForDerivedMember`). The factory stores its sketches solved for the saved
   row only: a member whose row differs in a sketch dimension needs the sketch solved again, which the
-  reader cannot do (sketch dimensions and constraints are not decoded). A member whose row differs only
+  reader could not do then (round ipt6 decodes them: note AP). A member whose row differs only
   in feature parameters (extrude distance etc.) is read with the member's values.
 - Not read: 22 parts whose derive names the part's own file name (a body taken from a same-named file
   elsewhere) and whose definition has another layout (no scale found); 5 Design Accelerator parts whose
   base is stored as a component name without a file (`Spur Gear1`, `Worm Gear`); multi-body derives
   followed by features of the part (2).
+
+## AP. Sketch constraints and dimensions; iPart members solved for their row (round ipt6)
+Confirmed on the saved geometry of the six AN/MS fitting factories (every constraint and dimension holds
+there to 1e-5 mm), `gusset_ole::inventor_sketch`:
+
+- A sketch lists its constraints and dimensions among its references; each refers to the sketch's
+  constraint set `90874d62` (the document record `90874d63` refers to it too and is not one). After the
+  common header (offset 30 on) a record names its sketch entities and, for a dimension, its parameter.
+  `90874d94` (coincident) can carry lists of (curve, parameter on the curve) before them; its last two
+  entities are the curve and the point (or two points).
+- Classes: `90874d94` coincident (point on a curve; nothing when the point is the curve's own end or
+  centre), `90874d95` parallel, `90874d96` perpendicular, `90874d97` tangent (a circle and a line, the
+  pair may repeat), `90874d98` horizontal, `90874d99` vertical, `442c7dd0` equal radius, `64da5250` two
+  points aligned (same x in every case seen; read off the saved geometry), `21e870bf` midpoint (line,
+  point), `0ddd7c10` symmetric (point, point, line), `e1108c00` a circle's centre, `fbdb891f` a regular
+  polygon (line, line, centre: equal sides; point, point, centre: corners equally far from the centre),
+  `52534838` the polygon's centre (no equation).
+- Dimensions: `11058558` distance (two points; point and line; two parallel lines; a circle and a line,
+  to the circle's near side), `3683ff40` vertical and `00acc000` horizontal distance of two points,
+  `590d0a10` angle of two lines (one of the four the lines make: the saved geometry tells which),
+  `671bb700` radius, `74df96e0` diameter. Values are the parameter's (cm, radians).
+- A reference (driven) dimension's parameter has bit 0 of header byte 13 set (`0x01`; driving ones 0):
+  its value is measured, it drives nothing (MS20819 `d16`, the arc's rise; AN806 `d42`, the hexagon's
+  circumcircle).
+- Projected entities (flag 0x40) are linked to what they show: `feb0d977` the origin's centre point,
+  `18951917` an origin axis (its points carry flag 0x100000, the line 0x200000), `60406697` / `64de16f3`
+  / `2d86fc26` (a projected loop) model vertices and edges through the naming records.
+- A sketch on a face: a `90874d23` record refers to its placement. An offset work plane is a `0d28d8c0`
+  record: the plane, its base plane, the offset parameter.
+
+The importer: an iPart member whose row changes a driving sketch dimension solves the factory's sketch
+again with `gusset-sketch`, from the saved geometry, the member's values in place; projected points stay
+fixed. How a dimension measures (the side of a line, which angle, the sign of a horizontal distance) is
+read off the saved geometry. Lines along the sketch's axes are held so first (a sketch Inventor leaves free
+to turn keeps its way round: AN806), and a solve that runs a line or a dimensioned point pair the other way
+is refused for the next try (AN871-4D's chamfer point). Lines that end tangent on an arc may have their
+angles stated by the arc's radius line, and be shrunk to nothing: MS20819's formulas make the fillet arc
+reach the far end of the next line (its length is 0 to 1e-15 cm in every member). The profile picks are
+made on the saved sketch (the history body's loops show it) and found again by the curve pieces around
+the region.
+
+When the row moves one sketch, a later sketch that projects model edges follows only if each projected
+point is a point of an earlier sketch that an extrude sweeps (start, end or middle of a blind or symmetric
+sweep, the distance as the row has it) or a revolve turns (its outline seen from a plane through the
+axis); a sketch on a face whose origin is such a point moves with it, and its projected origin and axes
+are seen from the new place. Offset work planes that nothing but names refer to place nothing. A member
+placed as its factory (no turn, shift or scale) gives its own stored body for the fillets and chamfers:
+it carries the factory's feature ids (`NMx_blend_tag`).
+
+Not read: projected points that are intersections of the model's faces (AN818's chamfer sketch); sketches
+on an offset work plane whose offset the row changes (AN818 `d16`); 4 MS20819 members (20D to 32D) whose
+shrunk line leaves the solve stuck (the dimension continuation passes through shapes where the line would
+run backwards, and with the line shrunk the in-between shapes do not exist); the AN816 factory, which does
+not rebuild itself. Result: 35 of the 71 members (AN924 11, AN806 10, AN871 7, MS20819 7).

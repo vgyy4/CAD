@@ -646,3 +646,40 @@ No part went from history to body. The 11 gained: 5 AN/MS fitting members, 2 alu
 parts, a mirrored terminal and one derived architecture part. Most of the remaining members need their
 factory's sketches solved again for their row; 22 derives name a same-named file elsewhere, and 5 Design
 Accelerator parts name a component without a file.
+
+## Amendment (2026-11-18, 17): Inventor round ipt6 - iPart members solved for their row
+
+Amendment 16 left iPart members whose row changes a sketch dimension of the factory as bodies (71 parts):
+the factory stores its sketches solved for its saved row only. The reader now decodes the sketch's
+constraints and dimensions (their classes, entities and parameters, note AP of
+`docs/formats/inventor-feature-tree.md`) and, for such a member, solves the factory's sketch again with
+`gusset-sketch` (`gusset_ole::inventor_sketch`; `gusset-ole` now depends on `gusset-sketch`, which
+depends only on `libm`):
+
+- The saved geometry is the starting shape and tells how each dimension measures (side, which angle,
+  sign); the member's values replace the saved ones. Reference (driven) dimensions drive nothing.
+  Projected points stay where they are unless the row moves what they show.
+- The solve must keep Inventor's shape: a result that runs a line, or a dimensioned point pair, the other
+  way is refused and the next statement of the sketch is tried (lines along the axes held first, then
+  free; angles of lines that end tangent on an arc by the arc's radius line; such a line shrunk to
+  nothing). Every attempt is a fixed, ordered list, so the outcome is the same every time.
+- Later sketches that project model edges follow only when each projected point is an earlier sketch's
+  point swept by an extrude or turned by a revolve; a sketch on a face moves with its origin when the
+  origin is such a point. Otherwise the feature is refused with the reason.
+- The profile picks are made on the saved sketch (the history body's loops show it) and found again on
+  the solved one by the curve pieces around each region.
+- A member placed exactly as its factory gives its own stored body to the fillet and chamfer readers (it
+  carries the factory's feature ids).
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4): it decides.
+Members that change no sketch dimension, and every other part, read as before.
+
+| corpus | parts | history before | after | without a solid |
+|---|---|---|---|---|
+| second (57 sources) | 1639 | 585 | 622 | 46 |
+
+No part went from history to body. The 37 gained: 35 AN/MS fitting members (AN924 11, AN806 10, AN871 7,
+MS20819 7) and the two iPart members of `iPartSample` (MetaReader samples). Left among the 71: the AN816
+family (its factory does not rebuild itself), AN818 (an offset work plane the row moves, and a sketch that
+projects intersections of faces), 4 MS20819 members whose shrunk line leaves the solve stuck and one
+AN806 member 0.07 % off in volume.
