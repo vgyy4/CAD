@@ -2107,16 +2107,18 @@ pub(crate) fn transform_steps(m: &[f64; 16], scale: bool) -> Result<Vec<Value>, 
         return Err("the transform is not affine".into());
     }
     let a = [[g(0), g(1), g(2)], [g(4), g(5), g(6)], [g(8), g(9), g(10)]];
+    // Row i, column j of the turn and scale part.
+    let e = |i: usize, j: usize| g(4 * i + j);
     let t = [g(3) * CM, g(7) * CM, g(11) * CM];
     if t.iter().any(|v| v.abs() > 1e7) {
         return Err("the transform reaches too far".into());
     }
     if scale {
-        let off = (0..3).any(|i| (0..3).any(|j| i != j && a[i][j].abs() > 1e-12));
+        let off = (0..3).any(|i| (0..3).any(|j| i != j && e(i, j).abs() > 1e-12));
         if off {
             return Err("a scale that also turns is not read".into());
         }
-        let k = [a[0][0], a[1][1], a[2][2]];
+        let k = [e(0, 0), e(1, 1), e(2, 2)];
         if k.iter().any(|&x| !(x > 1e-9 && x < 1e6)) {
             return Err("the scale factor is not positive".into());
         }
@@ -2129,12 +2131,12 @@ pub(crate) fn transform_steps(m: &[f64; 16], scale: bool) -> Result<Vec<Value>, 
         }
         return Ok(vec![o]);
     }
-    let col = |j: usize| [a[0][j], a[1][j], a[2][j]];
+    let col = |j: usize| [e(0, j), e(1, j), e(2, j)];
     let ortho = (0..3).all(|i| (0..3).all(|j| (dot(col(i), col(j)) - if i == j { 1.0 } else { 0.0 }).abs() <= 1e-9));
     if !ortho || dot(cross(col(0), col(1)), col(2)) <= 0.0 {
         return Err("the move scales, shears or mirrors the body".into());
     }
-    let ident = (0..3).all(|i| (0..3).all(|j| (a[i][j] - if i == j { 1.0 } else { 0.0 }).abs() <= 1e-12));
+    let ident = (0..3).all(|i| (0..3).all(|j| (e(i, j) - if i == j { 1.0 } else { 0.0 }).abs() <= 1e-12));
     let mut mv = json!({"type": "move_body"});
     if !ident {
         let (axis, angle) = axis_angle(&a).ok_or("the turn of the move is not readable")?;

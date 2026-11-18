@@ -1706,7 +1706,7 @@ fn a_surface_feature_is_left_out() {
 /// A placement record (cm): the identity turn with a shift, or with `k` on the diagonal.
 fn shift_placement(k: f64, t: [f64; 3]) -> Vec<u8> {
     let mut r = hdr(0, 0, 0);
-    if k == 1.0 {
+    if (k - 1.0).abs() < 1e-12 {
         // Entries 0, 5, 10, 15 one; 1, 2, 4, 6, 8, 9, 12, 13, 14 zero; 3, 7, 11 follow.
         r.extend(0x7356_8421u32.to_le_bytes());
         for v in t {
