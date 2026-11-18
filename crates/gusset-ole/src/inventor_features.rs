@@ -2435,6 +2435,11 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
                 st.omitted.push(json!({"name": name, "why": "cosmetic thread"}));
                 Ok(())
             }
+            // Nor does the tagging feature a derive leaves (note AO).
+            FeatType::Other(0xdfdb_99e8) => {
+                st.omitted.push(json!({"name": name, "why": "tagging feature, no geometry"}));
+                Ok(())
+            }
             other => {
                 st.out.push(unsupported(&name, &other.label(), None));
                 Ok(())

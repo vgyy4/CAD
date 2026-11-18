@@ -212,3 +212,81 @@ pub fn inventor_dc_part(classes: &[u32], recs: &[(usize, Vec<u8>)], extra: &[(&s
     s.extend(extra.iter().copied());
     ole(&s)
 }
+
+/// An Inventor derived part of `base` (an iPart member of it when `member`), mirrored in the XY
+/// plane when `mirror`, with an extrude of its own after the derive when `extra`: the records
+/// `crate::inventor_derived` reads (a derive feature, its definition, options, placement, scale
+/// parameter "d0" = 1 and base file name, and the tagging feature).
+pub fn inventor_derived_part(base: &str, member: bool, mirror: bool, extra: bool) -> Vec<u8> {
+    const CLASSES: [u32; 9] = [
+        0x2b48_a42b, // 0 name
+        0x9087_4d91, // 1 part feature
+        0x2148_c03c, // 2 derive link
+        0x3f36_34a0, // 3 derived part
+        0x3386_34ac, // 4 iPart member
+        0x3f36_349f, // 5 derive options
+        0x9087_4d18, // 6 placement
+        0x9087_4d26, // 7 parameter
+        0x255d_7ed7, // 8 base file
+    ];
+    let rf = |i: usize| (i as u32 + 1) | 0x8000_0000;
+    let hdr = |name_ref: u32| {
+        let mut v = vec![0u8; 22];
+        v[6..10].copy_from_slice(&name_ref.to_le_bytes());
+        v
+    };
+    let utf16 = |s: &str| {
+        let mut v = (s.encode_utf16().count() as u32).to_le_bytes().to_vec();
+        v.extend(s.encode_utf16().flat_map(u16::to_le_bytes));
+        v
+    };
+    let name_rec = |s: &str, typ: u32| {
+        let mut v = vec![0u8; 0x1a];
+        v.extend(utf16(s));
+        v.extend(typ.to_le_bytes());
+        v.extend([0x11u8; 12]);
+        v
+    };
+    let with_refs = |refs: &[usize]| {
+        let mut v = hdr(0);
+        for &r in refs {
+            v.extend(rf(r).to_le_bytes());
+        }
+        v
+    };
+    let mut feature = hdr(rf(0));
+    feature.extend(0u32.to_le_bytes());
+    feature.extend([0x02, 0, 0, 0x30, 3, 0, 0, 0, 3, 0, 0, 0, 0x10, 0, 0, 0]);
+    for s in [0u32, 0, rf(2)] {
+        feature.extend(s.to_le_bytes());
+    }
+    let mut placement = hdr(0);
+    placement.extend(if mirror { 0x7fde_8421u32 } else { 0x7bde_8421u32 }.to_le_bytes());
+    let mut param = hdr(0);
+    param.extend(utf16("d0"));
+    param.extend([0u8; 12]);
+    param.extend(1.0f64.to_le_bytes());
+    param.extend(1.0f64.to_le_bytes());
+    param.extend([0, 0, 0xff, 0xff]);
+    let mut file = hdr(0);
+    file.extend([0x20, 0x08, 0xf0, 0x01]);
+    file.extend(utf16(base));
+    file.extend([0u8; 8]);
+    let mut recs = vec![
+        (0, name_rec(&format!("Solid1::{base}"), 0x8e29_cbee)), // 0
+        (1, feature),                                            // 1
+        (2, with_refs(&[3])),                                    // 2
+        (if member { 4 } else { 3 }, with_refs(&[4, 5, 7])),     // 3 definition
+        (5, with_refs(&[5, 6])),                                 // 4 options
+        (6, placement),                                          // 5
+        (7, param),                                              // 6
+        (8, file),                                               // 7
+        (0, name_rec("TaggingFeature1", 0xdfdb_99e8)),           // 8
+        (1, hdr(rf(8))),                                         // 9
+    ];
+    if extra {
+        recs.push((0, name_rec("Extrusion1", 0x0ca9_1131))); // 10
+        recs.push((1, hdr(rf(10)))); // 11
+    }
+    inventor_dc_part(&CLASSES, &recs, &[])
+}

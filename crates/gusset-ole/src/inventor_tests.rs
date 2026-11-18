@@ -405,6 +405,16 @@ fn history_order_suppressed_thread_and_unknown_features() {
     assert_eq!(t["features"][2]["name"], "Thicken1");
 }
 
+#[test]
+fn a_tagging_feature_changes_no_geometry() {
+    let mut r = base_records();
+    r.push((NAME, name_rec("TaggingFeature1", Some(0xdfdb_99e8)))); // 19
+    r.push((FEATURE, feature(19, 0, 9, &[]))); // 20
+    let t = tree(&r).unwrap();
+    assert_eq!(types(&t).len(), 2);
+    assert_eq!(t["source"]["omitted"][0]["name"], "TaggingFeature1");
+}
+
 fn hole_records() -> Vec<(usize, Vec<u8>)> {
     let mut r = base_records();
     let mut centre_sketch_placement = hdr(0, 0, 0);

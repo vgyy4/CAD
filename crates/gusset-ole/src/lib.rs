@@ -17,6 +17,7 @@ mod acis;
 pub mod fixtures;
 pub mod inventor;
 mod inventor_dc;
+pub mod inventor_derived;
 pub mod inventor_features;
 mod inventor_profile;
 pub mod solidedge;
