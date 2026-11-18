@@ -157,6 +157,7 @@ fn to_gs(sk: &Sketch) -> Result<(Gs, HashMap<usize, EntityId>), String> {
                 let angle = libm::atan2(major[1], major[0]);
                 (rec, g.add_ellipse_at(id(&ids, c)?, angle, a, b).map_err(e)?, con)
             }
+            Curve::Spline { .. } => return Err("a sketch with a spline is not solved again".into()),
         };
         if con {
             g.set_construction(made, true).map_err(e)?;
@@ -185,7 +186,7 @@ fn topo(sk: &Sketch) -> Topo {
             Curve::Arc { id, c, s, e, .. } => {
                 t.circle.insert(id, (c, Some((s, e))));
             }
-            Curve::Ellipse { .. } => {}
+            Curve::Ellipse { .. } | Curve::Spline { .. } => {}
         }
     }
     t

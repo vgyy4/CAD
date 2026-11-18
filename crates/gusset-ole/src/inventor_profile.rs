@@ -29,6 +29,8 @@ pub(crate) enum Poly {
         a: f64,
         b: f64,
     },
+    /// A curve given as points along it (a B-spline, sampled).
+    Path(Vec<P2>),
 }
 
 fn dist(a: P2, b: P2) -> f64 {
@@ -38,6 +40,7 @@ fn dist(a: P2, b: P2) -> f64 {
 pub(crate) fn sample(c: &Poly) -> Vec<P2> {
     let tau = 2.0 * std::f64::consts::PI;
     match *c {
+        Poly::Path(ref pts) => pts.clone(),
         Poly::Line(a, b) => vec![a, b],
         Poly::Circle(c, r) => (0..=96)
             .map(|k| (c.0 + r * libm::cos(tau * f64::from(k) / 96.0), c.1 + r * libm::sin(tau * f64::from(k) / 96.0)))
@@ -67,6 +70,54 @@ pub(crate) fn sample(c: &Poly) -> Vec<P2> {
     }
 }
 
+/// Points along a B-spline (degree, knots, poles, weights: empty for a polynomial curve),
+/// [`SPLINE_SAMPLES`] per knot span, by de Boor's algorithm. `None` for an inconsistent curve.
+pub(crate) fn bspline_points(degree: u32, knots: &[f64], poles: &[P2], weights: &[f64]) -> Option<Vec<P2>> {
+    const SPLINE_SAMPLES: usize = 16;
+    let p = degree as usize;
+    let n = poles.len();
+    if n <= p || knots.len() != n + p + 1 || !(weights.is_empty() || weights.len() == n) {
+        return None;
+    }
+    // Homogeneous poles: (w x, w y, w).
+    let hp: Vec<[f64; 3]> = poles
+        .iter()
+        .enumerate()
+        .map(|(i, q)| {
+            let w = weights.get(i).copied().unwrap_or(1.0);
+            [q.0 * w, q.1 * w, w]
+        })
+        .collect();
+    let mut out = Vec::new();
+    for span in p..n {
+        let (t0, t1) = (*knots.get(span)?, *knots.get(span + 1)?);
+        if t1 <= t0 {
+            continue;
+        }
+        for k in 0..=SPLINE_SAMPLES {
+            let t = t0 + (t1 - t0) * k as f64 / SPLINE_SAMPLES as f64;
+            let mut d: Vec<[f64; 3]> = (0..=p).map(|j| hp.get(span + j - p).copied()).collect::<Option<_>>()?;
+            for r in 1..=p {
+                for j in (r..=p).rev() {
+                    let i = span + j - p;
+                    let (a0, a1) = (*knots.get(i)?, *knots.get(i + p + 1 - r)?);
+                    let alpha = if a1 > a0 { (t - a0) / (a1 - a0) } else { 0.0 };
+                    let (lo, hi) = (*d.get(j - 1)?, *d.get(j)?);
+                    let [l0, l1, l2] = lo;
+                    let [h0, h1, h2] = hi;
+                    *d.get_mut(j)? = [l0 + alpha * (h0 - l0), l1 + alpha * (h1 - l1), l2 + alpha * (h2 - l2)];
+                }
+            }
+            let q = *d.get(p)?;
+            if q[2] <= 0.0 {
+                return None;
+            }
+            out.push((q[0] / q[2], q[1] / q[2]));
+        }
+    }
+    (out.len() >= 2).then_some(out)
+}
+
 fn inside(poly: &[P2], p: P2) -> bool {
     let mut c = false;
     for (i, a) in poly.iter().enumerate() {
@@ -86,18 +137,71 @@ fn round6(x: f64) -> f64 {
 }
 
 /// One point (mm) inside each region of the sketch that an odd number of `loops` surround.
-/// `None` when there is nothing to draw.
+/// `None` when there is nothing to draw. A loop that no point falls in after the pass over the
+/// whole sketch (a small hole far from the rest: its inside is under a few cells) is looked at
+/// again on a grid over its own box (note AR).
 pub(crate) fn picks(curves: &[Poly], loops: &[Vec<P2>]) -> Option<Vec<P2>> {
+    // A loop listed twice (the same region picked twice) counts once.
+    let same = |a: &Vec<P2>, b: &Vec<P2>| a.len() == b.len() && a.iter().all(|&p| b.iter().any(|&q| dist(p, q) < 1e-6));
+    let mut once: Vec<Vec<P2>> = Vec::new();
+    for l in loops {
+        if !once.iter().any(|m| same(m, l)) {
+            once.push(l.clone());
+        }
+    }
+    let loops = &once[..];
     let polys: Vec<Vec<P2>> = curves.iter().map(sample).collect();
     let all = || polys.iter().flatten().chain(loops.iter().flatten()).copied();
     all().next()?;
-    let x0 = all().map(|p| p.0).fold(f64::INFINITY, f64::min);
-    let x1 = all().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
-    let y0 = all().map(|p| p.1).fold(f64::INFINITY, f64::min);
-    let y1 = all().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
-    if !(x0.is_finite() && x1.is_finite() && y0.is_finite() && y1.is_finite()) {
-        return None;
+    let mut res = picks_in(&polys, loops, extent(all())?)?;
+    for l in loops {
+        if l.len() < 3 || res.iter().any(|&p| inside(l, p)) {
+            continue;
+        }
+        let Some(b) = extent(l.iter().copied()) else { continue };
+        for p in picks_in(&polys, loops, b).unwrap_or_default() {
+            if !res.contains(&p) {
+                res.push(p);
+            }
+        }
     }
+    Some(res)
+}
+
+/// The part of the segment `a`-`b` inside the box (`x0, x1, y0, y1`), if any (Liang-Barsky).
+fn clip(a: P2, b: P2, bx: [f64; 4]) -> Option<(P2, P2)> {
+    let [x0, x1, y0, y1] = bx;
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for (p, q) in [(-dx, a.0 - x0), (dx, x1 - a.0), (-dy, a.1 - y0), (dy, y1 - a.1)] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let r = q / p;
+            if p < 0.0 {
+                t0 = t0.max(r);
+            } else {
+                t1 = t1.min(r);
+            }
+        }
+    }
+    (t0 <= t1).then_some(((a.0 + t0 * dx, a.1 + t0 * dy), (a.0 + t1 * dx, a.1 + t1 * dy)))
+}
+
+/// The box (`x0, x1, y0, y1`) of some points; `None` when it is not finite.
+fn extent(pts: impl Iterator<Item = P2> + Clone) -> Option<[f64; 4]> {
+    let x0 = pts.clone().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let x1 = pts.clone().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+    let y0 = pts.clone().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let y1 = pts.map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    (x0.is_finite() && x1.is_finite() && y0.is_finite() && y1.is_finite()).then_some([x0, x1, y0, y1])
+}
+
+/// [`picks`] on a grid over the box `b` (with a margin): curves outside it are left out.
+fn picks_in(polys: &[Vec<P2>], loops: &[Vec<P2>], b: [f64; 4]) -> Option<Vec<P2>> {
+    let [x0, x1, y0, y1] = b;
     let span = (x1 - x0).max(y1 - y0).max(1e-6);
     let x0 = x0 - span * 0.02;
     let y0 = y0 - span * 0.02;
@@ -105,9 +209,11 @@ pub(crate) fn picks(curves: &[Poly], loops: &[Vec<P2>]) -> Option<Vec<P2>> {
     let nx = ((x1 - x0) / h) as usize + 3;
     let ny = ((y1 - y0) / h) as usize + 3;
     let mut wall = vec![false; nx * ny];
-    for pl in &polys {
+    for pl in polys {
         for w in pl.windows(2) {
             let (Some(&a), Some(&b)) = (w.first(), w.get(1)) else { continue };
+            // Only the part of the segment over the grid is drawn.
+            let Some((a, b)) = clip(a, b, [x0, x0 + nx as f64 * h, y0, y0 + ny as f64 * h]) else { continue };
             let m = ((dist(a, b) / (h * 0.25)) as usize).max(1);
             for k in 0..=m {
                 let t = k as f64 / m as f64;
@@ -203,4 +309,50 @@ pub(crate) fn picks(curves: &[Poly], loops: &[Vec<P2>]) -> Option<Vec<P2>> {
         }
     }
     Some(res)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+
+    fn square(c: P2, r: f64) -> Vec<P2> {
+        vec![(c.0 - r, c.1 - r), (c.0 + r, c.1 - r), (c.0 + r, c.1 + r), (c.0 - r, c.1 + r), (c.0 - r, c.1 - r)]
+    }
+
+    /// A small hole far from the rest of a large sketch is found on a grid over its own box;
+    /// a loop listed twice counts once (note AR).
+    #[test]
+    fn small_loops_and_loops_listed_twice() {
+        let curves = vec![
+            Poly::Line((0.0, 0.0), (900.0, 0.0)),
+            Poly::Line((900.0, 0.0), (900.0, 500.0)),
+            Poly::Line((900.0, 500.0), (0.0, 500.0)),
+            Poly::Line((0.0, 500.0), (0.0, 0.0)),
+            Poly::Circle((20.0, 30.0), 1.5),
+        ];
+        let hole = square((20.0, 30.0), 1.5);
+        let p = picks(&curves, &[hole]).unwrap();
+        assert_eq!(p.len(), 1);
+        assert!(dist(p[0], (20.0, 30.0)) < 1.5, "{p:?}");
+        let outer = square((450.0, 250.0), 450.0);
+        let p = picks(&curves, &[outer.clone(), outer]).unwrap();
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(dist(p[0], (20.0, 30.0)) > 1.5, "{p:?}");
+    }
+
+    /// De Boor on a quadratic Bezier and a rational quarter circle.
+    #[test]
+    fn bspline_points_follow_the_curve() {
+        let k = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let pts = bspline_points(2, &k, &[(0.0, 0.0), (1.0, 2.0), (2.0, 0.0)], &[]).unwrap();
+        assert_eq!(pts.first(), Some(&(0.0, 0.0)));
+        assert_eq!(pts.last(), Some(&(2.0, 0.0)));
+        let mid = pts[pts.len() / 2];
+        assert!(dist(mid, (1.0, 1.0)) < 1e-12, "{mid:?}");
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let arc = bspline_points(2, &k, &[(1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], &[1.0, w, 1.0]).unwrap();
+        assert!(arc.iter().all(|p| (libm::hypot(p.0, p.1) - 1.0).abs() < 1e-12));
+        assert!(bspline_points(3, &k, &[(0.0, 0.0), (1.0, 2.0), (2.0, 0.0)], &[]).is_none());
+    }
 }

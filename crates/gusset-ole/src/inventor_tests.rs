@@ -1916,3 +1916,56 @@ fn a_part_that_starts_from_an_imported_body_is_refused() {
     r[20].1 = feature(19, 0, 9, &[]);
     assert!(tree(&r).is_ok());
 }
+
+/// A sketch B-spline (`317b7346`, note AR): its end points in its first list, then the degree
+/// and tolerance and three arrays (knots, no weights, poles in cm). The first and last poles
+/// are its end points; the others become construction points of the sketch.
+#[test]
+fn a_sketch_spline_has_its_degree_knots_and_poles() {
+    let mut classes = CLASSES.to_vec();
+    classes.push(0x317b_7346); // 13
+    let spline = |poles: &[(f64, f64)]| {
+        let mut r = hdr(0, 0, 0);
+        r.extend(0u32.to_le_bytes());
+        r.extend(rf(7).to_le_bytes());
+        r.extend(list(&[rf(4), rf(5)]));
+        r.extend([0u8; 8]);
+        r.extend(4u32.to_le_bytes());
+        r.extend([0u8; 8]);
+        r.extend(2u32.to_le_bytes());
+        r.extend(1e-9f64.to_le_bytes());
+        for n in [6u32, 6, 8] {
+            r.extend(n.to_le_bytes());
+        }
+        for k in [0.0f64, 0.0, 0.0, 1.0, 1.0, 1.0] {
+            r.extend(k.to_le_bytes());
+        }
+        for n in [0u32, 0, 8, 3, 8, 8] {
+            r.extend(n.to_le_bytes());
+        }
+        for &(x, y) in poles {
+            r.extend(x.to_le_bytes());
+            r.extend(y.to_le_bytes());
+        }
+        r.extend([0u8; 12]);
+        r
+    };
+    let mut r = base_records();
+    r[9] = (13, spline(&[(2.0, 0.0), (2.5, 0.5), (2.0, 1.0)]));
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    let sk = &t["features"][0];
+    assert_eq!(
+        sk["curves"][1],
+        json!({"id": "b9", "type": "bspline", "degree": 2, "knots": [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+               "poles": ["p4", "p9_1", "p5"]}),
+        "{sk}"
+    );
+    assert!(
+        sk["points"].as_array().unwrap().contains(&json!({"id": "p9_1", "x": 25.0, "y": 5.0, "construction": true})),
+        "{sk}"
+    );
+    // Poles that do not start at its first point: not this layout, not read.
+    r[9] = (13, spline(&[(2.1, 0.0), (2.5, 0.5), (2.0, 1.0)]));
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(t["features"][0]["curves"].as_array().map(Vec::len), Some(3));
+}

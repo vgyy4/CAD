@@ -57,6 +57,8 @@ pub(crate) enum Role {
     SkLine,
     SkCircle,
     SkEllipse,
+    /// A sketch B-spline (`317b7346`, note AR).
+    SkSpline,
     Param,
     SkPlacement,
     SkDir,
@@ -74,6 +76,7 @@ fn role_of(g: u32) -> Role {
         0xce52_df3a => Role::SkLine,
         0xce52_df3b => Role::SkCircle,
         0x4507_d460 => Role::SkEllipse,
+        0x317b_7346 => Role::SkSpline,
         0x9087_4d26 => Role::Param,
         0x9087_4d18 => Role::SkPlacement,
         0xce52_df40 => Role::SkDir,

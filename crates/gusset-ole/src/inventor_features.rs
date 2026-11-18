@@ -128,6 +128,18 @@ pub(crate) enum Curve {
         b: f64,
         con: bool,
     },
+    /// A clamped B-spline from point `s` to point `e`: its first and last poles are those
+    /// points, the others are given (mm); weights empty for a polynomial curve (note AR).
+    Spline {
+        id: usize,
+        s: usize,
+        e: usize,
+        degree: u32,
+        knots: Vec<f64>,
+        poles: Vec<P2>,
+        weights: Vec<f64>,
+        con: bool,
+    },
 }
 
 impl Sketch {
@@ -144,6 +156,14 @@ impl Sketch {
                 p
             })
             .collect();
+        let mut points = points;
+        for c in &self.curves {
+            if let Curve::Spline { id, ref poles, .. } = *c {
+                for (k, q) in poles.iter().enumerate().skip(1).take(poles.len().saturating_sub(2)) {
+                    points.push(json!({"id": format!("p{id}_{k}"), "x": q.0, "y": q.1, "construction": true}));
+                }
+            }
+        }
         let curves: Vec<Value> = self
             .curves
             .iter()
@@ -163,6 +183,22 @@ impl Sketch {
                         json!({"id": format!("e{id}"), "type": "ellipse", "center": format!("p{c}"), "major": major, "a": a, "b": b}),
                         con,
                     ),
+                    Curve::Spline { id, s, e, degree, ref knots, ref poles, ref weights, con } => {
+                        let n = poles.len();
+                        let ids: Vec<String> = (0..n)
+                            .map(|k| match k {
+                                0 => format!("p{s}"),
+                                k if k + 1 == n => format!("p{e}"),
+                                k => format!("p{id}_{k}"),
+                            })
+                            .collect();
+                        let mut j = json!({"id": format!("b{id}"), "type": "bspline", "degree": degree,
+                                           "knots": knots, "poles": ids});
+                        if !weights.is_empty() {
+                            put(&mut j, "weights", json!(weights));
+                        }
+                        (j, con)
+                    }
                 };
                 if con {
                     put(&mut j, "construction", json!(true));
@@ -199,6 +235,11 @@ impl Sketch {
                 Curve::Ellipse { c, major, a, b, con: false, .. } => {
                     if let Some(&c) = p.get(&c) {
                         out.push(Poly::Ellipse { c, major: (major[0], major[1]), a, b });
+                    }
+                }
+                Curve::Spline { degree, ref knots, ref poles, ref weights, con: false, .. } => {
+                    if let Some(pts) = crate::inventor_profile::bspline_points(degree, knots, poles, weights) {
+                        out.push(Poly::Path(pts));
                     }
                 }
                 _ => {}
@@ -249,8 +290,10 @@ impl Reader<'_> {
         let m = self.owned.get_or_init(|| {
             let mut m: HashMap<usize, Vec<usize>> = HashMap::new();
             for i in 0..self.dc.n() {
-                if matches!(self.dc.role(i), Role::SkPoint | Role::SkLine | Role::SkCircle | Role::SkEllipse)
-                    && let Some(o) = self.owner(i)
+                if matches!(
+                    self.dc.role(i),
+                    Role::SkPoint | Role::SkLine | Role::SkCircle | Role::SkEllipse | Role::SkSpline
+                ) && let Some(o) = self.owner(i)
                 {
                     m.entry(o).or_default().push(i);
                 }
@@ -507,7 +550,11 @@ impl Reader<'_> {
     /// or axes: those carry `feb0d977` / `18951917` links, or the axis flags).
     fn projects_model(&self, sk: &Sketch) -> bool {
         let curve_ids = sk.curves.iter().map(|c| match *c {
-            Curve::Line { id, .. } | Curve::Arc { id, .. } | Curve::Circle { id, .. } | Curve::Ellipse { id, .. } => id,
+            Curve::Line { id, .. }
+            | Curve::Arc { id, .. }
+            | Curve::Circle { id, .. }
+            | Curve::Ellipse { id, .. }
+            | Curve::Spline { id, .. } => id,
         });
         sk.points.iter().map(|p| p.0).chain(curve_ids).any(|i| self.model_projected(i))
     }
@@ -542,7 +589,7 @@ impl Reader<'_> {
         }
         for &i in items {
             let role = self.dc.role(i);
-            if !matches!(role, Role::SkLine | Role::SkCircle | Role::SkEllipse) {
+            if !matches!(role, Role::SkLine | Role::SkCircle | Role::SkEllipse | Role::SkSpline) {
                 continue;
             }
             if sk.curves.len() >= MAX_CURVES {
@@ -561,6 +608,12 @@ impl Reader<'_> {
             }
             if role == Role::SkEllipse {
                 if let Some(c) = self.ellipse(i, &sk.points, con) {
+                    sk.curves.push(c);
+                }
+                continue;
+            }
+            if role == Role::SkSpline {
+                if let Some(c) = self.spline(i, &list, &sk.points, con) {
                     sk.curves.push(c);
                 }
                 continue;
@@ -587,6 +640,64 @@ impl Reader<'_> {
             }
         }
         Ok(sk)
+    }
+
+    /// A B-spline record (`317b7346`, note AR): its first list names the curve's points (the
+    /// ends first and last); further on, `u32 degree, f64 tolerance`, then three arrays, each
+    /// `u32 n, u32 n, u32 8` and its doubles: the knots, the weights (none for a polynomial
+    /// curve) and, as `u32 n` and two more words, the poles (x, y in cm). The first and last
+    /// poles must be the end points, the knots non-decreasing and `poles + degree + 1` long.
+    /// Anything else (a periodic or unclamped curve, another layout) is not read.
+    fn spline(&self, i: usize, list: &[Option<usize>], points: &[(usize, f64, f64, bool)], con: bool) -> Option<Curve> {
+        const MAX_KNOTS: usize = 4096;
+        let rec = self.dc.r(i);
+        let (Some(Some(s)), Some(Some(e))) = (list.first(), list.last()) else { return None };
+        let at = |p: usize| points.iter().find(|q| q.0 == p).map(|q| (q.1, q.2));
+        let (ps, pe) = (at(*s)?, at(*e)?);
+        let dbls = |o: usize, n: usize| -> Option<Vec<f64>> {
+            (0..n).map(|k| f64_at(rec, o + 8 * k).filter(|v| v.is_finite() && v.abs() < 1e7)).collect()
+        };
+        for j in self.dc.body(i)..rec.len().saturating_sub(24) {
+            let Some(degree) = u32_at(rec, j).filter(|d| (1..=9).contains(d)) else { continue };
+            if !f64_at(rec, j + 4).is_some_and(|t| t > 0.0 && t < 1e-3) {
+                continue;
+            }
+            let (Some(nk), Some(nk2), Some(8)) = (u32_at(rec, j + 12), u32_at(rec, j + 16), u32_at(rec, j + 20)) else {
+                continue;
+            };
+            let nk = nk as usize;
+            if nk != nk2 as usize || nk > MAX_KNOTS {
+                continue;
+            }
+            let knots = dbls(j + 24, nk)?;
+            let o = j + 24 + 8 * nk;
+            let (nw, nw2, es) = (u32_at(rec, o)? as usize, u32_at(rec, o + 4)? as usize, u32_at(rec, o + 8)?);
+            if nw != nw2 || es != 8 || nw > MAX_KNOTS {
+                return None;
+            }
+            let weights = dbls(o + 12, nw)?;
+            let o = o + 12 + 8 * nw;
+            let np = u32_at(rec, o)? as usize;
+            if np < 2 || nk != np + degree as usize + 1 || !(nw == 0 || nw == np) {
+                return None;
+            }
+            let flat = dbls(o + 12, 2 * np)?;
+            let poles: Vec<P2> = flat
+                .chunks_exact(2)
+                .filter_map(|c| match *c {
+                    [x, y] => Some((rnd(x * CM), rnd(y * CM))),
+                    _ => None,
+                })
+                .collect();
+            let near = |a: P2, b: P2| libm::hypot(a.0 - b.0, a.1 - b.1) < 1e-4;
+            let ok = poles.first().is_some_and(|&p| near(p, ps))
+                && poles.last().is_some_and(|&p| near(p, pe))
+                && knots.windows(2).all(|w| matches!(*w, [a, b] if a <= b))
+                && weights.iter().all(|&w| w > 0.0)
+                && s != e;
+            return ok.then_some(Curve::Spline { id: i, s: *s, e: *e, degree, knots, poles, weights, con });
+        }
+        None
     }
 
     /// An ellipse record: the tail holds `f64 s, a, b, u8` (cm; `s` = y component of the major
