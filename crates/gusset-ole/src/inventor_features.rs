@@ -2044,6 +2044,130 @@ fn emboss(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Str
     Ok(())
 }
 
+/// A whole-body transform (note AQ): Move Bodies (`2b839fe9`), or a direct edit Move
+/// (`8fa6a6de`) or Scale (`5bcb6fff`) of bodies. Slot 0 lists the bodies (`0e6870ae`), slot 1
+/// (`0800fe29`) points at the matrix (cm) of the move or scale ([`transform_steps`]).
+fn body_transform(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    let s = r.slots(f)?;
+    let list = s.need(0)?;
+    if r.dc.class(list) != G_BODY_LIST {
+        return Err("the moved bodies are not a body list (a move of faces is not read)".into());
+    }
+    let recs: Vec<usize> =
+        r.dc.refs(list).into_iter().map(|(_, x)| x).filter(|&x| r.dc.class(x) == G_SOLID_BODY).collect();
+    let pl = r.dc.refs(s.need(1)?).into_iter().map(|(_, x)| x).find(|&x| r.dc.role(x) == Role::SkPlacement);
+    let m = pl.and_then(|p| r.dc.placement(p)).ok_or("the transform is not readable")?;
+    let steps = transform_steps(&m, f.typ == Some(FeatType::Other(0x5bcb_6fff)))?;
+    let mut targets = Vec::new();
+    for b in &recs {
+        let t = match st.bodies.get(b) {
+            Some(t) => t.clone(),
+            // A body no feature read named: the part's body, when it is the only one.
+            None if recs.len() == 1 && st.bodies.values().all(|v| Some(v) == st.first_body.as_ref()) => {
+                st.first_body.clone().ok_or("a move before any body")?
+            }
+            None => return Err("a moved body was not made by a feature read".into()),
+        };
+        targets.push(t);
+    }
+    if targets.is_empty() {
+        return Err("the transform moves no solid body".into());
+    }
+    let mut k = 0;
+    for t in &targets {
+        for step in &steps {
+            k += 1;
+            let nm = if k == 1 { name.to_string() } else { format!("{name}_{k}") };
+            let mut j = step.clone();
+            put(&mut j, "name", json!(nm));
+            put(&mut j, "target", json!(t));
+            st.out.push(j);
+        }
+    }
+    Ok(())
+}
+
+/// The tree features (without name and target) that apply a transform's matrix (row-major,
+/// entries 3, 7 and 11 in cm) to a body. A move's matrix is a turn and a shift: a move (the turn
+/// about the origin, then the shift). A scale's (`scale`) is the factor on the diagonal (one, or
+/// one per axis) and the base point the scale keeps in the shift's place: a scale about it
+/// (the de_scale sample: the base point is the scaled block's top face centre). A scale that
+/// also turns is not read.
+pub(crate) fn transform_steps(m: &[f64; 16], scale: bool) -> Result<Vec<Value>, String> {
+    let g = |i: usize| m.get(i).copied().unwrap_or(f64::NAN);
+    if !(0..16).all(|i| g(i).is_finite()) {
+        return Err("the transform is not finite".into());
+    }
+    if [g(12), g(13), g(14)].iter().any(|v| v.abs() > 1e-9) || (g(15) - 1.0).abs() > 1e-9 {
+        return Err("the transform is not affine".into());
+    }
+    let a = [[g(0), g(1), g(2)], [g(4), g(5), g(6)], [g(8), g(9), g(10)]];
+    let t = [g(3) * CM, g(7) * CM, g(11) * CM];
+    if t.iter().any(|v| v.abs() > 1e7) {
+        return Err("the transform reaches too far".into());
+    }
+    if scale {
+        let off = (0..3).any(|i| (0..3).any(|j| i != j && a[i][j].abs() > 1e-12));
+        if off {
+            return Err("a scale that also turns is not read".into());
+        }
+        let k = [a[0][0], a[1][1], a[2][2]];
+        if k.iter().any(|&x| !(x > 1e-9 && x < 1e6)) {
+            return Err("the scale factor is not positive".into());
+        }
+        let near = |x: f64, y: f64| (x - y).abs() <= 1e-12 * x.abs().max(y.abs()).max(1.0);
+        let mut o = json!({"type": "scale_body", "center": arr(t)});
+        if near(k[0], k[1]) && near(k[1], k[2]) {
+            put(&mut o, "factor", json!(rnd(k[0])));
+        } else {
+            put(&mut o, "factors", json!([rnd(k[0]), rnd(k[1]), rnd(k[2])]));
+        }
+        return Ok(vec![o]);
+    }
+    let col = |j: usize| [a[0][j], a[1][j], a[2][j]];
+    let ortho = (0..3).all(|i| (0..3).all(|j| (dot(col(i), col(j)) - if i == j { 1.0 } else { 0.0 }).abs() <= 1e-9));
+    if !ortho || dot(cross(col(0), col(1)), col(2)) <= 0.0 {
+        return Err("the move scales, shears or mirrors the body".into());
+    }
+    let ident = (0..3).all(|i| (0..3).all(|j| (a[i][j] - if i == j { 1.0 } else { 0.0 }).abs() <= 1e-12));
+    let mut mv = json!({"type": "move_body"});
+    if !ident {
+        let (axis, angle) = axis_angle(&a).ok_or("the turn of the move is not readable")?;
+        put(&mut mv, "rotate", json!({"axis": arr(axis), "origin": [0.0, 0.0, 0.0], "angle": rnd(angle)}));
+    }
+    if t.iter().any(|v| v.abs() > 1e-9) {
+        put(&mut mv, "translate", arr(t));
+    } else if ident {
+        return Err("the move leaves the body where it is".into());
+    }
+    Ok(vec![mv])
+}
+
+/// The unit axis and angle (degrees, 0..=180) of a rotation matrix (rows).
+fn axis_angle(m: &[[f64; 3]; 3]) -> Option<(V3, f64)> {
+    let e = |i: usize, j: usize| m.get(i).and_then(|r| r.get(j)).copied().unwrap_or(0.0);
+    let tr = e(0, 0) + e(1, 1) + e(2, 2);
+    let angle = libm::acos(((tr - 1.0) / 2.0).clamp(-1.0, 1.0));
+    let v = [e(2, 1) - e(1, 2), e(0, 2) - e(2, 0), e(1, 0) - e(0, 1)];
+    let s = libm::sqrt(dot(v, v));
+    let axis = if s > 1e-6 {
+        [v[0] / s, v[1] / s, v[2] / s]
+    } else {
+        // Half a turn: the axis is the longest column of (m + I) / 2.
+        let c = |j: usize| {
+            [
+                e(0, j) + if j == 0 { 1.0 } else { 0.0 },
+                e(1, j) + if j == 1 { 1.0 } else { 0.0 },
+                e(2, j) + if j == 2 { 1.0 } else { 0.0 },
+            ]
+        };
+        let best = (0..3).map(c).max_by(|a, b| dot(*a, *a).total_cmp(&dot(*b, *b)))?;
+        let l = libm::sqrt(dot(best, best));
+        (l > 1e-9).then(|| [best[0] / l, best[1] / l, best[2] / l])?
+    };
+    Some((axis, angle.to_degrees()))
+}
+
 /// The solid body record (`90874d47`) a feature made or changed: the first one its
 /// `0e6870ae` slot lists.
 fn body_record(r: &Reader, f: &Feature) -> Option<usize> {
@@ -2755,6 +2879,8 @@ pub fn feature_tree_with(
             FeatType::Combine => combine(&r, &mut st, f, &name),
             FeatType::Split => split(&r, &mut st, f, &name),
             FeatType::Plate => plate(&r, &mut st, f, &name),
+            // Move Bodies, and the direct edits Move and Scale of whole bodies (note AQ).
+            FeatType::Other(0x2b83_9fe9 | 0x8fa6_a6de | 0x5bcb_6fff) => body_transform(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.
             FeatType::Thread => {
                 st.omitted.push(json!({"name": name, "why": "cosmetic thread"}));
@@ -2764,6 +2890,12 @@ pub fn feature_tree_with(
             FeatType::Other(0x8e29_cbee) if derived_body.is_some() && st.first_body.is_none() => {
                 st.first_body = derived_body.map(str::to_string);
                 st.omitted.push(json!({"name": name, "why": "derive, made by the base part's features"}));
+                Ok(())
+            }
+            // A surface (extrude, revolve, sweep or offset surface, boundary patch; note AQ):
+            // no solid. A later feature that takes it as a tool refuses on its own.
+            FeatType::Other(0xe597_a4f0 | 0x36ed_6f3a | 0xcc42_4542 | 0xa82c_f09e | 0x8a94_bf8f) => {
+                st.omitted.push(json!({"name": name, "why": "surface feature, no solid"}));
                 Ok(())
             }
             // Nor does the tagging feature a derive leaves (note AO).

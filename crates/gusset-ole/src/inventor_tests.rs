@@ -19,7 +19,9 @@ const PARAM: usize = 7;
 const FEATURE: usize = 8;
 const ORDER: usize = 9;
 const BODY_NAME: usize = 10;
-const CLASSES: [u32; 11] = [
+const BODY_LIST: usize = 11;
+const SOLID: usize = 12;
+const CLASSES: [u32; 13] = [
     0x2b48_a42b,
     0x9087_4d18,
     0xce52_df35,
@@ -31,6 +33,8 @@ const CLASSES: [u32; 11] = [
     0x9087_4d91,
     0x4521_21b6,
     0x656d_d01e,
+    0x0e68_70ae,
+    0x9087_4d47,
 ];
 
 // Type GUIDs (first 32 bits) of the features.
@@ -1670,4 +1674,110 @@ fn an_unread_sketch_constraint_refuses_a_member_row() {
     let t = read(&[("d1".into(), 3.0)]);
     assert_eq!(t["features"][0]["type"], "unsupported");
     assert!(t["features"][0]["reason"].as_str().unwrap().contains("12345678 is not read"), "{t}");
+}
+
+/// A feature whose name word points at another record (here a record of no known class): its
+/// name is the typed name record whose owner word (offset 14) is the feature (note AQ).
+#[test]
+fn a_feature_is_named_by_the_name_record_it_owns() {
+    let mut recs = base_records();
+    recs.push((OTHER, hdr(0, 0, 0))); // 19
+    let ext = recs[18].1.clone();
+    let mut f = ext.clone();
+    f[6..10].copy_from_slice(&rf(19).to_le_bytes());
+    recs[18].1 = f;
+    let lost = tree(&recs).unwrap();
+    assert_eq!(types(&lost).last().unwrap().0, "unsupported");
+    recs[1].1[14..18].copy_from_slice(&rf(18).to_le_bytes());
+    assert_eq!(tree(&recs).unwrap(), tree(&base_records()).unwrap());
+}
+
+/// A surface feature makes no solid: it is left out with the reason.
+#[test]
+fn a_surface_feature_is_left_out() {
+    let mut recs = base_records();
+    recs.push((NAME, name_rec("ExtrusionSrf1", Some(0xe597_a4f0)))); // 19
+    recs.push((FEATURE, feature(19, 0, 9, &[0, 0, 0]))); // 20
+    let t = tree(&recs).unwrap();
+    assert_eq!(t["features"], tree(&base_records()).unwrap()["features"]);
+    assert_eq!(t["source"]["omitted"][0]["name"], "ExtrusionSrf1");
+}
+
+/// A placement record (cm): the identity turn with a shift, or with `k` on the diagonal.
+fn shift_placement(k: f64, t: [f64; 3]) -> Vec<u8> {
+    let mut r = hdr(0, 0, 0);
+    if k == 1.0 {
+        // Entries 0, 5, 10, 15 one; 1, 2, 4, 6, 8, 9, 12, 13, 14 zero; 3, 7, 11 follow.
+        r.extend(0x7356_8421u32.to_le_bytes());
+        for v in t {
+            r.extend(v.to_le_bytes());
+        }
+    } else {
+        // Entry 15 one; the zeros as above; 0, 3, 5, 7, 10, 11 follow.
+        r.extend(0x7356_8000u32.to_le_bytes());
+        for v in [k, t[0], k, t[1], k, t[2]] {
+            r.extend(v.to_le_bytes());
+        }
+    }
+    r
+}
+
+/// Move Bodies and the direct edit Scale: slot 0 the body list, slot 1 a record that points at
+/// the matrix (note AQ). A move shifts; a scale keeps the point in the shift's place.
+#[test]
+fn moves_and_scales_of_the_body_are_read() {
+    let with = |typ: u32, k: f64| {
+        let mut recs = base_records();
+        recs.push((NAME, name_rec("Move1", Some(typ)))); // 19
+        recs.push((SOLID, hdr(0, 0, 0))); // 20
+        recs.push((BODY_LIST, {
+            let mut l = hdr(0, 0, 0);
+            l.extend(list(&[rf(20)]));
+            l
+        })); // 21
+        recs.push((PLACEMENT, shift_placement(k, [1.0, 2.0, 0.5]))); // 22
+        recs.push((OTHER, {
+            let mut p = hdr(0, 0, 0);
+            p.extend(rf(22).to_le_bytes());
+            p
+        })); // 23
+        recs.push((FEATURE, feature(19, 0, 9, &[rf(21), rf(23), 0]))); // 24
+        let t = tree(&recs).unwrap();
+        t["features"].as_array().unwrap().last().unwrap().clone()
+    };
+    let m = with(0x2b83_9fe9, 1.0);
+    assert_eq!(m["type"], "move_body");
+    assert_eq!(m["target"], "Extrusion1");
+    assert_eq!(m["translate"], json!([10.0, 20.0, 5.0]));
+    assert!(m.get("rotate").is_none());
+    let s = with(0x5bcb_6fff, 1.5);
+    assert_eq!(s["type"], "scale_body");
+    assert_eq!(s["factor"], 1.5);
+    assert_eq!(s["center"], json!([10.0, 20.0, 5.0]));
+}
+
+#[test]
+fn a_move_with_a_turn_gives_its_axis_and_angle() {
+    use crate::inventor_features::transform_steps;
+    // A quarter turn about +Z, then a shift of 1 cm along X.
+    let m = [0.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+    let st = transform_steps(&m, false).unwrap();
+    assert_eq!(st.len(), 1);
+    assert_eq!(st[0]["rotate"]["axis"], json!([0.0, 0.0, 1.0]));
+    assert_eq!(st[0]["rotate"]["angle"], 90.0);
+    assert_eq!(st[0]["translate"], json!([10.0, 0.0, 0.0]));
+    // Half a turn about X.
+    let h = [1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+    let st = transform_steps(&h, false).unwrap();
+    assert_eq!(st[0]["rotate"]["axis"], json!([1.0, 0.0, 0.0]));
+    assert_eq!(st[0]["rotate"]["angle"], 180.0);
+    // A scale that turns, a move that scales or mirrors: refused.
+    assert!(transform_steps(&m, true).is_err());
+    let mut big = m;
+    big[0] = 2.0;
+    assert!(transform_steps(&big, false).is_err());
+    let mut mirror = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+    assert!(transform_steps(&mirror, false).is_err());
+    mirror[10] = 1.0;
+    assert!(transform_steps(&mirror, false).is_err(), "no move at all");
 }

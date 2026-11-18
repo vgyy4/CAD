@@ -420,6 +420,7 @@ impl Dc {
     /// it is left out.
     pub(crate) fn features(&self) -> Vec<Feature> {
         let mut out = Vec::new();
+        let mut owned: Option<HashMap<usize, usize>> = None;
         for i in 0..self.n() {
             if !matches!(self.role(i), Role::PartFeature | Role::PatternFeature)
                 && !G_FEATURE_CLASSES.contains(&self.class(i))
@@ -431,6 +432,15 @@ impl Dc {
                 continue;
             }
             let (mut name, mut typ) = (None, None);
+            // A feature whose name word points at another record (a surface feature's, a
+            // move or scale body's, some extrudes and holes, note AQ): its name record is the
+            // one whose owner word is the feature.
+            let v = match v {
+                Some(v) if self.role(v) != Role::Name => {
+                    owned.get_or_insert_with(|| self.owned_names()).get(&i).copied().or(Some(v))
+                }
+                v => v,
+            };
             if let Some(v) = v.filter(|&v| self.role(v) == Role::Name) {
                 name = self.namestr(v);
                 typ = self.nametype(v).map(FeatType::of);
@@ -443,6 +453,25 @@ impl Dc {
             out.push(Feature { rec: i, name, typ });
         }
         out
+    }
+
+    /// The typed name records (a feature's name) by the record their owner word (offset 14 or
+    /// 18, by the save's header) points at. A record named twice is left out.
+    fn owned_names(&self) -> HashMap<usize, usize> {
+        let mut m: HashMap<usize, Option<usize>> = HashMap::new();
+        for j in (0..self.n()).filter(|&j| self.role(j) == Role::Name) {
+            if self.nametype(j).is_none() {
+                continue;
+            }
+            let r = self.r(j);
+            let mut owners: Vec<usize> =
+                [14, 18].iter().filter_map(|&o| u32_at(r, o).and_then(|w| reference(w, self.n()))).collect();
+            owners.dedup();
+            for x in owners.into_iter().filter(|&x| x != j) {
+                m.entry(x).and_modify(|e| *e = None).or_insert(Some(j));
+            }
+        }
+        m.into_iter().filter_map(|(k, v)| Some((k, v?))).collect()
     }
 
     /// The id written at offset 18 of a record.
