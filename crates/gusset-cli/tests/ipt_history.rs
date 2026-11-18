@@ -12,7 +12,7 @@
 use gusset_commands::{CmdCtx, Session, execute};
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[test]
@@ -39,20 +39,8 @@ fn inventor_parts_come_in_as_history_or_bodies() {
     let (mut history, mut shapes, mut no_solid, mut failed) = (0, 0, 0, 0);
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
     for f in &files {
-        let k: Arc<dyn gusset_kernel::Kernel> =
-            Arc::new(gusset_kernel_occt::OcctKernel::with_worker(Some(worker.clone())).unwrap());
-        let doc = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
-        let mut s = Session::new(&doc, k, &CmdCtx::user(0));
-        let p = std::env::temp_dir().join(format!("gusset-ipt-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
-        std::fs::copy(f, p.join("part.ipt")).unwrap();
-        s.project_dir = Some(p.clone());
-        s.importer = Some(Arc::new(
-            gusset_worker::WorkerImporter::new(worker.clone()).with_timeout(std::time::Duration::from_secs(300)),
-        ));
         let verbose = std::env::var_os("GUSSET_IPT_VERBOSE").is_some();
-        match execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "part.ipt"})) {
+        match import_with_bases(f, &worker) {
             Ok(r) if r["tier"].as_str().unwrap_or_default().contains("Inventor feature history") => {
                 history += 1;
                 if verbose {
@@ -104,7 +92,6 @@ fn inventor_parts_come_in_as_history_or_bodies() {
                 eprintln!("{}: {}", f.display(), e.message);
             }
         }
-        let _ = std::fs::remove_dir_all(&p);
     }
     eprintln!(
         "{} files: {history} as history, {shapes} as bodies, {no_solid} without a solid, {failed} failed",
@@ -116,5 +103,52 @@ fn inventor_parts_come_in_as_history_or_bodies() {
     assert_eq!(failed, 0, "{failed} files did not import at all");
     if let Some(min) = std::env::var("GUSSET_IPT_MIN_HISTORY").ok().and_then(|v| v.parse::<usize>().ok()) {
         assert!(history >= min, "{history} files as history, at least {min} expected");
+    }
+}
+
+/// Imports `f` from a folder of its own. A derived part reads its base part from that folder
+/// by the name it stores; the samples are downloads whose folders were flattened into the file
+/// names ("dir__base.ipt"), so a base the import misses is looked up among the sample's
+/// siblings (the same name, or a flattened name ending in it, sharing most of the sample's
+/// prefix), copied in under the stored name, and the import run again.
+fn import_with_bases(f: &Path, worker: &Path) -> Result<serde_json::Value, gusset_commands::CommandError> {
+    let p = std::env::temp_dir().join(format!("gusset-ipt-{}", std::process::id()));
+    let mut bases: Vec<(String, PathBuf)> = Vec::new();
+    loop {
+        let k: Arc<dyn gusset_kernel::Kernel> =
+            Arc::new(gusset_kernel_occt::OcctKernel::with_worker(Some(worker.to_path_buf())).unwrap());
+        let doc = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
+        let mut s = Session::new(&doc, k, &CmdCtx::user(0));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::copy(f, p.join("part.ipt")).unwrap();
+        for (name, from) in &bases {
+            std::fs::copy(from, p.join(name)).unwrap();
+        }
+        s.project_dir = Some(p.clone());
+        s.importer = Some(Arc::new(
+            gusset_worker::WorkerImporter::new(worker.to_path_buf()).with_timeout(std::time::Duration::from_secs(300)),
+        ));
+        let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "part.ipt"}));
+        let _ = std::fs::remove_dir_all(&p);
+        let missing = r.as_ref().ok().and_then(|r| {
+            let text = r["warnings_user_text"].to_string();
+            let (_, rest) = text.split_once("it is derived from '")?;
+            let (name, rest) = rest.split_once('\'')?;
+            rest.starts_with(", which is not in the part's folder").then(|| name.to_string())
+        });
+        let Some(name) = missing.filter(|n| bases.len() < 5 && !bases.iter().any(|b| &b.0 == n)) else { return r };
+        let real = std::fs::canonicalize(f).unwrap_or_else(|_| f.to_path_buf());
+        let own = real.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let flat = format!("__{name}");
+        let common = |a: &str| a.chars().zip(own.chars()).take_while(|(x, y)| x == y).count();
+        let sibling = std::fs::read_dir(real.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| *n == name || n.ends_with(&flat))
+            .max_by_key(|n| (common(n), std::cmp::Reverse(n.clone())));
+        let Some(sibling) = sibling else { return r };
+        bases.push((name, real.with_file_name(sibling)));
     }
 }
