@@ -3873,7 +3873,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     distance = (h.abs() > 1e-6).then_some(round_to(h, 6) + 0.0);
                 }
             }
-            let mut up_to: Option<(V3, V3, f64, bool)> = None;
+            // (point, normal, offset, reverse, extend the face's surface: ADR 0061)
+            let mut up_to: Option<(V3, V3, f64, bool, bool)> = None;
             let mut end_s: Option<f64> = None;
             if let (Some(t @ (4 | 5)), Some(sk)) = (typ, last_sketch.as_ref()) {
                 distance = None;
@@ -3917,18 +3918,22 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                             },
                             |agree| if agree { 1.0 } else { -1.0 },
                         );
-                        up_to = Some((pt, nf, 0.0, dir < 0.0));
+                        // SolidWorks extends the surface where it does not cover the profile.
+                        up_to = Some((pt, nf, 0.0, dir < 0.0, true));
                     } else if t == 4 && den.abs() > 1e-9 {
                         let dir = extrude_direction(rf, a, b)
                             .and_then(|v| direction_agrees(n, 1.0, v))
                             .map_or(s_face.signum(), |agree| if agree { 1.0 } else { -1.0 });
                         if s_face * dir > 1e-9 && covered(dir) {
-                            up_to = Some((pt, nf, 0.0, dir < 0.0));
+                            up_to = Some((pt, nf, 0.0, dir < 0.0, false));
                             end_s = parallel.then_some(s_face);
                         } else if s_face * dir > 1e-9 && parallel {
                             // The face is smaller than the profile: SolidWorks extends its surface.
                             distance = Some(round_to(s_face, 6) + 0.0);
                             end_s = distance;
+                        } else if s_face * dir > 1e-9 {
+                            // A tilted face smaller than the profile: up to its extended plane.
+                            up_to = Some((pt, nf, 0.0, dir < 0.0, true));
                         }
                     } else if t == 5
                         && parallel
@@ -3943,7 +3948,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         if s_end.abs() > 1e-9 {
                             end_s = Some(round_to(s_end, 6) + 0.0);
                             if s_face * dir > 1e-9 && covered(dir) {
-                                up_to = Some((pt, nf, round_to((s_end - s_face) * dir, 6) + 0.0, dir < 0.0));
+                                up_to = Some((pt, nf, round_to((s_end - s_face) * dir, 6) + 0.0, dir < 0.0, false));
                             } else {
                                 distance = end_s;
                             }
@@ -4034,7 +4039,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 distance = None;
                 up_to = None;
             }
-            if let Some((pt, nf, off, reverse)) = up_to {
+            if let Some((pt, nf, off, reverse, extend)) = up_to {
                 js.insert("end_condition".into(), json!("to_face"));
                 js.insert("face".into(), json!({"point": json_v3(pt), "normal": json_v3(nf)}));
                 if off.abs() > 1e-9 {
@@ -4042,6 +4047,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 }
                 if reverse {
                     js.insert("reverse".into(), json!(true));
+                }
+                if extend {
+                    js.insert("extend".into(), json!(true));
                 }
                 // A face parallel to the sketch: its plane, should the face no longer cover the
                 // sweep when rebuilt (a hole cut through it since: 3_way_cube_connector's
