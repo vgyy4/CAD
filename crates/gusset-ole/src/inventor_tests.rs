@@ -1492,13 +1492,27 @@ fn a_combine_cuts_a_tool_body_kept_apart() {
         json!({"type": "combine", "name": "Combine1", "target": "Extrusion1",
                                          "tools": ["Extrusion2"], "operation": "cut"})
     );
-    // Without the combine, the second extrude joins the first body as before.
+    // Without the combine, the second extrude is still a body of its own (note AR: the stored
+    // bodies are measured apart); a cut listing it changes it, not the first body.
     r.truncate(25);
     let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
     assert_eq!(
         (t["features"][2]["operation"].clone(), t["features"][2]["target"].clone()),
-        (json!("join"), json!("Extrusion1"))
+        (json!("new"), Value::Null)
     );
+    r.push((NAME, name_rec("Extrusion3", Some(T_EXTRUDE)))); // 25
+    r.push((FEATURE, feature(25, 0, 7, &[rf(27), rf(12), 0, rf(15), rf(16), 0, rf(17), 0, rf(22)]))); // 26
+    r.push((OTHER, tail(2))); // 27: cut
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(
+        (t["features"][3]["operation"].clone(), t["features"][3]["target"].clone()),
+        (json!("cut"), json!("Extrusion2")),
+        "{t}"
+    );
+    // A cut whose list names a body no feature made changes the first body.
+    r[26].1 = feature(25, 0, 7, &[rf(27), rf(12), 0, rf(15), rf(16), 0, rf(17), 0, 0]);
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(t["features"][3]["target"], "Extrusion1", "{t}");
 }
 
 /// An emboss from the face (`285e398c`, notes AJ): its direction record points into the
@@ -1799,4 +1813,106 @@ fn the_order_record_reads_its_entries_not_stray_bytes() {
     r.push((ORDER, order));
     let names: Vec<String> = types(&tree(&r).unwrap()).into_iter().map(|t| t.1).collect();
     assert_eq!(names, ["Sketch1", "Extrusion1", "Thicken1"]);
+}
+
+/// A rectangular pattern in one direction (note AR): a count before the body list is an
+/// internal variable's, the pattern's own comes after it; the first flag after the direction
+/// makes the parameter the distance from the first occurrence to the last ("fit"). The stored
+/// direction is the one the pattern runs in.
+#[test]
+fn a_one_way_rectangular_pattern_reads_its_own_count_and_a_fit_distance() {
+    let mut classes = COPY_CLASSES.to_vec();
+    classes.extend([0x0e68_70ae, 0xce52_df40]); // 20 body list, 21 unit direction
+    let count = |n: u32| {
+        let mut v = hdr(0, 0, 0);
+        v.extend(utf16("d5"));
+        v.extend(n.to_le_bytes());
+        v.extend(n.to_le_bytes());
+        v
+    };
+    let mut r = base_records();
+    r.push((NAME, name_rec("Rectangular Pattern1", Some(0x767a_c2da)))); // 19
+    r.push((PLACEMENT, hdr(0, 0, 0))); // 20
+    r.push((15, count(2))); // 21: an internal variable's count
+    r.push((20, {
+        let mut v = hdr(0, 0, 0);
+        v.extend(list(&[]));
+        v
+    })); // 22
+    r.push((15, count(10))); // 23
+    r.push((PARAM, param("d6", 1.1))); // 24
+    r.push((21, {
+        let mut v = hdr(0, 0, 0);
+        doubles(&mut v, &[0.0, 0.0, 0.0, -1.0, 0.0]);
+        v
+    })); // 25
+    r.push((16, flag(1))); // 26: fit
+    for _ in 0..3 {
+        r.push((16, flag(0))); // 27..=29
+    }
+    let mut f = hdr(rf(19), 0, 6);
+    f.extend(0u32.to_le_bytes());
+    f.extend(list(&[rf(18)]));
+    for x in 20..=29 {
+        f.extend(rf(x).to_le_bytes());
+    }
+    r.push((18, f)); // 30
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(
+        t["features"][2],
+        json!({"type": "pattern_linear", "name": "Rectangular Pattern1", "features": ["Extrusion1"],
+               "direction": [0.0, -1.0, 0.0], "spacing": 1.222222222, "count": 10})
+    );
+    r[26].1 = flag(0);
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(
+        (t["features"][2]["spacing"].as_f64(), t["features"][2]["direction"].clone()),
+        (Some(11.0), json!([0.0, -1.0, 0.0]))
+    );
+}
+
+/// A mirror of the body whose second flag after its references is set removes the original
+/// (note AR): the copy is a body of its own, the original is removed, and later features
+/// change the copy.
+#[test]
+fn a_mirror_of_the_body_can_remove_the_original() {
+    let mut r = base_records();
+    r.push((NAME, name_rec("Mirror1", Some(0xb6c2_26a3)))); // 19
+    r.push((PLACEMENT, hdr(0, 0, 0))); // 20
+    r.push((14, {
+        let mut v = hdr(0, 0, 0);
+        doubles(&mut v, &[3.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        v
+    })); // 21
+    r.push((17, hdr(0, 0, 0))); // 22
+    r.push((16, flag(1))); // 23: the solid bodies
+    r.push((16, flag(1))); // 24: remove the original
+    let mut f = hdr(rf(19), 0, 6);
+    f.extend(0u32.to_le_bytes());
+    for x in [20, 22, 23, 24, 21] {
+        f.extend(rf(x).to_le_bytes());
+    }
+    r.push((12, f)); // 25
+    let t = copy_tree(&r);
+    assert_eq!(t["features"][2]["merge"], false, "{t}");
+    assert_eq!(t["features"][3], json!({"type": "remove_body", "name": "Mirror1_original", "target": "Extrusion1"}));
+    // Kept: one body, the copy merged in.
+    r[24].1 = flag(0);
+    let t = copy_tree(&r);
+    assert_eq!(t["features"].as_array().map(Vec::len), Some(3), "{t}");
+    assert!(t["features"][2].get("merge").is_none(), "{t}");
+}
+
+/// A solid body record whose id comes before every feature's: the part starts from an imported
+/// body (note AR), which the file keeps only inside the result; the tree is refused.
+#[test]
+fn a_part_that_starts_from_an_imported_body_is_refused() {
+    let mut r = base_records();
+    r.push((BODY_NAME, hdr(0, 0, 0))); // 19
+    r.push((FEATURE, feature(19, 0, 2, &[]))); // 20: a solid body, id 2 (the extrude's is 5)
+    let e = tree(&r).unwrap_err();
+    assert!(e.contains("imported body"), "{e}");
+    // Made after the extrude: an ordinary body.
+    r[20].1 = feature(19, 0, 9, &[]);
+    assert!(tree(&r).is_ok());
 }

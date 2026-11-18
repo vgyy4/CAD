@@ -419,7 +419,22 @@ impl Dc {
     /// name, e.g. "Solid1" or a body the user renamed, is behind that record), not a feature:
     /// it is left out.
     pub(crate) fn features(&self) -> Vec<Feature> {
+        self.features_and_bodies().0
+    }
+
+    /// Whether the part starts from a solid body no feature made: a solid body record whose id
+    /// comes before every feature's (an imported base body, note AR). Its shape is stored only
+    /// as part of the result.
+    pub(crate) fn has_base_body(&self) -> bool {
+        let (feats, bodies) = self.features_and_bodies();
+        let first = feats.iter().filter_map(|f| self.seq(f.rec)).min();
+        bodies.iter().filter_map(|&b| self.seq(b)).min().is_some_and(|b| first.is_none_or(|f| b < f))
+    }
+
+    /// The features, and the part-feature records that are solid bodies.
+    fn features_and_bodies(&self) -> (Vec<Feature>, Vec<usize>) {
         let mut out = Vec::new();
+        let mut bodies = Vec::new();
         let mut owned: Option<HashMap<usize, usize>> = None;
         for i in 0..self.n() {
             if !matches!(self.role(i), Role::PartFeature | Role::PatternFeature)
@@ -429,6 +444,7 @@ impl Dc {
             }
             let v = u32_at(self.r(i), 6).and_then(|v| reference(v, self.n()));
             if v.is_some_and(|v| self.class(v) == G_BODY_NAME) {
+                bodies.push(i);
                 continue;
             }
             let (mut name, mut typ) = (None, None);
@@ -447,12 +463,13 @@ impl Dc {
                 // The type a body's name carries (the bodies named through `656dd01e` have it
                 // too): an imported part whose only "feature" is its body.
                 if typ == Some(FeatType::Other(T_BODY)) {
+                    bodies.push(i);
                     continue;
                 }
             }
             out.push(Feature { rec: i, name, typ });
         }
-        out
+        (out, bodies)
     }
 
     /// The typed name records (a feature's name) by the record their owner word (offset 14 or

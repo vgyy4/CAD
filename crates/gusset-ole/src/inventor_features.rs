@@ -853,9 +853,6 @@ struct State {
     /// Feature name -> the names of the tree features it became (none when it was left out;
     /// a fillet with several radii is several), for the patterns and mirrors that copy it.
     emitted: HashMap<String, Vec<String>>,
-    /// Solid body records (`90874d47`) that a combine takes as a tool: the feature that makes
-    /// one keeps its own body (notes AK).
-    tools: Vec<usize>,
     /// Solid body record -> the tree body made for it.
     bodies: HashMap<usize, String>,
 }
@@ -871,11 +868,11 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         Some(4) => "intersect",
         _ => "join",
     };
-    // A body a combine takes as a tool stays a body of its own (notes AK).
+    // A new solid makes a body of its own when the feature names a solid body no feature made
+    // yet (notes AK, AR); the bodies a cut or join lists are those it changes.
     let own = body_record(r, f);
-    let tool_body = own.filter(|b| st.tools.contains(b));
-    let new_tool = op == "new" && st.first_body.is_some() && tool_body.is_some_and(|b| !st.bodies.contains_key(&b));
-    if st.first_body.is_some() && op == "new" && !new_tool {
+    let new_body = op == "new" && st.first_body.is_some() && own.is_some_and(|b| !st.bodies.contains_key(&b));
+    if st.first_body.is_some() && op == "new" && !new_body {
         op = "join";
     }
     if st.first_body.is_none() && op == "join" {
@@ -884,11 +881,7 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let mut j = json!({"type": if typ == FeatType::Extrude {"extrude"} else {"revolve"}, "name": name,
                        "sketch": sketch.name, "profiles": r.profiles(&sketch, lst), "operation": op});
     if op != "new" {
-        let fb = match tool_body.and_then(|b| st.bodies.get(&b)) {
-            Some(b) => b.clone(),
-            None => st.first_body.clone().ok_or("a cut or join before any body")?,
-        };
-        put(&mut j, "target", json!(fb));
+        put(&mut j, "target", changed_bodies(r, st, f, op == "cut")?);
     } else if let Some(b) = own {
         st.bodies.insert(b, name.to_string());
     }
@@ -1171,18 +1164,29 @@ fn pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
         return two_way_pattern(r, st, name, &body, &dirs, &tgt);
     }
     let dir = dirs.first().copied();
-    let cnt =
-        refs.iter().map(|x| x.1).find(|&x| r.dc.class(x) == G_COUNT && count_of(x).is_some_and(|c| 1 < c && c < 1000));
+    // The count: newer records also hold an internal variable's count (`RDxVar..`, 0 or a
+    // stale 2) before the list of bodies (note AR); the pattern's own comes after it.
+    let counts: Vec<(usize, usize)> = refs
+        .iter()
+        .copied()
+        .filter(|&(_, x)| r.dc.class(x) == G_COUNT && count_of(x).is_some_and(|c| 1 < c && c < 1000))
+        .collect();
+    let list_at = refs.iter().find(|&&(_, x)| r.dc.class(x) == G_BODY_LIST).map(|x| x.0);
+    let cnt = counts.iter().find(|&&(k, _)| list_at.is_some_and(|l| k > l)).or_else(|| counts.first()).map(|&(_, x)| x);
     let par = refs.iter().map(|x| x.1).find(|&x| r.dc.role(x) == Role::Param);
     let (true, Some(dir), Some(cnt), Some(par)) = (!tgt.is_empty(), dir, cnt, par) else {
         return Err("direction, count or spacing not found".into());
     };
     let vec = pattern_direction(r, dir)?;
     let count = count_of(cnt).ok_or("no count")?;
-    let spacing = rnd(r.dc.param(par).ok_or("the spacing is not readable")?.1 * CM);
     let flags: Vec<bool> = flags_after(r, &body, dir, G_FLAGS);
     let midplane = flags.last().copied().unwrap_or(false);
-    let vec = if flags.first().copied().unwrap_or(false) { [-vec[0], -vec[1], -vec[2]] } else { vec };
+    // The first flag after the direction: the parameter is the distance from the first
+    // occurrence to the last (spacing "fit"), not the spacing (note AR). The direction is
+    // stored as the pattern runs.
+    let fit = flags.len() > 1 && flags.first().copied().unwrap_or(false);
+    let total = r.dc.param(par).ok_or("the spacing is not readable")?.1 * CM;
+    let spacing = rnd(if fit { total / f64::from(count - 1) } else { total });
     let u = [rnd(vec[0]), rnd(vec[1]), rnd(vec[2])];
     if midplane {
         // Gusset has no midplane pattern: move the original holes back by half the run.
@@ -1543,13 +1547,7 @@ fn copied_features(r: &Reader, st: &State, f: &Feature) -> Result<(Vec<String>, 
         }
     }
     if out.is_empty() {
-        const G_REFS: u32 = 0xd83e_f271;
-        const G_FLAGS: u32 = 0x9087_4d28;
-        let solids = refs
-            .iter()
-            .skip_while(|&&(k, x)| k <= 14 || r.dc.class(x) != G_REFS)
-            .find(|&&(_, x)| r.dc.class(x) == G_FLAGS)
-            .is_some_and(|&(_, x)| r.dc.r(x).last() == Some(&1));
+        let solids = copy_flags(r, f).first().copied().unwrap_or(false);
         return match (solids, &st.first_body) {
             (true, Some(b)) => Ok((out, Some(b.clone()))),
             _ => Err("no feature to copy".into()),
@@ -1628,11 +1626,38 @@ fn mirror(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Str
     let (o, n) = work_plane(&r.dc, pl).map_err(|w| format!("the mirror {w}"))?;
     let mut j = json!({"type": "mirror", "name": name, "features": tgt,
         "plane": {"origin": [rnd(o[0] * CM), rnd(o[1] * CM), rnd(o[2] * CM)], "normal": [rnd(n[0]), rnd(n[1]), rnd(n[2])]}});
-    if let Some(b) = body {
+    // A mirror of the body whose second flag after its references is set removes the original
+    // (note AR): the mirrored copy is the body from then on.
+    let remove = body.is_some() && copy_flags(r, f).get(1).copied().unwrap_or(false);
+    if let Some(b) = &body {
         put(&mut j, "target", json!(b));
+        if remove {
+            put(&mut j, "merge", json!(false));
+        }
     }
     st.out.push(j);
+    if let (Some(b), true) = (body, remove) {
+        st.out.push(json!({"type": "remove_body", "name": format!("{name}_original"), "target": b}));
+        for v in st.bodies.values_mut().filter(|v| **v == b) {
+            *v = name.to_string();
+        }
+        st.first_body = Some(name.to_string());
+    }
     Ok(())
+}
+
+/// The flag records (`90874d28`, set when the last byte is 1) after a copy feature's
+/// references record (`d83ef271`): the first copies the solid bodies, the second (mirror)
+/// removes the original.
+fn copy_flags(r: &Reader, f: &Feature) -> Vec<bool> {
+    const G_REFS: u32 = 0xd83e_f271;
+    const G_FLAGS: u32 = 0x9087_4d28;
+    r.dc.refs(f.rec)
+        .into_iter()
+        .skip_while(|&(k, x)| k <= 14 || r.dc.class(x) != G_REFS)
+        .filter(|&(_, x)| r.dc.class(x) == G_FLAGS)
+        .map(|(_, x)| r.dc.r(x).last() == Some(&1))
+        .collect()
 }
 
 /// A thicken of a side face of the base block: the same as a join extrude of that side's
@@ -2178,9 +2203,30 @@ fn axis_angle(m: &[[f64; 3]; 3]) -> Option<(V3, f64)> {
 /// The solid body record (`90874d47`) a feature made or changed: the first one its
 /// `0e6870ae` slot lists.
 fn body_record(r: &Reader, f: &Feature) -> Option<usize> {
-    let s = r.dc.slots(f.rec)?;
-    let l = s.into_iter().flatten().find(|&i| r.dc.class(i) == G_BODY_LIST)?;
-    r.dc.refs(l).into_iter().map(|(_, x)| x).find(|&x| r.dc.class(x) == G_SOLID_BODY)
+    body_records(r, f).first().copied()
+}
+
+/// The tree bodies a cut or join changes: those its body list names that features made (all
+/// of them for a cut through several, else the first), or the first body.
+fn changed_bodies(r: &Reader, st: &State, f: &Feature, many: bool) -> Result<Value, String> {
+    let mut named: Vec<String> = Vec::new();
+    for b in body_records(r, f) {
+        if let Some(n) = st.bodies.get(&b).filter(|n| !named.contains(n)) {
+            named.push(n.clone());
+        }
+    }
+    match named.as_slice() {
+        [] => Ok(json!(st.first_body.clone().ok_or("a cut or join before any body")?)),
+        [one, ..] if !many || named.len() == 1 => Ok(json!(one)),
+        _ => Ok(json!(named)),
+    }
+}
+
+/// The solid bodies a feature's body list (`0e6870ae`) names.
+fn body_records(r: &Reader, f: &Feature) -> Vec<usize> {
+    let Some(s) = r.dc.slots(f.rec) else { return Vec::new() };
+    let Some(l) = s.into_iter().flatten().find(|&i| r.dc.class(i) == G_BODY_LIST) else { return Vec::new() };
+    r.dc.refs(l).into_iter().map(|(_, x)| x).filter(|&x| r.dc.class(x) == G_SOLID_BODY).collect()
 }
 
 /// The solid bodies a combine takes as tools (its slot 1).
@@ -2830,6 +2876,12 @@ pub fn feature_tree_with(
     if feats.len() > MAX_FEATURES {
         return Err("the part has too many features".into());
     }
+    // An imported base body (note AR): the file keeps its shape only inside the result.
+    if derived_body.is_none() && dc.has_base_body() {
+        return Err(
+            "the part starts from an imported body, whose shape the file keeps only as part of the result".into()
+        );
+    }
     let r = Reader {
         dc,
         result_bytes: result.unwrap_or(bytes),
@@ -2851,10 +2903,8 @@ pub fn feature_tree_with(
         names,
         holes: HashMap::new(),
         emitted: HashMap::new(),
-        tools: Vec::new(),
         bodies: HashMap::new(),
     };
-    st.tools = feats.iter().filter(|f| f.typ == Some(FeatType::Combine)).flat_map(|f| combine_tools(&r, f)).collect();
     for (k, f) in feats.iter().enumerate() {
         let name = f.name.clone().unwrap_or_else(|| format!("Feature{}", f.rec));
         let Some(typ) = f.typ else {
