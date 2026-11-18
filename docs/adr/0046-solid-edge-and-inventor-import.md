@@ -781,3 +781,59 @@ No part went from history to body. Of the 95 targets 11 came in (`Tilting head`,
 head`, `dock_base`, `leica_under_board`, `ex_newsolid`, the Testrig mirror half, `EPR_tube`, `Nieudane`,
 `AN816` and its member `AN816-8D`, the older gun body); 2 more outside them (an ISO 4162 screw and
 `Sampledurchführung`).
+
+## Amendment (2026-11-18, 20): Solid Edge round se4 - chamfer angles, key point turns, mirrors, helices, holes, variable rounds
+
+`gusset_ole::solidedge_features` reads more of a part's history (layout notes F13 of
+`docs/formats/solidedge-feature-tree.md`; clean room, from the sample bytes):
+
+- **Setback-and-angle chamfers** (kind 42): the setback along the reference face (a face set), the
+  angle from it; with one reference face per edge, one chamfer per face. Face sets now also hold
+  **cylinder faces** (type 23), picked halfway up a band between two circles about the axis.
+- **Revolves up to a key point**: the angle the `JMAngularKeyPointFunction` stores.
+- **Mirror copies of features** (`JMMirrorCopyFunction`, `JMFastMirrorFunction`): a Gusset mirror of the
+  feature copied, built again reflected.
+- **Helix protrusions and cutouts**: a sweep along a helix (ADR 0034 path) of the cross section about the
+  stored axis, its length and turns; the stored boxes of a screw flight agree.
+- **Holes**: a cut of the hole circles (each hole profile's 2D member stores centre, diameter and circle),
+  through all or to the depth; a blind hole's drill point (its angle) is a revolved cone cut below each
+  circle. Counterbores and countersinks are not decoded: the rebuild check tells.
+- **Value objects shared by several features** (a depth for a pattern of holes, a point angle with a unit)
+  were taken for dimension relations and gave nothing; read now.
+- **Variable rounds** (kind 2) become variable-radius fillets (ADR 0061 `vertex_radii`): vertex sets with
+  a radius each. No part of the corpus reaches one in a rebuild (the one part with them fails earlier at
+  a boolean), so this reading is unconfirmed by a rebuild.
+- **Sketch splines** that a profile keeps only in `SKETCH.P_B` (`B_CURVE` edges). Shared code: `gusset-xt`
+  gains `b_curve` (a `B_CURVE`'s degree, poles, weights, flat knots); nothing else outside `gusset-ole`
+  changed.
+
+Round kind 17 (three parts) is still not read: in none of them does the rebuild reach the round, so the
+difference from kind 1 is not confirmed. The rebuild check is unchanged (volume 2e-5, box 1e-4).
+
+**Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before (dd5b4a8): 63 as
+history. After: **71 as history**, none lost; new: 076 (key point revolve), 102 and 106 (angle chamfers),
+155 and 156 (mirror copies), 157 and 183 (holes; 183 is `halter fuer probnhalter`, whose 8 patterned
+holes have drill points), 172 (sketch splines). 109 bodies.
+
+**What blocks the rest (first reasons of the 109 bodies, measured).**
+
+- *Rounds the kernel does not build* (about 40): fillet failed 23, radius too large for the edge 10 (OCCT
+  fails, the message is Gusset's guess), round edge not found 5, chamfers 3. Probed by rebuilding up to
+  the failing round with each edge alone and with the radius scaled: e.g. 107's round on a revolved
+  B-spline face fails alone and at half the radius; 100's on the sides of a 12 degree revolved cut fails
+  on every edge alone; 170's r60 round of a screw flight's end (Solid Edge's blend runs below the flight)
+  fails. These are OCCT fillet limits, not decoding errors.
+- *Feature kinds not read* (16): part copies 4 (the copied part is another file), body patterns 2 (a
+  plane or profile and stored faces; layout not decoded), fast patterns 2, simplified base features 2,
+  wraps 2, smart boss, delete faces, helical curve, projected curve 1 each.
+- *Rebuilds that differ* (10) as in amendment 13 (cuts to the next face, which Gusset cannot express:
+  there is no "up to the next face" end; loft end conditions; through-all protrusions in hollow parts),
+  and 5 whose stored body measures 0: `gusset-xt` cannot convert some `BLENDED_EDGE` faces, the shell is
+  left open, and since daee02a an open sheet adds no volume (was a meaningless number before).
+- Round kind 17: 3; through-all reach along a slanted normal: 2; open revolve profiles with no end on the
+  axis: 2; single cases.
+
+**A kernel crash.** 040 now reaches its rebuild and OCCT segfaults inside `BRepFilletAPI_MakeFillet::Build`
+(`BRepBlend_SurfRstConstRad::Values` -> `Geom2dAdaptor_Curve::EvalD1`) on its r381 round. In the app the
+kernel runs in its worker and the crash is reported; the in-process corpus test dies, which is why it now
+runs one part per process. Not patched (an OCCT fillet bug; owner's call whether to chase it).

@@ -234,3 +234,48 @@ Same corpus (184 ordered parts). All from the sample bytes; each rule checked by
   rebuilt part after each feature with the stored box gives the first feature that differs.
 * Coverage of round se3 (OCCT test `par_history`, the same 184 ordered parts): **62 as history** (was 56; none
   lost), 120 as exact bodies, 2 failing in the body import as before. What blocks the rest: ADR 0046 amendment 13.
+
+
+## F13: round se4 (2026-11-18): chamfer angles, key point turns, mirrors, helices, holes, variable rounds
+Same corpus (180 of the 184 ordered parts in the measured list). All from the sample bytes; each rule
+checked by exact rebuilds in `par_history` where a part reaches it.
+
+* **Chamfer kind 42** (setback and angle): slot 3 a face set of the reference faces, 5 the setback
+  (along the reference face), 6 the angle from it (radians; 30 degrees in all 6 samples). With several
+  reference faces (one part: 4 edges, 4 cylinder faces) each edge lies on exactly one of them: one
+  chamfer per face, of the edges on it.
+* **Cylinder faces** in face sets (type 23): 12 `f64`: a point of the axis, the unit axis, the radius
+  as a vector across the axis, the minor to major ratio (1) and two more numbers (`-0, -1`, not read);
+  then the loops as a plane face's. A band between two whole circles about the axis is picked halfway
+  up it.
+* **Revolve up to a key point** (extent 72): slot 7 a `JMAngularKeyPointFunction`; after its slots
+  `u32 3` and the angle (radians). The pattern copies of such a revolve store the same angle as a value.
+* **Mirror copies of features** (`JMMirrorCopyFunction`, `JMFastMirrorFunction`): slot 2 the mirror
+  plane (a plane object), 3 the feature copied (slot 4 the same, slot 1 the previous feature). Read as
+  a Gusset mirror of that feature (built again, reflected).
+* **Helix protrusions** (`JMHelixProtrusionFunction`; cutouts by name, none in the corpus): slot 2
+  the axis (a line object whose range `t0..t1` is the helix's length, starting at `t0`), 3 a value
+  29, 4 the cross section's profile (a pattern copy for patterned helices), 7 the hand (0 right), 8
+  the turns, 9 a value 2 (not read). The cross section is carried by the screw motion. CONFIRMED by
+  the stored boxes of a half-turn screw flight (170).
+* **Holes** (`JMHoleFunction`): slot 2 the profiles; a hole profile lists key points, relations and
+  the hole's 2D member, laid out as: centre `f64 x2` at +8, two `-1`, the diameter at +40, `u16 0`,
+  then a circle member's numbers (centre, radius, `0.0, 1.0`). Slot 7 the extent (13 finite, 14
+  through all), 8 the side (as an extrude's), 9 the depth, 17 the diameter. Read as a cut of the
+  circles; a counterbore or countersink (hole data not decoded) would fail the rebuild check.
+* **Value objects shared by features** (one depth for 8 patterned holes): after the `f64`, `01 00 01
+  00`, `u32 3`, `u32 n` at +24 and `n` x (`u32` serial, `u16 9`); `28 + 6n` bytes, so longer than the
+  64 bytes the reader took for a value object.
+* **Variable rounds** (round kind 2): slot 4 empty, slot 5 a list of vertex sets, 6 the radius of each.
+  A vertex set is laid out as an edge set (`SET_LIST` head, `u32 1, n, 0, u8 2`), each entry a class id
+  ending in the curve class bytes, then the point (3 `f64`, metres) and 16 bytes of words. Read as a
+  variable-radius fillet (ADR 0061, `vertex_radii`); no part of the corpus reaches one in a rebuild.
+* **Round kind 17** (3 parts): slot 7 lists three options (66 69 71) instead of five; the radius is in
+  slot 4 as for kind 1. Not read: no part of the three reaches the round in a rebuild, so the meaning
+  is unconfirmed.
+* **Sketch splines in `SKETCH.P_B`**: edges on a `B_CURVE` (polynomial, or rational with equal weights)
+  that run over the whole curve; the curve sense turns the poles and knots to run along the edge.
+* Not read: body patterns (`JMBodyPatternFunction`: a plane or a profile in slot 2, the body's faces
+  stored with it), part copies, smart bosses, ribs, wraps, simplified base features, delete faces.
+* Coverage of round se4 (OCCT test `par_history`, 180 ordered parts, one part per process): **71 as
+  history** (was 63; none lost), 109 as exact bodies. What blocks the rest: ADR 0046 amendment 20.
