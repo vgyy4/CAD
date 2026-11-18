@@ -5190,11 +5190,7 @@ const MOVED: u32 = 0x4000_0000;
 /// An edge of a pattern's copy (every copy reference through the same pattern and copy, the
 /// other references to extrusions): the seed's edge problem, with the other faces moved back
 /// to the seed under fake ids; its midpoint is moved forward again by `k` steps.
-fn patterned_edge(
-    reps: &[Rep],
-    swept: &HashMap<u32, Swept>,
-    steps: &HashMap<u32, Step>,
-) -> Option<Patterned> {
+fn patterned_edge(reps: &[Rep], swept: &HashMap<u32, Swept>, steps: &HashMap<u32, Step>) -> Option<Patterned> {
     let first = reps.iter().find(|r| r.via.is_some())?;
     let (m, copy) = (first.via?, first.copy);
     let step = *steps.get(&m)?;
