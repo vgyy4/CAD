@@ -1316,3 +1316,45 @@ Targets from round sw9's logs (290 of 1352): `moHelix_c` 11 parts, `moRib_c` 6, 
 | all | 290 / 1352 | **292** / 1352 |
 
 Gained (sw-more): Nut Block 8mm Acme, 5mm Low Profile Socket Head Screw (helices no feature uses). None lost.
+
+## L22. Round 16 (sw11: drafts, fillet edges on pattern copies)
+Targets from round sw10's logs (292 of 1352): `moRib_c` 6 parts, `moSweepThread_c` 4, `moDraft_c` 4, `moDome_c` 4.
+
+* **Draft** (`moDraft_c`). The angle is `D1` (rad). The neutral plane is the draft's `moPlaneRef_w`: the first
+  reference after the class name and the two sentinels closing its header names a face (an extrude's cap or flat
+  side; read with the shell/mirror face pick), else the stored plane (`plane_ref`, origin and unit normal). The
+  span ends with `u32 n`, then `n` points (`f64` x, y, z, m), then up to 16 zero bytes: one point on each drafted
+  face, in the model as it was before the draft, pattern copies included (Hex Spacer: 18 points, the 6 sides and 6
+  Fillet1 blends of the hex bore at half height and one on each of the 6 patterned holes). The pull direction is the
+  neutral face's outward normal and the tree's draft (`flip` false) matches it: Hex Spacer's Draft1 (1 degree about
+  the bottom cap, normal -y) adds 234.6 mm3 exactly where the stored body has it; flipped it removes 248 mm3.
+  Drafts whose neutral face is not an extrude cap or flat side are written `unresolved` and refused.
+* **Fillet edges on pattern copies.** An edge record may name a face of a pattern's copy like a mirror's (L14):
+  a 16-byte reference to the pattern (`<tag> 00 00 <class> <u32 pattern id> <u32 stamp>`), the seed face's own
+  20-byte reference, its side words `ff ff ff ff 00 00 00 00`, then `u32` the copy's number (1 = the first after
+  the seed). Before this round the parser stopped at such a record and `selection` ended the run there, so the
+  fillet silently lost every later edge (Hex Spacer's Fillet2: 25 of 38 edges; the 12 hole rims and the bottom
+  rim were missing, 3.55 mm3 too much, all of it at the caps). Read now for circular patterns and linear patterns of
+  one direction: the seed edge's midpoint is computed with the other faces moved back by the copy's steps
+  (right-handed about the axis; a full circle is `count` steps, a partial one `count - 1`), then moved forward;
+  the faces are named as the pattern instance's (`pattern`, `copy` on the tree's face selector; Gusset's
+  `Pattern/instance(k, face)`), which finds the edge where a later draft moved it off its midpoint.
+* **Threads** (`moSweepThread_c`): the node has a child sketch, the thread profile (18 curves; `Diş Profili1`,
+  `Thread Profile1`), but the helix (start face, pitch, length, offset, direction) was not found near it; not
+  attempted. **Ribs and domes**: unchanged from L21 (no Gusset operation extends an open profile to the part or
+  fits a dome).
+
+**Coverage after the round** (rebuild check unchanged):
+
+| corpus | round sw10 | round sw11 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 252 / 1253 | **253** / 1253 |
+| all | 292 / 1352 | **293** / 1352 |
+
+Gained (sw-more): am-1305 500 Hex Spacer (draft, then a fillet with edges on pattern copies). None lost. The other
+drafts stop elsewhere: the HTD pulley at a circular pattern of a whole body (CirPattern3), the Lego arm at a
+3D-sketch loft, the SHARP sensor at an imported surface (their Draft2/3 have neutral faces the reader cannot place).
+4in 2013 Hub, refused before at Split1, now stops earlier: its fillet's pattern-copy edges exceed the work budget.

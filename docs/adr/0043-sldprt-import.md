@@ -759,3 +759,22 @@ with the 5.1-turn B-spline helicoids of the slot returns a valid solid that cut 
 up; the same slot built from a profile 3 mm higher cuts correctly): a kernel robustness problem, not a reading
 one. The other helix parts stop elsewhere (a composite-curve spring, a fillet edge, the bottle cap's thread-end
 sweeps, the gears' tooth-cut patterns, a `moBoss_c`).
+
+## Amendment (2026-11-18): drafts, fillet edges on pattern copies (round sw11)
+
+Round sw11 (L22 in `docs/formats/solidworks-feature-tree.md`) took the four features round sw10 measured.
+
+- **Draft.** `moDraft_c` is written as the tree's `draft`: the angle `D1`, the neutral plane named by its
+  `moPlaneRef_w` (an extrude face, else the stored plane) with the pull along that face's outward normal, and one
+  point per drafted face from the list the span ends with. A draft whose neutral plane cannot be placed is refused.
+- **Edges on pattern copies.** Edge records name a face of a pattern's copy through the pattern, the seed face and
+  the copy's number, as mirrors do. The reader places such an edge by moving the seed edge's problem back to the
+  seed and its midpoint forward, and names its face as the pattern's instance; the tree import's face selector takes
+  `pattern` and `copy` for that (additive; other sources unchanged). Before, the edge selection ended silently at
+  the first such record.
+
+Not done, and why: threads still lack their helix data (only the profile sketch, the node's child, was found); ribs
+and domes have no Gusset operation and stay refused.
+
+The rebuild check is unchanged. History 292 -> 293 of 1352, none lost: am-1305 500 Hex Spacer. The other draft
+parts stop at features this round does not read (a pattern of bodies, a 3D-sketch loft, an imported surface).
