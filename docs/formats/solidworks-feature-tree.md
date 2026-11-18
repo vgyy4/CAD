@@ -1232,8 +1232,17 @@ midpoint the reader's model of the part places wrongly, then whole-circle edges.
 * **Superseded selections** stay optional (left out where the model has no edge between the faces): the idler arms'
   records of keys 15-19 (L8) are such, and an earlier build without this lost them.
 * **Variable fillets.** `VarFillet_c` writes one radius per vertex (`D0`, `D01`, ...). The r3 keycap family's are
-  0.4 and 2 mm alternating, 126p-visor-mount's 1 mm and 0, OeMga's bottom/middle/top all 1 mm. Gusset has no
-  variable fillet, so only the last are read, as constant fillets.
+  0.4 and 2 mm alternating, 126p-visor-mount's 1 mm and 0, OeMga's bottom/middle/top all 1 mm. Only the last are
+  read, as constant fillets. Gusset has a variable fillet since round op1 (ADR 0061: `at: [vertex(...) = r]`,
+  tree `vertex_radii`), but the reader does not write it yet. Seen in r3's VarFillet2 (not yet relied on):
+  after the edge records (`kind` 2, one per edge with a variable radius: its two faces, then its two end faces)
+  come one `moEdgeDim_c` per edge, which names the edge by its id and ends in the numbers of its two
+  `moVertDim_c` (`0 1`, `2 3`, ...); each `moVertDim_c` holds its radius parameter and, after a
+  `moDisplayRadialDim_c`, a record of four face references (header `04 00 00 00 00 02`, the two sentinels):
+  the edge's two faces and the faces at that end, which tells which end of the edge the radius belongs to.
+  Left: the keycaps stop next at their stems' "up to surface" end, a face of the shell (`moShellSurfIdRep_c`,
+  not placed by the reader), and later at chamfer and fillet edges on the variable fillet's faces; a radius of
+  0 (126p-visor-mount) is not supported.
 
 **Coverage after the round** (rebuild check unchanged):
 
