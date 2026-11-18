@@ -248,20 +248,21 @@ fn wrap(a: f64) -> f64 {
 }
 
 /// The sketch solved again with the row's values, or `None` when the row changes none of its
-/// dimensions. `projected(i)`: entity `i` is projected (its place comes from elsewhere and is
+/// dimensions (or projected points it moves: `moved`, by record, mm). `projected(i)`: entity `i` is projected (its place comes from elsewhere and is
 /// kept). Every dimension of the sketch is read through `dc.param` (so the row's values count
 /// as read).
 pub(crate) fn resolve(
     dc: &Dc,
     s: usize,
     sk: &Sketch,
+    moved: &HashMap<usize, P2>,
     projected: &dyn Fn(usize) -> bool,
 ) -> Result<Option<Sketch>, String> {
     if !dc.has_row() {
         return Ok(None);
     }
     let cons = constraints(dc, s)?;
-    if !cons.iter().any(|c| !c.driven && c.param.is_some_and(|p| dc.in_row(p))) {
+    if moved.is_empty() && !cons.iter().any(|c| !c.driven && c.param.is_some_and(|p| dc.in_row(p))) {
         return Ok(None);
     }
     // First as the file has it; then with the angles of lines that end tangent on an arc
@@ -269,9 +270,12 @@ pub(crate) fn resolve(
     // still one when the member's row shrinks the line to nothing); last to a looser tolerance
     // (a line shrunk to nothing leaves the solve singular there, and it closes in slowly).
     let mut first = None;
-    for (by_radius, tolerance) in [(false, 1e-10), (true, 1e-10), (true, LOOSE)] {
+    // Each first holding the lines that run along the sketch's axes as they do (a sketch the
+    // file leaves free to turn keeps its way round, as Inventor's solve keeps it), then not.
+    let tries = [(false, 1e-10), (true, 1e-10), (true, LOOSE)].into_iter().flat_map(|t| [(t, true), (t, false)]);
+    for ((by_radius, tolerance), hold) in tries {
         let max_iterations = if tolerance >= LOOSE { 1000 } else { 100 };
-        let (g, ids) = system(dc, sk, &cons, projected, by_radius)?;
+        let (g, ids) = system(dc, sk, &cons, moved, projected, by_radius, hold)?;
         let r =
             gusset_sketch::solve_continued(&g, &SolveOptions { tolerance, max_iterations, ..SolveOptions::default() });
         if r.status != SolveStatus::Failed && r.conflicting.is_empty() {
@@ -324,10 +328,19 @@ fn system(
     dc: &Dc,
     sk: &Sketch,
     cons: &[Con],
+    moved: &HashMap<usize, P2>,
     projected: &dyn Fn(usize) -> bool,
     by_radius: bool,
+    hold: bool,
 ) -> Result<(Gs, HashMap<usize, EntityId>), String> {
     let (mut g, ids) = to_gs(sk)?;
+    // Projected points the row moves start (and are fixed) where they move to.
+    let mut order: Vec<(&usize, &P2)> = moved.iter().collect();
+    order.sort_by_key(|x| *x.0);
+    for (&p, &(u, v)) in order {
+        let e = ids.get(&p).copied().ok_or("a projected point is missing")?;
+        g.set_point(e, [u, v]).map_err(|x| format!("its sketch is not usable: {x}"))?;
+    }
     let t = topo(sk);
     let saved = Saved { pts: sk.points.iter().map(|&(i, u, v, _)| (i, (u, v))).collect(), sk, t: &t };
     let e = |x: gusset_sketch::SketchError| format!("its sketch constraint does not fit: {x}");
@@ -546,6 +559,24 @@ fn system(
                         Constraint::Diameter { c: cv, value: now }
                     },
                 )?;
+            }
+        }
+    }
+    if hold {
+        for c in &sk.curves {
+            let Curve::Line { id: l, a, b, .. } = *c else { continue };
+            if projected(a) && projected(b) {
+                continue;
+            }
+            let (p, q) = (saved.p(a)?, saved.p(b)?);
+            let len = libm::hypot(q.0 - p.0, q.1 - p.1);
+            if len < NOTHING {
+                continue;
+            }
+            if (q.1 - p.1).abs() < 1e-12 * len {
+                push(&mut g, Constraint::Horizontal(id(l)?))?;
+            } else if (q.0 - p.0).abs() < 1e-12 * len {
+                push(&mut g, Constraint::Vertical(id(l)?))?;
             }
         }
     }

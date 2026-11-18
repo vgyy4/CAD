@@ -210,7 +210,9 @@ impl Sketch {
 
 struct Reader<'a> {
     dc: Dc,
-    bytes: &'a [u8],
+    /// The part whose stored body is the result the blends are read from: the part itself, or
+    /// an iPart member read through its factory's history.
+    result_bytes: &'a [u8],
     limits: &'a Limits,
     /// Records that refer to each record.
     back: OnceCell<Vec<Vec<usize>>>,
@@ -276,7 +278,7 @@ impl Reader<'_> {
     fn result(&self) -> Option<&Acis> {
         self.result
             .get_or_init(|| {
-                let e = inventor::extract_sab(self.bytes, self.limits).ok()?;
+                let e = inventor::extract_sab(self.result_bytes, self.limits).ok()?;
                 Acis::parse(&e.sab).ok()
             })
             .as_ref()
@@ -299,19 +301,206 @@ impl Reader<'_> {
                 .collect()
         });
         let sk = self.saved_sketch(s)?;
-        if changed.iter().any(|&c| c != s) && self.projects_model(&sk) {
-            return Err(format!(
-                "sketch '{}' projects model edges, which move with the iPart member's row (not read yet)",
-                sk.name
-            ));
+        let others = changed.iter().any(|&c| c != s);
+        let placed = if others { self.moved_placement(s, &sk)? } else { None };
+        let m_new = placed.unwrap_or(sk.m);
+        let mut moved =
+            if others && self.projects_model(&sk) { self.reproject(s, &sk, &m_new)? } else { HashMap::new() };
+        if placed.is_some() {
+            // The origin's point and axes stay where they are in the model: seen from the moved
+            // plane they move the other way.
+            let (o0, x0, y0) = frame(&sk.m);
+            let (o1, x1, y1) = frame(&m_new);
+            for &(p, u, v, _) in &sk.points {
+                if self.flags(p) & 0x40 != 0 && !self.model_projected(p) {
+                    let w =
+                        [o0[0] + u * x0[0] + v * y0[0], o0[1] + u * x0[1] + v * y0[1], o0[2] + u * x0[2] + v * y0[2]];
+                    let q = sub3(w, o1);
+                    moved.insert(p, (rnd(dot(q, x1)), rnd(dot(q, y1))));
+                }
+            }
         }
         let projected = |i: usize| self.flags(i) & 0x40 != 0;
-        let Some(mut new) = crate::inventor_sketch::resolve(&self.dc, s, &sk, &projected)? else {
-            return Ok(sk);
+        let Some(mut new) = crate::inventor_sketch::resolve(&self.dc, s, &sk, &moved, &projected)? else {
+            if placed.is_none() {
+                return Ok(sk);
+            }
+            // Moved with its face only: the same sketch in the new place.
+            let mut new = sk;
+            new.m = m_new;
+            self.solved.borrow_mut().insert(s, new.clone());
+            return Ok(new);
         };
+        new.m = m_new;
         new.before = Some(Box::new(sk));
         self.solved.borrow_mut().insert(s, new.clone());
         Ok(new)
+    }
+
+    /// Points of the earlier sketches in model space (mm), as saved and as the row moves them:
+    /// every point of a sketch an extrude sweeps (blind or symmetric) at the start, end and
+    /// middle of the sweep, and every point of a sketch a revolve turns (with the revolve's
+    /// axis, for its outline seen from a plane through the axis). The sweep's distance follows
+    /// the row; the sketches are taken as solved for it.
+    fn sources(&self, s: usize) -> Result<Vec<Source>, String> {
+        let mut out = Vec::new();
+        for f in self.dc.ordered_features() {
+            let (Some(typ @ (FeatType::Extrude | FeatType::Revolve)), Ok(slots)) = (f.typ, self.slots(&f)) else {
+                continue;
+            };
+            let Some(s2) = slots.get(1).and_then(|l| self.profile_sketch(l)) else { continue };
+            if s2 >= s {
+                continue;
+            }
+            let (old2, new2) = (self.saved_sketch(s2)?, self.sketch(s2)?);
+            let at3 = |m: &[f64; 16], a: f64, b: f64| {
+                let (o, x, y) = frame(m);
+                [o[0] + a * x[0] + b * y[0], o[1] + a * x[1] + b * y[1], o[2] + a * x[2] + b * y[2]]
+            };
+            let (_, x2, y2) = frame(&old2.m);
+            let n2 = unit3(cross(x2, y2));
+            let mut sweeps: Vec<(f64, f64)> = vec![(0.0, 0.0)];
+            let mut axis = None;
+            if typ == FeatType::Extrude {
+                let ext = slots.get(6).and_then(|i| tail_u16(&self.dc, i));
+                if let Some(dp) = slots.get(4)
+                    && let (Some((_, was)), Some((_, now))) = (self.dc.param_saved(dp), self.dc.param(dp))
+                {
+                    let ks: &[f64] = match ext {
+                        Some(2) => &[0.5, -0.5],
+                        Some(1) => &[1.0, -1.0],
+                        _ => &[],
+                    };
+                    sweeps.extend(ks.iter().map(|k| (k * was * CM, k * now * CM)));
+                }
+            } else if let Some(ax) = slots.get(2)
+                && let Ok((p0, v)) = work_axis(&self.dc, ax)
+            {
+                axis = Some(([p0[0] * CM, p0[1] * CM, p0[2] * CM], v));
+            }
+            for &(q, qa, qb, _) in &old2.points {
+                let Some(&(_, na, nb, _)) = new2.points.iter().find(|w| w.0 == q) else { continue };
+                let (b0, b1) = (at3(&old2.m, qa, qb), at3(&new2.m, na, nb));
+                for &(t0, t1) in &sweeps {
+                    let shift = |b: V3, t: f64| [b[0] + t * n2[0], b[1] + t * n2[1], b[2] + t * n2[2]];
+                    out.push(Source { old: shift(b0, t0), new: shift(b1, t1), axis });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Where the row moves the points a sketch projects from the model (mm, by record), seen
+    /// from its plane `m_new` (note AP): each must be one of the [`Reader::sources`] seen from
+    /// the plane (or, for a turned point and a plane through the revolve's axis, the outline of
+    /// its circle). Points that several sources explain must agree.
+    fn reproject(&self, s: usize, sk: &Sketch, m_new: &[f64; 16]) -> Result<HashMap<usize, P2>, String> {
+        const TOL: f64 = 1e-5;
+        let refuse = || format!("sketch '{}' projects model edges that are not read for a member's row", sk.name);
+        if sk
+            .curves
+            .iter()
+            .any(|c| matches!(*c, Curve::Circle { id, .. } | Curve::Ellipse { id, .. } if self.model_projected(id)))
+        {
+            return Err(refuse());
+        }
+        let sources = self.sources(s)?;
+        let view = |m: &[f64; 16]| {
+            let (o, x, y) = frame(m);
+            move |p: V3| {
+                let q = sub3(p, o);
+                (dot(q, x), dot(q, y))
+            }
+        };
+        let (to2, to2_new) = (view(&sk.m), view(m_new));
+        let (_, x, y) = frame(&sk.m);
+        let n = unit3(cross(x, y));
+        // A turned point's outline: on the axis, its radius out across it in the plane.
+        let outline = |p: V3, p0: V3, v: V3, sign: f64| {
+            let a = dot(sub3(p, p0), v);
+            let foot = [p0[0] + a * v[0], p0[1] + a * v[1], p0[2] + a * v[2]];
+            let r = libm::sqrt(dot(sub3(p, foot), sub3(p, foot)));
+            let w = unit3(cross(n, v));
+            [foot[0] + sign * r * w[0], foot[1] + sign * r * w[1], foot[2] + sign * r * w[2]]
+        };
+        let mut out = HashMap::new();
+        for &(p, u, v, _) in &sk.points {
+            if !self.model_projected(p) {
+                continue;
+            }
+            let near = |q: P2| libm::hypot(q.0 - u, q.1 - v) < TOL;
+            let mut found: Vec<P2> = Vec::new();
+            for src in &sources {
+                if near(to2(src.old)) {
+                    found.push(to2_new(src.new));
+                }
+                if let Some((p0, ax)) = src.axis
+                    && dot(ax, n).abs() < 1e-9
+                {
+                    for sign in [1.0, -1.0] {
+                        if near(to2(outline(src.old, p0, ax, sign))) {
+                            found.push(to2_new(outline(src.new, p0, ax, sign)));
+                        }
+                    }
+                }
+            }
+            let Some(&first) = found.first() else { return Err(refuse()) };
+            if found.iter().any(|q| libm::hypot(q.0 - first.0, q.1 - first.1) > TOL) {
+                return Err(format!(
+                    "sketch '{}' projects a model edge that several earlier sketches explain",
+                    sk.name
+                ));
+            }
+            out.insert(p, (rnd(first.0), rnd(first.1)));
+        }
+        Ok(out)
+    }
+
+    /// The placement of a sketch on a face of the model (a `90874d23` record ties its placement
+    /// to the face) when the row moves the face: its origin must be one of the
+    /// [`Reader::sources`], and moves with it (the face is taken not to turn). `None`: the
+    /// sketch is not on a face, or its origin is no such point.
+    fn moved_placement(&self, s: usize, sk: &Sketch) -> Result<Option<[f64; 16]>, String> {
+        const TOL: f64 = 1e-5;
+        let on_face = self.dc.refs(s).into_iter().any(|(_, pl)| {
+            self.dc.role(pl) == Role::SkPlacement
+                && self.back().get(pl).is_some_and(|b| b.iter().any(|&j| self.dc.class(j) == 0x9087_4d23))
+        });
+        if !on_face {
+            return Ok(None);
+        }
+        let (o, ..) = frame(&sk.m);
+        let found: Vec<V3> = self
+            .sources(s)?
+            .into_iter()
+            .filter(|src| libm::sqrt(dot(sub3(src.old, o), sub3(src.old, o))) < TOL)
+            .map(|src| src.new)
+            .collect();
+        let Some(&first) = found.first() else {
+            return Err(format!("sketch '{}' lies on a face the member's row may move (not read yet)", sk.name));
+        };
+        if found.iter().any(|q| libm::sqrt(dot(sub3(*q, first), sub3(*q, first))) > TOL) {
+            return Err(format!("sketch '{}' lies on a face that several earlier sketches explain", sk.name));
+        }
+        let mut m = sk.m;
+        for (k, c) in [3usize, 7, 11].into_iter().zip(first) {
+            if let Some(e) = m.get_mut(k) {
+                *e = c / CM;
+            }
+        }
+        Ok(Some(m))
+    }
+
+    /// A sketch entity projected from the model's edges (not the origin's point or axes: those
+    /// carry `feb0d977` / `18951917` links, or the axis flags).
+    fn model_projected(&self, i: usize) -> bool {
+        let f = self.flags(i);
+        f & 0x40 != 0
+            && f & 0x30_0000 == 0
+            && !self
+                .back()
+                .get(i)
+                .is_some_and(|b| b.iter().any(|&j| matches!(self.dc.class(j), 0xfeb0_d977 | 0x1895_1917)))
     }
 
     /// Whether a sketch holds geometry projected from the model's edges (not the origin's point
@@ -320,15 +509,7 @@ impl Reader<'_> {
         let curve_ids = sk.curves.iter().map(|c| match *c {
             Curve::Line { id, .. } | Curve::Arc { id, .. } | Curve::Circle { id, .. } | Curve::Ellipse { id, .. } => id,
         });
-        sk.points.iter().map(|p| p.0).chain(curve_ids).any(|i| {
-            let f = self.flags(i);
-            f & 0x40 != 0
-                && f & 0x30_0000 == 0
-                && !self
-                    .back()
-                    .get(i)
-                    .is_some_and(|b| b.iter().any(|&j| matches!(self.dc.class(j), 0xfeb0_d977 | 0x1895_1917)))
-        })
+        sk.points.iter().map(|p| p.0).chain(curve_ids).any(|i| self.model_projected(i))
     }
 
     fn saved_sketch(&self, s: usize) -> Result<Sketch, String> {
@@ -612,6 +793,40 @@ impl Reader<'_> {
     fn pval(&self, s: &Slots, j: usize) -> Result<f64, String> {
         self.dc.pval(&s.0, j).ok_or_else(|| format!("slot {j} is not a parameter"))
     }
+}
+
+/// Reads (for the row) the offsets of the offset work planes (`0d28d8c0`: the plane, its base
+/// plane, the offset) that nothing but their names (and the document record) refer to: they
+/// place nothing (note AP).
+fn unused_planes(r: &Reader) {
+    for i in 0..r.dc.n() {
+        if r.dc.class(i) != 0x0d28_d8c0 {
+            continue;
+        }
+        // The plane is the first work plane it names (the base plane follows).
+        let refs: Vec<usize> = r.dc.refs(i).into_iter().map(|x| x.1).collect();
+        let (Some(&plane), Some(&p)) = (
+            refs.iter().find(|&&x| matches!(r.dc.class(x), 0xce52_df42)),
+            refs.iter().find(|&&x| r.dc.role(x) == Role::Param),
+        ) else {
+            continue;
+        };
+        let idle = r
+            .back()
+            .get(plane)
+            .is_some_and(|b| b.iter().all(|&j| j == i || r.dc.role(j) == Role::Name || r.dc.class(j) == 0x9087_4d63));
+        if idle {
+            let _ = r.dc.param(p);
+        }
+    }
+}
+
+/// A point of an earlier sketch in model space (mm), as saved and as the member's row moves it,
+/// with the axis (point, unit direction) of the revolve that turns it.
+struct Source {
+    old: V3,
+    new: V3,
+    axis: Option<(V3, V3)>,
 }
 
 /// What a hole's plain-cut form is made from (kept to remake it when a pattern moves the hole).
@@ -2449,18 +2664,21 @@ pub(crate) fn chamfer_second(
 /// A reason: the file is not an Inventor part, has no feature segment, or its records do not
 /// have the layout read here.
 pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Value, String> {
-    feature_tree_with(bytes, file_name, limits, &[], None).map(|t| t.0)
+    feature_tree_with(bytes, file_name, limits, &[], None, None).map(|t| t.0)
 }
 
 /// [`feature_tree`] for a part read as part of another (note AO).
 ///
 /// The parameters named in `row` are read as the given values (cm or radians) instead of the
-/// stored ones: an iPart factory read for one of its members. Also gives the names of the row's
-/// parameters the features took; a parameter the features do not take (a sketch dimension: the
-/// sketches are read as solved) is left as stored.
+/// stored ones: an iPart factory read for one of its members. A sketch whose dimensions the row
+/// changes is solved again (note AP). Also gives the names of the row's parameters the features
+/// and sketches took.
 ///
 /// With `derived_body`, the part's derive feature stands for that body (made by features before
 /// this tree): the features after it cut or join it. Without, a derive is not read.
+///
+/// With `result`, the stored body of that part (an iPart member's, in the factory's place) is
+/// the result the fillets and chamfers are read from.
 ///
 /// # Errors
 /// As [`feature_tree`].
@@ -2470,6 +2688,7 @@ pub fn feature_tree_with(
     limits: &Limits,
     row: &[(String, f64)],
     derived_body: Option<&str>,
+    result: Option<&[u8]>,
 ) -> Result<(Value, Vec<String>), String> {
     let mut dc = Dc::open(bytes, limits)?;
     dc.set_row(row);
@@ -2482,7 +2701,7 @@ pub fn feature_tree_with(
     }
     let r = Reader {
         dc,
-        bytes,
+        result_bytes: result.unwrap_or(bytes),
         limits,
         back: OnceCell::new(),
         owned: OnceCell::new(),
@@ -2572,6 +2791,9 @@ pub fn feature_tree_with(
         st.emitted.insert(name.clone(), made);
     }
     let file = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    if r.dc.has_row() {
+        unused_planes(&r);
+    }
     let used = r.dc.row_used();
     let tree = json!({"format": "gusset-feature-tree", "version": 2,
               "source": {"app": "inventor", "file": file, "omitted": st.omitted},

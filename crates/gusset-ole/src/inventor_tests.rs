@@ -1641,7 +1641,7 @@ fn sketch_points(t: &Value) -> Vec<(f64, f64)> {
 fn a_member_row_solves_the_sketch_again() {
     use crate::inventor_features::feature_tree_with;
     let part = inventor_dc_part(&SK_CLASSES, &constrained_records(false), &[]);
-    let read = |row: &[(String, f64)]| feature_tree_with(&part, "p.ipt", &Limits::default(), row, None).unwrap();
+    let read = |row: &[(String, f64)]| feature_tree_with(&part, "p.ipt", &Limits::default(), row, None, None).unwrap();
     let (saved, used) = read(&[]);
     assert!(used.is_empty());
     assert_eq!(sketch_points(&saved), vec![(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]);
@@ -1664,7 +1664,8 @@ fn a_member_row_solves_the_sketch_again() {
 fn an_unread_sketch_constraint_refuses_a_member_row() {
     use crate::inventor_features::feature_tree_with;
     let part = inventor_dc_part(&SK_CLASSES, &constrained_records(true), &[]);
-    let read = |row: &[(String, f64)]| feature_tree_with(&part, "p.ipt", &Limits::default(), row, None).unwrap().0;
+    let read =
+        |row: &[(String, f64)]| feature_tree_with(&part, "p.ipt", &Limits::default(), row, None, None).unwrap().0;
     assert_eq!(read(&[])["features"][1]["type"], "extrude");
     let t = read(&[("d1".into(), 3.0)]);
     assert_eq!(t["features"][0]["type"], "unsupported");

@@ -1800,9 +1800,24 @@ fn inventor_tree(
             }
             _ => {
                 let file = d.file.clone();
+                // A member placed as its factory (no turn, shift or scale) holds the factory's
+                // body as its row makes it: the blends are read from it (note AP).
+                let in_place = (d.scale - 1.0).abs() < 1e-12
+                    && d.transform
+                        .iter()
+                        .enumerate()
+                        .all(|(k, v)| (v - if k % 5 == 0 { 1.0 } else { 0.0 }).abs() < 1e-12);
+                let member = (!row.is_empty() && in_place).then(|| part.clone());
                 chain.push((d, std::mem::take(&mut part), std::mem::take(&mut part_name)));
-                let (tree, used) = gusset_ole::inventor_features::feature_tree_with(&base, &file, &limits, &row, None)
-                    .map_err(|e| format!("its base part '{name}': {e}"))?;
+                let (tree, used) = gusset_ole::inventor_features::feature_tree_with(
+                    &base,
+                    &file,
+                    &limits,
+                    &row,
+                    None,
+                    member.as_deref(),
+                )
+                .map_err(|e| format!("its base part '{name}': {e}"))?;
                 // A model parameter (Inventor names them d0, d1, ...) of the row that no feature
                 // takes is a sketch dimension. Others (user parameters) drive model parameters
                 // and are left to the rebuild check.
@@ -1859,7 +1874,7 @@ fn own_features(
         [] => return Ok(Vec::new()),
         _ => return Err(format!("it is derived from {} bodies and adds features of its own", bodies.len())),
     };
-    let (own, _) = gusset_ole::inventor_features::feature_tree_with(part, part_name, limits, &[], Some(body))?;
+    let (own, _) = gusset_ole::inventor_features::feature_tree_with(part, part_name, limits, &[], Some(body), None)?;
     let mut feats: Vec<Value> = own.get("features").and_then(Value::as_array).cloned().unwrap_or_default();
     let name = |f: &Value| f.get("name").and_then(Value::as_str).map(str::to_string);
     let mut taken: std::collections::BTreeSet<String> =
