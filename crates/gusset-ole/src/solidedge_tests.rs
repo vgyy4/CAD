@@ -929,3 +929,21 @@ fn a_setback_and_angle_chamfer_takes_its_reference_face() {
     assert_eq!(f["face"]["surface"]["origin"], json!([0.0, 0.0, 5.0]));
     assert_eq!(f["edges"][0]["midpoint"], json!([10.0, 0.0, 5.0]));
 }
+
+#[test]
+fn a_mirror_copy_builds_its_features_again_reflected() {
+    // The protrusion part, then a mirror copy of it about the plane x = 0 (slot 2 the plane,
+    // 3 the feature) and one of a feature that was not read.
+    let mut more = obj(6, 21, &plane_payload([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]));
+    more.extend(obj(38, 22, &func("JMMirrorCopyFunction", &[&[22], &[12], &[21], &[11], &[11]])));
+    more.extend(obj(38, 23, &func("JMFastMirrorFunction", &[&[23], &[22], &[21], &[12], &[12]])));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = &t["features"][2];
+    assert_eq!(
+        (&f["type"], &f["name"], &f["features"], &f["target"]),
+        (&json!("mirror"), &json!("MirrorCopy_1"), &json!(["Protrusion_1"]), &json!("Protrusion_1")),
+        "{t}"
+    );
+    assert_eq!(f["plane"], json!({"origin": [0.0, 0.0, 0.0], "normal": [1.0, 0.0, 0.0]}));
+    assert_eq!(t["features"][3]["type"], "unsupported", "{t}");
+}

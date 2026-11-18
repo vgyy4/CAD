@@ -1632,6 +1632,8 @@ enum Kind {
     LoftedProtrusion,
     LoftedCutout,
     ThinWall,
+    /// A mirror copy of features (`JMMirrorCopyFunction`, `JMFastMirrorFunction`).
+    Mirror,
     /// A cosmetic thread: no geometry.
     Thread,
     /// The start of an older part's history, before its first feature.
@@ -1653,6 +1655,7 @@ fn kind(class: &str) -> Kind {
         "JMChamferFunction" => Kind::Chamfer,
         "JMThreadFunction" => Kind::Thread,
         "JMThinwallAssocFunctionNew" => Kind::ThinWall,
+        "JMMirrorCopyFunction" | "JMFastMirrorFunction" => Kind::Mirror,
         "JMBodyFeatureAssocFunc" => Kind::BaseBody,
         _ => Kind::Other,
     }
@@ -1730,6 +1733,8 @@ fn label(class: &str) -> &str {
 
 struct State {
     out: Vec<Value>,
+    /// The tree names of the features read, by function serial.
+    names: HashMap<u32, String>,
     first_body: Option<String>,
     omitted: Vec<Value>,
 }
@@ -2107,6 +2112,24 @@ fn thin_wall(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), Stri
     Ok(())
 }
 
+/// A mirror copy of features (`JMMirrorCopyFunction`, `JMFastMirrorFunction`): slot 2 the
+/// mirror plane, 3 the features copied; each built again, reflected, into the first body.
+fn mirror(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), String> {
+    let target = s.first_body.clone().ok_or("a mirror before any body")?;
+    let (o, n, _) = f.slot(2).and_then(|p| st.obj(p)).and_then(plane).ok_or("the mirror plane is not readable")?;
+    let seeds: Vec<u32> = f.list(3).iter().copied().filter(|&x| x != 0).collect();
+    if seeds.is_empty() {
+        return Err("the mirror copies no feature".into());
+    }
+    let features: Vec<Value> = seeds
+        .iter()
+        .map(|x| s.names.get(x).map(|n| json!(n)).ok_or("a mirrored feature was not read"))
+        .collect::<Result<_, _>>()?;
+    s.out.push(json!({"type": "mirror", "name": name, "features": features, "target": target, "merge": true,
+                      "plane": {"origin": arr_mm(o), "normal": arr(n)}}));
+    Ok(())
+}
+
 /// Reads a Solid Edge part's ordered feature history as a feature tree.
 ///
 /// # Errors
@@ -2127,7 +2150,7 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
         st.sketch = sketch_edges(&f.read(i, limits).map_err(|e| e.to_string())?);
     }
     let feats = history(&st)?;
-    let mut s = State { out: Vec::new(), first_body: None, omitted: Vec::new() };
+    let mut s = State { out: Vec::new(), names: HashMap::new(), first_body: None, omitted: Vec::new() };
     let mut counts: HashMap<&str, usize> = HashMap::new();
     let mut solids = 0;
     for (serial, func) in &feats {
@@ -2170,10 +2193,22 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
                     s.out.push(unsupported(&name, what, &why));
                 }
             }
+            Kind::Mirror => {
+                if let Err(why) = mirror(&st, &mut s, func, &name) {
+                    s.out.push(unsupported(&name, what, &why));
+                }
+            }
             Kind::Thread => s.omitted.push(json!({"name": name, "why": "cosmetic thread"})),
             // Left out: if it held geometry, the rebuild check finds the body short.
             Kind::BaseBody if s.out.is_empty() => s.omitted.push(json!({"name": name, "why": "base body feature"})),
             Kind::Other | Kind::BaseBody => s.out.push(unsupported(&name, what, "feature kind not read yet")),
+        }
+        let read = s.out.iter().rev().any(|f| {
+            f.get("name").and_then(Value::as_str) == Some(name.as_str())
+                && f.get("type").and_then(Value::as_str).is_some_and(|t| t != "unsupported" && t != "sketch")
+        });
+        if read {
+            s.names.insert(*serial, name);
         }
     }
     if solids == 0 && s.out.iter().all(|f| f.get("type").and_then(Value::as_str) == Some("unsupported")) {
