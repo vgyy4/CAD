@@ -571,6 +571,42 @@ pub(crate) fn edge_set(b: &[u8]) -> Result<Vec<SetCurve>, String> {
     Ok(out)
 }
 
+/// The points of a vertex set (a variable round's vertices): laid out as an edge set's list
+/// ([`edge_set`]), each entry a class id ending in [`SET_CURVE`] and the point (metres,
+/// absolute), then a few words to the next.
+pub(crate) fn vertex_set(b: &[u8]) -> Result<Vec<V3>, String> {
+    let at = b
+        .windows(17)
+        .position(|w| w.first() == Some(&0xff) && w.get(7..) == Some(&SET_LIST[..]))
+        .ok_or("the vertex set lists no points")?;
+    let mut q = at + 17;
+    let n = u32_at(b, q + 4).ok_or("the vertex set is cut short")?;
+    if u32_at(b, q) != Some(1) || u32_at(b, q + 8) != Some(0) || b.get(q + 12) != Some(&2) {
+        return Err("the vertex set's list is not readable".into());
+    }
+    if n == 0 || n > MAX_MEMBERS {
+        return Err("the vertex set has no points or too many".into());
+    }
+    q += 13;
+    let mut out = Vec::new();
+    for k in 0..n {
+        if b.get(q + 5..q + 16) != Some(&SET_CURVE[..]) {
+            return Err("a vertex of the set is not readable".into());
+        }
+        let p = v3_at(b, q + 16)
+            .filter(|v| finite3(*v) && v.iter().all(|c| c.abs() < 1e6))
+            .ok_or("a vertex of the set is not readable")?;
+        out.push(p);
+        q += 40;
+        if k + 1 < n {
+            q = (q..=q + 64)
+                .find(|&o| b.get(o + 5..o + 16) == Some(&SET_CURVE[..]))
+                .ok_or("a vertex of the set is not readable")?;
+        }
+    }
+    Ok(out)
+}
+
 /// One stored curve of type `t` whose numbers start at `at` (see [`edge_set`]) and where it
 /// ends.
 fn set_curve(b: &[u8], t: u8, at: usize) -> Result<(SetCurve, usize), String> {
@@ -2101,8 +2137,8 @@ fn blend(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     let round = k == Kind::Round;
     let (set, size) = if round {
         match code(3) {
-            Some(1) => {}
-            other => return Err(format!("round kind {other:?} (not a constant radius)")),
+            Some(1 | 2) => {}
+            other => return Err(format!("round kind {other:?} (not a constant or variable radius)")),
         }
         (2, 4)
     } else {
@@ -2113,7 +2149,12 @@ fn blend(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
         }
         (4, 5)
     };
-    let size = small(size).map(|v| v * MM).filter(|v| *v > 1e-9).ok_or("the size is not readable")?;
+    // A variable round (kind 2): slot 5 the vertex sets, 6 the radius at each.
+    let vertices = if round && code(3) == Some(2) { variable_radii(st, f)? } else { Vec::new() };
+    let size = match vertices.first() {
+        Some(v) => v.get("radius").and_then(Value::as_f64).ok_or("a vertex radius is not readable")?,
+        None => small(size).map(|v| v * MM).filter(|v| *v > 1e-9).ok_or("the size is not readable")?,
+    };
     let set = f.slot(set).and_then(|v| st.obj(v)).ok_or("the edge set is missing")?;
     let picks: Vec<Value> = edge_set(set)?.iter().map(edge_pick).collect::<Result<_, _>>()?;
     let mut j = if round {
@@ -2121,6 +2162,9 @@ fn blend(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     } else {
         json!({"type": "chamfer", "name": name, "edges": picks, "distance": rnd(size)})
     };
+    if !vertices.is_empty() {
+        put(&mut j, "vertex_radii", json!(vertices));
+    }
     if !round && code(2) == Some(42) {
         // Setback and angle: the setback runs along the reference face (slot 3, a face set
         // of one face), the angle (slot 6, radians) is taken from it.
@@ -2138,6 +2182,24 @@ fn blend(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     }
     s.out.push(j);
     Ok(())
+}
+
+/// A variable round's radii by vertex (slot 5 the vertex sets, one point each; 6 the radii).
+fn variable_radii(st: &Store, f: &Func) -> Result<Vec<Value>, String> {
+    let (sets, radii) = (f.list(5), f.list(6));
+    if sets.is_empty() || sets.len() != radii.len() {
+        return Err("a variable round's vertices and radii do not pair up".into());
+    }
+    let mut out = Vec::new();
+    for (&v, &r) in sets.iter().zip(radii) {
+        let r =
+            st.obj(r).and_then(value).map(|r| r * MM).filter(|r| *r > 1e-9).ok_or("a vertex radius is not readable")?;
+        let set = st.obj(v).ok_or("a vertex set is missing")?;
+        for p in vertex_set(set)? {
+            out.push(json!({"point": arr_mm(p), "radius": rnd(r)}));
+        }
+    }
+    Ok(out)
 }
 
 /// A thin wall (`JMThinwallAssocFunctionNew`): slot 2 the side (4 the wall inside the body),

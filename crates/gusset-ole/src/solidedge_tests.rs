@@ -5,7 +5,7 @@ use crate::fixtures::ole;
 use crate::solidedge_features::{
     Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, close_on_axis, close_open, copy_frame, curve,
     edge_pick, edge_set, face_pick, face_set, feature_tree, history, key_point_angle, key_point_reach, parse_func,
-    plane, reach_in_box, stored_box, value,
+    plane, reach_in_box, stored_box, value, vertex_set,
 };
 use serde_json::json;
 
@@ -976,4 +976,50 @@ fn a_helix_protrusion_carries_its_profile_along_the_axis() {
                "left_handed": false})
     );
     assert_eq!(t["features"][2]["type"], "sketch");
+}
+
+/// A vertex set: the list head of an edge set, then each point as a class id and three
+/// numbers followed by 16 bytes of words.
+fn vertex_set_bytes(points: &[[f64; 3]]) -> Vec<u8> {
+    let mut v = b"\x00\x00\x00\x00".to_vec();
+    v.push(0xff);
+    v.extend([0xc0, 0x61, 0xcd, 0xb0, 0x51, 0xd1]);
+    v.extend([0xcd, 0x11, 0x8b, 0xa4, 0x08, 0x00, 0x36, 0x24, 0xfc, 0x01]);
+    v.extend(1u32.to_le_bytes());
+    v.extend((points.len() as u32).to_le_bytes());
+    v.extend(0u32.to_le_bytes());
+    v.push(2);
+    for p in points {
+        v.extend([0x72, 0xc7, 0xd4, 0x1d, 0x15]);
+        v.extend([0x3a, 0xce, 0x11, 0x9a, 0x5e, 0x08, 0x00, 0x36, 0x9b, 0x41, 0x02]);
+        v.extend(f64s(p));
+        v.extend([0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
+    }
+    v
+}
+
+#[test]
+fn a_variable_round_gives_the_radius_at_each_vertex() {
+    let b = vertex_set_bytes(&[[0.0, 0.0, 0.0], [0.02, 0.0, 0.0]]);
+    assert_eq!(vertex_set(&b).unwrap(), vec![[0.0, 0.0, 0.0], [0.02, 0.0, 0.0]]);
+    for n in 0..b.len() {
+        let _ = vertex_set(&b[..n]);
+    }
+    // The protrusion part, then a round of kind 2 on the box's edge along x at y = 0, z = 0:
+    // 1 mm at its start (slot 5 the vertex sets, 6 the radii), 2 mm at its end.
+    let set = edge_set_bytes(&[(3, vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.02])], false);
+    let mut more = obj(40, 21, &set);
+    more.extend(obj(36, 22, &small(2.0)));
+    more.extend(obj(40, 23, &vertex_set_bytes(&[[0.0, 0.0, 0.0]])));
+    more.extend(obj(40, 24, &vertex_set_bytes(&[[0.02, 0.0, 0.0]])));
+    more.extend(obj(36, 25, &small(0.001)));
+    more.extend(obj(36, 26, &small(0.002)));
+    more.extend(obj(38, 27, &func("JMRoundFunction", &[&[27], &[12], &[21], &[22], &[0], &[23, 24], &[25, 26]])));
+    let t = feature_tree(&part_with(1.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = &t["features"][2];
+    assert_eq!((&f["type"], &f["radius"]), (&json!("fillet"), &json!(1.0)), "{t}");
+    assert_eq!(
+        f["vertex_radii"],
+        json!([{"point": [0.0, 0.0, 0.0], "radius": 1.0}, {"point": [20.0, 0.0, 0.0], "radius": 2.0}])
+    );
 }
