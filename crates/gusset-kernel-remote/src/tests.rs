@@ -89,6 +89,13 @@ fn operations_match_the_kernel_they_wrap() {
     let e = k.extrude(&square(), &ExtrudeSpec { distance: 0.0, symmetric: false }).unwrap_err();
     let le = local.extrude(&square(), &ExtrudeSpec { distance: 0.0, symmetric: false }).unwrap_err();
     assert_eq!((e.kind, e.message), (le.kind, le.message));
+    // ADR 0061's requests cross the wire (the mock kernel refuses them as it does locally).
+    let e = k.fillet_variable(&a.shape, &[0, 1], 2.0, &[(3, 1.5), (4, 0.5)]).unwrap_err();
+    let le = local.fillet_variable(&b.shape, &[0, 1], 2.0, &[(3, 1.5), (4, 0.5)]).unwrap_err();
+    assert_eq!((e.kind, e.message), (le.kind, le.message));
+    let e = k.extrude_to_face(&square(), &a.shape, 1, 0.5, true, true).unwrap_err();
+    let le = local.extrude_to_face(&square(), &b.shape, 1, 0.5, true, true).unwrap_err();
+    assert_eq!((e.kind, e.message), (le.kind, le.message));
     assert_eq!(servers.lock().unwrap().len(), 1);
 }
 
