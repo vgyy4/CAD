@@ -360,7 +360,9 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
     }
     let file = open_regular(&full, path, MAX_IMPORT_BYTES)?;
     let file_name = full.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let dir = matches!(kind, Kind::Sldasm).then(|| full.parent().map(Path::to_path_buf)).flatten();
+    // An assembly reads its parts, and a derived Inventor part its base part, from the folder
+    // the file is in (ADR 0046 amendment 16).
+    let dir = matches!(kind, Kind::Sldasm | Kind::Inventor).then(|| full.parent().map(Path::to_path_buf)).flatten();
     Ok(ImportJob { file, kind, file_name, importer, kernel: s.kernel().clone(), dir, choice: HistoryChoice::Auto })
 }
 
@@ -507,7 +509,10 @@ impl ImportJob {
                     // The feature history as editable features, when it rebuilds to the part's
                     // own body (ADR 0046 amendment); else the body itself.
                     let mut attempt = None;
-                    let r = inventor_history(&bytes, &out, &self.kernel, &self.file_name, &mut attempt);
+                    let r = inventor_tree(&bytes, &self.file_name, self.dir.as_deref(), cancel).and_then(|(tree, base)| {
+                        let r = inventor_history(&tree, &out, &self.kernel, &self.file_name, &mut attempt);
+                        r.map(|(t, note)| (t, base_note(note, base)))
+                    });
                     let h = history::classify(
                         r,
                         attempt,
@@ -1740,19 +1745,227 @@ fn first_skipped(why: &str) -> Option<String> {
     v.get("feature").and_then(Value::as_str).map(str::to_string)
 }
 
+/// Most levels of base parts behind a derived Inventor part (a base that is itself derived).
+const MAX_DERIVE_DEPTH: usize = 4;
+
+/// The feature tree of an Inventor part: its own; or, for a derived part or iPart member (ADR
+/// 0046 amendment 16), its base part's history read from the part's own folder, followed by
+/// the derive's mirror or move, and the names of the bases for the note. A part without a
+/// derive, or whose derive is not readable, gets its own tree as before.
+fn inventor_tree(
+    bytes: &[u8],
+    file_name: &str,
+    dir: Option<&Path>,
+    cancel: &AtomicBool,
+) -> Result<(Value, Option<String>), String> {
+    let limits = gusset_ole::Limits::default();
+    let Ok(Some(mut d)) = gusset_ole::inventor_derived::derived_base(bytes, &limits) else {
+        return Ok((gusset_ole::inventor_features::feature_tree(bytes, file_name, &limits)?, None));
+    };
+    let own_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name).to_string();
+    let dir = dir.ok_or_else(|| format!("it is derived from '{}', and the part's folder is not known", shown(&d.file)))?;
+    // The part's own name counts as seen: a part that names itself as its base is a cycle.
+    let mut seen = vec![own_name.clone()];
+    let mut chain = Vec::new();
+    let mut part = bytes.to_vec();
+    let base_tree = loop {
+        let name = shown(&d.file);
+        if seen.contains(&d.file) {
+            return Err(format!("it is derived from '{name}', which is derived from it again (a cycle)"));
+        }
+        if chain.len() >= MAX_DERIVE_DEPTH {
+            return Err(format!("its chain of base parts is deeper than {MAX_DERIVE_DEPTH} levels"));
+        }
+        if let Some(f) = d.own_features.first() {
+            return Err(format!(
+                "it is derived from '{name}' and adds features of its own after the derive, which are not read yet ({})",
+                shown(f)
+            ));
+        }
+        let base = inventor_base_file(dir, &d.file, cancel)?;
+        if d.member {
+            ipart_row_matches(&part, &base, &name, &limits)?;
+        }
+        seen.push(d.file.clone());
+        match gusset_ole::inventor_derived::derived_base(&base, &limits) {
+            Ok(Some(next)) => {
+                chain.push(d);
+                d = next;
+                part = base;
+            }
+            _ => {
+                let file = d.file.clone();
+                chain.push(d);
+                break gusset_ole::inventor_features::feature_tree(&base, &file, &limits)
+                    .map_err(|e| format!("its base part '{name}': {e}"))?;
+            }
+        }
+    };
+    let mut tree = base_tree;
+    let mut bodies = base_bodies(&tree);
+    // The innermost derive first: each places the bodies of the base below it.
+    for (k, d) in chain.iter().rev().enumerate() {
+        let extra = derive_features(&mut bodies, d, k + 1)?;
+        if let Some(Value::Array(fs)) = tree.get_mut("features") {
+            fs.extend(extra);
+        }
+    }
+    if let Some(src) = tree.get_mut("source").and_then(Value::as_object_mut) {
+        src.insert("file".into(), Value::String(own_name));
+    }
+    let names: Vec<String> = chain.iter().map(|d| format!("'{}'", shown(&d.file))).collect();
+    Ok((tree, Some(names.join(" from "))))
+}
+
+/// A name from a file, for messages: control characters out, cut.
+fn shown(n: &str) -> String {
+    n.chars().filter(|c| !c.is_control()).take(120).collect()
+}
+
+/// An iPart member stores its row's values as its own parameters; the factory's history holds
+/// the factory's saved row (its sketches as solved for that row), so it only gives the member's
+/// body when no parameter of the member differs from the factory's.
+fn ipart_row_matches(member: &[u8], factory: &[u8], name: &str, limits: &gusset_ole::Limits) -> Result<(), String> {
+    let mine = gusset_ole::inventor_derived::parameters(member, limits)?;
+    let theirs = gusset_ole::inventor_derived::parameters(factory, limits)?;
+    let differ: Vec<&str> = mine
+        .iter()
+        .filter(|(n, v)| theirs.iter().any(|(m, w)| m == n && (v - w).abs() > 1e-9 * (1.0 + w.abs())))
+        .map(|(n, _)| n.as_str())
+        .collect();
+    match differ.first() {
+        None => Ok(()),
+        Some(first) => Err(format!(
+            "it is an iPart member of '{name}' whose row differs from the factory's saved row in {} parameter(s) (first: {}): the factory's sketches would have to be solved again",
+            differ.len(),
+            shown(first)
+        )),
+    }
+}
+
+/// The note of a rebuilt tree, with the base parts its history came from.
+fn base_note(note: Option<String>, base: Option<String>) -> Option<String> {
+    let Some(b) = base else { return note };
+    let b = format!("the history of its base part {b} (read from the part's folder)");
+    Some(note.map_or(b.clone(), |n| format!("{b}; {n}")))
+}
+
+/// The bodies of a base part's tree, by the features that make them: those that make a new
+/// body, else the first solid feature.
+fn base_bodies(tree: &Value) -> Vec<String> {
+    let feats: &[Value] = tree.get("features").and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    let solid = |f: &&Value| f.get("type").and_then(Value::as_str) != Some("sketch") && f.get("operation").is_some();
+    let name = |f: &Value| f.get("name").and_then(Value::as_str).map(str::to_string);
+    let mut bodies: Vec<String> = feats
+        .iter()
+        .filter(solid)
+        .filter(|f| f.get("operation").and_then(Value::as_str) == Some("new"))
+        .filter_map(name)
+        .collect();
+    if bodies.is_empty() {
+        bodies.extend(feats.iter().find(solid).and_then(name));
+    }
+    // None: the base's features are not read (the rebuild check names the first).
+    bodies
+}
+
+/// The features that place a base part's `bodies` as a derive does: a mirror of each and the
+/// removal of the original for a reflection (the copies are the bodies after it), a move for
+/// a shift, and first a scale when the derive scales. Turned placements are not read.
+fn derive_features(
+    bodies: &mut [String],
+    d: &gusset_ole::inventor_derived::DerivedBase,
+    level: usize,
+) -> Result<Vec<Value>, String> {
+    let at = |k: usize| d.transform.get(k).copied().unwrap_or(0.0);
+    // The placement holds the scale (a derive scaled by 2 and mirrored: diag(2, 2, -2)).
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    if !close((at(0) * at(0) + at(4) * at(4) + at(8) * at(8)).sqrt(), d.scale) {
+        return Err("the derive's scale and placement do not agree".into());
+    }
+    let r = [[at(0), at(1), at(2)], [at(4), at(5), at(6)], [at(8), at(9), at(10)]].map(|row| row.map(|v| v / d.scale));
+    let t = [at(3), at(7), at(11)];
+    let unit = |i: usize, j: usize| if i == j { 1.0 } else { 0.0 };
+    let identity = (0..3).all(|i| (0..3).all(|j| close(r[i][j], unit(i, j))));
+    let mut out = Vec::new();
+    let tag = format!("Derive{level}");
+    if !close(d.scale, 1.0) {
+        for (k, b) in bodies.iter().enumerate() {
+            out.push(json!({"type": "scale_body", "name": format!("{tag} scale {}", k + 1), "target": b,
+                            "factor": d.scale, "center": [0.0, 0.0, 0.0]}));
+        }
+    }
+    if identity {
+        if t.iter().any(|v| v.abs() > 1e-9) {
+            for (k, b) in bodies.iter().enumerate() {
+                out.push(json!({"type": "move_body", "name": format!("{tag} move {}", k + 1), "target": b, "translate": t}));
+            }
+        }
+        return Ok(out);
+    }
+    // A reflection is I - 2 n n^T: n from the diagonal entry furthest below 1, then checked.
+    let j = (0..3).max_by(|&a, &b| (1.0 - r[a][a]).total_cmp(&(1.0 - r[b][b]))).unwrap_or(0);
+    let len = (0.5 * (1.0 - r[j][j])).max(0.0).sqrt();
+    let n = [0, 1, 2].map(|i| if i == j { len } else { -r[i][j] / (2.0 * len).max(1e-12) });
+    let reflection = len > 1e-6 && (0..3).all(|i| (0..3).all(|k| close(r[i][k], unit(i, k) - 2.0 * n[i] * n[k])));
+    if !reflection {
+        return Err("the derive turns the base part's body, which is not read yet".into());
+    }
+    // x' = R x + t is a mirror in a plane only when t runs along the normal: the plane is t/2 off.
+    let along = t[0] * n[0] + t[1] * n[1] + t[2] * n[2];
+    if (0..3).any(|i| (t[i] - along * n[i]).abs() > 1e-9) {
+        return Err("the derive mirrors and shifts the base part's body, which is not read yet".into());
+    }
+    let origin = n.map(|c| 0.5 * along * c);
+    for (k, b) in bodies.iter_mut().enumerate() {
+        let copy = format!("{tag} mirror {}", k + 1);
+        out.push(json!({"type": "mirror", "name": copy, "target": b, "merge": false,
+                        "plane": {"origin": origin, "normal": n}}));
+        out.push(json!({"type": "remove_body", "name": format!("{tag} remove {}", k + 1), "target": b}));
+        *b = copy;
+    }
+    Ok(out)
+}
+
+/// Reads the base part of a derived Inventor part: only a plain `.ipt` file name, exactly as
+/// the part stores it, listed in the part's own folder, opened as a regular file (no links) and
+/// read under the import's size limit.
+fn inventor_base_file(dir: &Path, name: &str, cancel: &AtomicBool) -> Result<Vec<u8>, String> {
+    let s = shown(name);
+    let plain = !name.is_empty()
+        && !name.contains(['/', '\\', ':', '\0'])
+        && name != "."
+        && name != ".."
+        && !name.chars().any(char::is_control);
+    if !plain {
+        return Err(format!("its base part's name '{s}' is not a plain file name"));
+    }
+    if !Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("ipt")) {
+        return Err(format!("its base part '{s}' is not an Inventor part file"));
+    }
+    let listed = std::fs::read_dir(dir)
+        .map(|rd| rd.filter_map(Result::ok).take(MAX_SLDASM_DIR_ENTRIES).any(|e| e.file_name() == name))
+        .unwrap_or(false);
+    if !listed {
+        return Err(format!("it is derived from '{s}', which is not in the part's folder"));
+    }
+    let f = open_regular(&dir.join(name), name, MAX_IMPORT_BYTES)
+        .map_err(|e| format!("its base part '{s}' cannot be read: {}", e.message))?;
+    read_capped(f, MAX_IMPORT_BYTES, cancel).map_err(|e| format!("its base part '{s}': {}", e.message))
+}
+
 /// An Inventor part's feature history as a feature tree (ADR 0046 amendment), kept only when
 /// it rebuilds to the part's own body like a FreeCAD history does. A hole the kernel refuses
 /// is tried as plain cuts (one by one in order, then all of them): the rebuild decides, so the
 /// outcome is the same every time. Extrudes up to a face that do not rebuild as such are
 /// tried as their measured blind reach. `Err("")`: nothing to say.
 fn inventor_history(
-    bytes: &[u8],
+    tree: &Value,
     bodies: &[PreparedBody],
     kernel: &Arc<dyn gusset_kernel::Kernel>,
     file_name: &str,
     attempt: &mut Option<crate::tree_import::Tree>,
 ) -> Result<(crate::tree_import::Tree, Option<String>), String> {
-    let tree = gusset_ole::inventor_features::feature_tree(bytes, file_name, &gusset_ole::Limits::default())?;
     let holes: Vec<String> = tree
         .get("features")
         .and_then(Value::as_array)
@@ -1778,7 +1991,7 @@ fn inventor_history(
         if blind && !has_blind {
             break;
         }
-        last = inventor_holes(&tree, &holes, &omitted, blind, bodies, kernel, file_name, attempt);
+        last = inventor_holes(tree, &holes, &omitted, blind, bodies, kernel, file_name, attempt);
         if let Ok((_, note)) = &mut last {
             if blind {
                 let fs = tree.get("features").and_then(Value::as_array);
@@ -5098,5 +5311,119 @@ mod inventor_candidate_tests {
             inventor_candidate(&tree, &none, true)["features"][0],
             json!({"type": "extrude", "name": "E", "symmetric": false, "distance": -5.0})
         );
+    }
+}
+
+#[cfg(test)]
+mod inventor_base_tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+    use gusset_ole::fixtures::inventor_derived_part;
+
+    fn folder(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("gusset-ipt-base-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_base_is_read_by_its_plain_name_from_the_part_folder_only() {
+        let dir = folder("names");
+        std::fs::write(dir.join("B.ipt"), b"base").unwrap();
+        std::fs::write(dir.join("sub").join("C.ipt"), b"deep").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"secret").unwrap();
+        let no = AtomicBool::new(false);
+        assert_eq!(inventor_base_file(&dir, "B.ipt", &no).unwrap(), b"base");
+        // Separators, drives, dot names, other kinds of file and files of sub-folders are
+        // refused; the name must be the stored one exactly.
+        for n in ["sub/C.ipt", r"sub\C.ipt", "../B.ipt", "C:B.ipt", "..", ".", "", "C.ipt", "notes.txt", "b.ipt"] {
+            assert!(inventor_base_file(&dir, n, &no).is_err(), "{n}");
+        }
+        let why = inventor_base_file(&dir, "Z.ipt", &no).unwrap_err();
+        assert!(why.contains("'Z.ipt'") && why.contains("not in the part's folder"), "{why}");
+        // A link in the folder is not followed.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("sub").join("C.ipt"), dir.join("L.ipt")).unwrap();
+            assert!(inventor_base_file(&dir, "L.ipt", &no).is_err());
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_bases_cycles_and_deep_chains_are_reasons() {
+        let dir = folder("chain");
+        let no = AtomicBool::new(false);
+        let tree = |part: &[u8], name: &str| inventor_tree(part, name, Some(&dir), &no).map(|_| ()).unwrap_err();
+        // Missing: the reason names the base.
+        let why = tree(&inventor_derived_part("Missing.ipt", false, false, false), "P.ipt");
+        assert!(why.contains("'Missing.ipt'") && why.contains("not in the part's folder"), "{why}");
+        // The folder must be known.
+        let why = inventor_tree(&inventor_derived_part("B.ipt", false, false, false), "P.ipt", None, &no).unwrap_err();
+        assert!(why.contains("folder is not known"), "{why}");
+        // A part that names itself, and two parts that name each other, are cycles.
+        let why = tree(&inventor_derived_part("P.ipt", false, false, false), "P.ipt");
+        assert!(why.contains("cycle"), "{why}");
+        std::fs::write(dir.join("A.ipt"), inventor_derived_part("B.ipt", false, true, false)).unwrap();
+        std::fs::write(dir.join("B.ipt"), inventor_derived_part("A.ipt", false, false, false)).unwrap();
+        let why = tree(&std::fs::read(dir.join("A.ipt")).unwrap(), "A.ipt");
+        assert!(why.contains("cycle"), "{why}");
+        // A chain deeper than the limit stops there.
+        for k in 0..=MAX_DERIVE_DEPTH + 1 {
+            std::fs::write(dir.join(format!("D{k}.ipt")), inventor_derived_part(&format!("D{}.ipt", k + 1), false, false, false))
+                .unwrap();
+        }
+        let why = tree(&std::fs::read(dir.join("D0.ipt")).unwrap(), "D0.ipt");
+        assert!(why.contains("deeper than"), "{why}");
+        // Features of its own after the derive are not read yet.
+        let why = tree(&inventor_derived_part("B.ipt", false, false, true), "P.ipt");
+        assert!(why.contains("features of its own"), "{why}");
+        // A part that derives nothing gets its own tree, as before.
+        assert_eq!(
+            inventor_tree(b"not a part", "x.ipt", Some(&dir), &no).unwrap_err(),
+            gusset_ole::inventor_features::feature_tree(b"not a part", "x.ipt", &gusset_ole::Limits::default())
+                .unwrap_err()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_mirrored_derive_mirrors_each_body_and_drops_the_original() {
+        let base = |transform: [f64; 16]| gusset_ole::inventor_derived::DerivedBase {
+            file: "B.ipt".into(),
+            member: false,
+            transform,
+            scale: 1.0,
+            own_features: Vec::new(),
+        };
+        let id: [f64; 16] = std::array::from_fn(|k| if k % 5 == 0 { 1.0 } else { 0.0 });
+        let mut bodies = vec!["E1".to_string()];
+        assert!(derive_features(&mut bodies, &base(id), 1).unwrap().is_empty());
+        let mut m = id;
+        m[10] = -1.0;
+        m[11] = 4.0;
+        let f = derive_features(&mut bodies, &base(m), 1).unwrap();
+        assert_eq!(f[0]["type"], "mirror");
+        assert_eq!(f[0]["target"], "E1");
+        assert_eq!(f[0]["plane"], json!({"origin": [0.0, 0.0, 2.0], "normal": [0.0, 0.0, 1.0]}));
+        assert_eq!(f[1], json!({"type": "remove_body", "name": "Derive1 remove 1", "target": "E1"}));
+        assert_eq!(bodies, vec!["Derive1 mirror 1".to_string()]);
+        // A scaled derive's placement holds the scale: the bodies are scaled, then mirrored.
+        let mut s2 = id.map(|v| 2.0 * v);
+        (s2[10], s2[15]) = (-2.0, 1.0);
+        let scaled = gusset_ole::inventor_derived::DerivedBase { scale: 2.0, ..base(s2) };
+        let f = derive_features(&mut vec!["E1".to_string()], &scaled, 1).unwrap();
+        let kinds: Vec<&str> = f.iter().map(|x| x["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["scale_body", "mirror", "remove_body"]);
+        assert_eq!(f[1]["plane"]["normal"], json!([0.0, 0.0, 1.0]));
+        assert!(derive_features(&mut vec!["E1".to_string()], &base(s2), 1).is_err());
+        // A shift moves; a turn is not read.
+        let mut t = id;
+        t[3] = 5.0;
+        assert_eq!(derive_features(&mut bodies, &base(t), 2).unwrap()[0]["type"], "move_body");
+        let mut turn = id;
+        (turn[0], turn[1], turn[4], turn[5]) = (0.0, -1.0, 1.0, 0.0);
+        assert!(derive_features(&mut bodies, &base(turn), 3).is_err());
     }
 }
