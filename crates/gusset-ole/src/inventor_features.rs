@@ -843,6 +843,7 @@ impl Reader<'_> {
         if l2.iter().all(Vec::is_empty) {
             return json!("all");
         }
+
         match picks(&sk.polys(), &l2) {
             Some(pk) if !pk.is_empty() => Value::Array(pk.into_iter().map(|(a, b)| json!({"point": [a, b]})).collect()),
             _ => json!("all"),

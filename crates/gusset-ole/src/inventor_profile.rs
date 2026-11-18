@@ -136,13 +136,24 @@ fn round6(x: f64) -> f64 {
     libm::round(x * 1e6) / 1e6
 }
 
-/// One point (mm) inside each region of the sketch that lies in one of `bodies`: the loops of
-/// each region body the feature took, a point being in a body when it is inside an odd number of
-/// its loops (the same region taken twice is still that region; note AR). `None` when there is
-/// nothing to draw. A loop that no point falls in after the pass over the whole sketch (a small
-/// hole far from the rest: its inside is under a few cells) is looked at again on a grid over
-/// its own box.
+/// One point (mm) inside each region of the sketch that an odd number of the feature's loops
+/// surround (`bodies`: the loops of each body the history blob keeps for it; mostly one wire per
+/// loop, so the count runs over all of them). When that leaves nothing (one loop listed twice,
+/// note AR), a region is kept that lies in one of the bodies (an odd number of its own loops).
+/// `None` when there is nothing to draw.
 pub(crate) fn picks(curves: &[Poly], bodies: &[Vec<Vec<P2>>]) -> Option<Vec<P2>> {
+    let all: Vec<Vec<P2>> = bodies.iter().flatten().cloned().collect();
+    let res = picks_by(curves, std::slice::from_ref(&all))?;
+    if !res.is_empty() || bodies.len() < 2 {
+        return Some(res);
+    }
+    picks_by(curves, bodies)
+}
+
+/// [`picks`] with a region kept when it lies in one of `bodies`. A loop that no point falls in
+/// after the pass over the whole sketch (a small hole far from the rest: its inside is under a
+/// few cells) is looked at again on a grid over its own box.
+fn picks_by(curves: &[Poly], bodies: &[Vec<Vec<P2>>]) -> Option<Vec<P2>> {
     let polys: Vec<Vec<P2>> = curves.iter().map(sample).collect();
     let loops = || bodies.iter().flatten();
     let all = || polys.iter().flatten().chain(loops().flatten()).copied();
@@ -315,7 +326,8 @@ mod tests {
     }
 
     /// A small hole far from the rest of a large sketch is found on a grid over its own box;
-    /// a region taken twice is that region (note AR).
+    /// a loop listed twice, which leaves no region inside an odd number of loops, is the region
+    /// it bounds (note AR).
     #[test]
     fn small_loops_and_loops_listed_twice() {
         let curves = vec![
