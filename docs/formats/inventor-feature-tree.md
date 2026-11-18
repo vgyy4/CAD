@@ -812,3 +812,54 @@ Confirmed on the 74 target parts (and, for the order record, the 1686 parts of b
 Left: Design Accelerator gear teeth `73d72559` (and `36628967` in newer gears) with their many parameters;
 supports a blend or a later blend used up (a wall shorter than the two radii rounding it, a chamfer as
 wide as its step: the reconstructed edge lands on the wrong surface pair).
+
+## AR. Imported base bodies, one-way patterns, bodies, splines, holes to a plane (round ipt8)
+Target: the 95 parts of round ipt7 that failed with a volume difference (70) or "a cut or join before any
+body" (25). Measured with a per-feature comparison against the stored body (scratch, not committed);
+every rule below is a candidate the whole-part rebuild check decides.
+
+- **Imported base bodies (33 of the 95).** A solid body record (`90874d91` named through `656dd01e`)
+  whose id comes before every feature's is a body no feature made (STEP translator stock, McMaster
+  framing): 22 parts then cut or join it first, 11 more join it first and were read as a new body (the
+  T-slotted framing whose "extrusion is shorter than the result" of note AH is this). The file keeps
+  that body's shape only as part of the result: neither the history blob nor any other stream holds it.
+  No history part of either corpus has such a record; the reader now says so for the whole part.
+- **Make Components parts (3).** No derive feature, a derive options record `3f36349f` and a dozen
+  solid bodies, no `255d7ed7` file name: the base is not named. Not read.
+- **One-way rectangular patterns.** The pattern record holds two counts: one before the body list
+  (`0e6870ae`) is an internal variable's (`RDxVar..`, 0 or a stale 2); the pattern's own comes after
+  it. The first flag after the single direction is "fit": the parameter is the distance from the first
+  occurrence to the last (PixelStick: 116 LEDs over 85.6 cm; the servo PCB's 10 pins over 11 mm, measured
+  1.222 mm apart in the result). The stored direction is the one the pattern runs (no history part had
+  that flag set, so the earlier "reverse" reading had no support).
+- **New solid bodies.** An extrude or revolve with operation 1 after the first body, whose body list
+  names a body no feature made, is a body of its own (`ex_newsolid`: the cylinder overlaps the block and
+  the stored bodies are measured apart); a cut or join changes the bodies its list names.
+- **Mirror of the body that removes the original.** The second flag after the mirror's `d83ef271`
+  record (the first: solid bodies). Set in 4 corpus parts; the Testrig half shows it.
+- **Sketch B-splines `317b7346`.** First list: the end points; then `u32 degree, f64 tol (1e-9)` and
+  three arrays `u32 n, u32 n, u32 8` + doubles: knots (n = poles + degree + 1), weights (none seen) and
+  the poles (`u32 n` and two words, then x, y in cm; first and last pole are the end points). The robot
+  arm's "fillets" between arcs and lines are such splines. 34 corpus parts have them.
+- **Profile picks.** The history blob mostly keeps one wire body per loop (an annulus is its outer loop
+  and its hole loop as two bodies), so the odd count runs over all loops; a loop listed twice
+  (`new_bracket_carrete`) leaves nothing and is read as the region it bounds. A 5 mm hole in a
+  900 x 500 mm plate is under three grid cells: a loop with no pick is looked at again on a grid over its
+  own box.
+- **Holes to a plane or face** (slot 9 extent 7; 29 holes in 22 parts, all failing before): slot 13 is a
+  work plane `ce52df42` (16) or empty with a face named in slot 14 (`509fb5cc`, 13). The depth is the
+  plane's distance along the hole; for a face it is measured on the hole's tagged faces in the result.
+  Slot 20 holds the same depth as a parameter in the one part checked (`Nieudane`, d34 = 0.98 cm).
+- **Extrude direction (slot 2).** In one part (`Winkel 90_CU`) slot 2 runs against the sketch normal;
+  read as the sweep direction (the part still differs elsewhere).
+- **Lines of no length.** A sketch line whose ends are closer than 1e-6 mm (ISO 7045 Content Center
+  heads: 5e-8 mm) is left out of the tree's sketch.
+- **Taper (extrude slot 5, radians).** Read and tried both ways on the four ISO 7046 screws: neither
+  sign gives the stored volume (the cross recess is a join "to next" with a 5 degree taper; the result
+  also differs before it). Not read.
+
+Measured and left, in the 95: text on the LEGO studs (4); a scale (`pedal`, `Arm_3`); a join
+"through all" (needs an extent to the body's extremes, which Gusset has no operation for); extrudes up to
+a face that does not cover the profile (2, Gusset's up-to-face needs a face that does); counterbored
+holes that cross the face's edge (the fallback cut differs by 20 mm3); 7 parts within 1e-4 to 2e-4 of the
+volume (revolves and small cuts, cause not found); and single parts with a region pick or fillet set off.

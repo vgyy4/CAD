@@ -733,3 +733,51 @@ trim, stitch, replace face and delete face (no Gusset operation reads them as fe
 of the kinds above, 4 fillets that the kernel cannot build (the M1.4 screws: a lemon-shaped torus), and 2
 parts with a scale whose features do not give the part's volume (`pedal`, `Arm_3`: the box matches, the
 volume is 3 to 6 % off; the cause is not found).
+
+## Amendment (2026-11-18, 19): Inventor round ipt8 - imported base bodies, one-way patterns, splines, holes to a plane
+
+The 95 target parts of this round failed with a volume difference (70) or with "a cut or join before any
+body" (25). Measured feature by feature against the stored body (notes AR of
+`docs/formats/inventor-feature-tree.md`), by cause:
+
+| cause | parts | outcome |
+|---|---|---|
+| the part starts from an imported body (a solid body record before every feature) | 33 (22 early cuts, 11 read as volume differences) | not rebuildable: the file keeps that shape only inside the result; the reader says so |
+| Make Components part (no derive feature, base not named) | 3 | not read |
+| profile picks: sketch splines not read, a small hole under the grid, a loop listed twice | 5 | 4 come in |
+| holes ending at a plane or face (extent 7) | 4 (+1 iPart member of one) | 3 and the member come in |
+| one-way rectangular pattern: a stale internal count, fit spacing | 3 | patterns right; the parts still differ elsewhere |
+| a new solid kept apart; a body mirror that removes the original | 2 | both come in |
+| extrude taper (slot 5) | 4 (ISO 7046 screws) | neither sign gives the stored volume: not read |
+| sketch text on studs; a scale; a join through all; up-to-face on a face too small | 4, 2, 1, 2 | left (no Gusset operation for text profiles or "through all" joins; up-to-face needs a covering face) |
+| within 1e-4 to 2e-4 of the volume (revolves, small cuts) | 7 | cause not found |
+| single parts (a region pick, a fillet set, a twisted sweep, a hole across a face edge, derived bases) | the rest | left |
+
+Decisions:
+
+- A part whose first body is a solid body record no feature made is refused as a whole with that reason
+  (no history part of either corpus has one). Nothing is faked from the result.
+- Sketch B-splines (`317b7346`, clamped, degree/knots/weights/poles) become tree `bspline` curves; their
+  inner poles are construction points. A sketch with one is not solved again for an iPart row.
+- Profile picks count all loops of the feature (one wire per loop); only when that leaves no region do
+  the loop bodies count one by one. A loop with no pick is looked at again on a grid over its own box.
+- One-way rectangular patterns take the count after the body list and read the first flag after the
+  direction as fit spacing; the stored direction is the run direction.
+- An operation-1 extrude or revolve whose body list names a new body stays a body; cuts and joins change
+  the bodies their list names (else the first body). The second flag of a body mirror removes the
+  original (`merge: false` and `remove_body`).
+- Holes with extent 7 end at slot 13's work plane or, without one, at the depth their faces reach in the
+  result. Extrude slot 2 against the sketch normal turns the sweep. Sketch lines shorter than 1e-6 mm are
+  left out of the tree.
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4).
+
+| corpus | parts | history before | after | without a solid |
+|---|---|---|---|---|
+| first (Zenodo) | 47 | 28 | 28 | 0 |
+| second (57 sources) | 1639 | 635 | 648 | 46 |
+
+No part went from history to body. Of the 95 targets 11 came in (`Tilting head`, `Upper cover of robot
+head`, `dock_base`, `leica_under_board`, `ex_newsolid`, the Testrig mirror half, `EPR_tube`, `Nieudane`,
+`AN816` and its member `AN816-8D`, the older gun body); 2 more outside them (an ISO 4162 screw and
+`Sampledurchführung`).
