@@ -811,6 +811,21 @@ impl Acis {
     /// in the result (`NMx_Hole_Brep_tag`, 4th int the id): one per axis of its cylinders
     /// along `dir` (the hole's outward direction, unit), at the farthest point along `dir` of
     /// the hole's faces round that axis. File units; empty when no face is left.
+    /// How deep a hole reaches below `top` against the outward direction `dir` (both in file
+    /// units): the farthest corner of the faces it made in the result (`NMx_Hole_Brep_tag`
+    /// with its id). `None` when the result shows none of its faces.
+    pub(crate) fn hole_reach(&self, fid: i64, top: V3, dir: V3) -> Option<f64> {
+        let reach = self
+            .recs
+            .iter()
+            .filter(|r| r.ty.starts_with("NMx_Hole_Brep_tag") && r.ints.get(3) == Some(&fid))
+            .filter_map(|r| r.refs.iter().copied().find(|&y| self.is(y, "face")))
+            .flat_map(|f| self.verts(f))
+            .map(|v| dot(sub(top, v), dir))
+            .fold(f64::NEG_INFINITY, f64::max);
+        reach.is_finite().then_some(reach)
+    }
+
     pub(crate) fn hole_centres(&self, fid: i64, dir: V3) -> Vec<V3> {
         let mut faces: Vec<i64> = Vec::new();
         for r in &self.recs {

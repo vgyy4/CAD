@@ -164,9 +164,19 @@ impl Sketch {
                 }
             }
         }
+        // A line shorter than the profile tolerance (5e-8 mm between two points the file keeps
+        // apart, note AR) closes no gap: left out, its ends are one point to the regions.
+        let at: HashMap<usize, (f64, f64)> = self.points.iter().map(|&(i, u, v, _)| (i, (u, v))).collect();
+        let empty = |c: &Curve| match *c {
+            Curve::Line { a, b, .. } => {
+                matches!((at.get(&a), at.get(&b)), (Some(p), Some(q)) if libm::hypot(p.0 - q.0, p.1 - q.1) < 1e-6)
+            }
+            _ => false,
+        };
         let curves: Vec<Value> = self
             .curves
             .iter()
+            .filter(|c| !empty(c))
             .map(|c| {
                 let (mut j, con) = match *c {
                     Curve::Line { id, a, b, con } => {
@@ -1002,7 +1012,11 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let ext = |i: Option<usize>| i.and_then(|i| tail_u16(&r.dc, i));
     let mut axis_line = None;
     if typ == FeatType::Extrude {
-        let rev = s.get(3).and_then(|i| r.dc.r(i).last().copied()) == Some(1);
+        // Slot 2 is the sweep direction: the sketch normal, or (three extrudes of one part, note
+        // AR) the other way; slot 3 turns it round.
+        let (_, sx, sy) = frame(&sketch.m);
+        let away = s.get(2).and_then(|i| r.dc.skdir(i)).is_some_and(|d| dot([d[2], d[3], d[4]], cross(sx, sy)) < -0.5);
+        let rev = (s.get(3).and_then(|i| r.dc.r(i).last().copied()) == Some(1)) != away;
         let both = s.get(7).and_then(|i| r.dc.r(i).last().copied()) == Some(1);
         let dist = r.param(&s, 4)? * CM;
         match ext(s.get(6)) {
@@ -1163,13 +1177,14 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
         put(&mut j, "cbore_depth", json!(h));
         cb = Some((d, h));
     }
-    let through = s.get(9).and_then(|i| tail_u16(&r.dc, i)) == Some(5);
+    let extent = s.get(9).and_then(|i| tail_u16(&r.dc, i));
+    let through = extent == Some(5);
     let mut depth = 0.0;
     let mut point_angle = None;
     if through {
         put(&mut j, "through", json!(true));
     } else {
-        depth = rnd(r.pval(&s, 2)? * CM);
+        depth = if extent == Some(7) { to_depth(r, &s, f, &pos, nd)? } else { rnd(r.pval(&s, 2)? * CM) };
         put(&mut j, "depth", json!(depth));
         if let Ok(pa) = r.pval(&s, 6)
             && pa != 0.0
@@ -1193,6 +1208,38 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
 /// The same hole as plain cuts (exact geometry, less editable): a through hole as a circle
 /// sketch cut through everything, a blind one as one revolve cut per position (drill point
 /// and counterbore included).
+/// The depth (mm) of a hole that ends at a plane or face (extent 7, note AR): slot 13 a work
+/// plane (the depth to it along the hole, the same from every centre), else the face named
+/// through the naming records, measured on the hole's faces in the result body.
+fn to_depth(r: &Reader, s: &Slots, f: &Feature, pos: &[V3], nd: V3) -> Result<f64, String> {
+    const G_PLANE: u32 = 0xce52_df42;
+    let u = unit3(nd);
+    let first = *pos.first().ok_or("the hole has no centre")?;
+    if let Some(pl) = s.get(13).filter(|&pl| r.dc.class(pl) == G_PLANE) {
+        let (o, n) = work_plane(&r.dc, pl).map_err(|w| format!("the hole's end {w}"))?;
+        let o = [o[0] * CM, o[1] * CM, o[2] * CM];
+        let along = dot(u, n);
+        if along.abs() < 1e-9 {
+            return Err("the hole's end plane lies along the hole".into());
+        }
+        let depth = |p: V3| dot(sub3(p, o), n) / along;
+        let d = depth(first);
+        if d.is_nan() || d <= 0.0 || pos.iter().any(|&p| (depth(p) - d).abs() > 1e-6) {
+            return Err("the hole's end plane is not at one depth below its face".into());
+        }
+        return Ok(rnd(d));
+    }
+    let b = r.result().ok_or("the hole ends at a face and the result body is not readable")?;
+    let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
+    let d = b
+        .hole_reach(fid, [first[0] / CM, first[1] / CM, first[2] / CM], u)
+        .ok_or("the hole ends at a face and none of its faces is in the result body")?;
+    if d.is_nan() || d <= 0.0 {
+        return Err("the hole's faces do not reach below its face".into());
+    }
+    Ok(rnd(d * CM))
+}
+
 fn hole_fallback(name: &str, pos: &[V3], info: &HoleInfo, target: &str) -> Option<Vec<Value>> {
     let HoleInfo { nd, diameter, through, depth, point_angle, cbore, csink } = *info;
     let ln = libm::sqrt(dot(nd, nd));

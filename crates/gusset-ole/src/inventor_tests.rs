@@ -1972,3 +1972,62 @@ fn a_sketch_spline_has_its_degree_knots_and_poles() {
     let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
     assert_eq!(t["features"][0]["curves"].as_array().map(Vec::len), Some(3));
 }
+
+/// A hole that ends at a work plane (extent 7, slot 13, note AR) is as deep as the plane lies
+/// below its face along the hole.
+#[test]
+fn a_hole_to_a_work_plane_is_as_deep_as_the_plane() {
+    let mut r = hole_records();
+    r[27].1 = tail(7);
+    r.push((14, {
+        let mut v = hdr(0, 0, 0);
+        doubles(&mut v, &[0.0, 0.0, -0.3, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        v
+    })); // 29
+    let slots = [rf(20), rf(21), rf(22), 0, 0, 0, rf(23), rf(25), rf(26), rf(27), 0, 0, 0, rf(29)];
+    r[28].1 = feature(19, 0, 6, &slots);
+    let t = copy_tree(&r);
+    assert_eq!(t["features"][2]["depth"], 3.0, "{t}");
+    // A plane above the face is no depth.
+    r[29].1 = {
+        let mut v = hdr(0, 0, 0);
+        doubles(&mut v, &[0.0, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        v
+    };
+    assert_eq!(copy_tree(&r)["features"][2]["type"], "unsupported");
+}
+
+/// A line whose ends are closer than the profile tolerance is left out of the tree's sketch
+/// (note AR).
+#[test]
+fn a_line_of_no_length_is_left_out() {
+    let mut r = base_records();
+    r.push((POINT, point(7, 2.0 + 5e-9, 0.0))); // 19: 5e-8 mm from point 4
+    r[9] = (LINE, line(7, 19, 5));
+    r.push((LINE, line(7, 4, 19))); // 20
+    let t = tree(&r).unwrap();
+    let ids: Vec<&str> =
+        t["features"][0]["curves"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["l8", "l9", "l10", "l11"]);
+}
+
+/// Slot 2 is the extrude's sweep direction: against the sketch normal, the distance runs the
+/// other way (note AR).
+#[test]
+fn an_extrude_direction_against_the_sketch_normal_turns_it() {
+    let mut classes = COPY_CLASSES.to_vec();
+    classes.push(0xce52_df40); // 20
+    let mut r = base_records();
+    let dir = |z: f64| {
+        let mut v = hdr(0, 0, 0);
+        doubles(&mut v, &[0.0, 0.0, 0.0, 0.0, z]);
+        v
+    };
+    r.push((20, dir(-1.0))); // 19
+    r[18].1 = feature(1, 0, 5, &[rf(14), rf(12), rf(19), rf(15), rf(16), 0, rf(17)]);
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(t["features"][1]["distance"], -5.0, "{t}");
+    r[19].1 = dir(1.0);
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(t["features"][1]["distance"], 5.0, "{t}");
+}
