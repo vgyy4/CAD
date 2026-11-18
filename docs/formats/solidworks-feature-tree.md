@@ -1240,6 +1240,11 @@ midpoint the reader's model of the part places wrongly, then whole-circle edges.
   `moVertDim_c` (`0 1`, `2 3`, ...); each `moVertDim_c` holds its radius parameter and, after a
   `moDisplayRadialDim_c`, a record of four face references (header `04 00 00 00 00 02`, the two sentinels):
   the edge's two faces and the faces at that end, which tells which end of the edge the radius belongs to.
+  Up-to-surface ends (round op1): a curved end face, or a tilted planar face smaller than the profile, is
+  written with `extend` (ADR 0061); parallel faces keep the blind distance to their plane. No part changed
+  outcome: mid_shoulder_RT's Boss-Extrude6 (a pin up to the arc face of Boss-Extrude4 that it overhangs) now
+  builds, but the part is 2.4 mm3 (1.1e-4) short, cause not found; the other up-to-surface parts end on faces
+  the reader cannot place (a fillet's or shell's face, an imported body's).
   Left: the keycaps stop next at their stems' "up to surface" end, a face of the shell (`moShellSurfIdRep_c`,
   not placed by the reader), and later at chamfer and fillet edges on the variable fillet's faces; a radius of
   0 (126p-visor-mount) is not supported.

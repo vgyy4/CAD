@@ -860,6 +860,7 @@ every rule below is a candidate the whole-part rebuild check decides.
 
 Measured and left, in the 95: text on the LEGO studs (4); a scale (`pedal`, `Arm_3`); a join
 "through all" (needs an extent to the body's extremes, which Gusset has no operation for); extrudes up to
-a face that does not cover the profile (2, Gusset's up-to-face needs a face that does); counterbored
+a face that does not cover the profile (2; round op1 extends the face, ADR 0061, and both come in: the MoS2
+test rig's `Komponenten_~16` and `~17`, every extrude to a face now carries `extend`); counterbored
 holes that cross the face's edge (the fallback cut differs by 20 mm3); 7 parts within 1e-4 to 2e-4 of the
 volume (revolves and small cuts, cause not found); and single parts with a region pick or fillet set off.

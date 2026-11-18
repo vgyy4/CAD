@@ -11,14 +11,15 @@ Phase 3 has started (see Next).
 ## Done
 - Importer status (2026-11-14), feature history that rebuilds under the unchanged strict check:
   Fusion 277 of 318 (paused after rounds 33-34 gained none; docs/formats/fusion-corpus-tally.md);
-  SolidWorks 293 of 1352 (rounds sw1-sw11, ADR 0043; was 85; sw11 reads drafts and fillet edges on pattern copies); Inventor 648 of 1639 on the new corpus
-  and 28 of 47 on the old (rounds ipt1-ipt8, ADR 0046 amendments 8-10, 15-19; was 263 and 25; ipt4 reads coils,
+  SolidWorks 293 of 1352 (rounds sw1-sw11, ADR 0043; was 85; sw11 reads drafts and fillet edges on pattern copies); Inventor 650 of 1639 on the new corpus
+  and 28 of 47 on the old (rounds ipt1-ipt8 and op1, ADR 0046 amendments 8-10, 15-19; was 263 and 25; ipt4 reads coils,
   embosses, combines, splits and unfolded sheet-metal faces; ipt5 rebuilds derived parts and iPart members
   from their base part in the same folder; ipt6 solves an iPart factory's sketches again for a member's
   row; ipt7 names features through their owned name record, reads body moves and scales, leaves surfaces
   out, fixes trimmed-torus and seam-split blend picks and the order record; ipt8 reads sketch splines,
   one-way pattern counts and fit spacing, new solid bodies, body mirrors that remove the original, holes to a
-  plane or face, and says when a part starts from an imported body (43 parts: not rebuildable); left: Design
+  plane or face, and says when a part starts from an imported body (43 parts: not rebuildable); op1 extends the
+  face of an extrude to a face (ADR 0061); left: Design
   Accelerator gear teeth, surface consumers, blends whose supports were used up, tapers, sketch text); Solid Edge 28
   of 184 ordered parts (round se1, ADR 0046 amendment 11; first history import). Sample corpora are
   openly licensed downloads kept in scratch, never committed. Two in-process import crashes fixed (an
@@ -444,6 +445,19 @@ Phase 3 has started (see Next).
      `modeling_chamfer.rs` and `modeling_tree_import.rs`. Left: the Inventor/SolidWorks/FreeCAD
      importers still write equal chamfers only (M8: they need to emit `distance2`/`angle` and the face
      pick), variable-distance chamfers, a viewport preview of the reference face.
+   - Extrude up to an extended face and variable-radius fillets done (round op1, 2026-11-18; ADR 0061):
+     `extrude ... to: <face>, extend: true` cuts the sweep by the face's surface extended past its edges
+     (spheres and tori whole, B-splines by `GeomLib::ExtendSurfByLength`; a surface that does not cross the
+     whole sweep is refused, with or without extend); `fillet ... at: [vertex(<faces>) = <r>]` sets radii at
+     vertices, named by the faces meeting there (`VertexRef`, `BodyNames::vertex_names`/`resolve_vertex`).
+     `Kernel::extrude_to_face(.., extend)`, `Kernel::fillet_variable` (OCCT per-vertex `SetRadius`, remote
+     request 39), `feature.up_to_face` `extend`, `feature.fillet` `at`, tree `extend` and `vertex_radii`.
+     OCCT golden tests in `gusset-kernel-occt` and `modeling_tree_import.rs`. Measured: Inventor +2 (the
+     MoS2 test rig's Komponenten_~16/~17, note AR's faces that do not cover the profile), none lost;
+     SolidWorks 293 unchanged, none lost (mid_shoulder_RT now builds every feature but is 2.4 mm3, 1.1e-4,
+     short). Left: the SolidWorks reader does not write variable fillets yet (vertex ends not decoded, see
+     docs/formats/solidworks-feature-tree.md; the r3 keycaps also need their stems' end on a shell face),
+     a straight (linear) radius transition, vertex radius 0, a GUI form.
    - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body
