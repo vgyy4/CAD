@@ -1781,3 +1781,22 @@ fn a_move_with_a_turn_gives_its_axis_and_angle() {
     mirror[10] = 1.0;
     assert!(transform_steps(&mirror, false).is_err(), "no move at all");
 }
+
+/// The order record's entries are `0x80000003, id`: an id's bytes elsewhere in the record (a
+/// list header's `00 01 00 00` read as feature 256) do not move that feature first (note AQ).
+#[test]
+fn the_order_record_reads_its_entries_not_stray_bytes() {
+    let mut r = base_records();
+    r.push((NAME, name_rec("Thicken1", Some(T_THICKEN)))); // 19
+    r.push((FEATURE, feature(19, 0, 256, &[]))); // 20
+    let mut order = hdr(0, 0, 0);
+    // A stray 256 first, then the entries: the extrude (5), then the thicken (256).
+    order.extend([0x00, 0x01, 0x00, 0x00]);
+    for id in [5u32, 256] {
+        order.extend(0x8000_0003u32.to_le_bytes());
+        order.extend(id.to_le_bytes());
+    }
+    r.push((ORDER, order));
+    let names: Vec<String> = types(&tree(&r).unwrap()).into_iter().map(|t| t.1).collect();
+    assert_eq!(names, ["Sketch1", "Extrusion1", "Thicken1"]);
+}

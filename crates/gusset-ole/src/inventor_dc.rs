@@ -486,14 +486,26 @@ impl Dc {
             all.iter().enumerate().filter_map(|(k, f)| Some((self.seq(f.rec)?, k))).collect();
         let Some(o) = (0..self.n()).find(|&i| self.class(i) == G_ORDER) else { return all };
         let r = self.r(o);
-        let mut order: Vec<usize> = Vec::new();
-        for k in 0..r.len().saturating_sub(3) {
-            if let Some(&f) = u32_at(r, k).and_then(|v| ids.get(&v))
-                && !order.contains(&f)
-            {
-                order.push(f);
+        // Each entry is `0x80000003, id`; an id read at any other offset is part of another
+        // word (a feature whose id is 256 matched the bytes `00 01 00 00` of a list header and
+        // came first, note AQ). The loose reading stays for a record whose entries are not
+        // all found so.
+        let scan = |strict: bool| {
+            let mut order: Vec<usize> = Vec::new();
+            for k in 0..r.len().saturating_sub(3) {
+                if strict && (k < 4 || u32_at(r, k - 4) != Some(0x8000_0003)) {
+                    continue;
+                }
+                if let Some(&f) = u32_at(r, k).and_then(|v| ids.get(&v))
+                    && !order.contains(&f)
+                {
+                    order.push(f);
+                }
             }
-        }
+            order
+        };
+        let (strict, loose) = (scan(true), scan(false));
+        let order = if strict.len() == loose.len() { strict } else { loose };
         let rest: Vec<usize> = (0..all.len()).filter(|k| !order.contains(k)).collect();
         order.into_iter().chain(rest).filter_map(|k| all.get(k).cloned()).collect()
     }
