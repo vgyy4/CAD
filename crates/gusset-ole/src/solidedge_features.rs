@@ -309,7 +309,7 @@ fn type_names(t: &[u8]) -> HashMap<u16, String> {
 }
 
 /// A sketch curve of `SKETCH.P_B` (metres, absolute).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Edge3 {
     Line(V3, V3),
     /// Centre, normal, radius and, for an arc, its start and end, counter-clockwise about the
@@ -318,6 +318,9 @@ pub(crate) enum Edge3 {
     /// Centre, normal, major axis direction, semi-major and semi-minor lengths and, for an
     /// arc, its start and end, counter-clockwise about the normal from start to end.
     Ellipse(V3, V3, V3, f64, f64, Option<(V3, V3)>),
+    /// A polynomial B-spline: degree, poles, knots (each repeated by its multiplicity), run
+    /// along the edge.
+    Spline(u32, Vec<V3>, Vec<f64>),
 }
 
 impl Edge3 {
@@ -359,6 +362,10 @@ impl Edge3 {
                 };
                 let range = if k > 0.0 { (t(a), t(b)) } else { (t(b), t(a)) };
                 Some(Curve2::Ellipse(c2, u, ratio, Some(range)))
+            }
+            Edge3::Spline(d, ref poles, ref knots) => {
+                let poles: Vec<[f64; 2]> = poles.iter().map(|p| on(*p)).collect::<Option<_>>()?;
+                Some(Curve2::Spline(d, poles, knots.clone()))
             }
         }
     }
@@ -437,6 +444,31 @@ pub(crate) fn sketch_edges(pb: &[u8]) -> HashMap<u32, Edge3> {
                     _ => None,
                 };
                 Edge3::Ellipse(c, n, xa, ma, mi, ends)
+            }
+            // A whole polynomial B-spline (or a rational one of equal weights), turned to
+            // run along the edge.
+            Some("B_CURVE") => {
+                let Some((d, mut poles, weights, mut knots)) = gusset_xt::b_curve(&g, cu) else { continue };
+                let equal = weights.as_ref().is_none_or(|w| {
+                    w.first().is_some_and(|&w0| w0 > 0.0 && w.iter().all(|&x| (x - w0).abs() <= 1e-12 * w0))
+                });
+                let (Ok(d), true, true) = (u32::try_from(d), equal, poles.iter().all(|p| finite3(*p))) else {
+                    continue;
+                };
+                if !forward {
+                    poles.reverse();
+                    let hi = knots.last().copied().unwrap_or(0.0) + knots.first().copied().unwrap_or(0.0);
+                    knots = knots.iter().rev().map(|k| hi - k).collect();
+                }
+                // Only an edge over the whole curve: its ends are the first and last poles.
+                let near = |a: Option<V3>, b: Option<&V3>| match (a, b) {
+                    (Some(a), Some(b)) => (0..3).all(|i| (a[i] - b[i]).abs() <= 1e-9),
+                    _ => false,
+                };
+                if !(near(start, poles.first()) && near(end, poles.last())) {
+                    continue;
+                }
+                Edge3::Spline(d, poles, knots)
             }
             _ => continue,
         };
@@ -1180,7 +1212,8 @@ fn members(st: &Store, b: &[u8], at: usize, n: u32, plane: Option<(V3, V3, V3)>)
         }
         let Some(mb) = st.obj(m) else {
             // A curve of a sketch: in the sketches' Parasolid partition.
-            let e = st.sketch.get(&m).ok_or("a profile curve is not stored in the part")?;
+            let e =
+                st.sketch.get(&m).ok_or_else(|| format!("a profile curve is not stored in the part (member {m})"))?;
             let pl = plane.ok_or("a copied profile's curve is kept only in the sketches")?;
             curves.push(e.flat(pl.0, pl.1, pl.2).ok_or("a sketch curve does not lie in the profile plane")?);
             backwards.push(false);

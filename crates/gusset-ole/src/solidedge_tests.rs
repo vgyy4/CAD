@@ -1023,3 +1023,16 @@ fn a_variable_round_gives_the_radius_at_each_vertex() {
         json!([{"point": [0.0, 0.0, 0.0], "radius": 1.0}, {"point": [20.0, 0.0, 0.0], "radius": 2.0}])
     );
 }
+
+#[test]
+fn a_sketch_spline_comes_into_the_profile_plane() {
+    // A quadratic spline on the plane z = 1 (frame x along x): its poles in the plane's frame.
+    let e =
+        Edge3::Spline(2, vec![[0.0, 0.0, 1.0], [1.0, 2.0, 1.0], [2.0, 0.0, 1.0]], vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+    assert_eq!(
+        e.flat([0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+        Some(Curve2::Spline(2, vec![[0.0, 0.0], [1.0, 2.0], [2.0, 0.0]], vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]))
+    );
+    // Off the plane: not in it.
+    assert_eq!(e.flat([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]), None);
+}

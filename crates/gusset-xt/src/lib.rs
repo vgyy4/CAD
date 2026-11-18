@@ -124,5 +124,30 @@ pub fn to_step_placed(bytes: &[u8], name: &str, limits: &Limits, place: Option<&
     Ok(Converted { step, bodies: m.bodies.len(), looks, schema: g.schema_number, warnings })
 }
 
+/// A B-spline curve of a decoded graph: degree, poles, weights (`None` when polynomial) and
+/// knots, each repeated by its multiplicity.
+pub type BCurve = (usize, Vec<[f64; 3]>, Option<Vec<f64>>, Vec<f64>);
+
+/// The B-spline of a `B_CURVE` node (for readers of other formats that keep sketch curves in a
+/// Parasolid partition); `None` for another node, a periodic curve or malformed data.
+#[must_use]
+pub fn b_curve(g: &Graph, curve: u32) -> Option<BCurve> {
+    if g.type_name(curve)? != "B_CURVE" {
+        return None;
+    }
+    let nurbs = g.ptr(curve, "nurbs");
+    if g.int(nurbs, "periodic") == Some(1) {
+        return None;
+    }
+    let n = geom::nurbs_curve(g, nurbs)?;
+    let ([deg, _], [mults, _], [knots, _]) = (n.degree, &n.mults, &n.knots);
+    let mut flat = Vec::new();
+    for (k, m) in knots.iter().zip(mults) {
+        let m = usize::try_from(*m).ok().filter(|m| *m <= deg + 1)?;
+        flat.extend(std::iter::repeat_n(*k, m));
+    }
+    (flat.len() == n.poles.len() + deg + 1).then_some((deg, n.poles, n.weights, flat))
+}
+
 #[cfg(test)]
 mod tests;

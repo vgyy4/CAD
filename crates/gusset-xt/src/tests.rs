@@ -638,3 +638,34 @@ fn intersection_refinement_gives_up_quietly() {
         assert!((c.poles[0][0] - 5.0).abs() < 1e-9);
     }
 }
+
+#[test]
+fn a_b_curve_gives_its_poles_and_flat_knots() {
+    let mut f = TextFile::new();
+    f.node(134, 4, &[("nurbs", vec![n(5)])]);
+    f.node(
+        136,
+        5,
+        &[
+            ("degree", vec![n(2)]),
+            ("n_vertices", vec![n(3)]),
+            ("vertex_dim", vec![n(3)]),
+            ("n_knots", vec![n(2)]),
+            ("knot_type", vec![n(1)]),
+            ("rational", vec![W::C(b'F')]),
+            ("curve_form", vec![n(1)]),
+            ("bspline_vertices", vec![n(6)]),
+            ("knot_mult", vec![n(7)]),
+            ("knots", vec![n(8)]),
+        ],
+    );
+    f.node(45, 6, &[("vertices", [0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 2.0, 0.0, 0.0].iter().map(|v| n(v)).collect())]);
+    f.node(127, 7, &[("mult", vec![n(3), n(3)])]);
+    f.node(128, 8, &[("knots", vec![n(0), n(1)])]);
+    let g = decode(&f.finish(), &Limits::default()).unwrap();
+    let (d, poles, w, knots) = crate::b_curve(&g, 4).unwrap();
+    assert_eq!((d, poles.len(), w, knots), (2, 3, None, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]));
+    assert_eq!(poles[1], [1.0, 2.0, 0.0]);
+    // Another node is not a B-spline.
+    assert!(crate::b_curve(&g, 5).is_none());
+}
