@@ -1009,10 +1009,13 @@ mod sab {
             Poly::Circle((10.0, 10.0), 5.0),
         ];
         // Outer loop only: the annulus and the disc are both inside it once.
-        let p = picks(&curves, &[sq(20.0)]).unwrap();
+        let p = picks(&curves, &[vec![sq(20.0)]]).unwrap();
         assert_eq!(p.len(), 2);
-        // Outer and inner loops: the disc is inside twice, so only the annulus is left.
-        let p = picks(&curves, &[sq(20.0), circle((10.0, 10.0), 5.0)]).unwrap();
+        // Outer and inner loops of one region: the disc is inside twice, so only the annulus
+        // is left; with the disc a region of its own, both.
+        let p = picks(&curves, &[vec![sq(20.0), circle((10.0, 10.0), 5.0)], vec![circle((10.0, 10.0), 5.0)]]).unwrap();
+        assert_eq!(p.len(), 2);
+        let p = picks(&curves, &[vec![sq(20.0), circle((10.0, 10.0), 5.0)]]).unwrap();
         assert_eq!(p.len(), 1);
         let d = ((p[0].0 - 10.0).powi(2) + (p[0].1 - 10.0).powi(2)).sqrt();
         assert!(d > 5.0, "{p:?}");
@@ -1029,7 +1032,7 @@ mod sab {
                 (5.0 + 0.6 * u - 0.8 * v, 3.0 + 0.8 * u + 0.6 * v)
             })
             .collect();
-        let p = picks(&curves, &[lp]).unwrap();
+        let p = picks(&curves, &[vec![lp]]).unwrap();
         assert_eq!(p.len(), 1);
         assert!((p[0].0 - 5.0).abs() < 1.0 && (p[0].1 - 3.0).abs() < 1.0, "{p:?}");
     }

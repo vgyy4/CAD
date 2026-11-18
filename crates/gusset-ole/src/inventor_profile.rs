@@ -136,30 +136,24 @@ fn round6(x: f64) -> f64 {
     libm::round(x * 1e6) / 1e6
 }
 
-/// One point (mm) inside each region of the sketch that an odd number of `loops` surround.
-/// `None` when there is nothing to draw. A loop that no point falls in after the pass over the
-/// whole sketch (a small hole far from the rest: its inside is under a few cells) is looked at
-/// again on a grid over its own box (note AR).
-pub(crate) fn picks(curves: &[Poly], loops: &[Vec<P2>]) -> Option<Vec<P2>> {
-    // A loop listed twice (the same region picked twice) counts once.
-    let same = |a: &Vec<P2>, b: &Vec<P2>| a.len() == b.len() && a.iter().all(|&p| b.iter().any(|&q| dist(p, q) < 1e-6));
-    let mut once: Vec<Vec<P2>> = Vec::new();
-    for l in loops {
-        if !once.iter().any(|m| same(m, l)) {
-            once.push(l.clone());
-        }
-    }
-    let loops = &once[..];
+/// One point (mm) inside each region of the sketch that lies in one of `bodies`: the loops of
+/// each region body the feature took, a point being in a body when it is inside an odd number of
+/// its loops (the same region taken twice is still that region; note AR). `None` when there is
+/// nothing to draw. A loop that no point falls in after the pass over the whole sketch (a small
+/// hole far from the rest: its inside is under a few cells) is looked at again on a grid over
+/// its own box.
+pub(crate) fn picks(curves: &[Poly], bodies: &[Vec<Vec<P2>>]) -> Option<Vec<P2>> {
     let polys: Vec<Vec<P2>> = curves.iter().map(sample).collect();
-    let all = || polys.iter().flatten().chain(loops.iter().flatten()).copied();
+    let loops = || bodies.iter().flatten();
+    let all = || polys.iter().flatten().chain(loops().flatten()).copied();
     all().next()?;
-    let mut res = picks_in(&polys, loops, extent(all())?)?;
-    for l in loops {
+    let mut res = picks_in(&polys, bodies, extent(all())?)?;
+    for l in loops() {
         if l.len() < 3 || res.iter().any(|&p| inside(l, p)) {
             continue;
         }
         let Some(b) = extent(l.iter().copied()) else { continue };
-        for p in picks_in(&polys, loops, b).unwrap_or_default() {
+        for p in picks_in(&polys, bodies, b).unwrap_or_default() {
             if !res.contains(&p) {
                 res.push(p);
             }
@@ -200,7 +194,7 @@ fn extent(pts: impl Iterator<Item = P2> + Clone) -> Option<[f64; 4]> {
 }
 
 /// [`picks`] on a grid over the box `b` (with a margin): curves outside it are left out.
-fn picks_in(polys: &[Vec<P2>], loops: &[Vec<P2>], b: [f64; 4]) -> Option<Vec<P2>> {
+fn picks_in(polys: &[Vec<P2>], bodies: &[Vec<Vec<P2>>], b: [f64; 4]) -> Option<Vec<P2>> {
     let [x0, x1, y0, y1] = b;
     let span = (x1 - x0).max(y1 - y0).max(1e-6);
     let x0 = x0 - span * 0.02;
@@ -303,8 +297,8 @@ fn picks_in(polys: &[Vec<P2>], loops: &[Vec<P2>], b: [f64; 4]) -> Option<Vec<P2>
             }
         }
         let p = (x0 + ((best % nx) as f64 + 0.5) * h, y0 + ((best / nx) as f64 + 0.5) * h);
-        let k = loops.iter().filter(|l| l.len() > 2 && inside(l, p)).count();
-        if k % 2 == 1 {
+        let odd = |b: &Vec<Vec<P2>>| b.iter().filter(|l| l.len() > 2 && inside(l, p)).count() % 2 == 1;
+        if bodies.iter().any(odd) {
             res.push((round6(p.0), round6(p.1)));
         }
     }
@@ -321,7 +315,7 @@ mod tests {
     }
 
     /// A small hole far from the rest of a large sketch is found on a grid over its own box;
-    /// a loop listed twice counts once (note AR).
+    /// a region taken twice is that region (note AR).
     #[test]
     fn small_loops_and_loops_listed_twice() {
         let curves = vec![
@@ -332,11 +326,11 @@ mod tests {
             Poly::Circle((20.0, 30.0), 1.5),
         ];
         let hole = square((20.0, 30.0), 1.5);
-        let p = picks(&curves, &[hole]).unwrap();
+        let p = picks(&curves, &[vec![hole]]).unwrap();
         assert_eq!(p.len(), 1);
         assert!(dist(p[0], (20.0, 30.0)) < 1.5, "{p:?}");
         let outer = square((450.0, 250.0), 450.0);
-        let p = picks(&curves, &[outer.clone(), outer]).unwrap();
+        let p = picks(&curves, &[vec![outer.clone()], vec![outer]]).unwrap();
         assert_eq!(p.len(), 1, "{p:?}");
         assert!(dist(p[0], (20.0, 30.0)) > 1.5, "{p:?}");
     }

@@ -813,21 +813,24 @@ impl Reader<'_> {
             return json!("all");
         }
         let (o, x, y) = ([sk.m[3], sk.m[7], sk.m[11]], [sk.m[0], sk.m[4], sk.m[8]], [sk.m[1], sk.m[5], sk.m[9]]);
-        let mut l2: Vec<Vec<P2>> = Vec::new();
+        // The loops of each region body (one body per region the feature took).
+        let mut l2: Vec<Vec<Vec<P2>>> = Vec::new();
         for t in tags {
             let Some(ls) = ac.loops_of_body(t) else { return json!("all") };
-            for l in ls {
-                l2.push(
-                    l.into_iter()
-                        .map(|p| {
-                            let q = sub3(p, o);
-                            (dot(q, x) * CM, dot(q, y) * CM)
-                        })
-                        .collect(),
-                );
-            }
+            l2.push(
+                ls.into_iter()
+                    .map(|l| {
+                        l.into_iter()
+                            .map(|p| {
+                                let q = sub3(p, o);
+                                (dot(q, x) * CM, dot(q, y) * CM)
+                            })
+                            .collect()
+                    })
+                    .collect(),
+            );
         }
-        if l2.is_empty() {
+        if l2.iter().all(Vec::is_empty) {
             return json!("all");
         }
         match picks(&sk.polys(), &l2) {
@@ -2474,7 +2477,7 @@ fn loop_sketch(r: &Reader, c: usize) -> Result<(usize, Sketch, Value), String> {
         }
     }
     let (k, sk, l2) = found.ok_or("no sketch holds the profile's loop")?;
-    let profiles = match picks(&sk.polys(), &l2) {
+    let profiles = match picks(&sk.polys(), &[l2]) {
         Some(pk) if !pk.is_empty() => Value::Array(pk.into_iter().map(|(a, b)| json!({"point": [a, b]})).collect()),
         _ => return Err("the profile's regions are not found".into()),
     };
