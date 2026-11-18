@@ -2368,7 +2368,30 @@ pub(crate) fn chamfer_second(
 /// A reason: the file is not an Inventor part, has no feature segment, or its records do not
 /// have the layout read here.
 pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Value, String> {
-    let dc = Dc::open(bytes, limits)?;
+    feature_tree_with(bytes, file_name, limits, &[], None).map(|t| t.0)
+}
+
+/// [`feature_tree`] for a part read as part of another (note AO).
+///
+/// The parameters named in `row` are read as the given values (cm or radians) instead of the
+/// stored ones: an iPart factory read for one of its members. Also gives the names of the row's
+/// parameters the features took; a parameter the features do not take (a sketch dimension: the
+/// sketches are read as solved) is left as stored.
+///
+/// With `derived_body`, the part's derive feature stands for that body (made by features before
+/// this tree): the features after it cut or join it. Without, a derive is not read.
+///
+/// # Errors
+/// As [`feature_tree`].
+pub fn feature_tree_with(
+    bytes: &[u8],
+    file_name: &str,
+    limits: &Limits,
+    row: &[(String, f64)],
+    derived_body: Option<&str>,
+) -> Result<(Value, Vec<String>), String> {
+    let mut dc = Dc::open(bytes, limits)?;
+    dc.set_row(row);
     let feats = dc.ordered_features();
     if feats.is_empty() {
         return Err("the part has no features".into());
@@ -2435,6 +2458,12 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
                 st.omitted.push(json!({"name": name, "why": "cosmetic thread"}));
                 Ok(())
             }
+            // A derive whose body the caller made: the features after it work on that body.
+            FeatType::Other(0x8e29_cbee) if derived_body.is_some() && st.first_body.is_none() => {
+                st.first_body = derived_body.map(str::to_string);
+                st.omitted.push(json!({"name": name, "why": "derive, made by the base part's features"}));
+                Ok(())
+            }
             // Nor does the tagging feature a derive leaves (note AO).
             FeatType::Other(0xdfdb_99e8) => {
                 st.omitted.push(json!({"name": name, "why": "tagging feature, no geometry"}));
@@ -2460,7 +2489,9 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
         st.emitted.insert(name.clone(), made);
     }
     let file = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
-    Ok(json!({"format": "gusset-feature-tree", "version": 2,
+    let used = r.dc.row_used();
+    let tree = json!({"format": "gusset-feature-tree", "version": 2,
               "source": {"app": "inventor", "file": file, "omitted": st.omitted},
-              "features": st.out}))
+              "features": st.out});
+    Ok((tree, used))
 }

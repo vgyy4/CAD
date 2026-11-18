@@ -274,15 +274,15 @@ pub fn inventor_derived_part(base: &str, member: bool, mirror: bool, extra: bool
     file.extend([0u8; 8]);
     let mut recs = vec![
         (0, name_rec(&format!("Solid1::{base}"), 0x8e29_cbee)), // 0
-        (1, feature),                                            // 1
-        (2, with_refs(&[3])),                                    // 2
-        (if member { 4 } else { 3 }, with_refs(&[4, 5, 7])),     // 3 definition
-        (5, with_refs(&[5, 6])),                                 // 4 options
-        (6, placement),                                          // 5
-        (7, param),                                              // 6
-        (8, file),                                               // 7
-        (0, name_rec("TaggingFeature1", 0xdfdb_99e8)),           // 8
-        (1, hdr(rf(8))),                                         // 9
+        (1, feature),                                           // 1
+        (2, with_refs(&[3])),                                   // 2
+        (if member { 4 } else { 3 }, with_refs(&[4, 5, 7])),    // 3 definition
+        (5, with_refs(&[5, 6])),                                // 4 options
+        (6, placement),                                         // 5
+        (7, param),                                             // 6
+        (8, file),                                              // 7
+        (0, name_rec("TaggingFeature1", 0xdfdb_99e8)),          // 8
+        (1, hdr(rf(8))),                                        // 9
     ];
     if extra {
         recs.push((0, name_rec("Extrusion1", 0x0ca9_1131))); // 10

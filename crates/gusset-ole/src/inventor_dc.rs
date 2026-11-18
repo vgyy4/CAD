@@ -11,6 +11,7 @@
 
 use crate::inventor::{B_HEADER, ZSTD_MAGIC, b_data, is_zlib, unpack};
 use crate::{Limits, open};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// Most records one segment may have.
@@ -188,6 +189,11 @@ pub(crate) struct Dc {
     pub(crate) role: Vec<Role>,
     /// The version word that follows the common header of the first feature record.
     ver: Option<u32>,
+    /// Parameter values that replace the stored ones, by name (an iPart member's row read
+    /// against its factory, note AO).
+    row: Vec<(String, f64)>,
+    /// The names of the replaced parameters a reading took.
+    row_used: RefCell<Vec<String>>,
 }
 
 fn inflate(z: &[u8], limits: &Limits) -> Option<Vec<u8>> {
@@ -314,7 +320,7 @@ impl Dc {
         }
         let role: Vec<Role> = g.iter().map(|&x| role_of(x)).collect();
         let (b, spans) = unshift(b, spans, &g, &role);
-        let mut d = Dc { data: b, spans, g, role, ver: None };
+        let mut d = Dc { data: b, spans, g, role, ver: None, row: Vec::new(), row_used: RefCell::new(Vec::new()) };
         let first = d.role.iter().position(|r| *r == Role::PartFeature);
         d.ver = first.and_then(|i| u32_at(d.r(i), 22)).filter(|&v| v != 0);
         Ok(d)
@@ -507,7 +513,24 @@ impl Dc {
                 break;
             }
         }
+        if let Some(&(_, v)) = self.row.iter().find(|(n, _)| *n == name) {
+            let mut used = self.row_used.borrow_mut();
+            if !used.contains(&name) {
+                used.push(name.clone());
+            }
+            return Some((name, v));
+        }
         Some((name, val))
+    }
+
+    /// Reads parameters named in `row` as the given values instead of the stored ones.
+    pub(crate) fn set_row(&mut self, row: &[(String, f64)]) {
+        self.row = row.to_vec();
+    }
+
+    /// The names of the replaced parameters read so far.
+    pub(crate) fn row_used(&self) -> Vec<String> {
+        self.row_used.borrow().clone()
     }
 
     /// The value of the parameter in slot `j` of a feature.
