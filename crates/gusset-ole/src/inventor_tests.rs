@@ -1386,3 +1386,135 @@ fn a_hole_with_slot_17_set_goes_the_other_way() {
     assert_eq!(t["features"][2]["type"], "unsupported");
     assert!(t["features"][2]["reason"].as_str().unwrap().contains("slot 7 is empty and the result body"), "{t}");
 }
+
+fn flag(b: u8) -> Vec<u8> {
+    let mut v = hdr(0, 0, 0);
+    v.push(b);
+    v
+}
+
+/// A coil (`b41914da`, notes AI): the operation, profile and axis as a revolve's, slot 3 turns
+/// the axis, slot 4 the hand, slot 5's third byte the kind (1: turns and height), the pitch,
+/// height (cm) and turns, a taper and natural ends. The rectangle is screwed along X: on the
+/// world axis climbing +X the helix names it, the other way it climbs a construction line.
+#[test]
+fn a_coil_is_a_helical_sweep_of_its_profile() {
+    let with = |flip: u8, right: u8, end: u8| {
+        let mut r = base_records();
+        r[1].1 = name_rec("Coil1", Some(0xb419_14da));
+        r.push((13, {
+            let mut v = hdr(0, 0, 0);
+            v.extend(list(&[]));
+            doubles(&mut v, &[-1.0, 0.0, 0.0]);
+            doubles(&mut v, &[2.0, 0.0, 0.0]);
+            v
+        })); // 19: the axis (cm)
+        r.push((OTHER, flag(flip))); // 20
+        r.push((OTHER, flag(right))); // 21
+        r.push((OTHER, {
+            let mut v = hdr(0, 0, 0);
+            v.extend([3, 0, 1, 0]);
+            v
+        })); // 22: kind 1, turns and height
+        r.push((PARAM, param("d1", 1.0))); // 23: pitch (not used by kind 1)
+        r.push((PARAM, param("d2", 6.0))); // 24: height
+        r.push((PARAM, param("d3", 3.0))); // 25: turns
+        r.push((PARAM, param("d4", 0.0))); // 26: taper
+        r.push((OTHER, flag(end))); // 27: natural ends
+        let slots =
+            [rf(14), rf(12), rf(19), rf(20), rf(21), rf(22), rf(23), rf(24), rf(25), rf(26), rf(27), 0, 0, rf(27)];
+        r[18].1 = feature(1, 0, 5, &slots);
+        copy_tree(&r)
+    };
+    let t = with(0, 1, 0);
+    assert_eq!(
+        t["features"][1],
+        json!({"type": "sweep", "name": "Coil1", "sketch": "Sketch1", "operation": "new",
+               "helix": {"origin": [-10.0, 0.0, 0.0], "axis": [1.0, 0.0, 0.0], "radius": 10.0,
+                         "pitch": 20.0, "height": 60.0, "left_handed": false}})
+    );
+    let t = with(1, 0, 0);
+    let h = &t["features"][1]["helix"];
+    assert_eq!(
+        (h["axis"].clone(), h["left_handed"].clone(), h["line"].clone()),
+        (json!([-1.0, 0.0, 0.0]), json!(true), json!("ax18"))
+    );
+    assert!(t["features"][0]["curves"].as_array().unwrap().iter().any(|c| c["id"] == "ax18"));
+    let t = with(0, 1, 1);
+    assert_eq!(t["features"][0]["reason"], "a coil with flat ends is not read");
+}
+
+/// A combine (`c0236733`, notes AK): a second extrude that makes a body the combine takes as a
+/// tool stays a body of its own (its `0e6870ae` list names it), and the combine cuts it from
+/// the base body.
+#[test]
+fn a_combine_cuts_a_tool_body_kept_apart() {
+    let mut classes = COPY_CLASSES.to_vec();
+    classes.extend([0x0e68_70ae, 0x9087_4d47]); // 20 body list, 21 solid body
+    let mut r = base_records();
+    r.push((21, hdr(0, 0, 0))); // 19: the first body
+    r.push((21, hdr(0, 0, 0))); // 20: the second body
+    r.push((20, {
+        let mut v = hdr(0, 0, 0);
+        v.extend(list(&[rf(19)]));
+        v
+    })); // 21
+    r.push((20, {
+        let mut v = hdr(0, 0, 0);
+        v.extend(list(&[rf(20)]));
+        v
+    })); // 22
+    r[18].1 = feature(1, 0, 5, &[rf(14), rf(12), 0, rf(15), rf(16), 0, rf(17), 0, rf(21)]);
+    r.push((NAME, name_rec("Extrusion2", Some(T_EXTRUDE)))); // 23
+    r.push((FEATURE, feature(23, 0, 6, &[rf(14), rf(12), 0, rf(15), rf(16), 0, rf(17), 0, rf(22)]))); // 24
+    r.push((NAME, name_rec("Combine1", Some(0xc023_6733)))); // 25
+    r.push((OTHER, tail(2))); // 26: cut
+    r.push((OTHER, flag(0))); // 27: tools not kept
+    r.push((FEATURE, feature(25, 0, 7, &[rf(21), rf(22), rf(26), rf(27)]))); // 28
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(t["features"][2]["operation"], "new", "{t}");
+    assert_eq!(
+        t["features"][3],
+        json!({"type": "combine", "name": "Combine1", "target": "Extrusion1",
+                                         "tools": ["Extrusion2"], "operation": "cut"})
+    );
+    // Without the combine, the second extrude joins the first body as before.
+    r.truncate(25);
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(
+        (t["features"][2]["operation"].clone(), t["features"][2]["target"].clone()),
+        (json!("join"), json!("Extrusion1"))
+    );
+}
+
+/// An emboss from the face (`285e398c`, notes AJ): its direction record points into the
+/// material, so an emboss rises against it and an engrave cuts along it, by the depth.
+#[test]
+fn an_emboss_rises_against_its_direction_and_an_engrave_cuts_along_it() {
+    let with = |kind: u16| {
+        let mut r = base_records();
+        r.push((NAME, name_rec("Emboss1", Some(0x285e_398c)))); // 19
+        r.push((OTHER, tail(kind))); // 20
+        r.push((OTHER, {
+            let mut v = hdr(0, 0, 0);
+            doubles(&mut v, &[0.0, 0.0, 0.0, 0.0, 1.0]);
+            v
+        })); // 21: the direction
+        r.push((PARAM, param("d5", 0.2))); // 22: depth
+        r.push((PARAM, param("d6", 0.0))); // 23: taper
+        r.push((FEATURE, feature(19, 0, 6, &[rf(20), rf(12), rf(21), 0, 0, rf(22), rf(23)]))); // 24
+        tree(&r).unwrap()
+    };
+    let t = with(3);
+    assert_eq!(
+        (t["features"][2]["operation"].clone(), t["features"][2]["distance"].clone()),
+        (json!("join"), json!(-2.0)),
+        "{t}"
+    );
+    let t = with(2);
+    assert_eq!(
+        (t["features"][2]["operation"].clone(), t["features"][2]["distance"].clone()),
+        (json!("cut"), json!(2.0))
+    );
+    assert_eq!(with(1)["features"][2]["reason"], "emboss kind Some(1)");
+}

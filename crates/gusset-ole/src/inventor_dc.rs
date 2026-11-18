@@ -88,6 +88,10 @@ pub(crate) const G_LOOP: u32 = 0xa477_243b;
 pub(crate) const G_LOOP_BODY: u32 = 0xcc0f_7521;
 /// The record that ties a sweep's path loop to its sketch (as `G_PROFILE` does a profile's).
 pub(crate) const G_PATH: u32 = 0x424e_b7d7;
+/// A feature's list of the solid bodies it made or changed.
+pub(crate) const G_BODY_LIST: u32 = 0x0e68_70ae;
+/// A solid body of the part.
+pub(crate) const G_SOLID_BODY: u32 = 0x9087_4d47;
 /// The type GUID (first 32 bits) a solid body's name carries.
 const T_BODY: u32 = 0x0ca9_112d;
 /// The record that names a solid body (a part-feature record that is a body, not a feature).
@@ -112,6 +116,9 @@ pub(crate) enum FeatType {
     Chamfer,
     Shell,
     Sweep,
+    Coil,
+    Emboss,
+    Combine,
     Other(u32),
 }
 
@@ -130,6 +137,9 @@ impl FeatType {
             0xf900_713f => FeatType::Chamfer,
             0xb83c_9612 => FeatType::Shell,
             0x90ba_da05 => FeatType::Sweep,
+            0xb419_14da => FeatType::Coil,
+            0x285e_398c => FeatType::Emboss,
+            0xc023_6733 => FeatType::Combine,
             o => FeatType::Other(o),
         }
     }
@@ -148,6 +158,9 @@ impl FeatType {
             FeatType::Chamfer => "chamfer".into(),
             FeatType::Shell => "shell".into(),
             FeatType::Sweep => "sweep".into(),
+            FeatType::Coil => "coil".into(),
+            FeatType::Emboss => "emboss".into(),
+            FeatType::Combine => "combine".into(),
             FeatType::Other(g) => format!("feature {g:08x}"),
         }
     }

@@ -16,7 +16,7 @@
 //! shaped as expected gives an `unsupported` feature or an error, never a panic.
 
 use crate::acis::{Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, RevSeg, Surf, V3, cross, dot, local_path};
-use crate::inventor_dc::{Dc, FeatType, Feature, Role, f64_at, u16_at, u32_at};
+use crate::inventor_dc::{Dc, FeatType, Feature, G_BODY_LIST, G_SOLID_BODY, Role, f64_at, u16_at, u32_at};
 use crate::inventor_profile::{P2, Poly, picks};
 use crate::{Limits, inventor};
 use serde_json::{Value, json};
@@ -557,6 +557,11 @@ struct State {
     /// Feature name -> the names of the tree features it became (none when it was left out;
     /// a fillet with several radii is several), for the patterns and mirrors that copy it.
     emitted: HashMap<String, Vec<String>>,
+    /// Solid body records (`90874d47`) that a combine takes as a tool: the feature that makes
+    /// one keeps its own body (notes AK).
+    tools: Vec<usize>,
+    /// Solid body record -> the tree body made for it.
+    bodies: HashMap<usize, String>,
 }
 
 fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> Result<(), String> {
@@ -570,7 +575,11 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         Some(4) => "intersect",
         _ => "join",
     };
-    if st.first_body.is_some() && op == "new" {
+    // A body a combine takes as a tool stays a body of its own (notes AK).
+    let own = body_record(r, f);
+    let tool_body = own.filter(|b| st.tools.contains(b));
+    let new_tool = op == "new" && st.first_body.is_some() && tool_body.is_some_and(|b| !st.bodies.contains_key(&b));
+    if st.first_body.is_some() && op == "new" && !new_tool {
         op = "join";
     }
     if st.first_body.is_none() && op == "join" {
@@ -579,8 +588,13 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let mut j = json!({"type": if typ == FeatType::Extrude {"extrude"} else {"revolve"}, "name": name,
                        "sketch": sketch.name, "profiles": r.profiles(&sketch, lst), "operation": op});
     if op != "new" {
-        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        let fb = match tool_body.and_then(|b| st.bodies.get(&b)) {
+            Some(b) => b.clone(),
+            None => st.first_body.clone().ok_or("a cut or join before any body")?,
+        };
         put(&mut j, "target", json!(fb));
+    } else if let Some(b) = own {
+        st.bodies.insert(b, name.to_string());
     }
     let ext = |i: Option<usize>| i.and_then(|i| tail_u16(&r.dc, i));
     let mut axis_line = None;
@@ -1052,14 +1066,22 @@ fn midplane_halves(
 /// such) and for an axis off the plane.
 fn sketch_axis_line(sk: &Sketch, p: V3, v: V3, rec: usize) -> Option<(Vec<Value>, Value, String)> {
     let (o, x, y) = frame(&sk.m);
-    let n = unit3(cross(x, y));
     let q = sub3(p, o);
-    if dot(q, n).abs() > 1e-6 || dot(v, n).abs() > 1e-9 {
-        return None;
-    }
     let along = |a: V3| (dot(v, a).abs() - 1.0).abs() < 1e-9;
     let through_origin = dot(cross(q, v), cross(q, v)) < 1e-12;
     if through_origin && (along(x) || along(y)) {
+        return None;
+    }
+    sketch_line_along(sk, p, v, rec)
+}
+
+/// A construction line of the sketch from `p` (mm) in the direction `v`, when both lie in its
+/// plane: its ids.
+fn sketch_line_along(sk: &Sketch, p: V3, v: V3, rec: usize) -> Option<(Vec<Value>, Value, String)> {
+    let (o, x, y) = frame(&sk.m);
+    let n = unit3(cross(x, y));
+    let q = sub3(p, o);
+    if dot(q, n).abs() > 1e-6 || dot(v, n).abs() > 1e-9 {
         return None;
     }
     let (u0, v0) = (rnd(dot(q, x)), rnd(dot(q, y)));
@@ -1588,6 +1610,195 @@ fn sweep(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     Ok(())
 }
 
+/// A coil (`b41914da`; notes AI): the profile screwed along an axis. Slot 0 the operation (as a
+/// revolve's), 1 the profile loops, 2 the axis (as a revolve's), 3 flips the axis, 4 the hand
+/// (1 right), 5 the kind (byte 2: 0 pitch and turns, 1 turns and height, 2 pitch and height,
+/// 3 a spiral), 6 the pitch, 7 the height (cm), 8 the turns, 9 the taper, 10 and 13 the start
+/// and end (last byte 0: natural; flat ends are not read). A helical sweep of the profile that
+/// starts at the profile and climbs the axis.
+fn coil(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    let s = r.slots(f)?;
+    let lst = s.need(1)?;
+    let sk = r.profile_sketch(lst).ok_or("no sketch found")?;
+    let sketch = r.sketch(sk)?;
+    let last = |j: usize| s.get(j).and_then(|i| r.dc.r(i).last().copied());
+    if [10, 13].iter().any(|&j| last(j) != Some(0)) {
+        return Err("a coil with flat ends is not read".into());
+    }
+    if r.pval(&s, 9)? != 0.0 {
+        return Err("a tapered coil is not read".into());
+    }
+    let kind = s.get(5).and_then(|i| r.dc.r(i).get(r.dc.body(i) + 2).copied());
+    let (pitch, turns, height) = (r.pval(&s, 6)? * CM, r.pval(&s, 8)?, r.pval(&s, 7)? * CM);
+    let (pitch, height) = match kind {
+        Some(0) => (pitch, pitch * turns),
+        Some(1) if turns > 0.0 => (height / turns, height),
+        Some(2) => (pitch, height),
+        k => return Err(format!("coil kind {k:?}")),
+    };
+    if !(pitch > 0.0 && height > 0.0 && pitch.is_finite() && height.is_finite()) {
+        return Err("the coil has no pitch or height".into());
+    }
+    let (p0, mut v) = work_axis(&r.dc, s.need(2)?).map_err(|w| format!("the coil {}", w.trim_start_matches("the ")))?;
+    if last(3) == Some(1) {
+        v = [-v[0], -v[1], -v[2]];
+    }
+    let p = [p0[0] * CM, p0[1] * CM, p0[2] * CM];
+    let mut op = match s.get(0).and_then(|i| tail_u16(&r.dc, i)) {
+        Some(2) => "cut",
+        Some(1) => "new",
+        Some(4) => "intersect",
+        _ => "join",
+    };
+    if st.first_body.is_some() && op == "new" {
+        op = "join";
+    }
+    if st.first_body.is_none() && op == "join" {
+        op = "new";
+    }
+    // The radius only describes the helix: the document takes it from the profile.
+    let pts: HashMap<usize, P2> = sketch.points.iter().map(|&(i, u, w, _)| (i, (u, w))).collect();
+    let (o, x, y) = frame(&sketch.m);
+    let mut radius = 0.0f64;
+    for (u, w) in pts.values() {
+        let q = sub3([o[0] + u * x[0] + w * y[0], o[1] + u * x[1] + w * y[1], o[2] + u * x[2] + w * y[2]], p);
+        let c = cross(q, v);
+        radius = radius.max(libm::sqrt(dot(c, c)));
+    }
+    let mut helix = json!({"origin": arr(p), "axis": arr(v), "radius": rnd(radius.max(1e-3)),
+                           "pitch": rnd(pitch), "height": rnd(height),
+                           "left_handed": last(4) != Some(1)});
+    // The document sweeps a section through the axis; a section across it (a twisted
+    // extrusion) is not that.
+    if dot(v, unit3(cross(x, y))).abs() > 1e-9 {
+        return Err("the coil's profile does not lie along its axis".into());
+    }
+    let world = (0..3).find(|&k| (v.get(k).copied().unwrap_or(0.0) - 1.0).abs() < 1e-9);
+    let on_world = world.is_some_and(|k| p.iter().enumerate().all(|(i, c)| i == k || c.abs() < 1e-6));
+    let mut axis_line = None;
+    if !on_world {
+        let l = sketch_line_along(&sketch, p, v, f.rec).ok_or("the coil axis is not in the profile's plane")?;
+        put(&mut helix, "line", json!(l.2.clone()));
+        axis_line = Some(l);
+    }
+    let mut j = json!({"type": "sweep", "name": name, "sketch": sketch.name, "helix": helix, "operation": op});
+    if op != "new" {
+        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        put(&mut j, "target", json!(fb));
+    }
+    if !st.done.contains_key(&sk) {
+        st.out.push(sketch.json());
+        st.done.insert(sk, ());
+    }
+    if let Some((lp, line, _)) = axis_line {
+        let entry = st.out.iter_mut().rev().find(|o| {
+            o.get("type").and_then(Value::as_str) == Some("sketch")
+                && o.get("name").and_then(Value::as_str) == Some(&sketch.name)
+        });
+        let Some(Value::Object(o)) = entry else { return Err("the profile sketch is not out".into()) };
+        if let Some(Value::Array(a)) = o.get_mut("points") {
+            a.extend(lp);
+        }
+        if let Some(Value::Array(c)) = o.get_mut("curves") {
+            c.push(line);
+        }
+    }
+    st.out.push(j);
+    if st.first_body.is_none() {
+        st.first_body = Some(name.to_string());
+    }
+    Ok(())
+}
+
+/// An emboss or engrave (`285e398c`; notes AJ): slot 0 the kind (3 emboss from the face, 2
+/// engrave from the face), 1 the profile loops, 5 the depth (cm), 6 the taper, 9 the face a
+/// wrapped emboss wraps onto. The profile is extruded from its sketch: the reach and its side
+/// are measured on the feature's faces in the result body (as for an extrude to a face) and
+/// must match the depth.
+fn emboss(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    let s = r.slots(f)?;
+    let lst = s.need(1)?;
+    let sk = r.profile_sketch(lst).ok_or("no sketch found")?;
+    let sketch = r.sketch(sk)?;
+    let op = match s.get(0).and_then(|i| tail_u16(&r.dc, i)) {
+        Some(3) => "join",
+        Some(2) => "cut",
+        k => return Err(format!("emboss kind {k:?}")),
+    };
+    if s.get(9).is_some() {
+        return Err("a wrapped emboss is not read".into());
+    }
+    if r.pval(&s, 6)? != 0.0 {
+        return Err("a tapered emboss is not read".into());
+    }
+    let depth = r.pval(&s, 5)? * CM;
+    let dir = s.get(2).and_then(|i| {
+        let rec = r.dc.r(i);
+        let k = rec.len().checked_sub(24)?;
+        Some([f64_at(rec, k)?, f64_at(rec, k + 8)?, f64_at(rec, k + 16)?])
+    });
+    let dir = dir.ok_or("the emboss has no direction")?;
+    let (_, x, y) = frame(&sketch.m);
+    let along = dot(dir, unit3(cross(x, y)));
+    if (along.abs() - 1.0).abs() > 1e-9 {
+        return Err("the emboss direction is not across its sketch".into());
+    }
+    // The direction points into the material: an emboss rises against it, an engrave cuts
+    // along it (slot 3 does not change the side of one from the face).
+    let d = depth * along.signum() * if op == "join" { -1.0 } else { 1.0 };
+    let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+    let j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": r.profiles(&sketch, lst),
+                   "operation": op, "target": fb, "distance": rnd(d), "symmetric": false});
+    if !st.done.contains_key(&sk) {
+        st.out.push(sketch.json());
+        st.done.insert(sk, ());
+    }
+    st.out.push(j);
+    Ok(())
+}
+
+/// The solid body record (`90874d47`) a feature made or changed: the first one its
+/// `0e6870ae` slot lists.
+fn body_record(r: &Reader, f: &Feature) -> Option<usize> {
+    let s = r.dc.slots(f.rec)?;
+    let l = s.into_iter().flatten().find(|&i| r.dc.class(i) == G_BODY_LIST)?;
+    r.dc.refs(l).into_iter().map(|(_, x)| x).find(|&x| r.dc.class(x) == G_SOLID_BODY)
+}
+
+/// The solid bodies a combine takes as tools (its slot 1).
+fn combine_tools(r: &Reader, f: &Feature) -> Vec<usize> {
+    let Some(Some(l)) = r.dc.slots(f.rec).and_then(|s| s.get(1).copied()) else { return Vec::new() };
+    r.dc.refs(l).into_iter().map(|(_, x)| x).filter(|&x| r.dc.class(x) == G_SOLID_BODY).collect()
+}
+
+/// A combine (`c0236733`; notes AK): slot 0 the base body, 1 the tool bodies, 2 the operation
+/// (2 cut, 3 join, 4 intersect), 3 keeps the tools (not read). The bodies are those the
+/// features that made them were given.
+fn combine(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    let s = r.slots(f)?;
+    let op = match s.get(2).and_then(|i| tail_u16(&r.dc, i)) {
+        Some(2) => "cut",
+        Some(3) => "join",
+        Some(4) => "intersect",
+        k => return Err(format!("combine operation {k:?}")),
+    };
+    if s.get(3).and_then(|i| r.dc.r(i).last().copied()) != Some(0) {
+        return Err("a combine that keeps its tools is not read".into());
+    }
+    let named = |b: usize| st.bodies.get(&b).cloned().ok_or("a body of the combine was not made by a feature read");
+    let base = r.dc.refs(s.need(0)?).into_iter().map(|(_, x)| x).find(|&x| r.dc.class(x) == G_SOLID_BODY);
+    let target = named(base.ok_or("the combine has no base body")?)?;
+    let mut tools = Vec::new();
+    for b in combine_tools(r, f) {
+        tools.push(named(b)?);
+    }
+    if tools.is_empty() {
+        return Err("the combine has no tool body".into());
+    }
+    st.out.push(json!({"type": "combine", "name": name, "target": target, "tools": tools, "operation": op}));
+    Ok(())
+}
+
 fn unsupported(name: &str, what: &str, reason: Option<String>) -> Value {
     let mut v = json!({"type": "unsupported", "name": name, "original_type": what});
     if let Some(r) = reason {
@@ -2040,7 +2251,10 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
         names,
         holes: HashMap::new(),
         emitted: HashMap::new(),
+        tools: Vec::new(),
+        bodies: HashMap::new(),
     };
+    st.tools = feats.iter().filter(|f| f.typ == Some(FeatType::Combine)).flat_map(|f| combine_tools(&r, f)).collect();
     for (k, f) in feats.iter().enumerate() {
         let name = f.name.clone().unwrap_or_else(|| format!("Feature{}", f.rec));
         let Some(typ) = f.typ else {
@@ -2067,6 +2281,9 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
                 shell(&r, &mut st, f, &name, &later)
             }
             FeatType::Sweep => sweep(&r, &mut st, f, &name),
+            FeatType::Coil => coil(&r, &mut st, f, &name),
+            FeatType::Emboss => emboss(&r, &mut st, f, &name),
+            FeatType::Combine => combine(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.
             FeatType::Thread => {
                 st.omitted.push(json!({"name": name, "why": "cosmetic thread"}));
