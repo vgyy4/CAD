@@ -1031,6 +1031,58 @@ fn an_extrude_to_face_ends_on_the_picked_face_with_its_offset() {
 }
 
 #[test]
+fn an_extrude_to_a_face_smaller_than_its_profile_needs_extend() {
+    // A 4 x 4 roof over the 10 x 10 post (ADR 0061): its plane, extended, ends the post.
+    let tree = |extend: bool| {
+        vec![
+            rect("RoofSketch", plane_at(30.0), 8.0, 8.0, 4.0, 4.0),
+            extrude("Roof", "RoofSketch", 10.0, "new"),
+            rect("PostSketch", plane_at(0.0), 5.0, 5.0, 10.0, 10.0),
+            json!({
+                "type": "extrude", "name": "Post", "sketch": "PostSketch", "profiles": "all", "operation": "new",
+                "end_condition": "to_face", "face": {"point": [10, 10, 30], "normal": [0, 0, -1]}, "extend": extend
+            }),
+        ]
+    };
+    let (_, r) = import_into_session(tree(false));
+    assert_ne!(r["skipped_user_text"], json!([]), "{r}");
+    let (mut s, r) = import_into_session(tree(true));
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({"body": "Post"})).unwrap();
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 3000.0);
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("to: Roof/cap(start), extend: true"), "{text}");
+}
+
+#[test]
+fn a_variable_fillet_takes_its_radii_at_vertices() {
+    // The vertical edge at (40, 0) of a 40 x 20 x 10 box: 1 mm at its foot, 3 mm at its top.
+    let fillet = json!({
+        "type": "fillet", "name": "VarFillet1", "radius": 2, "edges": [{"midpoint": [40, 0, 5]}],
+        "vertex_radii": [{"point": [40, 0, 0], "radius": 1}, {"point": [40, 0, 10], "radius": 3}]
+    });
+    let (mut s, r) = import_into_session(vec![
+        rect("PlateSketch", plane_at(0.0), 0.0, 0.0, 40.0, 20.0),
+        extrude("Plate", "PlateSketch", 10.0, "new"),
+        fillet,
+    ]);
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 7990.523733484952);
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    let line = text.lines().find(|l| l.starts_with("fillet ")).unwrap_or_else(|| panic!("{text}"));
+    assert!(line.contains("radius: 2 mm, at: [vertex(") && line.contains(") = 3 mm]"), "{line}");
+    // A radius at no vertex of the model is refused.
+    let (_, r) = import_into_session(vec![
+        rect("PlateSketch", plane_at(0.0), 0.0, 0.0, 40.0, 20.0),
+        extrude("Plate", "PlateSketch", 10.0, "new"),
+        json!({"type": "fillet", "name": "V", "radius": 2, "edges": [{"midpoint": [40, 0, 5]}],
+               "vertex_radii": [{"point": [40, 0, 4], "radius": 1}]}),
+    ]);
+    assert_ne!(r["skipped_user_text"], json!([]), "{r}");
+}
+
+#[test]
 fn an_extrude_to_face_can_cut_a_pocket_and_reverse() {
     // A pocket from the plate's top down to its underside, 3 mm short: the sketch is on the
     // top (z = 10), the sweep runs against the sketch normal.

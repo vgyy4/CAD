@@ -350,6 +350,17 @@ struct EdgeF {
     /// for edges that lie on edges of another body.
     #[serde(default)]
     on_body: Option<String>,
+    /// Fillet, variable radius (ADR 0061): the radius at vertices of the edges, by position;
+    /// `radius` holds elsewhere.
+    #[serde(default)]
+    vertex_radii: Vec<VertexPick>,
+}
+
+/// The radius of a variable fillet at the vertex of the model at `point` (within 0.01 mm).
+#[derive(Debug, Clone, Deserialize)]
+struct VertexPick {
+    point: [f64; 3],
+    radius: f64,
 }
 
 /// Tier note for feature-tree imports.
@@ -2654,7 +2665,7 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         let mut seen = HashSet::new();
         names.retain(|n| seen.insert(n.clone()));
         let name = g.fresh(&d.name, if fillet { "Fillet" } else { "Chamfer" });
-        let second = if fillet { String::new() } else { chamfer_second(g, s, d, &body, &names)? };
+        let second = if fillet { vertex_radii(&ev, d, &body)? } else { chamfer_second(g, s, d, &body, &names)? };
         let line = format!("\n{kw} {name} (edges: [{}], {key}: {} mm{second})\n", names.join(", "), num(size));
         g.text.push_str(&line);
         blend_of.insert(body, name.clone());
@@ -2675,6 +2686,36 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
     }
     g.made.extend(made);
     Ok(())
+}
+
+/// The `, at: [...]` of a variable fillet on `body` (ADR 0061): each vertex pick named after
+/// the vertex of the body at its point; empty for a constant fillet. Picks on no vertex of the
+/// body are left to the fillets of other bodies, but each must land on some body.
+fn vertex_radii(ev: &gusset_eval::Evaluation, d: &EdgeF, body: &str) -> Result<String, String> {
+    if d.vertex_radii.is_empty() {
+        return Ok(String::new());
+    }
+    if d.vertex_radii.len() > MAX_PICKS {
+        return Err("too many vertex radii".into());
+    }
+    let near = |b: &gusset_eval::Body, p: [f64; 3]| -> Option<usize> {
+        b.topology.vertices.iter().position(|v| norm(sub(v.point, p)) <= 0.01)
+    };
+    let mut at = Vec::new();
+    for v in &d.vertex_radii {
+        let r = Some(v.radius)
+            .filter(|r| r.is_finite() && *r > 0.0 && *r < 1e12)
+            .ok_or("a vertex radius is not positive")?;
+        if !ev.bodies.iter().any(|b| near(b, v.point).is_some()) {
+            return Err(format!("no vertex of the model lies at {:?}", v.point));
+        }
+        let Some(b) = ev.bodies.iter().find(|b| b.feature == body) else { continue };
+        let Some(i) = near(b, v.point) else { continue };
+        let names = b.names.vertex_names(&b.topology);
+        let name = names.get(i).ok_or("a vertex has no name")?;
+        at.push(format!("{name} = {} mm", num(r)));
+    }
+    Ok(if at.is_empty() { String::new() } else { format!(", at: [{}]", at.join(", ")) })
 }
 
 #[cfg(test)]
