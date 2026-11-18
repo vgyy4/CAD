@@ -1818,3 +1818,33 @@ fn edges_named_by_their_faces_and_by_blend_faces() {
     let after1 = 1000.0 - (1.0 - core::f64::consts::FRAC_PI_4) * 10.0;
     assert!(v < after1 - 1.0 && v > after1 - 1.6, "volume {v}: {r}");
 }
+
+/// A mirror of a hole and of the pattern of it (Inventor's gun box): the pattern is made again
+/// of the mirrored hole, along the reflected direction. A mirror of the pattern alone, whose
+/// hole it does not copy, is refused.
+#[test]
+fn a_mirror_copies_a_pattern_of_the_features_it_copies() {
+    let pi = std::f64::consts::PI;
+    let row = vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 60.0, 20.0),
+        extrude("Plate", "Sketch1", 10.0, "new"),
+        json!({"type": "hole", "name": "Hole1", "face": {"point": [20, 10, 10], "normal": [0, 0, 1]},
+               "positions": [[35, 10, 10]], "diameter": 4, "through": true}),
+        json!({"type": "pattern_linear", "name": "Row", "features": ["Hole1"], "direction": [1, 0, 0],
+               "count": 3, "spacing": 10}),
+    ];
+    let mut fs = row.clone();
+    fs.push(json!({"type": "mirror", "name": "M", "features": ["Hole1", "Row"],
+                   "plane": {"origin": [30, 0, 0], "normal": [1, 0, 0]}}));
+    let (_, v) = import_v2(fs);
+    // Holes at x = 35, 45, 55 and their images at 25, 15, 5.
+    assert_vol(v, 12000.0 - 6.0 * pi * 4.0 * 10.0);
+    let mut fs = row;
+    fs.push(json!({"type": "mirror", "name": "M", "features": ["Row"],
+                   "plane": {"origin": [30, 0, 0], "normal": [1, 0, 0]}}));
+    let tree = json!({"format": "gusset-feature-tree", "version": 2, "source": {"app": "test"}, "features": fs});
+    let mut s = session();
+    std::fs::write(s.project_dir.clone().unwrap().join("t.gtree.json"), serde_json::to_vec(&tree).unwrap()).unwrap();
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap();
+    assert!(r["skipped_user_text"][0]["reason"].as_str().unwrap().contains("does not copy first"), "{r}");
+}

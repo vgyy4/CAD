@@ -953,6 +953,32 @@ fn reflect_feature(f: &Value, o: V3, n: V3, rename: &dyn Fn(&str) -> String) -> 
                 }
             }
         }
+        // A pattern of features the mirror copies too: of their copies, along the reflected
+        // direction; a turn's sense reverses, so its axis turns round.
+        "pattern_linear" | "pattern_circular" => {
+            let feats: Vec<String> = f
+                .get("features")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(rename)
+                .collect();
+            if feats.is_empty() {
+                return Err("a pattern of the whole body cannot be mirrored as a feature".into());
+            }
+            set(&mut out, "features", json!(feats));
+            if out.get("direction").is_some() {
+                map_v3(&mut out, "direction", &dr)?;
+            }
+            if let Some(ax) = out.get_mut("axis") {
+                map_v3(ax, "origin", &pt)?;
+                map_v3(ax, "direction", &|v: V3| {
+                    let r = dr(v);
+                    [-r[0], -r[1], -r[2]]
+                })?;
+            }
+        }
         other => return Err(format!("a {} feature cannot be mirrored", short(other))),
     }
     Ok(out)
@@ -1142,6 +1168,15 @@ fn mirror_features(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value], o: V3
                 let dd = serde_json::from_value::<DraftF>(rf).map_err(|e| e.to_string())?;
                 draft(g, s, &dd)?;
                 last = Some(dd.name);
+            }
+            "pattern_linear" | "pattern_circular" => {
+                // Of features this mirror copies: their copies must be made already.
+                let pd = serde_json::from_value::<PatternF>(rf).map_err(|e| e.to_string())?;
+                if let Some(x) = pd.features.iter().find(|x| !g.features.contains_key(*x)) {
+                    return Err(format!("its pattern copies '{}', which the mirror does not copy first", short(x)));
+                }
+                pattern(g, s, &pd, kind == "pattern_circular")?;
+                last = Some(pd.name);
             }
             other => return Err(format!("a {} feature cannot be mirrored", short(other))),
         }

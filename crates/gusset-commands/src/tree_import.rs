@@ -1279,7 +1279,18 @@ pub fn apply_with(
         };
         match r {
             Ok(()) => {
-                if matches!(kind, "sketch" | "extrude" | "revolve" | "hole" | "fillet" | "chamfer" | "draft") {
+                if matches!(
+                    kind,
+                    "sketch"
+                        | "extrude"
+                        | "revolve"
+                        | "hole"
+                        | "fillet"
+                        | "chamfer"
+                        | "draft"
+                        | "pattern_linear"
+                        | "pattern_circular"
+                ) {
                     g.index.insert(src_name.clone(), fi);
                 }
             }
