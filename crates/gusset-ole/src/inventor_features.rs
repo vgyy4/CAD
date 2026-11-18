@@ -1324,16 +1324,7 @@ fn mirror(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Str
             .rfind(|&(k, x)| k > 14 && r.dc.class(x) == G_PLANE)
             .ok_or("the mirror plane is not a work plane")?
             .1;
-    let rec = r.dc.r(pl);
-    let k = rec.len().checked_sub(72).ok_or("the mirror plane is cut short")?;
-    let g = |j: usize| f64_at(rec, k + 8 * j).ok_or("the mirror plane is cut short");
-    let o = [g(0)?, g(1)?, g(2)?];
-    let (u, w) = ([g(3)?, g(4)?, g(5)?], [g(6)?, g(7)?, g(8)?]);
-    let unit = |a: V3| (dot(a, a) - 1.0).abs() < 1e-6;
-    if !(unit(u) && unit(w) && dot(u, w).abs() < 1e-6 && o.iter().all(|c| c.is_finite() && c.abs() < 1e6)) {
-        return Err("the mirror plane is not readable".into());
-    }
-    let n = unit3(cross(u, w));
+    let (o, n) = work_plane(&r.dc, pl).map_err(|w| format!("the mirror {w}"))?;
     let mut j = json!({"type": "mirror", "name": name, "features": tgt,
         "plane": {"origin": [rnd(o[0] * CM), rnd(o[1] * CM), rnd(o[2] * CM)], "normal": [rnd(n[0]), rnd(n[1]), rnd(n[2])]}});
     if let Some(b) = body {
@@ -1797,6 +1788,58 @@ fn combine(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
     }
     st.out.push(json!({"type": "combine", "name": name, "target": target, "tools": tools, "operation": op}));
     Ok(())
+}
+
+/// A work plane record (`ce52df42`): a point (cm) and two unit vectors, the last 72 bytes;
+/// the point and the normal.
+fn work_plane(dc: &Dc, pl: usize) -> Result<(V3, V3), String> {
+    let rec = dc.r(pl);
+    let k = rec.len().checked_sub(72).ok_or("plane is cut short")?;
+    let g = |j: usize| f64_at(rec, k + 8 * j).ok_or("plane is cut short");
+    let o = [g(0)?, g(1)?, g(2)?];
+    let (u, w) = ([g(3)?, g(4)?, g(5)?], [g(6)?, g(7)?, g(8)?]);
+    let unit = |a: V3| (dot(a, a) - 1.0).abs() < 1e-6;
+    if !(unit(u) && unit(w) && dot(u, w).abs() < 1e-6 && o.iter().all(|c| c.is_finite() && c.abs() < 1e6)) {
+        return Err("plane is not readable".into());
+    }
+    Ok((o, unit3(cross(u, w))))
+}
+
+/// A split (`8371a8ba`; notes AL): slot 0 the kind (1 trims the part, 2 splits faces, 3
+/// splits the body in two), 5 the work plane it splits at, 6 the side a trim removes. Split
+/// faces change no shape and are left out; a trim is a split at the plane and the removal of
+/// one side; a split body keeps both.
+fn split(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    const G_PLANE: u32 = 0xce52_df42;
+    let s = r.slots(f)?;
+    let kind = s.get(0).and_then(|i| tail_u16(&r.dc, i));
+    if kind == Some(2) {
+        st.omitted.push(json!({"name": name, "why": "split faces (no change of shape)"}));
+        return Ok(());
+    }
+    let pl = s.need(5)?;
+    if r.dc.class(pl) != G_PLANE {
+        return Err("the split tool is not a work plane".into());
+    }
+    let (o, n) = work_plane(&r.dc, pl).map_err(|w| format!("the split {w}"))?;
+    let fb = st.first_body.clone().ok_or("a split before any body")?;
+    let plane = json!({"origin": [rnd(o[0] * CM), rnd(o[1] * CM), rnd(o[2] * CM)], "normal": [rnd(n[0]), rnd(n[1]), rnd(n[2])]});
+    match kind {
+        Some(1) => {
+            // The new body is the side the normal points to; slot 6 clear removes it, set
+            // keeps it.
+            let other = s.get(6).and_then(|i| r.dc.r(i).last().copied()) != Some(1);
+            st.out.push(json!({"type": "split", "name": name, "target": fb, "plane": plane}));
+            if other {
+                st.out.push(json!({"type": "remove_body", "name": format!("{name}_removed"), "target": name}));
+            } else {
+                st.out.push(json!({"type": "remove_body", "name": format!("{name}_removed"), "target": fb}));
+                st.first_body = Some(name.to_string());
+            }
+            Ok(())
+        }
+        k => Err(format!("split kind {k:?}")),
+    }
 }
 
 fn unsupported(name: &str, what: &str, reason: Option<String>) -> Value {
@@ -2284,6 +2327,7 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             FeatType::Coil => coil(&r, &mut st, f, &name),
             FeatType::Emboss => emboss(&r, &mut st, f, &name),
             FeatType::Combine => combine(&r, &mut st, f, &name),
+            FeatType::Split => split(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.
             FeatType::Thread => {
                 st.omitted.push(json!({"name": name, "why": "cosmetic thread"}));

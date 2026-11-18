@@ -119,6 +119,7 @@ pub(crate) enum FeatType {
     Coil,
     Emboss,
     Combine,
+    Split,
     Other(u32),
 }
 
@@ -140,6 +141,7 @@ impl FeatType {
             0xb419_14da => FeatType::Coil,
             0x285e_398c => FeatType::Emboss,
             0xc023_6733 => FeatType::Combine,
+            0x8371_a8ba => FeatType::Split,
             o => FeatType::Other(o),
         }
     }
@@ -161,6 +163,7 @@ impl FeatType {
             FeatType::Coil => "coil".into(),
             FeatType::Emboss => "emboss".into(),
             FeatType::Combine => "combine".into(),
+            FeatType::Split => "split".into(),
             FeatType::Other(g) => format!("feature {g:08x}"),
         }
     }

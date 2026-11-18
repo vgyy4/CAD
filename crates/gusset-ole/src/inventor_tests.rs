@@ -1518,3 +1518,31 @@ fn an_emboss_rises_against_its_direction_and_an_engrave_cuts_along_it() {
     );
     assert_eq!(with(1)["features"][2]["reason"], "emboss kind Some(1)");
 }
+
+/// A split (`8371a8ba`, notes AL) that trims the part at a work plane: a split and the removal
+/// of the side its normal points to unless slot 6 is set; a split of faces is left out.
+#[test]
+fn a_split_trims_the_part_at_its_work_plane() {
+    let with = |kind: u16, keep: u8| {
+        let mut r = base_records();
+        r.push((NAME, name_rec("Split1", Some(0x8371_a8ba)))); // 19
+        r.push((OTHER, tail(kind))); // 20
+        r.push((14, {
+            let mut v = hdr(0, 0, 0);
+            doubles(&mut v, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+            v
+        })); // 21: the plane x = 10 mm
+        r.push((OTHER, flag(keep))); // 22
+        r.push((FEATURE, feature(19, 0, 6, &[rf(20), 0, 0, 0, 0, rf(21), rf(22)]))); // 23
+        copy_tree(&r)
+    };
+    let t = with(1, 0);
+    let plane = json!({"origin": [10.0, 0.0, 0.0], "normal": [1.0, 0.0, 0.0]});
+    assert_eq!(t["features"][2], json!({"type": "split", "name": "Split1", "target": "Extrusion1", "plane": plane}));
+    assert_eq!(t["features"][3], json!({"type": "remove_body", "name": "Split1_removed", "target": "Split1"}));
+    let t = with(1, 1);
+    assert_eq!(t["features"][3]["target"], "Extrusion1");
+    let t = with(2, 0);
+    assert_eq!(t["features"].as_array().unwrap().len(), 2);
+    assert_eq!(t["source"]["omitted"][0]["name"], "Split1");
+}
