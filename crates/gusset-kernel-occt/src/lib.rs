@@ -484,9 +484,10 @@ mod imp {
             face: u32,
             offset: f64,
             reverse: bool,
+            extend: bool,
         ) -> KResult<OpResult> {
             let p = profile_data(profile)?;
-            op_result(ffi::extrude_to_face(&p, raw(target)?, face, offset, reverse)?)
+            op_result(ffi::extrude_to_face(&p, raw(target)?, face, offset, reverse, extend)?)
         }
 
         fn revolve(&self, profile: &Profile, spec: &RevolveSpec) -> KResult<OpResult> {
@@ -568,6 +569,10 @@ mod imp {
 
         fn fillet(&self, shape: &Shape, edges: &[u32], radius: f64) -> KResult<OpResult> {
             op_result(ffi::blend(raw(shape)?, edges, radius, true)?)
+        }
+
+        fn fillet_variable(&self, shape: &Shape, edges: &[u32], radius: f64, at: &[(u32, f64)]) -> KResult<OpResult> {
+            op_result(ffi::fillet_variable(raw(shape)?, edges, radius, at)?)
         }
 
         fn chamfer(&self, shape: &Shape, edges: &[u32], distance: f64) -> KResult<OpResult> {

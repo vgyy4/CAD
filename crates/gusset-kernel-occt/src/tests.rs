@@ -268,6 +268,47 @@ fn fillet_and_chamfer_history() {
     assert!(k().fillet(&a.shape, &[9999], 1.0).is_err());
 }
 
+#[test]
+fn variable_fillet_golden() {
+    // A vertical edge of a 40 x 20 x 10 box, radius 1 at its bottom and 3 at its top (ADR 0061).
+    let a = k().extrude(&boxp(40.0, 20.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let t = k().topology(&a.shape).unwrap();
+    let e = t.edges.iter().position(|e| (e.length - 10.0).abs() < 1e-9).unwrap();
+    let ends = &t.edges[e].vertices;
+    let (lo, hi) = if t.vertices[ends[0] as usize].point[2] < 1.0 { (ends[0], ends[1]) } else { (ends[1], ends[0]) };
+    let f = k().fillet_variable(&a.shape, &[e as u32], 2.0, &[(lo, 1.0), (hi, 3.0)]).unwrap();
+    // Each section is a quarter round of r(z): the ends are quarter circles of radius 1 and 3.
+    let ft = k().topology(&f.shape).unwrap();
+    let blend = f.face_origins.iter().position(|o| o.contains(&FaceOrigin::FromEdge { input: 0, edge: e as u32 }));
+    let blend = blend.unwrap() as u32;
+    let mut rims: Vec<(f64, f64)> = ft
+        .edges
+        .iter()
+        .filter(|x| x.faces.contains(&blend) && (x.midpoint[2].abs() < 1e-6 || (x.midpoint[2] - 10.0).abs() < 1e-6))
+        .map(|x| (x.midpoint[2], x.length))
+        .collect();
+    rims.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(rims.len(), 2, "{rims:?}");
+    assert!((rims[0].1 - std::f64::consts::FRAC_PI_2).abs() < 1e-5, "{rims:?}");
+    assert!((rims[1].1 - 3.0 * std::f64::consts::FRAC_PI_2).abs() < 1e-5, "{rims:?}");
+    // Removed: (1 - pi / 4) times the integral of r^2. OCCT's law lies between the straight one
+    // (r = 1 + 2t: 10 * 13 / 3) and the one level at both ends (smoothstep: 10 * (3 + 52 / 35)).
+    let quarter = 1.0 - std::f64::consts::FRAC_PI_4;
+    let v = volume(&f.shape);
+    assert!(8000.0 - v > quarter * 130.0 / 3.0 && 8000.0 - v < quarter * 10.0 * (3.0 + 52.0 / 35.0), "{v}");
+    // The golden value (OCCT's spline law through the radii).
+    assert!(close(v, 7990.523733484952, 1e-9), "{v:.12}");
+    assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e as u32 }));
+    // The same radius at both ends is the constant fillet.
+    let c = k().fillet_variable(&a.shape, &[e as u32], 2.0, &[(lo, 2.0)]).unwrap();
+    assert!(close(volume(&c.shape), 8000.0 - (4.0 - std::f64::consts::PI) * 10.0, 1e-7));
+    // A vertex off the edges, a bad radius and a bad index are refused.
+    let off = (0..t.vertices.len() as u32).find(|v| !ends.contains(v)).unwrap();
+    assert!(k().fillet_variable(&a.shape, &[e as u32], 2.0, &[(off, 1.0)]).is_err());
+    assert!(k().fillet_variable(&a.shape, &[e as u32], 2.0, &[(lo, -1.0)]).is_err());
+    assert!(k().fillet_variable(&a.shape, &[e as u32], 2.0, &[(999, 1.0)]).is_err());
+}
+
 /// A 10 mm cube and one of its edges with both adjacent faces (ascending indices).
 fn cube_edge() -> (OpResult, u32, [u32; 2]) {
     let a = k().extrude(&boxp(10.0, 10.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
@@ -1862,7 +1903,7 @@ fn volume(s: &Shape) -> f64 {
 fn extrude_to_parallel_plane_with_offset() {
     let plate = slab(30.0, 40.0, 20.0, 10.0);
     let f = flat_face(&plate, [0.0, 0.0, -1.0], 30.0);
-    let r = k().extrude_to_face(&boxp(10.0, 10.0), &plate, f, 0.0, false).unwrap();
+    let r = k().extrude_to_face(&boxp(10.0, 10.0), &plate, f, 0.0, false, false).unwrap();
     assert!(close(volume(&r.shape), 3000.0, 1e-9));
     let t = k().topology(&r.shape).unwrap();
     assert_eq!((t.faces.len(), t.solids), (6, 1));
@@ -1873,9 +1914,9 @@ fn extrude_to_parallel_plane_with_offset() {
     assert_eq!(lat, 4);
     assert!(r.face_origins.iter().any(|o| matches!(o[..], [FaceOrigin::Cap { end: CapEnd::Start, .. }])));
     // Offset beyond the face and short of it.
-    let past = k().extrude_to_face(&boxp(10.0, 10.0), &plate, f, 2.0, false).unwrap();
+    let past = k().extrude_to_face(&boxp(10.0, 10.0), &plate, f, 2.0, false, false).unwrap();
     assert!(close(volume(&past.shape), 3200.0, 1e-9));
-    let short = k().extrude_to_face(&boxp(10.0, 10.0), &plate, f, -5.0, false).unwrap();
+    let short = k().extrude_to_face(&boxp(10.0, 10.0), &plate, f, -5.0, false, false).unwrap();
     assert!(close(volume(&short.shape), 2500.0, 1e-9));
 }
 
@@ -1884,21 +1925,126 @@ fn extrude_to_face_reverse_and_refusals() {
     // A plate below the sketch: only the reverse direction reaches its top.
     let below = slab(-15.0, 40.0, 20.0, 10.0);
     let top = flat_face(&below, [0.0, 0.0, 1.0], -5.0);
-    let r = k().extrude_to_face(&boxp(10.0, 10.0), &below, top, 0.0, true).unwrap();
+    let r = k().extrude_to_face(&boxp(10.0, 10.0), &below, top, 0.0, true, false).unwrap();
     assert!(close(volume(&r.shape), 500.0, 1e-9));
-    let e = k().extrude_to_face(&boxp(10.0, 10.0), &below, top, 0.0, false).unwrap_err();
+    let e = k().extrude_to_face(&boxp(10.0, 10.0), &below, top, 0.0, false, false).unwrap_err();
     assert!(e.message.contains("behind"), "{}", e.message);
     // A face smaller than the profile does not cover the sweep.
     let small = slab(30.0, 4.0, 4.0, 10.0);
     let f = flat_face(&small, [0.0, 0.0, -1.0], 30.0);
-    let e = k().extrude_to_face(&boxp(10.0, 10.0), &small, f, 0.0, false).unwrap_err();
+    let e = k().extrude_to_face(&boxp(10.0, 10.0), &small, f, 0.0, false, false).unwrap_err();
     assert!(e.message.contains("cover"), "{}", e.message);
     // A face edge-on to the sweep is never reached.
     let wall = slab(30.0, 40.0, 20.0, 10.0);
     let side = k().topology(&wall).unwrap().faces.iter().position(|f| f.normal[0] < -0.9).unwrap() as u32;
-    assert!(k().extrude_to_face(&boxp(10.0, 10.0), &wall, side, 0.0, false).is_err());
+    assert!(k().extrude_to_face(&boxp(10.0, 10.0), &wall, side, 0.0, false, false).is_err());
     // Out-of-range face.
-    assert!(k().extrude_to_face(&boxp(10.0, 10.0), &wall, 999, 0.0, false).is_err());
+    assert!(k().extrude_to_face(&boxp(10.0, 10.0), &wall, 999, 0.0, false, false).is_err());
+}
+
+#[test]
+fn extrude_to_an_extended_plane() {
+    // A 4 x 4 plate over the 10 x 10 square: not covering, so refused unless extended (ADR 0061).
+    let small = slab(30.0, 4.0, 4.0, 10.0);
+    let f = flat_face(&small, [0.0, 0.0, -1.0], 30.0);
+    let r = k().extrude_to_face(&boxp(10.0, 10.0), &small, f, 0.0, false, true).unwrap();
+    assert!(close(volume(&r.shape), 3000.0, 1e-9), "{}", volume(&r.shape));
+    assert!(r.face_origins.iter().any(|o| o == &vec![FaceOrigin::Cap { end: CapEnd::End, region: 0 }]));
+    let off = k().extrude_to_face(&boxp(10.0, 10.0), &small, f, -5.0, false, true).unwrap();
+    assert!(close(volume(&off.shape), 2500.0, 1e-9), "{}", volume(&off.shape));
+    // A small tilted face: its plane, rising from z = 20 at x = 0 by 1 in 4 along x.
+    let wedge = k()
+        .extrude(
+            &xz_poly(&[[2.0, 20.5], [4.0, 21.0], [4.0, 50.0], [2.0, 50.0]]),
+            &ExtrudeSpec { distance: -3.0, symmetric: false },
+        )
+        .unwrap()
+        .shape;
+    let under = k().topology(&wedge).unwrap().faces.iter().position(|f| f.normal[2] < -0.9).unwrap() as u32;
+    assert!(k().extrude_to_face(&boxp(10.0, 10.0), &wedge, under, 0.0, false, false).is_err());
+    let r = k().extrude_to_face(&boxp(10.0, 10.0), &wedge, under, 0.0, false, true).unwrap();
+    assert!(close(volume(&r.shape), 2125.0, 1e-9), "{}", volume(&r.shape));
+}
+
+#[test]
+fn extrude_to_an_extended_sphere() {
+    // An eighth of a ball of radius 30 around (5, 5, 40), below its center, in one quadrant
+    // only: the 10 x 10 square straddles all four, so only the extended sphere covers it.
+    let quarter = Profile {
+        frame: Frame { origin: [5.0, 5.0, 0.0], ..Frame::XZ },
+        regions: vec![Region2 {
+            outer: Loop2 {
+                edges: vec![
+                    ProfileEdge { seg: Seg2::Line { a: [0.0, 40.0], b: [0.0, 10.0] }, tag: 1 },
+                    ProfileEdge {
+                        seg: Seg2::Arc { center: [0.0, 40.0], start: [0.0, 10.0], end: [30.0, 40.0], ccw: true },
+                        tag: 2,
+                    },
+                    ProfileEdge { seg: Seg2::Line { a: [30.0, 40.0], b: [0.0, 40.0] }, tag: 3 },
+                ],
+            },
+            holes: vec![],
+        }],
+    };
+    let ball = k()
+        .revolve(
+            &quarter,
+            &RevolveSpec { axis_origin: [0.0, 0.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::FRAC_PI_2 },
+        )
+        .unwrap()
+        .shape;
+    let t = k().topology(&ball).unwrap();
+    let curved = t.faces.iter().position(|f| !matches!(f.kind, SurfaceKind::Plane)).unwrap() as u32;
+    assert!(k().extrude_to_face(&boxp(10.0, 10.0), &ball, curved, 0.0, false, false).is_err());
+    let r = k().extrude_to_face(&boxp(10.0, 10.0), &ball, curved, 0.0, false, true).unwrap();
+    // The volume under z = 40 - sqrt(900 - (x - 5)^2 - (y - 5)^2) over the square (Simpson).
+    let n = 400;
+    let h = 10.0 / f64::from(n);
+    let w = |i: i32| {
+        if i == 0 || i == n {
+            1.0
+        } else if i % 2 == 1 {
+            4.0
+        } else {
+            2.0
+        }
+    };
+    let mut expect = 0.0;
+    for i in 0..=n {
+        for j in 0..=n {
+            let (x, y) = (f64::from(i) * h - 5.0, f64::from(j) * h - 5.0);
+            expect += w(i) * w(j) * (40.0 - (900.0 - x * x - y * y).sqrt());
+        }
+    }
+    expect *= h * h / 9.0;
+    assert!(close(volume(&r.shape), expect, 1e-7), "{} vs {expect}", volume(&r.shape));
+    // A ball too small to cross the whole sweep is refused even extended.
+    let tiny = Profile {
+        frame: Frame { origin: [5.0, 5.0, 0.0], ..Frame::XZ },
+        regions: vec![Region2 {
+            outer: Loop2 {
+                edges: vec![
+                    ProfileEdge { seg: Seg2::Line { a: [0.0, 40.0], b: [0.0, 37.0] }, tag: 1 },
+                    ProfileEdge {
+                        seg: Seg2::Arc { center: [0.0, 40.0], start: [0.0, 37.0], end: [3.0, 40.0], ccw: true },
+                        tag: 2,
+                    },
+                    ProfileEdge { seg: Seg2::Line { a: [3.0, 40.0], b: [0.0, 40.0] }, tag: 3 },
+                ],
+            },
+            holes: vec![],
+        }],
+    };
+    let small = k()
+        .revolve(
+            &tiny,
+            &RevolveSpec { axis_origin: [0.0, 0.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::FRAC_PI_2 },
+        )
+        .unwrap()
+        .shape;
+    let t = k().topology(&small).unwrap();
+    let curved = t.faces.iter().position(|f| !matches!(f.kind, SurfaceKind::Plane)).unwrap() as u32;
+    assert!(k().extrude_to_face(&boxp(10.0, 10.0), &small, curved, 0.0, false, true).is_err());
 }
 
 fn xz_poly(pts: &[[f64; 2]]) -> Profile {
@@ -1920,7 +2066,7 @@ fn extrude_to_tilted_plane() {
         .shape;
     let t = k().topology(&wedge).unwrap();
     let under = t.faces.iter().position(|f| f.normal[2] < -0.9).unwrap() as u32;
-    let r = k().extrude_to_face(&boxp(10.0, 10.0), &wedge, under, 0.0, false).unwrap();
+    let r = k().extrude_to_face(&boxp(10.0, 10.0), &wedge, under, 0.0, false, false).unwrap();
     // Height 20 + x / 4 over the 10 x 10 square: 10 * (200 + 12.5).
     assert!(close(volume(&r.shape), 2125.0, 1e-9), "{}", volume(&r.shape));
     let rt = k().topology(&r.shape).unwrap();
@@ -1928,7 +2074,7 @@ fn extrude_to_tilted_plane() {
     // The end cap lies on the wedge's underside, which rises toward +x: its outward normal leans to -x.
     assert!(rt.faces[end].normal[2] > 0.9 && rt.faces[end].normal[0] < -0.1);
     // Offset is measured along the sweep direction perpendicular to the face.
-    let off = k().extrude_to_face(&boxp(10.0, 10.0), &wedge, under, 1.0, false).unwrap();
+    let off = k().extrude_to_face(&boxp(10.0, 10.0), &wedge, under, 1.0, false, false).unwrap();
     let cos = (1.0f64 + 0.25f64 * 0.25).sqrt().recip();
     assert!(close(volume(&off.shape), 2125.0 + 100.0 * 1.0 / cos, 1e-6), "{}", volume(&off.shape));
 }
@@ -1951,7 +2097,7 @@ fn extrude_to_cylinder_face() {
     let cyl = k().extrude(&c, &ExtrudeSpec { distance: -40.0, symmetric: false }).unwrap().shape;
     let t = k().topology(&cyl).unwrap();
     let side = t.faces.iter().position(|f| f.kind == SurfaceKind::Cylinder).unwrap() as u32;
-    let r = k().extrude_to_face(&boxp(10.0, 10.0), &cyl, side, 0.0, false).unwrap();
+    let r = k().extrude_to_face(&boxp(10.0, 10.0), &cyl, side, 0.0, false, false).unwrap();
     let a = 5.0f64;
     let rad = 8.0f64;
     let integral = a * (rad * rad - a * a).sqrt() + rad * rad * (a / rad).asin();
@@ -1959,7 +2105,7 @@ fn extrude_to_cylinder_face() {
     assert!(close(volume(&r.shape), expect, 1e-6), "{} vs {expect}", volume(&r.shape));
     assert!(r.face_origins.iter().any(|o| o == &vec![FaceOrigin::Cap { end: CapEnd::End, region: 0 }]));
     // A cylinder face takes no offset.
-    assert!(k().extrude_to_face(&boxp(10.0, 10.0), &cyl, side, 1.0, false).is_err());
+    assert!(k().extrude_to_face(&boxp(10.0, 10.0), &cyl, side, 1.0, false, false).is_err());
 }
 
 #[test]
@@ -2015,15 +2161,15 @@ fn extrude_to_a_cone_face_that_the_profile_meets_at_its_rim() {
     let small = slivers(0.8660254);
     let (exact, c1) = body(0.8660254);
     let (rounded, c2) = body(0.866025);
-    let v1 = volume(&k().extrude_to_face(&small, &exact, c1, 0.0, true).unwrap().shape);
-    let v2 = volume(&k().extrude_to_face(&small, &rounded, c2, 0.0, true).unwrap().shape);
+    let v1 = volume(&k().extrude_to_face(&small, &exact, c1, 0.0, true, false).unwrap().shape);
+    let v2 = volume(&k().extrude_to_face(&small, &rounded, c2, 0.0, true, false).unwrap().shape);
     assert!(close(v1, v2, 1e-5), "{v1} vs {v2}");
     let (narrow, c3) = body(0.856);
-    let e = k().extrude_to_face(&small, &narrow, c3, 0.0, true).unwrap_err();
+    let e = k().extrude_to_face(&small, &narrow, c3, 0.0, true, false).unwrap_err();
     assert!(e.message.contains("cover"), "{}", e.message);
     let sliver = slivers(4.0);
     let (body, cone) = body(4.0);
-    let r = k().extrude_to_face(&sliver, &body, cone, 0.0, true).unwrap();
+    let r = k().extrude_to_face(&sliver, &body, cone, 0.0, true, false).unwrap();
     assert!(r.face_origins.iter().all(|o| !o.is_empty()), "{:?}", r.face_origins);
     // Height 20 - (6 + r) = 14 - r over each sliver (x 2..4 inside the circle): 14 A - integral
     // of r over it, A = (16 pi / 3) - 2 sqrt 12 (the segment of a 60 degree half-angle).

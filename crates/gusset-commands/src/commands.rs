@@ -2336,6 +2336,9 @@ pub struct ExtrudeToFace {
     /// Sweep against the sketch normal.
     #[serde(default)]
     pub reverse: bool,
+    /// Extend the face's surface past its edges.
+    #[serde(default)]
+    pub extend: bool,
     /// new (default), add, cut, intersect.
     #[serde(default)]
     pub op: Option<String>,
@@ -2350,7 +2353,7 @@ pub struct ExtrudeToFace {
 impl Command for ExtrudeToFace {
     const ID: &'static str = "feature.up_to_face";
     const TITLE: &'static str = "Extrude up to face";
-    const DESCRIPTION: &'static str = "Extrude closed sketch regions until a face (planar or curved, ahead of the profile, covering its whole sweep); the end follows model changes. op cut makes a pocket up to a face. Result: body_changes.";
+    const DESCRIPTION: &'static str = "Extrude closed sketch regions until a face (planar or curved, ahead of the profile, covering its whole sweep unless extend); the end follows model changes. op cut makes a pocket up to a face. Result: body_changes.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -2358,6 +2361,7 @@ impl Command for ExtrudeToFace {
             face: FaceRef::parse(&self.to).map_err(|e| CommandError::args(format!("to '{}': {e}", self.to)))?,
             offset: self.offset.as_deref().map(|o| parse_expr("offset", o)).transpose()?,
             reverse: self.reverse,
+            extend: self.extend,
         };
         extrude_feature(
             s,
@@ -2705,6 +2709,9 @@ pub struct Fillet {
     /// Full round instead of edges and radius: middle faces between two parallel faces.
     #[serde(default)]
     pub full_round: Option<Vec<String>>,
+    /// Variable radius: `vertex(<faces>) = <radius>` per vertex.
+    #[serde(default)]
+    pub at: Vec<String>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -2719,7 +2726,7 @@ impl Command for Fillet {
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let (def, edges, size) = match &self.full_round {
             Some(f) => {
-                if !self.edges.is_empty() || self.radius.is_some() {
+                if !self.edges.is_empty() || self.radius.is_some() || !self.at.is_empty() {
                     return Err(CommandError::args("full_round replaces edges and radius")
                         .hint("give either full_round (faces) or edges with radius"));
                 }
@@ -2747,6 +2754,7 @@ impl Command for Fillet {
                 (None, edges, Some(size))
             }
         };
+        let radii = self.at.iter().map(|a| parse_vertex_radius(a)).collect::<Result<Vec<_>, _>>()?;
         edit_post(
             s,
             ctx,
@@ -2755,7 +2763,7 @@ impl Command for Fillet {
                 let name = feature_name(doc, self.name, "Fillet")?;
                 let def = match (def, size) {
                     (Some(d), _) => d,
-                    (None, Some(size)) => EdgeBlendDef::new(edges, size),
+                    (None, Some(size)) => EdgeBlendDef { radii, ..EdgeBlendDef::new(edges, size) },
                     (None, None) => return Err(CommandError::args("radius is required")),
                 };
                 insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Fillet(def)));
@@ -2764,6 +2772,16 @@ impl Command for Fillet {
             |_, out, _| blend_outcome(out),
         )
     }
+}
+
+/// One `vertex(<faces>) = <radius>` of a variable fillet (ADR 0061).
+fn parse_vertex_radius(a: &str) -> Result<VertexRadius, CommandError> {
+    let bad = |why: String| {
+        CommandError::args(format!("at '{a}': {why}")).hint("write vertex(<face>, <face>, <face>) = <radius>")
+    };
+    let (v, r) = a.rsplit_once('=').ok_or_else(|| bad("no '='".into()))?;
+    let vertex = VertexRef::parse(v.trim()).map_err(|e| bad(e.to_string()))?;
+    Ok(VertexRadius { vertex, radius: parse_expr("radius", r.trim())? })
 }
 
 /// Bevels edges.
@@ -2833,7 +2851,7 @@ impl Command for Chamfer {
             "Chamfer",
             |doc, rb| {
                 let name = feature_name(doc, self.name, "Chamfer")?;
-                let def = EdgeBlendDef { edges, size, second, faces, full_round: Vec::new() };
+                let def = EdgeBlendDef { edges, size, second, faces, full_round: Vec::new(), radii: Vec::new() };
                 insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Chamfer(def)));
                 Ok(json!({ "feature": name }))
             },
@@ -2952,12 +2970,18 @@ fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
                 for f in b.faces.iter_mut().chain(&mut b.full_round) {
                     f.rename_feature(from, to);
                 }
+                for r in &mut b.radii {
+                    r.vertex.rename_feature(from, to);
+                }
             }
             FeatureKind::Import(_) => {}
             other => ops::rename_refs(other, from, to),
         }
         if let FeatureKind::Revolve(r) = &mut f.kind {
             r.axis.rename_feature(from, to);
+        }
+        if let FeatureKind::Extrude(ExtrudeDef { end: ExtrudeEnd::ToFace { face, .. }, .. }) = &mut f.kind {
+            face.rename_feature(from, to);
         }
     }
     // Drawings: base views showing the feature's body and dimension edges (review D4).

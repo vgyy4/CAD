@@ -95,7 +95,9 @@ impl<K: Kernel> Server<K> {
                 });
                 Reply::Unit
             }
-            Request::ExtrudeToFace(p, t, face, offset, rev) => Reply::Op(k.extrude_to_face(&p, &t, face, offset, rev)?),
+            Request::ExtrudeToFace(p, t, face, offset, rev, ext) => {
+                Reply::Op(k.extrude_to_face(&p, &t, face, offset, rev, ext)?)
+            }
             Request::Extrude(p, spec) => Reply::Op(k.extrude(&p, &spec)?),
             Request::Revolve(p, spec) => Reply::Op(k.revolve(&p, &spec)?),
             Request::Sweep(p, path, spec) => Reply::Op(k.sweep(&p, &path, &spec)?),
@@ -109,6 +111,7 @@ impl<K: Kernel> Server<K> {
             Request::Shell(s, faces, t) => Reply::Op(k.shell(&s, &faces, t)?),
             Request::ChamferRef(s, edges, faces, spec) => Reply::Op(k.chamfer_ref(&s, &edges, &faces, &spec)?),
             Request::FullRound(s, faces) => Reply::Op(k.full_round(&s, &faces)?),
+            Request::FilletVariable(s, edges, r, at) => Reply::Op(k.fillet_variable(&s, &edges, r, &at)?),
             Request::Draft(s, faces, spec) => Reply::Op(k.draft(&s, &faces, &spec)?),
             Request::OffsetFaces(s, faces, d) => Reply::Op(k.offset_faces(&s, &faces, d)?),
             Request::OffsetFacesOnly(s, faces, d) => Reply::Op(k.offset_faces_only(&s, &faces, d)?),

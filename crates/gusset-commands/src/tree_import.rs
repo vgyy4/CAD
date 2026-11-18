@@ -268,6 +268,10 @@ struct SolidF {
     /// Extrude to a face: sweep against the source sketch's normal.
     #[serde(default)]
     reverse: bool,
+    /// Extrude to a face: extend the face's surface past its edges (ADR 0061), so the end may
+    /// lie outside the face (SolidWorks "up to surface", Inventor "to face, extended").
+    #[serde(default)]
+    extend: bool,
     /// Extrude to a planar face parallel to the sketch: the blind distance (signed as `distance`)
     /// that reaches the face's plane, offset included. Used when the face does not cover the
     /// sweep as the model is built here (a hole an earlier cut made in it): SolidWorks extends a
@@ -1198,6 +1202,7 @@ pub fn apply_with(
                                 offset: None,
                                 offset_parameter: None,
                                 reverse: false,
+                                extend: false,
                                 plane_distance: None,
                                 distance: Some(dist),
                                 ..d.clone()
@@ -1843,6 +1848,9 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
                 }
                 if d.reverse != flipped {
                     args.push("reverse: true".into());
+                }
+                if d.extend {
+                    args.push("extend: true".into());
                 }
             }
             other => return Err(format!("end condition '{}' is not blind or to_face", short(other))),

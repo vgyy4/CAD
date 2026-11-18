@@ -296,6 +296,9 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                         "give one reference face per edge, or none",
                     ));
                 }
+                if !b.radii.is_empty() && (b.edges.is_empty() || !matches!(f.kind, FeatureKind::Fillet(_))) {
+                    out.push(issue_h(n, "vertex radii need a fillet of edges", "remove at, or give edges"));
+                }
                 if !b.faces.is_empty() && b.second == ChamferSecond::Equal {
                     out.push(issue_h(
                         n,

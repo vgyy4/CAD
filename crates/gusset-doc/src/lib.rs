@@ -22,7 +22,7 @@ pub const TEXT_GRAMMAR: &str = include_str!("grammar.md");
 
 pub use cursor::ParseError;
 pub use model::*;
-pub use refs::{CapSide, EdgeRef, FaceKey, FaceRef, HolePart, SheetPart};
+pub use refs::{CapSide, EdgeRef, FaceKey, FaceRef, HolePart, SheetPart, VertexRef};
 pub use validate::Issue;
 
 /// Why text could not be turned into a valid document.
@@ -447,6 +447,31 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     }
 
     #[test]
+    fn variable_fillets_round_trip_and_are_validated() {
+        let e = "edge(E/side(P/l4), E/side(P/l5))";
+        let v1 = "vertex(E/cap(end), E/side(P/l4), E/side(P/l5))";
+        let v2 = "vertex(E/cap(start), E/side(P/l4), E/side(P/l5))";
+        let ok = format!("{HOLE_BASE}fillet R (edges: [{e}], radius: 2 mm, at: [{v1} = d / 2, {v2} = 0.5 mm])\n");
+        let doc = Document::from_text(&ok).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), ok);
+        let kind = &doc.feature("R").unwrap().kind;
+        let FeatureKind::Fillet(b) = kind else { panic!() };
+        assert_eq!(b.radii.len(), 2);
+        assert_eq!(b.radii[0].vertex.to_string(), v1);
+        // The radii read parameters; the vertices depend on their features.
+        assert!(kind.parameters().contains(&"d".to_string()));
+        assert_eq!(kind.dependencies(), ["E", "P"]);
+        assert!(validate::validate(&doc).is_empty());
+        // Only a fillet of edges takes vertex radii.
+        let bad = format!("{HOLE_BASE}chamfer C (edges: [{e}], distance: 1 mm, at: [{v1} = 1 mm])\n");
+        assert!(Document::from_text(&bad).unwrap_err().to_string().contains("at"));
+        let bad = format!("{HOLE_BASE}fillet R (full_round: [E/side(P/l4)], at: [{v1} = 1 mm])\n");
+        assert!(Document::from_text(&bad).unwrap_err().to_string().contains("full_round only"));
+        let bad = format!("{HOLE_BASE}fillet R (edges: [{e}], radius: 2 mm, at: [{v1} 1 mm])\n");
+        assert!(Document::from_text(&bad).is_err());
+    }
+
+    #[test]
     fn a_face_profile_round_trips_and_is_validated() {
         let ok = format!(
             "{HOLE_BASE}extrude E2 (profile: E/cap(end), distance: 2 mm, op: add, body: E)\n\nloft L (profiles: [E/cap(end), S], op: new)\n\nextrude E3 (profile: L/along(edge(E/cap(end), E/side(P/l4))), distance: 1 mm, op: new)\n"
@@ -485,13 +510,15 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     #[test]
     fn extrude_up_to_a_face_round_trips_and_is_validated() {
         let ok = format!(
-            "{HOLE_BASE}extrude E2 (profile: P, to: E/cap(end), offset: deep / 2, reverse: true, op: add, body: E)\n\nextrude E3 (profile: P, to: E/side(P/l5), op: cut, body: E)\n"
+            "{HOLE_BASE}extrude E2 (profile: P, to: E/cap(end), offset: deep / 2, reverse: true, op: add, body: E)\n\nextrude E3 (profile: P, to: E/side(P/l5), op: cut, body: E)\n\nextrude E4 (profile: P, to: E/side(P/l5), extend: true, op: cut, body: E)\n"
         );
         let doc = Document::from_text(&ok).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(doc.to_text(), ok);
         let FeatureKind::Extrude(e) = &doc.feature("E2").unwrap().kind else { panic!() };
-        let ExtrudeEnd::ToFace { face, offset, reverse } = &e.end else { panic!() };
-        assert_eq!((face.to_string().as_str(), offset.is_some(), *reverse), ("E/cap(end)", true, true));
+        let ExtrudeEnd::ToFace { face, offset, reverse, extend } = &e.end else { panic!() };
+        assert_eq!((face.to_string().as_str(), offset.is_some(), *reverse, *extend), ("E/cap(end)", true, true, false));
+        let FeatureKind::Extrude(e4) = &doc.feature("E4").unwrap().kind else { panic!() };
+        assert!(matches!(e4.end, ExtrudeEnd::ToFace { extend: true, .. }));
         assert!(e.end.distance().is_none());
         // It depends on the feature of the face, and the offset reads parameters.
         assert!(doc.feature("E2").unwrap().kind.dependencies().contains(&"E".to_string()));
@@ -509,6 +536,7 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             ("distance: 1 mm, to: E/cap(end)", "not both"),
             ("distance: 1 mm, offset: 1 mm", "go with to"),
             ("distance: 1 mm, reverse: true", "go with to"),
+            ("distance: 1 mm, extend: true", "go with to"),
             ("to: E/cap(end), symmetric: true", "symmetric"),
             ("op: new", "needs an end"),
         ] {

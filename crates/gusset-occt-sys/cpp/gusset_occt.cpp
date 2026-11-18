@@ -171,6 +171,11 @@
 #include <OSD_Parallel.hxx>
 #include <array>
 #include <Geom_Plane.hxx>
+#include <Geom_BSplineSurface.hxx>
+#include <Geom_BezierSurface.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
+#include <GeomConvert.hxx>
+#include <GeomLib.hxx>
 #include <atomic>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
@@ -1600,6 +1605,58 @@ bool cut_coaxial_holes(const Swept& body, const std::vector<Swept>& holes, TopoD
   return true;
 }
 
+// The surface of a face extended past the face (ADR 0061), as a face to cut a sweep with: a
+// sphere or torus whole; a periodic direction over its period; otherwise the natural bounds of
+// the surface clipped to `margin` (model units) past the face's (u0..u1, v0..v1), and a B-spline
+// or Bezier surface first extended by `margin` across each side (curvature-continuous). A null
+// face when the surface cannot be built.
+TopoDS_Face extended_face(occ::handle<Geom_Surface> surf, double u0, double u1, double v0, double v1, double margin) {
+  TopoDS_Face none;
+  if (surf.IsNull()) return none;
+  while (true) {
+    occ::handle<Geom_RectangularTrimmedSurface> tr = occ::handle<Geom_RectangularTrimmedSurface>::DownCast(surf);
+    if (tr.IsNull()) break;
+    surf = tr->BasisSurface();
+  }
+  if (surf->IsKind(STANDARD_TYPE(Geom_BSplineSurface)) || surf->IsKind(STANDARD_TYPE(Geom_BezierSurface))) {
+    occ::handle<Geom_BSplineSurface> bs = GeomConvert::SurfaceToBSplineSurface(surf);
+    if (bs.IsNull()) return none;
+    occ::handle<Geom_BoundedSurface> b = bs;
+    for (int side = 0; side < 4; ++side) {
+      const bool in_u = side < 2, after = side % 2 == 1;
+      if ((in_u && bs->IsUPeriodic()) || (!in_u && bs->IsVPeriodic())) continue;
+      try {
+        GeomLib::ExtendSurfByLength(b, margin, 2, in_u, after);
+      } catch (const Standard_Failure&) {
+        // That side stays as it is.
+      }
+    }
+    BRepBuilderAPI_MakeFace mf(occ::handle<Geom_Surface>(b), 1e-7);
+    if (!mf.IsDone()) return none;
+    return mf.Face();
+  }
+  double nu0, nu1, nv0, nv1;
+  surf->Bounds(nu0, nu1, nv0, nv1);
+  if (surf->IsUPeriodic()) {
+    nu0 = 0.0;
+    nu1 = surf->UPeriod();
+  } else {
+    nu0 = std::max(nu0, u0 - margin);
+    nu1 = std::min(nu1, u1 + margin);
+  }
+  if (surf->IsVPeriodic()) {
+    nv0 = 0.0;
+    nv1 = surf->VPeriod();
+  } else {
+    nv0 = std::max(nv0, v0 - margin);
+    nv1 = std::min(nv1, v1 + margin);
+  }
+  if (!(nu1 > nu0) || !(nv1 > nv0)) return none;
+  BRepBuilderAPI_MakeFace mf(surf, nu0, nu1, nv0, nv1, 1e-7);
+  if (!mf.IsDone()) return none;
+  return mf.Face();
+}
+
 // The recs of faces that a boolean replaced or removed, carried over to the result.
 void carry_recs(BRepAlgoAPI_BuilderAlgo& op, std::vector<Rec>& recs) {
   std::vector<Rec> out;
@@ -1704,11 +1761,15 @@ int gs_extrude(const GsProfile* p, double distance, int symmetric, GsShape** out
 // along the face normal toward the far side for planes), returning the swept tool solid.
 // The prism is made longer than needed and split by the face's surface (a plane, cylinder or
 // cone extended past the face, any other surface as bounded); the piece holding the start cap is
-// the result. The cut-off end must lie inside the face itself, or the call fails.
-int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face, double offset, int reverse,
+// the result. The cut-off end must lie inside the face itself, or the call fails; with flag 2
+// (extend, ADR 0061) the face's surface is extended (spheres and tori whole, other surfaces past
+// their natural bounds) and the end may lie anywhere on it. Flag 1 reverses the sweep.
+int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face, double offset, int flags,
                        GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   if (!p || !target || !out || !origins) return fail("null argument");
+  const bool reverse = (flags & 1) != 0;
+  const bool extend = (flags & 2) != 0;
   if (!std::isfinite(offset)) return fail("the offset must be finite");
   ShapeMap tfaces;
   TopExp::MapShapes(target->s, TopAbs_FACE, tfaces);
@@ -1813,6 +1874,9 @@ int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face,
       BRepBuilderAPI_MakeFace mf(cs, 0.0, 2.0 * M_PI, lo, hi, 1e-7);
       if (!mf.IsDone()) return fail("could not extend the face");
       tool_face = mf.Face();
+    } else if (extend) {
+      tool_face = extended_face(surf, u0, u1, v0, v1, udiag + 1.0);
+      if (tool_face.IsNull()) return fail("could not extend the face");
     } else {
       if (surf->IsUPeriodic()) {
         u0 = 0.0;
@@ -1867,13 +1931,22 @@ int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face,
     if (piece.IsNull()) return fail("could not find the extrusion's start after cutting at the face");
     ShapeMap pf;
     TopExp::MapShapes(piece, TopAbs_FACE, pf);
+    // The far end of the long prism must be cut off everywhere: a surface that ends inside
+    // the sweep (not extended far enough) leaves part of it.
+    {
+      const TopoDS_Shape last = mk.LastShape(faces[ri]);
+      ShapeList last_mods = sp.Modified(last);
+      if (last_mods.IsEmpty() && !sp.IsDeleted(last)) last_mods.Append(last);
+      for (ShapeList::Iterator it(last_mods); it.More(); it.Next())
+        if (pf.Contains(it.Value())) return fail("the face's surface does not cross the whole sweep");
+    }
     std::vector<TopoDS_Shape> caps;
     const ShapeList& tm = sp.Modified(tool_face);
     for (ShapeList::Iterator it(tm); it.More(); it.Next())
       if (pf.Contains(it.Value())) caps.push_back(it.Value());
     if (caps.empty()) return fail("the extrusion does not reach the face");
     // The end must lie inside the face: the cap and its overlap with the real face agree.
-    for (const auto& cap : caps) {
+    for (const auto& cap : extend ? std::vector<TopoDS_Shape>() : caps) {
       GProp_GProps g0, g1;
       BRepGProp::SurfaceProperties(cap, g0);
       double common_area = 0.0;
@@ -4040,6 +4113,51 @@ int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, 
 int gs_fillet(const GsShape* s, const uint32_t* edges, size_t nedges, double radius, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   return blend<BRepFilletAPI_MakeFillet>(s, edges, nedges, radius, true, out, origins);
+  GS_GUARD_END
+}
+
+// A variable-radius fillet (ADR 0061): `radius` along the edges, `radii[i]` at vertex
+// `vertices[i]` (an end of one of the edges). OCCT interpolates the radius smoothly between
+// the given values along each contour of tangent edges (a cubic through them, level at the
+// contour's ends).
+int gs_fillet_variable(const GsShape* s, const uint32_t* edges, size_t nedges, double radius,
+                       const uint32_t* vertices, const double* radii, size_t nvertices, GsShape** out,
+                       GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!s || !out || !origins || (!edges && nedges) || (nvertices && (!vertices || !radii))) return fail("null argument");
+  if (nedges == 0) return fail("no edges selected");
+  if (!std::isfinite(radius) || radius <= 0) return fail("fillet radius must be positive");
+  ShapeMap vm;
+  TopExp::MapShapes(s->s, TopAbs_VERTEX, vm);
+  std::vector<TopoDS_Edge> es;
+  for (size_t i = 0; i < nedges; ++i) es.push_back(edge_by_index(s->s, edges[i]));
+  BRepFilletAPI_MakeFillet mk(s->s);
+  for (const auto& e : es) mk.Add(radius, e);
+  for (size_t i = 0; i < nvertices; ++i) {
+    if (!std::isfinite(radii[i]) || radii[i] <= 0) return fail("fillet radius must be positive");
+    if (vm.Extent() <= 0 || vertices[i] >= uint32_t(vm.Extent())) return fail("vertex index out of range");
+    const TopoDS_Vertex v = TopoDS::Vertex(vm(int(vertices[i]) + 1));
+    int ic = 0;
+    for (const auto& e : es) {
+      TopoDS_Vertex v0, v1;
+      TopExp::Vertices(e, v0, v1);
+      if ((!v0.IsNull() && v0.IsSame(v)) || (!v1.IsNull() && v1.IsSame(v))) {
+        ic = mk.Contour(e);
+        if (ic > 0) break;
+      }
+    }
+    if (ic <= 0) return fail("a vertex of the variable radius is not an end of the fillet's edges");
+    mk.SetRadius(radii[i], ic, v);
+  }
+  mk.Build();
+  if (!mk.IsDone()) return fail("variable fillet failed");
+  Handle(ShapeBuild_ReShape) ctx;
+  TopoDS_Shape result = valid_blend(mk.Shape(), true, ctx, s->s);
+  std::vector<int64_t> o;
+  blend_origins(mk, s->s, result, ctx, o);
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
   GS_GUARD_END
 }
 

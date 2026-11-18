@@ -1068,7 +1068,7 @@ impl Evaluator {
                         k.extrude(&profile, &ExtrudeSpec { distance, symmetric: e.symmetric })
                             .map_err(|ke| kernel_err(name, "extrusion", ke))?
                     }
-                    ExtrudeEnd::ToFace { face, offset, reverse } => {
+                    ExtrudeEnd::ToFace { face, offset, reverse, extend } => {
                         let offset = match offset {
                             Some(o) => eval_expr(name, o, Dim::LENGTH, params, units)?,
                             None => 0.0,
@@ -1091,12 +1091,18 @@ impl Evaluator {
                                     err
                                 },
                             )?;
-                        k.extrude_to_face(&profile, &target.shape, fi, offset, *reverse).map_err(|ke| {
+                        k.extrude_to_face(&profile, &target.shape, fi, offset, *reverse, *extend).map_err(|ke| {
                             let mut err = kernel_err(name, "extrusion up to a face", ke);
                             if err.hint.is_none() {
-                                err.hint = Some(format!(
-                                    "the face {face} must lie ahead of the whole profile (reverse flips the direction) and contain the end of the sweep"
-                                ));
+                                err.hint = Some(if *extend {
+                                    format!(
+                                        "the surface of {face} must lie ahead of the whole profile (reverse flips the direction) and cross the whole sweep"
+                                    )
+                                } else {
+                                    format!(
+                                        "the face {face} must lie ahead of the whole profile (reverse flips the direction) and contain the end of the sweep (extend: true extends its surface)"
+                                    )
+                                });
                             }
                             err
                         })?
@@ -1127,7 +1133,32 @@ impl Evaluator {
                     .get(bi)
                     .cloned()
                     .ok_or_else(|| EvalError::new(name, ErrorCode::NoTargetBody, "no body"))?;
-                let (res, size) = if fillet {
+                let (res, size) = if fillet && !b.radii.is_empty() {
+                    let mut at = Vec::with_capacity(b.radii.len());
+                    for vr in &b.radii {
+                        let r = eval_expr(name, &vr.radius, Dim::LENGTH, params, units)?;
+                        if !(r.is_finite() && r > 0.0) {
+                            return Err(EvalError::new(
+                                name,
+                                ErrorCode::Expression,
+                                format!("the radius at {} must be positive", vr.vertex),
+                            ));
+                        }
+                        let v = body.names.resolve_vertex(&body.topology, &vr.vertex).map_err(|why| {
+                            let mut err = EvalError::new(
+                                name,
+                                ErrorCode::MissingReference,
+                                format!("vertex {}: {why}", vr.vertex),
+                            )
+                            .with_hint("re-select the vertex of the variable radius");
+                            err.reference = Some(vr.vertex.to_string());
+                            err
+                        })?;
+                        at.push((v, r));
+                    }
+                    let largest = at.iter().map(|a| a.1).fold(size, f64::max);
+                    (k.fillet_variable(&body.shape, &edges, size, &at), largest)
+                } else if fillet {
                     (k.fillet(&body.shape, &edges, size), size)
                 } else {
                     let plan = chamfer::plan(name, b, size, &edges, &body, params, units)?;

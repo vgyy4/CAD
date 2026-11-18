@@ -499,8 +499,9 @@ impl Kernel for RemoteKernel {
         face: u32,
         offset: f64,
         reverse: bool,
+        extend: bool,
     ) -> KResult<OpResult> {
-        self.op(&Request::ExtrudeToFace(profile.clone(), target.clone(), face, offset, reverse))
+        self.op(&Request::ExtrudeToFace(profile.clone(), target.clone(), face, offset, reverse, extend))
     }
 
     fn revolve(&self, profile: &Profile, spec: &RevolveSpec) -> KResult<OpResult> {
@@ -548,6 +549,10 @@ impl Kernel for RemoteKernel {
 
     fn full_round(&self, shape: &Shape, faces: &[u32]) -> KResult<OpResult> {
         self.op(&Request::FullRound(shape.clone(), faces.to_vec()))
+    }
+
+    fn fillet_variable(&self, shape: &Shape, edges: &[u32], radius: f64, at: &[(u32, f64)]) -> KResult<OpResult> {
+        self.op(&Request::FilletVariable(shape.clone(), edges.to_vec(), radius, at.to_vec()))
     }
 
     fn shell(&self, shape: &Shape, remove: &[u32], thickness: f64) -> KResult<OpResult> {

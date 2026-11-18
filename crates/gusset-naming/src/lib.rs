@@ -7,7 +7,7 @@
 
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
-use gusset_doc::{CapSide, EdgeRef, FaceKey, FaceRef, HolePart, SheetPart};
+use gusset_doc::{CapSide, EdgeRef, FaceKey, FaceRef, HolePart, SheetPart, VertexRef};
 use gusset_kernel::{CapEnd, FaceOrigin, Topology, V3};
 use std::collections::BTreeMap;
 
@@ -487,6 +487,68 @@ impl BodyNames {
             .cloned();
         Resolution::Missing { reason, suggestion }
     }
+
+    /// The name of every vertex of the body (ADR 0061): the faces that meet at it, with a
+    /// `#k` index ordered by position where several vertices share the faces. Computed on
+    /// demand from the topology the names were made for.
+    #[must_use]
+    pub fn vertex_names(&self, topo: &Topology) -> Vec<VertexRef> {
+        let mut faces: Vec<Vec<FaceRef>> = vec![Vec::new(); topo.vertices.len()];
+        for e in &topo.edges {
+            for v in &e.vertices {
+                let Some(at) = faces.get_mut(*v as usize) else { continue };
+                for f in &e.faces {
+                    if let Some(name) = self.faces.get(*f as usize) {
+                        at.push(name.clone());
+                    }
+                }
+            }
+        }
+        let mut out: Vec<VertexRef> = faces.into_iter().map(|f| VertexRef::new(f, None)).collect();
+        disambiguate(
+            &mut out,
+            |i| topo.vertices.get(i).map(|v| geo_key(v.point, 0.0)),
+            |v: &mut VertexRef, k| v.index = k,
+        );
+        out
+    }
+
+    /// Resolves a vertex reference (ADR 0061) against the body's topology: the vertex of that
+    /// name, else the only vertex whose faces are the same with another index, else the only
+    /// vertex where all the named faces meet (a later feature added faces around it).
+    ///
+    /// # Errors
+    /// Why no single vertex matches.
+    pub fn resolve_vertex(&self, topo: &Topology, r: &VertexRef) -> Result<u32, String> {
+        let names = self.vertex_names(topo);
+        let index = |i: usize| u32::try_from(i).map_err(|_| "too many vertices".to_string());
+        if let Some(i) = names.iter().position(|v| v == r) {
+            return index(i);
+        }
+        let same: Vec<usize> = (0..names.len()).filter(|&i| names.get(i).is_some_and(|v| v.faces == r.faces)).collect();
+        if let [only] = same.as_slice() {
+            return index(*only);
+        }
+        if same.len() > 1 {
+            return Err(format!("{} vertices now lie between these faces and the index no longer matches", same.len()));
+        }
+        let around: Vec<usize> = (0..names.len())
+            .filter(|&i| names.get(i).is_some_and(|v| r.faces.iter().all(|f| v.faces.contains(f))))
+            .collect();
+        match around.as_slice() {
+            [only] => index(*only),
+            [] => {
+                let missing: Vec<String> =
+                    r.faces.iter().filter(|f| !self.faces.contains(f)).map(ToString::to_string).collect();
+                Err(if missing.is_empty() {
+                    "these faces no longer meet at a vertex".to_string()
+                } else {
+                    format!("face {} no longer exists", missing.join(" and "))
+                })
+            }
+            many => Err(format!("these faces meet at {} vertices", many.len())),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -521,6 +583,34 @@ mod tests {
             &t,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn vertices_are_named_by_their_faces() {
+        let k = MockKernel;
+        let r = k
+            .extrude(
+                &rect_profile(40.0, 20.0, ["l5", "l6", "l7", "l8"]),
+                &ExtrudeSpec { distance: 10.0, symmetric: false },
+            )
+            .unwrap();
+        let t = k.topology(&r.shape).unwrap();
+        let names = named_box(40.0);
+        let v = names.vertex_names(&t);
+        assert_eq!(v.len(), 8);
+        assert!(v.iter().all(|n| n.faces.len() == 3 && n.index.is_none()), "{v:?}");
+        // The corner where the end cap meets l5 and l6 is at (40, 0, 10).
+        let r = VertexRef::parse("vertex(Extrude1/cap(end), Extrude1/side(Sketch1/l5), Extrude1/side(Sketch1/l6))")
+            .unwrap();
+        let i = names.resolve_vertex(&t, &r).unwrap();
+        assert_eq!(t.vertices[i as usize].point, [40.0, 0.0, 10.0]);
+        // A stale index still finds the only vertex of those faces; two faces meet at two.
+        let stale = VertexRef { index: Some(2), ..r.clone() };
+        assert_eq!(names.resolve_vertex(&t, &stale), Ok(i));
+        let two = VertexRef::new(r.faces[1..].to_vec(), None);
+        assert!(names.resolve_vertex(&t, &two).unwrap_err().contains("2 vertices"));
+        let gone = VertexRef::parse("vertex(Extrude1/cap(end), Extrude9/side(Sketch1/l5))").unwrap();
+        assert!(names.resolve_vertex(&t, &gone).unwrap_err().contains("Extrude9"));
     }
 
     #[test]

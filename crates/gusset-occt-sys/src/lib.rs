@@ -134,7 +134,7 @@ mod raw {
             target: *const GsShape,
             face: u32,
             offset: f64,
-            reverse: i32,
+            flags: i32,
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;
@@ -217,6 +217,17 @@ mod raw {
             edges: *const u32,
             nedges: usize,
             radius: f64,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_fillet_variable(
+            s: *const GsShape,
+            edges: *const u32,
+            nedges: usize,
+            radius: f64,
+            vertices: *const u32,
+            radii: *const f64,
+            nvertices: usize,
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;

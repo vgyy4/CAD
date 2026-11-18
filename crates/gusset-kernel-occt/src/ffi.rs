@@ -28,8 +28,9 @@ pub(crate) fn extrude_to_face(
     face: u32,
     offset: f64,
     reverse: bool,
+    extend: bool,
 ) -> KResult<OpOut> {
-    safe::extrude_to_face(p, target, face, offset, reverse).map_err(err(KernelErrorKind::OperationFailed))
+    safe::extrude_to_face(p, target, face, offset, reverse, extend).map_err(err(KernelErrorKind::OperationFailed))
 }
 
 pub(crate) fn extrude_curves(p: &ProfileData, distance: f64, symmetric: bool) -> KResult<OpOut> {
@@ -111,6 +112,10 @@ pub(crate) fn full_round(s: &RawShape, faces: &[u32]) -> KResult<OpOut> {
 
 pub(crate) fn blend(s: &RawShape, edges: &[u32], size: f64, fillet: bool) -> KResult<OpOut> {
     safe::blend(s, edges, size, fillet).map_err(err(KernelErrorKind::OperationFailed))
+}
+
+pub(crate) fn fillet_variable(s: &RawShape, edges: &[u32], radius: f64, at: &[(u32, f64)]) -> KResult<OpOut> {
+    safe::fillet_variable(s, edges, radius, at).map_err(err(KernelErrorKind::OperationFailed))
 }
 
 pub(crate) fn shell(s: &RawShape, faces: &[u32], thickness: f64) -> KResult<OpOut> {

@@ -103,7 +103,8 @@ int gs_extrude(const GsProfile* p, double distance, int symmetric, GsShape** out
 /* Extrudes `p` along its normal (against it when `reverse`) until face `face` of `target`,
  * moved by `offset` mm further along the extrusion (planar faces only). Fails when the sweep
  * does not reach the face or the face does not cover the end of the sweep. */
-int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face, double offset, int reverse,
+// flags: bit 0 reverse, bit 1 extend the face's surface past its boundary (ADR 0061).
+int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face, double offset, int flags,
                        GsShape** out, GsBuf* origins);
 int gs_revolve(const GsProfile* p, const double axis_origin[2], const double axis_dir[2], double angle,
                GsShape** out, GsBuf* origins);
@@ -128,6 +129,10 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, int refine, G
 int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, size_t ntools, int refine,
                     GsShape** out, GsBuf* origins);
 int gs_fillet(const GsShape* s, const uint32_t* edges, size_t nedges, double radius, GsShape** out, GsBuf* origins);
+// Variable-radius fillet (ADR 0061): `radius` on the edges, `radii[i]` at vertex `vertices[i]`.
+int gs_fillet_variable(const GsShape* s, const uint32_t* edges, size_t nedges, double radius,
+                       const uint32_t* vertices, const double* radii, size_t nvertices, GsShape** out,
+                       GsBuf* origins);
 int gs_chamfer(const GsShape* s, const uint32_t* edges, size_t nedges, double dist, GsShape** out, GsBuf* origins);
 /* Chamfers with a reference face per edge (`faces[i]` is a face index adjacent to `edges[i]`;
  * the first distance `a` runs along it). mode 1: two distances (a, b); mode 2: distance `a`

@@ -192,14 +192,23 @@ pub fn extrude(p: &ProfileData, distance: f64, symmetric: bool) -> ShimResult<Op
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
-/// Extrudes a profile until face `face` of `target` (moved by `offset`).
-pub fn extrude_to_face(p: &ProfileData, target: &RawShape, face: u32, offset: f64, reverse: bool) -> ShimResult<OpOut> {
+/// Extrudes a profile until face `face` of `target` (moved by `offset`); with `extend` the
+/// face's surface is extended past its boundary.
+pub fn extrude_to_face(
+    p: &ProfileData,
+    target: &RawShape,
+    face: u32,
+    offset: f64,
+    reverse: bool,
+    extend: bool,
+) -> ShimResult<OpOut> {
+    let flags = i32::from(reverse) | (i32::from(extend) << 1);
     let raw = p.raw();
     let mut out = std::ptr::null_mut();
     let mut origins = GsBuf::default();
     let rc = target.with(|t| {
         // SAFETY: `raw` points into `p`'s vectors and `t` is locked and valid for the call; out-params are valid.
-        unsafe { sys::gs_extrude_to_face(&raw, t, face, offset, i32::from(reverse), &mut out, &mut origins) }
+        unsafe { sys::gs_extrude_to_face(&raw, t, face, offset, flags, &mut out, &mut origins) }
     });
     check(rc)?;
     Ok((RawShape::from_ptr(out)?, take(origins)))
@@ -380,6 +389,32 @@ pub fn blend(s: &RawShape, edges: &[u32], size: f64, fillet: bool) -> ShimResult
         } else {
             // SAFETY: as above.
             unsafe { sys::gs_chamfer(p, edges.as_ptr(), edges.len(), size, &mut out, &mut origins) }
+        }
+    });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
+/// Variable-radius fillet (ADR 0061): `radius` on `edges`, `at[i].1` at vertex `at[i].0`.
+pub fn fillet_variable(s: &RawShape, edges: &[u32], radius: f64, at: &[(u32, f64)]) -> ShimResult<OpOut> {
+    let vertices: Vec<u32> = at.iter().map(|a| a.0).collect();
+    let radii: Vec<f64> = at.iter().map(|a| a.1).collect();
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    let rc = s.with(|p| {
+        // SAFETY: shape locked and valid; the slices are alive for the call and their lengths match.
+        unsafe {
+            sys::gs_fillet_variable(
+                p,
+                edges.as_ptr(),
+                edges.len(),
+                radius,
+                vertices.as_ptr(),
+                radii.as_ptr(),
+                vertices.len(),
+                &mut out,
+                &mut origins,
+            )
         }
     });
     check(rc)?;

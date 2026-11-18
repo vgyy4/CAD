@@ -141,6 +141,61 @@ pub struct EdgeRef {
     pub index: Option<u32>,
 }
 
+/// A named vertex (ADR 0061): the faces that meet at it (sorted), plus a disambiguator
+/// ordered by position like an edge's, e.g. `vertex(E/cap(end), E/side(S/l1), E/side(S/l2))`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct VertexRef {
+    pub faces: Vec<FaceRef>,
+    pub index: Option<u32>,
+}
+
+impl VertexRef {
+    /// Builds a vertex reference with its faces in canonical (sorted) order.
+    pub fn new(mut faces: Vec<FaceRef>, index: Option<u32>) -> Self {
+        sort_faces(&mut faces);
+        VertexRef { faces, index }
+    }
+
+    pub fn features(&self, f: &mut dyn FnMut(&str)) {
+        for face in &self.faces {
+            face.features(f);
+        }
+    }
+
+    pub fn rename_feature(&mut self, from: &str, to: &str) {
+        for face in &mut self.faces {
+            face.rename_feature(from, to);
+        }
+        sort_faces(&mut self.faces);
+    }
+
+    pub fn parse(s: &str) -> Result<VertexRef, ParseError> {
+        let mut c = Cursor::new(s, 1);
+        let r = parse_vertex(&mut c)?;
+        if !c.at_end() {
+            return Err(c.err("unexpected text after reference"));
+        }
+        Ok(r)
+    }
+}
+
+impl fmt::Display for VertexRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("vertex(")?;
+        for (i, face) in self.faces.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{face}")?;
+        }
+        f.write_str(")")?;
+        if let Some(i) = self.index {
+            write!(f, "#{i}")?;
+        }
+        Ok(())
+    }
+}
+
 impl FaceRef {
     pub fn new(feature: impl Into<String>, key: FaceKey) -> Self {
         FaceRef { feature: feature.into(), key, index: None }
@@ -365,6 +420,25 @@ pub(crate) fn parse_edge(c: &mut Cursor<'_>) -> Result<EdgeRef, ParseError> {
     Ok(EdgeRef::new(faces, index))
 }
 
+pub(crate) fn parse_vertex(c: &mut Cursor<'_>) -> Result<VertexRef, ParseError> {
+    c.enter()?;
+    if !c.eat_kw("vertex") {
+        return Err(c.err_hint("expected a vertex reference", "vertex(<face>, <face>, <face>)"));
+    }
+    c.expect('(')?;
+    let mut faces = vec![parse_face(c)?];
+    while c.eat(',') {
+        faces.push(parse_face(c)?);
+        if faces.len() > 16 {
+            return Err(c.err("a vertex reference names at most 16 faces"));
+        }
+    }
+    c.expect(')')?;
+    let index = parse_index(c)?;
+    c.leave();
+    Ok(VertexRef::new(faces, index))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,6 +469,9 @@ mod tests {
             let r = FaceRef::parse(s).unwrap();
             assert_eq!(r.to_string(), s);
         }
+        let v = VertexRef::parse("vertex(E/side(S/l2), E/cap(end), E/side(S/l1))#3").unwrap();
+        assert_eq!(v.to_string(), "vertex(E/cap(end), E/side(S/l1), E/side(S/l2))#3");
+        assert!(VertexRef::parse("vertex()").is_err() && VertexRef::parse("edge(E/cap(end))").is_err());
         let e = EdgeRef::parse("edge(Extrude1/side(Sketch1/l3), Extrude1/cap(end))#2").unwrap();
         // Faces are canonically sorted.
         assert_eq!(e.to_string(), "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l3))#2");

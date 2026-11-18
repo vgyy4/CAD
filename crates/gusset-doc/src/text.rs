@@ -7,7 +7,7 @@
 
 use crate::cursor::{Cursor, ParseError, quote};
 use crate::model::*;
-use crate::refs::{EdgeRef, FaceRef, parse_edge, parse_face};
+use crate::refs::{EdgeRef, FaceRef, parse_edge, parse_face, parse_vertex};
 use gusset_units::LengthUnit;
 use gusset_units::params::Param;
 use gusset_units::quantity::format_exact;
@@ -518,13 +518,16 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("profile: {}", print_profile(&e.profile)));
             match &e.end {
                 ExtrudeEnd::Distance(d) => args.push(format!("distance: {d}")),
-                ExtrudeEnd::ToFace { face, offset, reverse } => {
+                ExtrudeEnd::ToFace { face, offset, reverse, extend } => {
                     args.push(format!("to: {face}"));
                     if let Some(o) = offset {
                         args.push(format!("offset: {o}"));
                     }
                     if *reverse {
                         args.push("reverse: true".into());
+                    }
+                    if *extend {
+                        args.push("extend: true".into());
                     }
                 }
             }
@@ -621,6 +624,10 @@ fn print_feature(out: &mut String, f: &Feature) {
             if !b.faces.is_empty() && !matches!(b.second, ChamferSecond::Equal) {
                 let faces: Vec<String> = b.faces.iter().map(FaceRef::to_string).collect();
                 args.push(format!("faces: [{}]", faces.join(", ")));
+            }
+            if !b.radii.is_empty() {
+                let at: Vec<String> = b.radii.iter().map(|r| format!("{} = {}", r.vertex, r.radius)).collect();
+                args.push(format!("at: [{}]", at.join(", ")));
             }
         }
         FeatureKind::Surface(d) => {
@@ -1381,18 +1388,20 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut second: Option<ChamferSecond> = None;
     let mut faces: Option<Vec<FaceRef>> = None;
     let mut full_round: Option<Vec<FaceRef>> = None;
+    let mut radii: Vec<VertexRadius> = Vec::new();
     let mut to_face: Option<FaceRef> = None;
     let mut to_offset = None;
     let mut to_reverse = false;
+    let mut to_extend = false;
     let mut blob = None;
     let mut format = None;
     let mut file = None;
     let allowed = match kw {
         "extrude" => {
-            "profile, distance, to, offset, reverse, symmetric, op, body, body_name, refine, label, group, suppressed"
+            "profile, distance, to, offset, reverse, extend, symmetric, op, body, body_name, refine, label, group, suppressed"
         }
         "revolve" => "profile, axis, angle, op, body, body_name, refine, label, group, suppressed",
-        "fillet" => "edges, radius, full_round, label, group, suppressed",
+        "fillet" => "edges, radius, at, full_round, label, group, suppressed",
         "chamfer" => "edges, distance, distance2, angle, faces, label, group, suppressed",
         _ => "blob, format, file, label, group, suppressed",
     };
@@ -1420,6 +1429,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             ("extrude", "to") => to_face = Some(parse_face(c)?),
             ("extrude", "offset") => to_offset = Some(c.expr()?),
             ("extrude", "reverse") => to_reverse = parse_bool(c)?,
+            ("extrude", "extend") => to_extend = parse_bool(c)?,
             ("revolve", "axis") => axis = Some(parse_axis(c)?),
             ("revolve", "angle") => angle = Some(c.expr()?),
             ("fillet" | "chamfer", "edges") => {
@@ -1455,6 +1465,24 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             }
             ("chamfer", "faces") => faces = Some(parse_face_list(c)?),
             ("fillet", "full_round") => full_round = Some(parse_face_list(c)?),
+            ("fillet", "at") => {
+                c.expect('[')?;
+                if !c.eat(']') {
+                    loop {
+                        let vertex = parse_vertex(c)?;
+                        c.expect('=')?;
+                        radii.push(VertexRadius { vertex, radius: c.expr()? });
+                        if radii.len() > MAX_VERTEX_RADII {
+                            return Err(c.err("too many vertex radii"));
+                        }
+                        if c.eat(',') {
+                            continue;
+                        }
+                        c.expect(']')?;
+                        break;
+                    }
+                }
+            }
             ("import", "blob") => blob = Some(c.string()?),
             ("import", "format") => {
                 let w = c.ident_or_digits()?;
@@ -1479,9 +1507,11 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
                         "to: ends the extrude on a face; distance: ends it blind",
                     ));
                 }
-                (Some(d), None) if to_offset.is_none() && !to_reverse => ExtrudeEnd::Distance(d),
-                (Some(_), None) => return Err(c.err("offset and reverse go with to:, not with distance:")),
-                (None, Some(face)) if !symmetric => ExtrudeEnd::ToFace { face, offset: to_offset, reverse: to_reverse },
+                (Some(d), None) if to_offset.is_none() && !to_reverse && !to_extend => ExtrudeEnd::Distance(d),
+                (Some(_), None) => return Err(c.err("offset, reverse and extend go with to:, not with distance:")),
+                (None, Some(face)) if !symmetric => {
+                    ExtrudeEnd::ToFace { face, offset: to_offset, reverse: to_reverse, extend: to_extend }
+                }
                 (None, Some(_)) => return Err(c.err("an extrude up to a face cannot be symmetric")),
                 (None, None) => {
                     return Err(c.err_hint("'extrude' needs an end", "give distance: <length> or to: <face>"));
@@ -1506,8 +1536,8 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             if full_round.as_ref().is_some_and(Vec::is_empty) {
                 return Err(c.err("full_round needs at least one face"));
             }
-            if edges.is_some() || size.is_some() {
-                return Err(c.err("a full-round fillet takes full_round only, not edges or radius"));
+            if edges.is_some() || size.is_some() || !radii.is_empty() {
+                return Err(c.err("a full-round fillet takes full_round only, not edges, radius or at"));
             }
             FeatureKind::Fillet(EdgeBlendDef::full_round(full_round.unwrap_or_default()))
         }
@@ -1518,6 +1548,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
                 second: second.unwrap_or_default(),
                 faces: faces.unwrap_or_default(),
                 full_round: Vec::new(),
+                radii,
             };
             if kw == "fillet" { FeatureKind::Fillet(def) } else { FeatureKind::Chamfer(def) }
         }

@@ -1,7 +1,7 @@
 //! The document model (ADR 0004): parameters plus an ordered list of features holding
 //! only *inputs*. Derived geometry never lives here.
 
-use crate::refs::{EdgeRef, FaceRef};
+use crate::refs::{EdgeRef, FaceRef, VertexRef};
 use gusset_units::LengthUnit;
 use gusset_units::expr::Expr;
 use gusset_units::params::Param;
@@ -323,6 +323,9 @@ impl FeatureKind {
                 for f in b.faces.iter().chain(&b.full_round) {
                     f.features(&mut add);
                 }
+                for r in &b.radii {
+                    r.vertex.features(&mut add);
+                }
             }
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => {
@@ -471,6 +474,7 @@ impl FeatureKind {
                 if let ChamferSecond::Distance(e) | ChamferSecond::Angle(e) = &b.second {
                     take(e);
                 }
+                b.radii.iter().for_each(|r| take(&r.radius));
             }
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => take(&d.thickness),
@@ -578,6 +582,7 @@ impl FeatureKind {
                 if let ChamferSecond::Distance(e) | ChamferSecond::Angle(e) = &mut b.second {
                     out.push(e);
                 }
+                out.extend(b.radii.iter_mut().map(|r| &mut r.radius));
             }
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => out.push(&mut d.thickness),
@@ -1062,7 +1067,10 @@ pub enum ExtrudeEnd {
     /// surface" / "offset from surface", FreeCAD `UpToFace`, Fusion "To object"). The sweep
     /// runs along the sketch normal, or against it with `reverse`, and stops on the face;
     /// `offset` moves the end further along (negative: short of the face), planar faces only.
-    ToFace { face: FaceRef, offset: Option<Expr>, reverse: bool },
+    /// With `extend` (ADR 0061) the face's surface is extended past its boundary, so the end
+    /// may lie outside the face (SolidWorks "up to surface", Inventor "to face, extended");
+    /// otherwise the face must cover the whole end of the sweep.
+    ToFace { face: FaceRef, offset: Option<Expr>, reverse: bool, extend: bool },
 }
 
 impl ExtrudeEnd {
@@ -1250,12 +1258,33 @@ pub struct EdgeBlendDef {
     /// full-round fillet: `edges` is empty and `size` unused (the radius is half the distance
     /// between the face's two parallel neighbours).
     pub full_round: Vec<FaceRef>,
+    /// Fillet only (ADR 0061): radii at vertices of the edges. Non-empty = a variable-radius
+    /// fillet: the radius is `size` where no vertex gives one and evolves smoothly along each
+    /// chain of tangent edges between the given values.
+    pub radii: Vec<VertexRadius>,
 }
+
+/// The radius of a variable fillet at one vertex of its edges (ADR 0061).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VertexRadius {
+    pub vertex: VertexRef,
+    pub radius: Expr,
+}
+
+/// Most vertex radii one variable fillet may give.
+pub const MAX_VERTEX_RADII: usize = 4096;
 
 impl EdgeBlendDef {
     /// A blend with one size: a fillet, or an equal chamfer.
     pub fn new(edges: Vec<EdgeRef>, size: Expr) -> Self {
-        EdgeBlendDef { edges, size, second: ChamferSecond::Equal, faces: Vec::new(), full_round: Vec::new() }
+        EdgeBlendDef {
+            edges,
+            size,
+            second: ChamferSecond::Equal,
+            faces: Vec::new(),
+            full_round: Vec::new(),
+            radii: Vec::new(),
+        }
     }
 
     /// A full-round fillet of the given middle faces.

@@ -172,8 +172,11 @@ pub trait Kernel: Send + Sync + Debug {
 
     /// Linear sweep of a planar profile along its normal (against it when `reverse`) until
     /// the face `face` (index into the topology of `target`), moved `offset` mm further
-    /// along the sweep (negative: stops short; non-zero only for planar faces). The face
-    /// must reach past the whole end of the sweep; otherwise the call fails. The result is
+    /// along the sweep (negative: stops short; non-zero only for planar faces). Without
+    /// `extend` the face must reach past the whole end of the sweep, otherwise the call fails;
+    /// with it (ADR 0061) the face's surface is extended past the face's boundary (a plane,
+    /// cylinder, cone, sphere or torus whole, other surfaces by a margin) and the end may lie
+    /// on that extension. The result is
     /// the swept tool solid, with the same face origins as [`Kernel::extrude`] (`Cap` end is
     /// the face cut). Like an extrude it is combined with a body by the caller.
     fn extrude_to_face(
@@ -183,8 +186,9 @@ pub trait Kernel: Send + Sync + Debug {
         face: u32,
         offset: f64,
         reverse: bool,
+        extend: bool,
     ) -> KResult<OpResult> {
-        let _ = (profile, target, face, offset, reverse);
+        let _ = (profile, target, face, offset, reverse, extend);
         unsupported("extrude up to a face", self.name())
     }
 
@@ -244,6 +248,15 @@ pub trait Kernel: Send + Sync + Debug {
     fn fillet(&self, shape: &Shape, edges: &[u32], radius: f64) -> KResult<OpResult> {
         let _ = (shape, edges, radius);
         unsupported("fillet", self.name())
+    }
+
+    /// A variable-radius fillet (ADR 0061): `radius` along `edges` except where `at` gives
+    /// the radius at a vertex (index into the shape's topology, an end of one of the edges);
+    /// between given values the radius evolves smoothly along each chain of tangent edges.
+    /// Face origins as [`Kernel::fillet`].
+    fn fillet_variable(&self, shape: &Shape, edges: &[u32], radius: f64, at: &[(u32, f64)]) -> KResult<OpResult> {
+        let _ = (shape, edges, radius, at);
+        unsupported("variable-radius fillet", self.name())
     }
 
     fn chamfer(&self, shape: &Shape, edges: &[u32], distance: f64) -> KResult<OpResult> {

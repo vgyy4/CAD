@@ -129,9 +129,10 @@ impl Kernel for PoolKernel {
         face: u32,
         offset: f64,
         reverse: bool,
+        extend: bool,
     ) -> KResult<OpResult> {
         let (k, s) = self.on_one(target)?;
-        k.extrude_to_face(profile, &s, face, offset, reverse)
+        k.extrude_to_face(profile, &s, face, offset, reverse, extend)
     }
 
     fn revolve(&self, profile: &Profile, spec: &RevolveSpec) -> KResult<OpResult> {
@@ -198,6 +199,11 @@ impl Kernel for PoolKernel {
     fn full_round(&self, shape: &Shape, faces: &[u32]) -> KResult<OpResult> {
         let (k, s) = self.on_one(shape)?;
         k.full_round(&s, faces)
+    }
+
+    fn fillet_variable(&self, shape: &Shape, edges: &[u32], radius: f64, at: &[(u32, f64)]) -> KResult<OpResult> {
+        let (k, s) = self.on_one(shape)?;
+        k.fillet_variable(&s, edges, radius, at)
     }
 
     fn shell(&self, shape: &Shape, remove: &[u32], thickness: f64) -> KResult<OpResult> {

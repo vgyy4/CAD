@@ -33,7 +33,7 @@ pub(crate) enum Request {
     Status,
     Free(Vec<u64>),
     Extrude(Profile, ExtrudeSpec),
-    ExtrudeToFace(Profile, Shape, u32, f64, bool),
+    ExtrudeToFace(Profile, Shape, u32, f64, bool, bool),
     Revolve(Profile, RevolveSpec),
     Sweep(Profile, SweepPath, SweepSpec),
     Loft(Vec<Profile>, LoftSpec),
@@ -44,6 +44,8 @@ pub(crate) enum Request {
     Chamfer(Shape, Vec<u32>, f64),
     ChamferRef(Shape, Vec<u32>, Vec<u32>, ChamferSpec),
     FullRound(Shape, Vec<u32>),
+    /// Edges, radius, (vertex, radius) pairs (ADR 0061).
+    FilletVariable(Shape, Vec<u32>, f64, Vec<(u32, f64)>),
     Shell(Shape, Vec<u32>, f64),
     Draft(Shape, Vec<u32>, DraftSpec),
     OffsetFaces(Shape, Vec<u32>, f64),
@@ -166,6 +168,17 @@ impl Request {
                 put_shape(&mut w, s, shape)?;
                 put_u32s(&mut w, faces)?;
             }
+            Request::FilletVariable(shape, edges, radius, at) => {
+                w.u8(39);
+                put_shape(&mut w, s, shape)?;
+                put_u32s(&mut w, edges)?;
+                w.f64(*radius);
+                w.seq_len(at.len())?;
+                for (v, r) in at {
+                    w.u32(*v);
+                    w.f64(*r);
+                }
+            }
             Request::Draft(shape, faces, spec) => {
                 w.u8(25);
                 put_shape(&mut w, s, shape)?;
@@ -202,13 +215,14 @@ impl Request {
                 w.seq_len(ids.len())?;
                 ids.iter().for_each(|i| w.u64(*i));
             }
-            Request::ExtrudeToFace(p, target, face, offset, reverse) => {
+            Request::ExtrudeToFace(p, target, face, offset, reverse, extend) => {
                 w.u8(37);
                 p.put(&mut w, s)?;
                 put_shape(&mut w, s, target)?;
                 w.u32(*face);
                 w.f64(*offset);
                 w.bool(*reverse);
+                w.bool(*extend);
             }
             Request::Extrude(p, spec) => {
                 w.u8(2);
@@ -327,9 +341,14 @@ impl Request {
                 Request::Free((0..n).map(|_| r.u64()).collect::<Result<_, _>>()?)
             }
             2 => Request::Extrude(Profile::get(&mut r, s)?, ExtrudeSpec::get(&mut r, s)?),
-            37 => {
-                Request::ExtrudeToFace(Profile::get(&mut r, s)?, get_shape(&mut r, s)?, r.u32()?, r.f64()?, r.bool()?)
-            }
+            37 => Request::ExtrudeToFace(
+                Profile::get(&mut r, s)?,
+                get_shape(&mut r, s)?,
+                r.u32()?,
+                r.f64()?,
+                r.bool()?,
+                r.bool()?,
+            ),
             3 => Request::Revolve(Profile::get(&mut r, s)?, RevolveSpec::get(&mut r, s)?),
             4 => Request::Sweep(Profile::get(&mut r, s)?, SweepPath::get(&mut r, s)?, SweepSpec::get(&mut r, s)?),
             5 => Request::Loft(Vec::<Profile>::get(&mut r, s)?, LoftSpec::get(&mut r, s)?),
@@ -383,6 +402,12 @@ impl Request {
                 ChamferSpec::get(&mut r, s)?,
             ),
             36 => Request::FullRound(get_shape(&mut r, s)?, get_u32s(&mut r)?),
+            39 => {
+                let (shape, edges, radius) = (get_shape(&mut r, s)?, get_u32s(&mut r)?, r.f64()?);
+                let n = r.seq_len(12)?;
+                let at = (0..n).map(|_| Ok((r.u32()?, r.f64()?))).collect::<Result<Vec<_>, WireError>>()?;
+                Request::FilletVariable(shape, edges, radius, at)
+            }
             25 => Request::Draft(get_shape(&mut r, s)?, get_u32s(&mut r)?, DraftSpec::get(&mut r, s)?),
             t => return Err(WireError(format!("unknown request {t}"))),
         };
