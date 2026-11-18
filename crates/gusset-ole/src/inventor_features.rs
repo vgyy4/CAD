@@ -17,7 +17,7 @@
 
 use crate::acis::{Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, RevSeg, Surf, V3, cross, dot, local_path};
 use crate::inventor_dc::{Dc, FeatType, Feature, G_BODY_LIST, G_SOLID_BODY, Role, f64_at, u16_at, u32_at};
-use crate::inventor_profile::{P2, Poly, picks};
+use crate::inventor_profile::{P2, Poly, picks, sample};
 use crate::{Limits, inventor};
 use serde_json::{Value, json};
 use std::cell::OnceCell;
@@ -1842,6 +1842,107 @@ fn split(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     }
 }
 
+/// The sketch whose curves a loop of the history blob runs along, given the record that names
+/// the loop's history body (`cc0f7521`), and the regions the loop surrounds in it. Several
+/// sketches may share a plane: the loop's points must lie on one sketch's curves.
+fn loop_sketch(r: &Reader, c: usize) -> Result<(usize, Sketch, Value), String> {
+    let ac = r.history().ok_or("the history blob is not readable")?;
+    let hb = r.dc.refs(c).into_iter().find(|&(_, y)| r.dc.role(y) == Role::HistoryBlob).ok_or("no history body")?.0;
+    let tag = i64::from(u32_at(r.dc.r(c), hb + 4).ok_or("no history body")?);
+    let loops = ac.loops_of_body(tag).ok_or("the profile's loop is not readable")?;
+    if loops.iter().all(Vec::is_empty) {
+        return Err("the profile's loop has no points".into());
+    }
+    let mut found: Option<(usize, Sketch, Vec<Vec<P2>>)> = None;
+    let mut seen: Vec<usize> = Vec::new();
+    for j in 0..r.dc.n() {
+        if r.dc.class(j) != super::inventor_dc::G_PROFILE {
+            continue;
+        }
+        let Some((_, k)) = r.dc.refs(j).into_iter().find(|&(_, x)| r.dc.role(x) == Role::Sketch) else { continue };
+        if seen.contains(&k) {
+            continue;
+        }
+        seen.push(k);
+        let sk = r.sketch(k)?;
+        let (o, x, y) = frame(&sk.m);
+        let n = unit3(cross(x, y));
+        let lines: Vec<Vec<P2>> = sk.polys().iter().map(sample).collect();
+        let mut l2 = Vec::new();
+        let mut on = true;
+        for l in &loops {
+            let mut out = Vec::new();
+            for p in l {
+                let q = sub3([p[0] * CM, p[1] * CM, p[2] * CM], o);
+                let uv = (dot(q, x), dot(q, y));
+                if dot(q, n).abs() > 1e-6 || polyline_dist(uv, &lines) > 0.02 {
+                    on = false;
+                }
+                out.push(uv);
+            }
+            l2.push(out);
+        }
+        if on {
+            if found.is_some() {
+                return Err("the profile's loop runs along several sketches".into());
+            }
+            found = Some((k, sk, l2));
+        }
+    }
+    let (k, sk, l2) = found.ok_or("no sketch holds the profile's loop")?;
+    let profiles = match picks(&sk.polys(), &l2) {
+        Some(pk) if !pk.is_empty() => Value::Array(pk.into_iter().map(|(a, b)| json!({"point": [a, b]})).collect()),
+        _ => return Err("the profile's regions are not found".into()),
+    };
+    Ok((k, sk, profiles))
+}
+
+/// A sheet-metal face (`55585fc6`; notes AM): slot 0 names the profile's loop body, 1 a
+/// direction, 3 the thickness (cm), 16 the operation. An extrude of the profile by the
+/// thickness, on the side its faces lie in the result body.
+fn plate(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    let s = r.slots(f)?;
+    let c =
+        r.dc.refs(s.need(0)?)
+            .into_iter()
+            .map(|(_, y)| y)
+            .find(|&y| r.dc.class(y) == super::inventor_dc::G_LOOP_BODY)
+            .ok_or("the face has no profile loop")?;
+    let (k, sketch, profiles) = loop_sketch(r, c)?;
+    let t = r.pval(&s, 3)? * CM;
+    let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
+    let d = r.swept_distance(&sketch, fid)?;
+    if (d.abs() - t).abs() > 1e-6 * t.max(1.0) {
+        return Err(format!("the face reaches {} mm, its thickness is {} mm", rnd(d.abs()), rnd(t)));
+    }
+    let mut op = match s.get(16).and_then(|i| tail_u16(&r.dc, i)) {
+        Some(2) => "cut",
+        Some(1) => "new",
+        _ => "join",
+    };
+    if st.first_body.is_some() && op == "new" {
+        op = "join";
+    }
+    if st.first_body.is_none() && op == "join" {
+        op = "new";
+    }
+    let mut j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": profiles,
+                       "operation": op, "distance": rnd(d), "symmetric": false});
+    if op != "new" {
+        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        put(&mut j, "target", json!(fb));
+    }
+    if !st.done.contains_key(&k) {
+        st.out.push(sketch.json());
+        st.done.insert(k, ());
+    }
+    st.out.push(j);
+    if st.first_body.is_none() {
+        st.first_body = Some(name.to_string());
+    }
+    Ok(())
+}
+
 fn unsupported(name: &str, what: &str, reason: Option<String>) -> Value {
     let mut v = json!({"type": "unsupported", "name": name, "original_type": what});
     if let Some(r) = reason {
@@ -2328,6 +2429,7 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             FeatType::Emboss => emboss(&r, &mut st, f, &name),
             FeatType::Combine => combine(&r, &mut st, f, &name),
             FeatType::Split => split(&r, &mut st, f, &name),
+            FeatType::Plate => plate(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.
             FeatType::Thread => {
                 st.omitted.push(json!({"name": name, "why": "cosmetic thread"}));

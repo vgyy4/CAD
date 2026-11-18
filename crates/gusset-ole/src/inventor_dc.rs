@@ -120,6 +120,7 @@ pub(crate) enum FeatType {
     Emboss,
     Combine,
     Split,
+    Plate,
     Other(u32),
 }
 
@@ -142,6 +143,7 @@ impl FeatType {
             0x285e_398c => FeatType::Emboss,
             0xc023_6733 => FeatType::Combine,
             0x8371_a8ba => FeatType::Split,
+            0x5558_5fc6 => FeatType::Plate,
             o => FeatType::Other(o),
         }
     }
@@ -164,6 +166,7 @@ impl FeatType {
             FeatType::Emboss => "emboss".into(),
             FeatType::Combine => "combine".into(),
             FeatType::Split => "split".into(),
+            FeatType::Plate => "sheet metal face".into(),
             FeatType::Other(g) => format!("feature {g:08x}"),
         }
     }

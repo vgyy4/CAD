@@ -35,7 +35,7 @@ fn dist(a: P2, b: P2) -> f64 {
     libm::hypot(a.0 - b.0, a.1 - b.1)
 }
 
-fn sample(c: &Poly) -> Vec<P2> {
+pub(crate) fn sample(c: &Poly) -> Vec<P2> {
     let tau = 2.0 * std::f64::consts::PI;
     match *c {
         Poly::Line(a, b) => vec![a, b],

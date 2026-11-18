@@ -1546,3 +1546,16 @@ fn a_split_trims_the_part_at_its_work_plane() {
     assert_eq!(t["features"].as_array().unwrap().len(), 2);
     assert_eq!(t["source"]["omitted"][0]["name"], "Split1");
 }
+
+/// A sheet-metal face (`55585fc6`, notes AM) is read from its loop's history body and the
+/// result body; without a loop body it says so.
+#[test]
+fn a_sheet_metal_face_needs_its_profile_loop() {
+    let mut r = base_records();
+    r.push((NAME, name_rec("Plate1", Some(0x5558_5fc6)))); // 19
+    r.push((OTHER, hdr(0, 0, 0))); // 20: no loop body
+    r.push((FEATURE, feature(19, 0, 6, &[rf(20), 0, 0, rf(16)]))); // 21
+    let t = tree(&r).unwrap();
+    assert_eq!(t["features"][2]["original_type"], "sheet metal face");
+    assert_eq!(t["features"][2]["reason"], "the face has no profile loop");
+}
