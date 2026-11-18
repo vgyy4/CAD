@@ -2255,6 +2255,39 @@ fn containing_edges(ev: &gusset_eval::Evaluation, pick: &EdgePick, mid: V3) -> V
     out
 }
 
+/// The two model edges that meet at a source edge's midpoint and run on either way along its
+/// path: the source edge split at its middle. A revolved face's seam splits an edge that crosses
+/// it in Gusset's model (an arc of a revolved head that a slot cut, the Inventor screws' rims),
+/// where Inventor keeps one edge; the pick's midpoint is then the seam vertex.
+fn halves_at_midpoint(ev: &gusset_eval::Evaluation, pick: &EdgePick, mid: V3) -> Vec<(String, String)> {
+    let (Some(first), Some(last)) = (pick.path.first().copied(), pick.path.last().copied()) else {
+        return Vec::new();
+    };
+    for b in &ev.bodies {
+        let t = &b.topology;
+        let (mut a, mut z) = (None, None);
+        for (i, e) in t.edges.iter().enumerate() {
+            let ends: Vec<V3> =
+                e.vertices.iter().filter_map(|v| t.vertices.get(*v as usize)).map(|v| v.point).collect();
+            if !ends.iter().any(|v| norm(sub(*v, mid)) <= 0.01) || ends.iter().all(|v| norm(sub(*v, mid)) <= 0.01) {
+                continue;
+            }
+            let holds = |p: V3| edge_holds(e.kind, &ends, e.midpoint, e.circle, &[mid, p]);
+            match (holds(first), holds(last)) {
+                (true, false) if a.is_none() => a = Some(i),
+                (false, true) if z.is_none() => z = Some(i),
+                _ => {}
+            }
+        }
+        if let (Some(a), Some(z)) = (a, z)
+            && let (Some(na), Some(nz)) = (b.names.edges.get(a), b.names.edges.get(z))
+        {
+            return vec![(b.feature.clone(), na.to_string()), (b.feature.clone(), nz.to_string())];
+        }
+    }
+    Vec::new()
+}
+
 fn edges_holding(ev: &gusset_eval::Evaluation, pick: &EdgePick, mid: V3, pts: &[V3]) -> Vec<(String, String)> {
     let interior = pick.path.is_empty();
     let mut out = Vec::new();
@@ -2544,6 +2577,9 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
                     }
                     if on_path.is_empty() {
                         on_path = spline_edges_at_ends(&ev, pick);
+                    }
+                    if on_path.is_empty() {
+                        on_path = halves_at_midpoint(&ev, pick, mid);
                     }
                     on_path.retain(|(body, _)| mine(body));
                     if on_path.is_empty() {

@@ -505,3 +505,36 @@ fn edges_named_by_their_faces_resolve() {
     let r = import(&mut s, "named.gtree.json", &tree2(json!(f))).unwrap();
     assert!(skipped(&r).iter().any(|(n, why)| n == "Fillet1" && why.contains("between the faces")), "{r}");
 }
+
+/// A source edge the model holds as two edges meeting at its midpoint (a revolved face's seam
+/// splits an arc that crosses it in Gusset's model; here a side drawn as two lines): a pick at
+/// that vertex, with a path either way along it, takes both halves.
+#[test]
+fn a_pick_at_the_vertex_between_two_halves_takes_both() {
+    let mut s = session();
+    let sketch = json!({
+        "type": "sketch", "name": "Base", "plane": xy(),
+        "points": [
+            {"id": "p1", "x": 0, "y": 0}, {"id": "pm", "x": 5, "y": 0}, {"id": "p2", "x": 10, "y": 0},
+            {"id": "p3", "x": 10, "y": 10}, {"id": "p4", "x": 0, "y": 10}
+        ],
+        "curves": [
+            {"id": "l1", "type": "line", "start": "p1", "end": "pm"},
+            {"id": "l1b", "type": "line", "start": "pm", "end": "p2"},
+            {"id": "l2", "type": "line", "start": "p2", "end": "p3"},
+            {"id": "l3", "type": "line", "start": "p3", "end": "p4"},
+            {"id": "l4", "type": "line", "start": "p4", "end": "p1"}
+        ]
+    });
+    let fs = json!([
+        sketch,
+        {"type": "extrude", "name": "Block", "sketch": "Base", "profiles": "all", "distance": 5, "operation": "new"},
+        {"type": "chamfer", "name": "C1", "distance": 1,
+         "edges": [{"midpoint": [5, 0, 5], "path": [[4.9, 0, 5], [5.1, 0, 5]]}]}
+    ]);
+    let r = import(&mut s, "halves.gtree.json", &tree2(fs)).unwrap();
+    // The edges are found; the mock kernel has no chamfer (OCCT builds it).
+    let sk = skipped(&r);
+    assert_eq!(sk.len(), 1, "{r}");
+    assert!(sk[0].1.contains("not supported by the mock kernel"), "{r}");
+}

@@ -1153,8 +1153,13 @@ fn pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
     const G_COUNT: u32 = 0xbb1d_d5df;
     const G_FLAGS: u32 = 0x9087_4d28;
     let refs = r.dc.refs(f.rec);
-    let tgt: Vec<String> =
-        refs.iter().filter(|&&(_, x)| x != f.rec).filter_map(|&(_, x)| st.names.get(&x).cloned()).collect();
+    // A feature that was left out (a cosmetic thread, note AQ) is not copied.
+    let tgt: Vec<String> = refs
+        .iter()
+        .filter(|&&(_, x)| x != f.rec)
+        .filter_map(|&(_, x)| st.names.get(&x).cloned())
+        .filter(|n| st.emitted.get(n).is_none_or(|m| !m.is_empty()))
+        .collect();
     let count_of = |x: usize| {
         let b = r.dc.r(x);
         u32_at(b, b.len().checked_sub(4)?)

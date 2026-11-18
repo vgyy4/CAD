@@ -1116,6 +1116,41 @@ enum Curve2 {
     Circ { c: (f64, f64), r: f64 },
 }
 
+/// The support curves of a blend's long sides, once each (a later cut can split one support
+/// surface into several faces: a slot across a dome). Of more than two, with the blend's torus
+/// profile circle (centre, minor radius), those it touches (the floor of a cut across the
+/// axis that trimmed the blend is not a support).
+fn supports(sup: Vec<(i64, Curve2)>, torus: Option<((f64, f64), f64)>) -> Vec<(i64, Curve2)> {
+    let same = |a: Curve2, b: Curve2| match (a, b) {
+        (Curve2::Line { n, d }, Curve2::Line { n: m, d: e }) => {
+            (n.0 - m.0).abs() <= 1e-9 && (n.1 - m.1).abs() <= 1e-9 && (d - e).abs() <= 1e-9
+        }
+        (Curve2::Circ { c, r }, Curve2::Circ { c: q, r: s }) => {
+            (c.0 - q.0).abs() <= 1e-9 && (c.1 - q.1).abs() <= 1e-9 && (r - s).abs() <= 1e-9
+        }
+        _ => false,
+    };
+    let mut out: Vec<(i64, Curve2)> = Vec::new();
+    for x in sup {
+        if out.iter().all(|u| !same(u.1, x.1)) {
+            out.push(x);
+        }
+    }
+    if out.len() > 2
+        && let Some((tc, minor)) = torus
+    {
+        let tol = 1e-6 * minor.max(1.0);
+        out.retain(|(_, cv)| match *cv {
+            Curve2::Line { n, d } => ((n.0 * tc.0 + n.1 * tc.1 - d).abs() - minor).abs() <= tol,
+            Curve2::Circ { c, r } => {
+                let dd = libm::hypot(c.0 - tc.0, c.1 - tc.1);
+                (dd - (r + minor)).abs() <= tol || (dd - (r - minor).abs()).abs() <= tol
+            }
+        });
+    }
+    out
+}
+
 /// The intersections of two plane curves, nearest to `o` first.
 fn inter2(s1: Curve2, s2: Curve2, o: (f64, f64)) -> Vec<(f64, f64)> {
     let mut pts: Vec<(f64, f64)> = Vec::new();
@@ -1287,6 +1322,13 @@ impl Acis {
             Surf::Torus { c, ax: u, major, minor } => {
                 coaxial(*u).then(|| Curve2::Circ { c: (*major, Self::rh(o, ax, *c).1), r: *minor })
             }
+            // A sphere centred on the axis.
+            Surf::Sphere => {
+                let r = self.surf_rec(g).and_then(|s| self.recs.get(s))?;
+                let (c, rad) = (*r.pos.first()?, r.dbls.first()?.abs());
+                let (rho, h) = Self::rh(o, ax, c);
+                (rho <= 1e-6 && rad > 1e-9 && rad.is_finite()).then_some(Curve2::Circ { c: (0.0, h), r: rad })
+            }
             Surf::Cone => {
                 let mut pts: Vec<(f64, f64)> = Vec::new();
                 for p in self.verts(g) {
@@ -1355,6 +1397,15 @@ impl Acis {
                 None => sup.push((*g, pc)),
             }
         }
+        // A torus blend that a later cut across the axis trimmed (the screws' slots) has that
+        // cut's floor as a long side too: its supports are the neighbours it touches.
+        let torus = match self.kind(f) {
+            Surf::Torus { c, ax: u, major, minor } if (dot(u, ax).abs() - 1.0).abs() <= 1e-6 => {
+                Some(((major, Self::rh(o, ax, c).1), minor))
+            }
+            _ => None,
+        };
+        let sup = supports(sup, torus);
         let [a, b] = sup.as_slice() else {
             return Err(format!("{} coaxial long-side neighbours", sup.len()));
         };
@@ -1437,7 +1488,7 @@ impl Acis {
                 }
                 let why = ce.err().unwrap_or_default();
                 let (major, what) = match other {
-                    Surf::Torus { major, .. } => (Some(*major), "torus"),
+                    Surf::Torus { major, minor, .. } => (Some((*major, *minor)), "torus"),
                     Surf::Cone => (None, "cone"),
                     Surf::Sphere => return Err("blend surface sphere-surface".into()),
                     Surf::Other(t) => return Err(format!("blend surface {t} ({why})")),
@@ -1488,22 +1539,35 @@ impl Acis {
         f: i64,
         nb: &[(i64, Surf)],
         vs: &[V3],
-        torus_major: Option<f64>,
+        torus: Option<(f64, f64)>,
         what: &str,
     ) -> Result<(V3, V3, f64), String> {
+        let torus_major = torus.map(|t| t.0);
         let miss = || format!("{what} blend: corner circle not found");
         let s = self.surf_rec(f).and_then(|s| self.recs.get(s)).ok_or_else(miss)?;
         let o = *s.pos.first().ok_or_else(miss)?;
         let ax = unit(*s.vec.first().ok_or_else(miss)?);
         let rh: Vec<(f64, f64)> = vs.iter().map(|&v| Self::rh(o, ax, v)).collect();
         let axial = |n: V3| (dot(n, ax).abs() - 1.0).abs() < 1e-6;
-        let pls: Vec<V3> = nb
+        let mut pls: Vec<V3> = nb
             .iter()
             .filter_map(|(_, s)| match s {
                 Surf::Plane { p, n } if axial(*n) => Some(*p),
                 _ => None,
             })
             .collect();
+        // A torus touches its support plane a minor radius off its centre: a plane across the
+        // axis elsewhere is a later cut through the blend (the screws' slots), not a support.
+        if let Some((_, minor)) = torus {
+            let touching: Vec<V3> = pls
+                .iter()
+                .copied()
+                .filter(|p| (dot(sub(*p, o), ax).abs() - minor).abs() <= 1e-6 * minor.max(1.0))
+                .collect();
+            if !touching.is_empty() {
+                pls = touching;
+            }
+        }
         let cyl: Vec<f64> = nb
             .iter()
             .filter_map(|(_, s)| match s {
@@ -1571,6 +1635,21 @@ pub(crate) fn local_path(m: V3, info: &EdgeInfo, eps: f64) -> Option<[V3; 2]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_supports_of_a_trimmed_torus_blend_are_the_curves_it_touches() {
+        use super::{Curve2, supports};
+        // Torus profile circle at (0.04, 0) with radius 0.09: a cone line 0.09 off, a sphere
+        // (twice: the dome split by a slot) touching it inside, and a slot floor across the axis.
+        let cone = Curve2::Line { n: (1.0, 0.0), d: 0.13 };
+        let dome = Curve2::Circ { c: (0.0, 1.0), r: libm::hypot(0.04, 1.0) + 0.09 };
+        let floor = Curve2::Line { n: (0.0, 1.0), d: 0.05 };
+        let got = supports(vec![(1, cone), (2, dome), (3, dome), (4, floor)], Some(((0.04, 0.0), 0.09)));
+        assert_eq!(got.iter().map(|x| x.0).collect::<Vec<_>>(), vec![1, 2]);
+        // Two supports stay as they are; without a torus nothing is judged.
+        assert_eq!(supports(vec![(1, cone), (4, floor)], Some(((0.04, 0.0), 0.09))).len(), 2);
+        assert_eq!(supports(vec![(1, cone), (2, dome), (4, floor)], None).len(), 3);
+    }
 
     #[test]
     fn custom_naming_attributes_read_as_the_older_record_types() {
