@@ -509,10 +509,11 @@ impl ImportJob {
                     // The feature history as editable features, when it rebuilds to the part's
                     // own body (ADR 0046 amendment); else the body itself.
                     let mut attempt = None;
-                    let r = inventor_tree(&bytes, &self.file_name, self.dir.as_deref(), cancel).and_then(|(tree, base)| {
-                        let r = inventor_history(&tree, &out, &self.kernel, &self.file_name, &mut attempt);
-                        r.map(|(t, note)| (t, base_note(note, base)))
-                    });
+                    let r =
+                        inventor_tree(&bytes, &self.file_name, self.dir.as_deref(), cancel).and_then(|(tree, base)| {
+                            let r = inventor_history(&tree, &out, &self.kernel, &self.file_name, &mut attempt);
+                            r.map(|(t, note)| (t, base_note(note, base)))
+                        });
                     let h = history::classify(
                         r,
                         attempt,
@@ -1763,11 +1764,16 @@ fn inventor_tree(
         return Ok((gusset_ole::inventor_features::feature_tree(bytes, file_name, &limits)?, None));
     };
     let own_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name).to_string();
-    let dir = dir.ok_or_else(|| format!("it is derived from '{}', and the part's folder is not known", shown(&d.file)))?;
+    let dir =
+        dir.ok_or_else(|| format!("it is derived from '{}', and the part's folder is not known", shown(&d.file)))?;
     // The part's own name counts as seen: a part that names itself as its base is a cycle.
     let mut seen = vec![own_name.clone()];
-    let mut chain = Vec::new();
+    // Each derive with the part that holds it (bytes, name).
+    let mut chain: Vec<(gusset_ole::inventor_derived::DerivedBase, Vec<u8>, String)> = Vec::new();
     let mut part = bytes.to_vec();
+    let mut part_name = own_name.clone();
+    // An iPart member's row: its parameters whose values differ from its factory's.
+    let mut row: Vec<(String, f64)> = Vec::new();
     let base_tree = loop {
         let name = shown(&d.file);
         if seen.contains(&d.file) {
@@ -1776,36 +1782,55 @@ fn inventor_tree(
         if chain.len() >= MAX_DERIVE_DEPTH {
             return Err(format!("its chain of base parts is deeper than {MAX_DERIVE_DEPTH} levels"));
         }
-        if let Some(f) = d.own_features.first() {
-            return Err(format!(
-                "it is derived from '{name}' and adds features of its own after the derive, which are not read yet ({})",
-                shown(f)
-            ));
-        }
         let base = inventor_base_file(dir, &d.file, cancel)?;
         if d.member {
-            ipart_row_matches(&part, &base, &name, &limits)?;
+            row = ipart_row(&part, &base, &limits)?;
         }
         seen.push(d.file.clone());
         match gusset_ole::inventor_derived::derived_base(&base, &limits) {
             Ok(Some(next)) => {
-                chain.push(d);
+                if !row.is_empty() {
+                    return Err(format!(
+                        "it is an iPart member of '{name}', which is itself derived from another part"
+                    ));
+                }
+                let next_name = d.file.clone();
+                chain.push((d, std::mem::replace(&mut part, base), std::mem::replace(&mut part_name, next_name)));
                 d = next;
-                part = base;
             }
             _ => {
                 let file = d.file.clone();
-                chain.push(d);
-                break gusset_ole::inventor_features::feature_tree(&base, &file, &limits)
+                chain.push((d, std::mem::take(&mut part), std::mem::take(&mut part_name)));
+                let (tree, used) = gusset_ole::inventor_features::feature_tree_with(&base, &file, &limits, &row, None)
                     .map_err(|e| format!("its base part '{name}': {e}"))?;
+                // A model parameter (Inventor names them d0, d1, ...) of the row that no feature
+                // takes is a sketch dimension. Others (user parameters) drive model parameters
+                // and are left to the rebuild check.
+                let model = |n: &str| {
+                    n.strip_prefix('d').is_some_and(|k| !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()))
+                };
+                let unread: Vec<&str> =
+                    row.iter().map(|p| p.0.as_str()).filter(|n| model(n) && !used.iter().any(|u| u == n)).collect();
+                if let Some(first) = unread.first() {
+                    return Err(format!(
+                        "it is an iPart member of '{name}' whose row differs from the factory's saved row in {} sketch dimension(s) (first: {}): the factory's sketches would have to be solved again",
+                        unread.len(),
+                        shown(first)
+                    ));
+                }
+                break tree;
             }
         }
     };
     let mut tree = base_tree;
     let mut bodies = base_bodies(&tree);
-    // The innermost derive first: each places the bodies of the base below it.
-    for (k, d) in chain.iter().rev().enumerate() {
-        let extra = derive_features(&mut bodies, d, k + 1)?;
+    // The innermost derive first: each places the bodies of the base below it, then the
+    // features its part adds after it work on them.
+    for (k, (d, part, part_name)) in chain.iter().rev().enumerate() {
+        let mut extra = derive_features(&mut bodies, d, k + 1)?;
+        if !d.own_features.is_empty() {
+            extra.extend(own_features(&tree, &extra, part, part_name, &bodies, &limits)?);
+        }
         if let Some(Value::Array(fs)) = tree.get_mut("features") {
             fs.extend(extra);
         }
@@ -1813,8 +1838,67 @@ fn inventor_tree(
     if let Some(src) = tree.get_mut("source").and_then(Value::as_object_mut) {
         src.insert("file".into(), Value::String(own_name));
     }
-    let names: Vec<String> = chain.iter().map(|d| format!("'{}'", shown(&d.file))).collect();
+    let names: Vec<String> = chain.iter().map(|c| format!("'{}'", shown(&c.0.file))).collect();
     Ok((tree, Some(names.join(" from "))))
+}
+
+/// The features a derived part adds after its derive, read from the part with its derive
+/// standing for the derived body; names that the tree before them already uses are renamed
+/// (with the part's name), with every reference to them.
+fn own_features(
+    tree: &Value,
+    before: &[Value],
+    part: &[u8],
+    part_name: &str,
+    bodies: &[String],
+    limits: &gusset_ole::Limits,
+) -> Result<Vec<Value>, String> {
+    let body = match bodies {
+        [body] => body,
+        // The base's features made no body read here: the rebuild check names them.
+        [] => return Ok(Vec::new()),
+        _ => return Err(format!("it is derived from {} bodies and adds features of its own", bodies.len())),
+    };
+    let (own, _) = gusset_ole::inventor_features::feature_tree_with(part, part_name, limits, &[], Some(body))?;
+    let mut feats: Vec<Value> = own.get("features").and_then(Value::as_array).cloned().unwrap_or_default();
+    let name = |f: &Value| f.get("name").and_then(Value::as_str).map(str::to_string);
+    let mut taken: std::collections::BTreeSet<String> =
+        tree.get("features").and_then(Value::as_array).into_iter().flatten().chain(before).filter_map(name).collect();
+    let stem = shown(part_name.rsplit_once('.').map_or(part_name, |p| p.0));
+    let mut renamed: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for f in &feats {
+        let Some(n) = name(f) else { continue };
+        if taken.contains(&n) {
+            let mut k = 1;
+            let mut new = format!("{n} ({stem})");
+            while taken.contains(&new) {
+                k += 1;
+                new = format!("{n} ({stem} {k})");
+            }
+            taken.insert(new.clone());
+            renamed.insert(n, new);
+        } else {
+            taken.insert(n);
+        }
+    }
+    for f in &mut feats {
+        rename_strings(f, &renamed);
+    }
+    Ok(feats)
+}
+
+/// Replaces every string of `v` that is a key of `map`.
+fn rename_strings(v: &mut Value, map: &std::collections::HashMap<String, String>) {
+    match v {
+        Value::String(s) => {
+            if let Some(n) = map.get(s.as_str()) {
+                s.clone_from(n);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| rename_strings(x, map)),
+        Value::Object(o) => o.values_mut().for_each(|x| rename_strings(x, map)),
+        _ => {}
+    }
 }
 
 /// A name from a file, for messages: control characters out, cut.
@@ -1823,24 +1907,16 @@ fn shown(n: &str) -> String {
 }
 
 /// An iPart member stores its row's values as its own parameters; the factory's history holds
-/// the factory's saved row (its sketches as solved for that row), so it only gives the member's
-/// body when no parameter of the member differs from the factory's.
-fn ipart_row_matches(member: &[u8], factory: &[u8], name: &str, limits: &gusset_ole::Limits) -> Result<(), String> {
+/// the factory's saved row. The member's row is its parameters whose values differ from the
+/// factory's (cm or radians): the factory is read with those values, and the features take
+/// those that are theirs (the sketches are stored solved for the saved row only).
+fn ipart_row(member: &[u8], factory: &[u8], limits: &gusset_ole::Limits) -> Result<Vec<(String, f64)>, String> {
     let mine = gusset_ole::inventor_derived::parameters(member, limits)?;
     let theirs = gusset_ole::inventor_derived::parameters(factory, limits)?;
-    let differ: Vec<&str> = mine
-        .iter()
+    Ok(mine
+        .into_iter()
         .filter(|(n, v)| theirs.iter().any(|(m, w)| m == n && (v - w).abs() > 1e-9 * (1.0 + w.abs())))
-        .map(|(n, _)| n.as_str())
-        .collect();
-    match differ.first() {
-        None => Ok(()),
-        Some(first) => Err(format!(
-            "it is an iPart member of '{name}' whose row differs from the factory's saved row in {} parameter(s) (first: {}): the factory's sketches would have to be solved again",
-            differ.len(),
-            shown(first)
-        )),
-    }
+        .collect())
 }
 
 /// The note of a rebuilt tree, with the base parts its history came from.
@@ -1898,7 +1974,9 @@ fn derive_features(
     if identity {
         if t.iter().any(|v| v.abs() > 1e-9) {
             for (k, b) in bodies.iter().enumerate() {
-                out.push(json!({"type": "move_body", "name": format!("{tag} move {}", k + 1), "target": b, "translate": t}));
+                out.push(
+                    json!({"type": "move_body", "name": format!("{tag} move {}", k + 1), "target": b, "translate": t}),
+                );
             }
         }
         return Ok(out);
@@ -5371,14 +5449,17 @@ mod inventor_base_tests {
         assert!(why.contains("cycle"), "{why}");
         // A chain deeper than the limit stops there.
         for k in 0..=MAX_DERIVE_DEPTH + 1 {
-            std::fs::write(dir.join(format!("D{k}.ipt")), inventor_derived_part(&format!("D{}.ipt", k + 1), false, false, false))
-                .unwrap();
+            std::fs::write(
+                dir.join(format!("D{k}.ipt")),
+                inventor_derived_part(&format!("D{}.ipt", k + 1), false, false, false),
+            )
+            .unwrap();
         }
         let why = tree(&std::fs::read(dir.join("D0.ipt")).unwrap(), "D0.ipt");
         assert!(why.contains("deeper than"), "{why}");
-        // Features of its own after the derive are not read yet.
-        let why = tree(&inventor_derived_part("B.ipt", false, false, true), "P.ipt");
-        assert!(why.contains("features of its own"), "{why}");
+        // Features of its own after the derive are read once the base is: the base decides.
+        let why = tree(&inventor_derived_part("E.ipt", false, false, true), "P.ipt");
+        assert!(why.contains("'E.ipt'") && why.contains("not in the part's folder"), "{why}");
         // A part that derives nothing gets its own tree, as before.
         assert_eq!(
             inventor_tree(b"not a part", "x.ipt", Some(&dir), &no).unwrap_err(),
@@ -5386,6 +5467,18 @@ mod inventor_base_tests {
                 .unwrap_err()
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn renamed_features_are_renamed_where_they_are_named() {
+        let mut f =
+            json!({"name": "Sketch1", "type": "sketch", "sketch": "Sketch1", "profiles": [{"of": ["Sketch1", "x"]}]});
+        let map = std::collections::HashMap::from([("Sketch1".to_string(), "Sketch1 (P)".to_string())]);
+        rename_strings(&mut f, &map);
+        assert_eq!(
+            f,
+            json!({"name": "Sketch1 (P)", "type": "sketch", "sketch": "Sketch1 (P)", "profiles": [{"of": ["Sketch1 (P)", "x"]}]})
+        );
     }
 
     #[test]
