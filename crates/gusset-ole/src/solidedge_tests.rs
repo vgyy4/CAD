@@ -4,8 +4,8 @@
 use crate::fixtures::ole;
 use crate::solidedge_features::{
     Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, close_on_axis, close_open, copy_frame, curve,
-    edge_pick, edge_set, face_pick, face_set, feature_tree, history, key_point_reach, parse_func, plane, reach_in_box,
-    stored_box, value,
+    edge_pick, edge_set, face_pick, face_set, feature_tree, history, key_point_angle, key_point_reach, parse_func,
+    plane, reach_in_box, stored_box, value,
 };
 use serde_json::json;
 
@@ -880,4 +880,52 @@ fn a_revolve_turns_its_profile_to_the_side_it_names() {
         assert_eq!(r["type"], "revolve", "{t}");
         assert_eq!(r["angle"], json!(want), "{dir} {side}: {t}");
     }
+}
+
+#[test]
+fn a_revolve_up_to_a_key_point_turns_the_stored_angle() {
+    // The angular key point: after its slots `u32 3` and the angle (radians).
+    let kp = |a: f64| {
+        let mut b = func("JMAngularKeyPointFunction", &[&[24], &[1], &[2], &[0]]);
+        b.extend(3u32.to_le_bytes());
+        b.extend(f64s(&[a]));
+        b
+    };
+    assert_eq!(key_point_angle(&obj(1, 24, &kp(0.5))), Some(0.5));
+    assert_eq!(key_point_angle(&obj(1, 24, &kp(0.0))), None);
+    assert_eq!(key_point_angle(&obj(1, 24, &func("JMLinearKeyPointFunction", &[&[24]]))), None);
+    // The revolve of the turn test above (about +y, side 1), up to a key point at 60 degrees.
+    let mut a = vec![0u8; 4];
+    a.push(0x03);
+    a.extend(f64s(&[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]));
+    let mut more = obj(30, 21, &a);
+    more.extend(obj(36, 22, &small(72.0)));
+    more.extend(obj(36, 23, &small(1.0)));
+    more.extend(obj(37, 24, &kp(core::f64::consts::FRAC_PI_3)));
+    more.extend(obj(
+        38,
+        25,
+        &func("JMRevolvedProtrusionFunction", &[&[25], &[12], &[2], &[22], &[23], &[0], &[21], &[24]]),
+    ));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let r = &t["features"][3];
+    assert_eq!((&r["type"], &r["angle"]), (&json!("revolve"), &json!(60.0)), "{t}");
+}
+
+#[test]
+fn a_setback_and_angle_chamfer_takes_its_reference_face() {
+    // The protrusion part (box z 0..5 mm), then a chamfer of kind 42: slot 3 the reference
+    // face (the top), 5 the setback 0.5 mm, 6 the angle 30 degrees (radians).
+    let set = edge_set_bytes(&[(3, vec![0.0, 0.0, 0.005, 1.0, 0.0, 0.0, 0.0, 0.02])], false);
+    let mut more = obj(40, 21, &set);
+    more.extend(obj(40, 22, &face_set_bytes(&[top_face()])));
+    more.extend(obj(36, 23, &small(42.0)));
+    more.extend(obj(36, 24, &small(0.0005)));
+    more.extend(obj(36, 25, &small(core::f64::consts::FRAC_PI_6)));
+    more.extend(obj(38, 26, &func("JMChamferFunction", &[&[26], &[12], &[23], &[22], &[21], &[24], &[25]])));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = &t["features"][2];
+    assert_eq!((&f["type"], &f["distance"], &f["angle"]), (&json!("chamfer"), &json!(0.5), &json!(30.0)), "{t}");
+    assert_eq!(f["face"]["surface"]["origin"], json!([0.0, 0.0, 5.0]));
+    assert_eq!(f["edges"][0]["midpoint"], json!([10.0, 0.0, 5.0]));
 }

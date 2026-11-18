@@ -500,6 +500,17 @@ pub(crate) fn key_point_reach(b: &[u8]) -> Option<(f64, V3)> {
     Some((d, unit(v)?))
 }
 
+/// An angular key point extent (`JMAngularKeyPointFunction`, a revolve up to a key point):
+/// after its slots, `u32 3` and the angle (radians).
+pub(crate) fn key_point_angle(b: &[u8]) -> Option<f64> {
+    let f = parse_func(b)?;
+    if f.class != "JMAngularKeyPointFunction" || u32_at(b, f.tail)? != 3 {
+        return None;
+    }
+    let a = f64_at(b, f.tail + 4)?;
+    (a.is_finite() && a.abs() > 1e-12 && a.abs() <= core::f64::consts::TAU + 1e-9).then_some(a)
+}
+
 /// A curve of a round's or chamfer's edge set, as the part stored it when the feature was
 /// made (metres, absolute).
 #[derive(Debug, Clone, PartialEq)]
@@ -1811,6 +1822,13 @@ fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Ki
             13 => small(7).ok_or("the revolve angle is not readable")?.to_degrees(),
             // A full turn.
             17 => 360.0,
+            // Up to a key point: the angle the part stores with it.
+            72 => f
+                .slot(7)
+                .and_then(|x| st.obj(x))
+                .and_then(key_point_angle)
+                .ok_or("the key point's angle is not readable")?
+                .to_degrees(),
             e => return Err(format!("revolve extent {e}")),
         };
         if !(angle.is_finite() && angle.abs() > 1e-9 && angle.abs() <= 360.0 + 1e-9) {
@@ -2034,18 +2052,34 @@ fn blend(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     } else {
         match code(2) {
             Some(41) if f.slot(3).is_none() => {}
-            other => return Err(format!("chamfer kind {other:?} (not equal setbacks)")),
+            Some(42) => {}
+            other => return Err(format!("chamfer kind {other:?} (not equal setbacks or setback and angle)")),
         }
         (4, 5)
     };
     let size = small(size).map(|v| v * MM).filter(|v| *v > 1e-9).ok_or("the size is not readable")?;
     let set = f.slot(set).and_then(|v| st.obj(v)).ok_or("the edge set is missing")?;
     let picks: Vec<Value> = edge_set(set)?.iter().map(edge_pick).collect::<Result<_, _>>()?;
-    let j = if round {
+    let mut j = if round {
         json!({"type": "fillet", "name": name, "edges": picks, "radius": rnd(size)})
     } else {
         json!({"type": "chamfer", "name": name, "edges": picks, "distance": rnd(size)})
     };
+    if !round && code(2) == Some(42) {
+        // Setback and angle: the setback runs along the reference face (slot 3, a face set
+        // of one face), the angle (slot 6, radians) is taken from it.
+        let a = small(6)
+            .map(f64::to_degrees)
+            .filter(|a| *a > 1e-9 && *a < 90.0 - 1e-9)
+            .ok_or("the chamfer angle is not readable")?;
+        let faces = f.slot(3).and_then(|v| st.obj(v)).ok_or("the chamfer's reference face set is missing")?;
+        let face = match face_set(faces)?.as_slice() {
+            [one] => face_pick(one)?,
+            other => return Err(format!("a chamfer with {} reference faces", other.len())),
+        };
+        put(&mut j, "angle", json!(rnd(a)));
+        put(&mut j, "face", face);
+    }
     s.out.push(j);
     Ok(())
 }
