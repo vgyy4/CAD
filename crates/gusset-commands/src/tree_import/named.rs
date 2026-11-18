@@ -25,6 +25,12 @@ pub(super) struct FaceSel {
     normal: Option<V3>,
     #[serde(default)]
     index: Option<u32>,
+    /// A face of a pattern's copy: the pattern (by the source's name) and the copy's number
+    /// (1 the first after the seed); the rest names the seed's face.
+    #[serde(default)]
+    pattern: Option<String>,
+    #[serde(default)]
+    copy: Option<u32>,
 }
 
 /// What a [`FaceSel`] stands for in the document's names.
@@ -44,12 +50,24 @@ enum Want {
     Blend {
         fillet: Vec<(String, String)>,
     },
+    /// The face pattern copy `k` made from the face the inner want names.
+    Instance {
+        pattern: String,
+        k: u32,
+        face: Box<Want>,
+    },
 }
 
 /// Most source curves one side face may name.
 const MAX_CURVES: usize = 64;
 
 fn want(g: &Gen, f: &FaceSel) -> Option<Want> {
+    if let Some(p) = &f.pattern {
+        let pattern = g.features.get(p)?.clone();
+        let k = f.copy.filter(|k| *k > 0)?;
+        let seed = FaceSel { pattern: None, copy: None, ..f.clone() };
+        return Some(Want::Instance { pattern, k, face: Box::new(want(g, &seed)?) });
+    }
     let feature = g.features.get(&f.feature)?.clone();
     let plane = match (f.point, f.normal) {
         (Some(p), Some(n)) if p.iter().chain(&n).all(|v| v.is_finite()) && norm(n) > 1e-9 => {
@@ -95,6 +113,12 @@ fn holds(w: &Want, r: &FaceRef, info: Option<&FaceInfo>, loose: bool) -> bool {
         Want::Cap { feature, plane } => {
             r.feature == *feature && matches!(r.key, FaceKey::Cap { .. }) && plane.is_none_or(|pl| on_plane(info, pl))
         }
+        Want::Instance { pattern, k, face } => match &r.key {
+            FaceKey::Instance { k: rk, face: inner } => {
+                r.feature == *pattern && rk == k && holds(face, inner, info, loose)
+            }
+            _ => false,
+        },
         Want::Blend { fillet } => match &r.key {
             FaceKey::Blend(e) => {
                 let e = e.to_string();

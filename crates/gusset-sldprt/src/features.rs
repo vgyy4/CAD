@@ -1713,6 +1713,8 @@ struct Rep {
     ext2: bool,
     /// A face of a mirror's copy: the mirror's feature id (the reference names the seed face).
     via: Option<u32>,
+    /// A face of a pattern's copy (`via` the pattern): the copy's number, 1 the first after the seed.
+    copy: u32,
 }
 
 /// An edge record's header at `i` (`edges.HDR`): `01 00*7 n`, then either `00{4,6} kind(1..4)
@@ -1749,7 +1751,7 @@ fn edge_header(d: &[u8], i: usize) -> Option<(usize, usize)> {
 /// Edge records in `[a, b)` (`edges.edge_records`). Each reference is a 20-byte core followed
 /// by 0 to 2 extra words, depending on its class.
 fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, String> {
-    Ok(edge_records_to(d, a, b, &HashSet::new())?.into_iter().map(|(s, _, r)| (s, r)).collect())
+    Ok(edge_records_to(d, a, b, &HashSet::new(), &HashSet::new())?.into_iter().map(|(s, _, r)| (s, r)).collect())
 }
 
 /// [`edge_records`] with the end of each record (after its last reference). A face of a
@@ -1761,6 +1763,7 @@ fn edge_records_to(
     a: usize,
     b: usize,
     mirrors: &HashSet<u32>,
+    patterns: &HashSet<u32>,
 ) -> Result<Vec<(usize, usize, Vec<Rep>)>, String> {
     let mut out = Vec::new();
     let mut i = a;
@@ -1779,7 +1782,7 @@ fn edge_records_to(
             }
             let mut via = None;
             let outer = need(u32_at(d, p + 8), "an edge record")?;
-            if mirrors.contains(&outer)
+            if (mirrors.contains(&outer) || patterns.contains(&outer))
                 && u16_at(d, p).is_some_and(|t| t & 0x8000 != 0)
                 && u16_at(d, p + 2) == Some(0)
                 && u16_at(d, p + 16).is_some_and(|t| t & 0x8000 != 0)
@@ -1823,7 +1826,18 @@ fn edge_records_to(
                 }
             }
             let ext2 = extra == 2 && !last && idx <= 1 && first_extra.is_some_and(|w| w != 0xffff_ffff);
-            reps.push(Rep { tag: t & 0x7fff, fid, idx, ext: extra == 1 && !last, ext2, via });
+            // A face of a pattern's copy: the seed's side words, then the copy's number.
+            let mut copy = 0;
+            if via.is_some_and(|v| patterns.contains(&v)) {
+                match u32_at(d, p) {
+                    Some(c @ 1..=4096) if extra == 2 => {
+                        copy = c;
+                        p += 4;
+                    }
+                    _ => break,
+                }
+            }
+            reps.push(Rep { tag: t & 0x7fff, fid, idx, ext: extra == 1 && !last, ext2, via, copy });
         }
         // Face lists (mirror planes) hold n - 1 references.
         if reps.len() + 1 == n {
@@ -2198,7 +2212,15 @@ fn end_face_ref(d: &[u8], a: usize, b: usize) -> Option<Rep> {
     if t & 0x8000 == 0 || u16_at(d, c + 2)? != 0 {
         return None;
     }
-    Some(Rep { tag: t & 0x7fff, fid: u32_at(d, c + 8)?, idx: u32_at(d, c + 16)?, ext: false, ext2: false, via: None })
+    Some(Rep {
+        tag: t & 0x7fff,
+        fid: u32_at(d, c + 8)?,
+        idx: u32_at(d, c + 16)?,
+        ext: false,
+        ext2: false,
+        via: None,
+        copy: 0,
+    })
 }
 
 /// Whether `(u, v)` lies inside the profile (even-odd over its drawn segments; m).
@@ -2263,6 +2285,55 @@ fn dist_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     let len2 = dx * dx + dy * dy;
     let t = if len2 < 1e-24 { 0.0 } else { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0) };
     libm::hypot(p.0 - (a.0 + t * dx), p.1 - (a.1 + t * dy))
+}
+
+/// The face reference of a draft's neutral plane: the first reference after the
+/// `moPlaneRef_w` class name and the two sentinels that close its record header.
+fn neutral_face_ref(span: &[u8]) -> Option<Rep> {
+    let at = span.windows(12).position(|w| w == b"moPlaneRef_w")?;
+    let tail = span.get(at..(at + 200).min(span.len()))?;
+    let s = tail.windows(16).position(|w| w.get(..8) == Some(&SENTINEL[..]) && w.get(8..) == Some(&SENTINEL[..]))?;
+    let p = at + s + 18;
+    let t = u16_at(span, p)?;
+    if t & 0x8000 == 0 || u16_at(span, p + 2)? != 0 {
+        return None;
+    }
+    Some(Rep {
+        tag: t & 0x7fff,
+        fid: u32_at(span, p + 8)?,
+        idx: u32_at(span, p + 16)?,
+        ext: false,
+        ext2: false,
+        via: None,
+        copy: 0,
+    })
+}
+
+/// The points (mm) a draft span ends with: `u32 n`, then `n` points (`f64` x, y, z in metres),
+/// then up to 16 zero bytes. One lies on each face the draft tapers, pattern copies included.
+fn draft_points(span: &[u8]) -> Vec<V3> {
+    for tail in 0..=16usize {
+        let Some(end) = span.len().checked_sub(tail) else { break };
+        if span.get(end..).is_some_and(|t| t.iter().any(|&c| c != 0)) {
+            break;
+        }
+        for n in 1..=512usize {
+            let Some(k) = end.checked_sub(4 + 24 * n) else { break };
+            if u32_at(span, k).map(|v| v as usize) != Some(n) {
+                continue;
+            }
+            let pts: Vec<V3> = (0..n)
+                .filter_map(|i| {
+                    let q = k + 4 + 24 * i;
+                    Some([f64_at(span, q)?, f64_at(span, q + 8)?, f64_at(span, q + 16)?])
+                })
+                .collect();
+            if pts.len() == n && pts.iter().flatten().all(|v| v.is_finite() && v.abs() < 10.0) {
+                return pts.into_iter().map(|p| p.map(|v| round_to(v * 1000.0, 6) + 0.0)).collect();
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// The plane of the face a reference names, for a pick: a point on the face (mm), its outward
@@ -3094,8 +3165,20 @@ struct Named<'a> {
 /// plane where it is known, or the face a fillet or chamfer made from its `idx`-th edge.
 /// `None` for faces of other features and mirror copies.
 fn face_sel(r: &Rep, m: &Named) -> Option<Value> {
-    if r.via.is_some() {
-        return None;
+    if let Some(v) = r.via {
+        // A face of a pattern's copy: the seed's face, through the pattern and copy (no plane:
+        // the seed's is not the copy's).
+        if r.copy == 0 {
+            return None;
+        }
+        let pattern = &m.nodes.iter().find(|q| q.id == v)?.name;
+        let mut o = face_sel(&Rep { via: None, copy: 0, ..*r }, m)?;
+        let map = o.as_object_mut()?;
+        map.remove("point");
+        map.remove("normal");
+        map.insert("pattern".into(), json!(pattern));
+        map.insert("copy".into(), json!(r.copy));
+        return Some(o);
     }
     let name = &m.nodes.iter().find(|q| q.id == r.fid)?.name;
     if m.blends.contains(&r.fid) {
@@ -3547,6 +3630,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut node_index: Option<HashMap<u32, usize>> = None;
     // Mirror id -> its plane (origin mm, unit normal), for edges on the mirrored copy.
     let mut mirror_planes: HashMap<u32, (V3, V3)> = HashMap::new();
+    // Each pattern of one direction read: the motion from one copy to the next.
+    let mut pattern_steps: HashMap<u32, Step> = HashMap::new();
     // Node id -> name of each sketch read (lofts name their sections by id).
     let mut sketch_ids: HashMap<u32, String> = HashMap::new();
     // Node id -> name of each helix read, and the helix (round sw10): sweeps run along them.
@@ -4234,7 +4319,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let fillet = cls.as_deref() != Some("Chamfer_c");
             let ps = params(rf, a, b, nt)?;
             let mirror_ids: HashSet<u32> = mirror_planes.keys().copied().collect();
-            let sel = selection(edge_records_to(rf, a, b, &mirror_ids)?);
+            let pattern_ids: HashSet<u32> = pattern_steps.keys().copied().collect();
+            let sel = selection(edge_records_to(rf, a, b, &mirror_ids, &pattern_ids)?);
             let mut edges = Vec::new();
             let mut mids: Vec<Option<V3>> = Vec::new();
             let mut stale = 0usize;
@@ -4287,6 +4373,25 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 let m = match mirrored_edge(reps, &swept, &mirror_planes) {
                     Some((plane, reps, swept)) => midpoint(&reps, &swept, &rounds, &sketches, &cap_tags, &mut work)?
                         .map(|m| reflect(m, plane).map(|c| round_to(c, 6) + 0.0)),
+                    None if reps.iter().any(|r| r.via.is_some_and(|v| pattern_steps.contains_key(&v))) => {
+                        match patterned_edge(reps, &swept, &pattern_steps) {
+                            Some((step, k, reps, swept)) => {
+                                let model = Model {
+                                    swept: &swept,
+                                    rounds: &rounds,
+                                    revolved: &revolved,
+                                    sketches: &sketches,
+                                    cap_tags: &cap_tags,
+                                };
+                                let seed = match midpoint(&reps, &swept, &rounds, &sketches, &cap_tags, &mut work)? {
+                                    Some(m) => Some(m),
+                                    None => closed_edge(&reps, &model, &mut work)?,
+                                };
+                                seed.map(|m| step_point(step, k, m).map(|c| round_to(c, 6) + 0.0))
+                            }
+                            None => None,
+                        }
+                    }
                     None => match midpoint(reps, &swept, &rounds, &sketches, &cap_tags, &mut work)? {
                         Some(m) => Some(m),
                         None => {
@@ -4418,6 +4523,11 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 |p| index.get(&p).and_then(|&k| nodes.get(k)).map(|m| m.name.clone()),
                 &feats,
             );
+            if let [one] = made.as_slice()
+                && let Some(step) = pattern_step(one)
+            {
+                pattern_steps.insert(n.id, step);
+            }
             feats.extend(made);
         } else if cls.as_deref() == Some("moMirrorStock_c") {
             // A mirrored copy of an external part: the part keeps the source body in its
@@ -4581,6 +4691,30 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             feats.push(Value::Object(js));
         } else if cls.is_none() || is_in(&cls, &SKIPPED) {
             continue;
+        } else if cls.as_deref() == Some("moDraft_c") {
+            // A draft (round sw11): the angle `D1`, the neutral plane the face its `moPlaneRef_w`
+            // names, and a point on each drafted face in the list that ends the span.
+            let ps = params(rf, a, b, nt)?;
+            let span = rf.get(a..b).unwrap_or(&[]);
+            let neutral = neutral_face_ref(span)
+                .and_then(|r| face_pick(&r, &swept, &sketches, &cap_tags))
+                .map(|(o, n, _)| (o, n))
+                .or_else(|| plane_ref(rf, a, b));
+            let points = draft_points(span);
+            let mut js = Map::new();
+            js.insert("type".into(), json!("draft"));
+            js.insert("name".into(), json!(n.name));
+            js.insert("angle".into(), json!(ps.first().map(|v| round_to(v.to_degrees(), 9))));
+            js.insert("faces".into(), json!(points.iter().map(|p| json!({"point": json_v3(*p)})).collect::<Vec<_>>()));
+            match neutral {
+                Some((o, nrm)) if !points.is_empty() => {
+                    js.insert("plane".into(), json!({"origin": json_v3(o), "normal": json_v3(nrm)}));
+                }
+                _ => {
+                    js.insert("unresolved".into(), json!(true));
+                }
+            }
+            feats.push(Value::Object(js));
         } else {
             feats.push(json!({"type": "unsupported", "name": n.name, "original_type": cls}));
         }
@@ -4989,6 +5123,106 @@ fn mirrored_edge(reps: &[Rep], swept: &HashMap<u32, Swept>, planes: &HashMap<u32
     Some((plane, out, sw))
 }
 
+/// The motion from one copy of a pattern to the next: a turn about an axis (a point on it and
+/// its unit direction, mm; the angle in radians, right-handed about the direction) or a shift
+/// (mm).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Step {
+    Turn(V3, V3, f64),
+    Shift(V3),
+}
+
+/// The step of a pattern of one direction as the tree writes it: a circular pattern's angle
+/// spread over its copies (all the way round: count steps), a linear one's spacing.
+fn pattern_step(f: &Value) -> Option<Step> {
+    let v3 = |v: Option<&Value>| -> Option<V3> {
+        let a = v?.as_array()?;
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+    };
+    let count = f.get("count")?.as_f64().filter(|c| *c >= 2.0)?;
+    match f.get("type")?.as_str()? {
+        "pattern_circular" => {
+            let axis = f.get("axis")?;
+            let (o, d) = (v3(axis.get("origin"))?, v3(axis.get("direction"))?);
+            let len = libm::sqrt(dot(d, d));
+            let total = f.get("angle")?.as_f64()?.to_radians();
+            let step = if (total - TAU).abs() < 1e-9 { total / count } else { total / (count - 1.0) };
+            (len > 1e-12).then(|| Step::Turn(o, d.map(|c| c / len), step))
+        }
+        "pattern_linear" => {
+            let d = v3(f.get("direction"))?;
+            let len = libm::sqrt(dot(d, d));
+            let sp = f.get("spacing")?.as_f64()?;
+            (len > 1e-12).then(|| Step::Shift(d.map(|c| c * sp / len)))
+        }
+        _ => None,
+    }
+}
+
+/// A direction moved `k` steps (a shift leaves it).
+fn step_dir(s: Step, k: f64, v: V3) -> V3 {
+    match s {
+        Step::Turn(_, u, a) => {
+            // Rodrigues: v cos + (u x v) sin + u (u . v)(1 - cos).
+            let (sn, cs) = (libm::sin(a * k), libm::cos(a * k));
+            let w = cross(u, v);
+            let d = dot(u, v) * (1.0 - cs);
+            [v[0] * cs + w[0] * sn + u[0] * d, v[1] * cs + w[1] * sn + u[1] * d, v[2] * cs + w[2] * sn + u[2] * d]
+        }
+        Step::Shift(_) => v,
+    }
+}
+
+/// A point moved `k` steps.
+fn step_point(s: Step, k: f64, p: V3) -> V3 {
+    match s {
+        Step::Turn(o, _, _) => comb(o, 1.0, step_dir(s, k, sub(p, o)), 1.0),
+        Step::Shift(t) => comb(p, 1.0, t, k),
+    }
+}
+
+/// A pattern's step, the copy's number, an edge's references moved back and the extrusions they name.
+type Patterned = (Step, f64, Vec<Rep>, HashMap<u32, Swept>);
+
+/// Fake ids of extrusions moved back from a pattern's copy (feature ids are far below).
+const MOVED: u32 = 0x4000_0000;
+
+/// An edge of a pattern's copy (every copy reference through the same pattern and copy, the
+/// other references to extrusions): the seed's edge problem, with the other faces moved back
+/// to the seed under fake ids; its midpoint is moved forward again by `k` steps.
+fn patterned_edge(
+    reps: &[Rep],
+    swept: &HashMap<u32, Swept>,
+    steps: &HashMap<u32, Step>,
+) -> Option<Patterned> {
+    let first = reps.iter().find(|r| r.via.is_some())?;
+    let (m, copy) = (first.via?, first.copy);
+    let step = *steps.get(&m)?;
+    if copy == 0 {
+        return None;
+    }
+    let k = f64::from(copy);
+    let mut sw = swept.clone();
+    let mut out = Vec::with_capacity(reps.len());
+    for r in reps {
+        match r.via {
+            Some(v) if v == m && r.copy == copy => out.push(Rep { via: None, copy: 0, ..*r }),
+            Some(_) => return None,
+            None => {
+                let f = swept.get(&r.fid)?;
+                let jp = JsonPlane {
+                    origin: step_point(step, -k, f.plane.origin),
+                    x: step_dir(step, -k, f.plane.x),
+                    y: step_dir(step, -k, f.plane.y),
+                };
+                sw.insert(r.fid | MOVED, Swept { plane: jp, ..*f });
+                out.push(Rep { fid: r.fid | MOVED, ..*r });
+            }
+        }
+    }
+    Some((step, k, out, sw))
+}
+
 /// Whether a feature of that name was read (not a sketch, not unsupported).
 fn emitted(feats: &[Value], name: &str) -> bool {
     feats.iter().any(|f| {
@@ -5149,6 +5383,9 @@ fn check(tree: &Value) -> Result<(), String> {
                     return Err(format!("{name}: the sweep's profile and path were not found"));
                 }
             }
+            "draft" if f.get("unresolved").is_some() => {
+                return Err(format!("{name}: the draft's neutral plane or faces were not found"));
+            }
             "hole" | "mirror" | "shell" if f.get("unresolved").is_some() => {
                 return Err(format!("{name}: the {} was not resolved", s("type")));
             }
@@ -5282,7 +5519,7 @@ mod end_face_tests {
             40,
             Swept { sketch: 0, plane, distance: 5.0, symmetric: false, through: false, cut: false },
         )]);
-        let r = Rep { tag: 9, fid: 40, idx: 1, ext: false, ext2: false, via: None };
+        let r = Rep { tag: 9, fid: 40, idx: 1, ext: false, ext2: false, via: None, copy: 0 };
         let (p, n, _) = face_pick(&r, &swept, &[g], &HashSet::from([9u16])).unwrap();
         assert_eq!(n, [0.0, 0.0, 1.0]);
         assert!((p[0] + 9.899).abs() < 1e-6 && p[1].abs() < 1e-6 && (p[2] - 5.0).abs() < 1e-9, "{p:?}");
@@ -5339,7 +5576,7 @@ mod end_face_tests {
         let cap_tags = HashSet::from([9u16]);
         let rounds = HashMap::new();
         let m = Model { swept: &swept, rounds: &rounds, revolved: &revolved, sketches: &sketches, cap_tags: &cap_tags };
-        let rep = |tag, fid, idx| Rep { tag, fid, idx, ext: false, ext2: false, via: None };
+        let rep = |tag, fid, idx| Rep { tag, fid, idx, ext: false, ext2: false, via: None, copy: 0 };
         let mut work = 0;
         // `[hole, wall, wall, wall]`: the rim, opposite the circle's start.
         let reps = [rep(1, 33, 7), rep(1, 32, 3), rep(1, 32, 3), rep(1, 32, 3)];
@@ -5380,7 +5617,7 @@ mod end_face_tests {
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 0.0, 1.0] };
         swept.insert(33, Swept { sketch: 1, plane, distance: -500.0, symmetric: false, through: true, cut: false });
         let cap_tags = HashSet::from([9u16]);
-        let rep = |tag, fid, idx| Rep { tag, fid, idx, ext: false, ext2: false, via: None };
+        let rep = |tag, fid, idx| Rep { tag, fid, idx, ext: false, ext2: false, via: None, copy: 0 };
         let mut work = 0;
         // The corner of sides 3 and 4 at (20, 10), from the plate's far cap (z = 5) down to the
         // cut's wall (z = 3): its middle is at z = 4, not at the plate's mid-depth.
@@ -5404,7 +5641,7 @@ mod end_face_tests {
         assert_eq!(lift(&r, 0.0, 0.0, cap_height(&r, 0)), [60.0, 0.0, 0.0]);
         // A face of Mirror1's copy (seed face 3) and a face of the plate: the copy's face is the
         // seed's, the plate's is the reflected plate's.
-        let rep = |idx, via| Rep { tag: 9, fid: 32, idx, ext: false, ext2: false, via };
+        let rep = |idx, via| Rep { tag: 9, fid: 32, idx, ext: false, ext2: false, via, copy: 0 };
         let planes = HashMap::from([(40, plane)]);
         let (p, reps, sw) = mirrored_edge(&[rep(3, Some(40)), rep(1, None)], &swept, &planes).unwrap();
         assert_eq!(p, plane);
@@ -5429,18 +5666,75 @@ mod end_face_tests {
         d.extend([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]);
         d.extend([0xa4, 0x80, 0, 0, 0x8c, 0x80, 0x8e, 0, 30, 0, 0, 0, 0x1e, 0x96, 0xfe, 0x52, 0, 0, 0, 0]);
         d.extend([0u8; 12]);
-        let recs = edge_records_to(&d, 0, d.len(), &HashSet::from([59])).unwrap();
+        let recs = edge_records_to(&d, 0, d.len(), &HashSet::from([59]), &HashSet::new()).unwrap();
         let reps = &recs[0].2;
         assert_eq!((reps[0].fid, reps[0].idx, reps[0].via), (55, 3, Some(59)));
         assert_eq!((reps[1].fid, reps[1].via), (30, None));
         // Unless the mirror is known, the record is not read so.
-        assert!(edge_records_to(&d, 0, d.len(), &HashSet::new()).unwrap().iter().all(|r| r.2.len() != 2));
+        assert!(
+            edge_records_to(&d, 0, d.len(), &HashSet::new(), &HashSet::new()).unwrap().iter().all(|r| r.2.len() != 2)
+        );
+    }
+
+    #[test]
+    fn a_face_of_a_pattern_copy_carries_the_copy_number() {
+        let word = [0x7d, 0xc3, 0x94, 0x25, 0xad, 0x49, 0xb2, 0x54];
+        let mut d = vec![0u8; 4];
+        d.extend([1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        d.extend(word);
+        d.extend(word);
+        d.extend([0, 0]);
+        // A cap of Boss-Extrude1 (id 30), then CirPattern1 (id 62) copy 5 of Cut-Extrude1 (id 58) face 2.
+        d.extend([0x94, 0x81, 0, 0, 0x91, 0x81, 0x93, 1, 30, 0, 0, 0, 0x0d, 0x4c, 0x1e, 0x52, 0, 0, 0, 0, 2, 0, 0, 0]);
+        d.extend([0xa7, 0x84, 0, 0, 0x91, 0x81, 0x93, 1, 62, 0, 0, 0, 0x4c, 0x2d, 0x2a, 0x52]);
+        d.extend([0xfb, 0x83, 0, 0, 0x91, 0x81, 0x93, 1, 58, 0, 0, 0, 0x37, 0x2d, 0x2a, 0x52, 2, 0, 0, 0]);
+        d.extend([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 5, 0, 0, 0]);
+        d.extend([0u8; 12]);
+        let recs = edge_records_to(&d, 0, d.len(), &HashSet::new(), &HashSet::from([62])).unwrap();
+        let reps = &recs[0].2;
+        assert_eq!((reps[0].fid, reps[0].via, reps[0].copy), (30, None, 0));
+        assert_eq!((reps[1].fid, reps[1].idx, reps[1].via, reps[1].copy), (58, 2, Some(62), 5));
+        // Unless the pattern is known, the record is not read so.
+        let plain = edge_records_to(&d, 0, d.len(), &HashSet::new(), &HashSet::new()).unwrap();
+        assert!(plain.iter().flat_map(|r| &r.2).all(|r| r.via.is_none() && r.copy == 0 && r.fid != 58));
+    }
+
+    #[test]
+    fn a_pattern_step_moves_points_by_the_copy_number() {
+        let turn = pattern_step(&json!({"type": "pattern_circular", "count": 6, "angle": 360.0,
+            "axis": {"origin": [0.0, 0.0, 0.0], "direction": [0.0, 0.0, 2.0]}}))
+        .unwrap();
+        let p = step_point(turn, 3.0, [1.0, 0.0, 5.0]);
+        assert!((p[0] + 1.0).abs() < 1e-12 && p[1].abs() < 1e-12 && (p[2] - 5.0).abs() < 1e-12);
+        let q = step_point(turn, 1.0, [1.0, 0.0, 0.0]);
+        assert!((q[0] - 0.5).abs() < 1e-12 && (q[1] - libm::sqrt(3.0) / 2.0).abs() < 1e-12);
+        // A partial circle spreads its angle over count - 1 steps.
+        let part = pattern_step(&json!({"type": "pattern_circular", "count": 3, "angle": 90.0,
+            "axis": {"origin": [0.0, 0.0, 0.0], "direction": [0.0, 0.0, 1.0]}}));
+        assert!(matches!(part, Some(Step::Turn(_, _, a)) if (a - TAU / 8.0).abs() < 1e-12));
+        let shift =
+            pattern_step(&json!({"type": "pattern_linear", "count": 4, "direction": [2.0, 0.0, 0.0], "spacing": 5.0}))
+                .unwrap();
+        assert_eq!(step_point(shift, 2.0, [1.0, 1.0, 1.0]), [11.0, 1.0, 1.0]);
+        assert_eq!(step_dir(shift, 2.0, [0.0, 1.0, 0.0]), [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn a_draft_ends_with_a_point_on_each_face() {
+        let mut d = vec![9u8; 7];
+        d.extend(2u32.to_le_bytes());
+        for v in [0.001f64, 0.002, 0.003, -0.004, 0.0, 0.0125] {
+            d.extend(v.to_le_bytes());
+        }
+        d.extend([0u8; 8]);
+        assert_eq!(draft_points(&d), vec![[1.0, 2.0, 3.0], [-4.0, 0.0, 12.5]]);
+        assert!(draft_points(&[1u8; 40]).is_empty());
     }
 
     #[test]
     fn a_cap_or_a_side_of_an_extruded_profile_is_picked_with_its_outward_normal() {
         let (swept, sketches) = plate();
-        let rep = |idx| Rep { tag: 9, fid: 32, idx, ext: false, ext2: false, via: None };
+        let rep = |idx| Rep { tag: 9, fid: 32, idx, ext: false, ext2: false, via: None, copy: 0 };
         let none = HashSet::new();
         // Face 1 (no side has that key): the far cap; face 0: the near one.
         let (p, n, _) = face_pick(&rep(1), &swept, &sketches, &none).unwrap();
@@ -5469,8 +5763,8 @@ mod end_face_tests {
         // later one is coplanar with them.)
         let (swept, sketches) = plate();
         let caps = HashSet::from([9u16]);
-        let side = |idx| Rep { tag: 4, fid: 32, idx, ext: false, ext2: false, via: None };
-        let cap = Rep { tag: 9, fid: 32, idx: 1, ext: false, ext2: false, via: None };
+        let side = |idx| Rep { tag: 4, fid: 32, idx, ext: false, ext2: false, via: None, copy: 0 };
+        let cap = Rep { tag: 9, fid: 32, idx: 1, ext: false, ext2: false, via: None, copy: 0 };
         let faces: Vec<_> = [side(3), cap, side(2), side(4)]
             .iter()
             .map(|r| face_of(r, &swept, &HashMap::new(), &sketches, &caps))
