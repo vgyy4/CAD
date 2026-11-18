@@ -462,7 +462,7 @@ pub(crate) fn sketch_edges(pb: &[u8]) -> HashMap<u32, Edge3> {
                 }
                 // Only an edge over the whole curve: its ends are the first and last poles.
                 let near = |a: Option<V3>, b: Option<&V3>| match (a, b) {
-                    (Some(a), Some(b)) => (0..3).all(|i| (a[i] - b[i]).abs() <= 1e-9),
+                    (Some(a), Some(b)) => a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1e-9),
                     _ => false,
                 };
                 if !(near(start, poles.first()) && near(end, poles.last())) {
@@ -775,7 +775,10 @@ pub(crate) fn face_set(b: &[u8]) -> Result<Vec<SetFace>, String> {
                 };
                 let r = dot(major, major).sqrt();
                 let ratio = f64_at(b, at + 72);
-                if !(r > 1e-9 && dot(major, axis).abs() < 1e-9 * (1.0 + r) && ratio == Some(1.0)) {
+                if !(r > 1e-9
+                    && dot(major, axis).abs() < 1e-9 * (1.0 + r)
+                    && ratio.is_some_and(|k| (k - 1.0).abs() < 1e-12))
+                {
                     return Err("a face cylinder of the set is not round".into());
                 }
                 (origin, axis, unit(major).ok_or("a face cylinder of the set has no radius")?, Some(r), 96)
@@ -1237,8 +1240,8 @@ pub(crate) fn hole_circle(b: &[u8]) -> Option<Curve2> {
     let (x, y, r) = (f(50)?, f(58)?, f(66)?);
     let same = |a: f64, b: f64| (a - b).abs() <= 1e-12 * (1.0 + a.abs());
     (u16_at(b, 48)? == 0
-        && f(74)? == 0.0
-        && f(82)? == 1.0
+        && f(74)?.abs() < 1e-15
+        && (f(82)? - 1.0).abs() < 1e-15
         && r > 0.0
         && same(cx, x)
         && same(cy, y)

@@ -659,7 +659,7 @@ fn a_b_curve_gives_its_poles_and_flat_knots() {
             ("knots", vec![n(8)]),
         ],
     );
-    f.node(45, 6, &[("vertices", [0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 2.0, 0.0, 0.0].iter().map(|v| n(v)).collect())]);
+    f.node(45, 6, &[("vertices", [0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 2.0, 0.0, 0.0].iter().map(n).collect())]);
     f.node(127, 7, &[("mult", vec![n(3), n(3)])]);
     f.node(128, 8, &[("knots", vec![n(0), n(1)])]);
     let g = decode(&f.finish(), &Limits::default()).unwrap();

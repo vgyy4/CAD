@@ -1089,8 +1089,11 @@ fn a_hole_cuts_its_circle() {
     assert_eq!(sk["curves"][0]["radius"], json!(2.0));
 }
 
-/// A face set of faces of any type: type byte, numbers, loops (as [`face_set_bytes`]).
-fn typed_face_set_bytes(faces: &[(u8, Vec<f64>, Vec<Vec<(u8, Vec<f64>)>>)]) -> Vec<u8> {
+/// A face of any type: type byte, numbers, loops of curves (type byte, numbers).
+type TypedFace = (u8, Vec<f64>, Vec<Vec<(u8, Vec<f64>)>>);
+
+/// A face set of faces of any type (as [`face_set_bytes`]).
+fn typed_face_set_bytes(faces: &[TypedFace]) -> Vec<u8> {
     let mut v = b"\x14\x00\x00\x00JMGetSmoothFaceSeq\0".to_vec();
     v.push(0xff);
     v.extend([0xf0, 0xcb, 0xaa, 0xf5, 0x51, 0xd1]);
