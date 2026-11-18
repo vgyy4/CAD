@@ -20,6 +20,7 @@ mod inventor_dc;
 pub mod inventor_derived;
 pub mod inventor_features;
 mod inventor_profile;
+mod inventor_sketch;
 pub mod solidedge;
 pub mod solidedge_features;
 

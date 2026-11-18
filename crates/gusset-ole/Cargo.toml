@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+gusset-sketch.workspace = true
 gusset-sldprt.workspace = true
 gusset-xt.workspace = true
 miniz_oxide.workspace = true

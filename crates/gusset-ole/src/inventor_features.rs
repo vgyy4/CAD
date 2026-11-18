@@ -20,7 +20,7 @@ use crate::inventor_dc::{Dc, FeatType, Feature, G_BODY_LIST, G_SOLID_BODY, Role,
 use crate::inventor_profile::{P2, Poly, picks, sample};
 use crate::{Limits, inventor};
 use serde_json::{Value, json};
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 
 /// Centimetres to millimetres.
@@ -34,7 +34,7 @@ const PATH_EPS: f64 = 0.01;
 /// A through-all extent, in millimetres.
 const THROUGH: f64 = 1e4;
 
-fn rnd(v: f64) -> f64 {
+pub(crate) fn rnd(v: f64) -> f64 {
     rnd_to(v, 1e9)
 }
 
@@ -86,15 +86,20 @@ fn tail_u16(dc: &Dc, i: usize) -> Option<u16> {
     u16_at(r, r.len().checked_sub(2)?)
 }
 
-struct Sketch {
-    name: String,
-    m: [f64; 16],
-    points: Vec<(usize, f64, f64, bool)>,
-    /// (kind, id, [point records], radius, construction)
-    curves: Vec<Curve>,
+#[derive(Clone)]
+pub(crate) struct Sketch {
+    pub(crate) name: String,
+    pub(crate) m: [f64; 16],
+    /// (record, x, y, projected), mm.
+    pub(crate) points: Vec<(usize, f64, f64, bool)>,
+    pub(crate) curves: Vec<Curve>,
+    /// The sketch as saved, when it was solved again for an iPart member's row (the profile
+    /// loops of the history body show the saved sketch).
+    pub(crate) before: Option<Box<Sketch>>,
 }
 
-enum Curve {
+#[derive(Clone)]
+pub(crate) enum Curve {
     Line {
         id: usize,
         a: usize,
@@ -213,6 +218,10 @@ struct Reader<'a> {
     owned: OnceCell<HashMap<usize, Vec<usize>>>,
     history: OnceCell<Option<Acis>>,
     result: OnceCell<Option<Acis>>,
+    /// Sketches solved again for an iPart member's row, by sketch record.
+    solved: RefCell<HashMap<usize, Sketch>>,
+    /// The sketches whose dimensions the row changes.
+    changed: OnceCell<Vec<usize>>,
 }
 
 impl Reader<'_> {
@@ -273,7 +282,56 @@ impl Reader<'_> {
             .as_ref()
     }
 
+    /// A sketch as the features see it: as saved, or solved again with the iPart member's row
+    /// when the row changes one of its dimensions (note AP). A sketch that projects edges of
+    /// the model is refused when the row changes another sketch: the projected geometry would
+    /// move with it.
     fn sketch(&self, s: usize) -> Result<Sketch, String> {
+        if !self.dc.has_row() {
+            return self.saved_sketch(s);
+        }
+        if let Some(done) = self.solved.borrow().get(&s) {
+            return Ok(done.clone());
+        }
+        let changed = self.changed.get_or_init(|| {
+            (0..self.dc.n())
+                .filter(|&i| self.dc.role(i) == Role::Sketch && crate::inventor_sketch::row_changes(&self.dc, i))
+                .collect()
+        });
+        let sk = self.saved_sketch(s)?;
+        if changed.iter().any(|&c| c != s) && self.projects_model(&sk) {
+            return Err(format!(
+                "sketch '{}' projects model edges, which move with the iPart member's row (not read yet)",
+                sk.name
+            ));
+        }
+        let projected = |i: usize| self.flags(i) & 0x40 != 0;
+        let Some(mut new) = crate::inventor_sketch::resolve(&self.dc, s, &sk, &projected)? else {
+            return Ok(sk);
+        };
+        new.before = Some(Box::new(sk));
+        self.solved.borrow_mut().insert(s, new.clone());
+        Ok(new)
+    }
+
+    /// Whether a sketch holds geometry projected from the model's edges (not the origin's point
+    /// or axes: those carry `feb0d977` / `18951917` links, or the axis flags).
+    fn projects_model(&self, sk: &Sketch) -> bool {
+        let curve_ids = sk.curves.iter().map(|c| match *c {
+            Curve::Line { id, .. } | Curve::Arc { id, .. } | Curve::Circle { id, .. } | Curve::Ellipse { id, .. } => id,
+        });
+        sk.points.iter().map(|p| p.0).chain(curve_ids).any(|i| {
+            let f = self.flags(i);
+            f & 0x40 != 0
+                && f & 0x30_0000 == 0
+                && !self
+                    .back()
+                    .get(i)
+                    .is_some_and(|b| b.iter().any(|&j| matches!(self.dc.class(j), 0xfeb0_d977 | 0x1895_1917)))
+        })
+    }
+
+    fn saved_sketch(&self, s: usize) -> Result<Sketch, String> {
         let r = self.dc.refs(s);
         let placement = r.iter().map(|&(_, x)| x).find(|&x| self.dc.role(x) == Role::SkPlacement);
         let m = match placement {
@@ -285,6 +343,7 @@ impl Reader<'_> {
             m,
             points: Vec::new(),
             curves: Vec::new(),
+            before: None,
         };
         let mut ids: HashMap<usize, ()> = HashMap::new();
         let items = self.owned(s);
@@ -435,6 +494,28 @@ impl Reader<'_> {
 
     /// `"all"`, or one point per region the feature's loops surround.
     fn profiles(&self, sk: &Sketch, lst: usize) -> Value {
+        let Some(before) = &sk.before else { return self.saved_profiles(sk, lst) };
+        // Picked on the saved sketch (the loops show it), then found again on the solved one.
+        match self.saved_profiles(before, lst) {
+            Value::Array(picks) => {
+                let mut out = Vec::new();
+                for p in picks {
+                    let at = p
+                        .get("point")
+                        .and_then(Value::as_array)
+                        .and_then(|a| Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?)));
+                    let Some(q) = at.and_then(|q| crate::inventor_sketch::map_pick(before, sk, q)) else {
+                        return json!("all");
+                    };
+                    out.push(json!({"point": [rnd(q.0), rnd(q.1)]}));
+                }
+                Value::Array(out)
+            }
+            other => other,
+        }
+    }
+
+    fn saved_profiles(&self, sk: &Sketch, lst: usize) -> Value {
         let (Some(ac), Some(tags)) = (self.history(), self.loop_tags(lst)) else { return json!("all") };
         if tags.is_empty() {
             return json!("all");
@@ -2407,6 +2488,8 @@ pub fn feature_tree_with(
         owned: OnceCell::new(),
         history: OnceCell::new(),
         result: OnceCell::new(),
+        solved: RefCell::new(HashMap::new()),
+        changed: OnceCell::new(),
     };
     let names: HashMap<usize, String> =
         feats.iter().map(|f| (f.rec, f.name.clone().unwrap_or_else(|| format!("Feature{}", f.rec)))).collect();

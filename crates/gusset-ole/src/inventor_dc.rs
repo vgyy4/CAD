@@ -494,8 +494,22 @@ impl Dc {
         self.first_list(i, None).map(|x| x.0)
     }
 
-    /// Parameter record: name and value (cm or radians).
+    /// Parameter record: name and value (cm or radians); a parameter of the row reads as the
+    /// row's value and counts as read.
     pub(crate) fn param(&self, i: usize) -> Option<(String, f64)> {
+        let (name, val) = self.param_saved(i)?;
+        if let Some(&(_, v)) = self.row.iter().find(|(n, _)| *n == name) {
+            let mut used = self.row_used.borrow_mut();
+            if !used.contains(&name) {
+                used.push(name.clone());
+            }
+            return Some((name, v));
+        }
+        Some((name, val))
+    }
+
+    /// Parameter record: name and the value the file stores.
+    pub(crate) fn param_saved(&self, i: usize) -> Option<(String, f64)> {
         let r = self.r(i);
         let val = f64_at(r, r.len().checked_sub(20)?)?;
         let mut name = String::new();
@@ -513,14 +527,26 @@ impl Dc {
                 break;
             }
         }
-        if let Some(&(_, v)) = self.row.iter().find(|(n, _)| *n == name) {
-            let mut used = self.row_used.borrow_mut();
-            if !used.contains(&name) {
-                used.push(name.clone());
-            }
-            return Some((name, v));
-        }
         Some((name, val))
+    }
+
+    /// Whether the row replaces the value of parameter record `i` (without counting it as read).
+    pub(crate) fn in_row(&self, i: usize) -> bool {
+        if self.row.is_empty() || self.role(i) != Role::Param {
+            return false;
+        }
+        self.param_saved(i).is_some_and(|(n, _)| self.row.iter().any(|(m, _)| *m == n))
+    }
+
+    /// Whether parameter record `i` is driven (a reference dimension's measured value: bit 0 of
+    /// header byte 13; note AP).
+    pub(crate) fn driven(&self, i: usize) -> bool {
+        self.role(i) == Role::Param && self.r(i).get(13).is_some_and(|b| b & 1 != 0)
+    }
+
+    /// Whether a row is set.
+    pub(crate) fn has_row(&self) -> bool {
+        !self.row.is_empty()
     }
 
     /// Reads parameters named in `row` as the given values instead of the stored ones.

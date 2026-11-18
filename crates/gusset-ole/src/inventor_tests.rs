@@ -1569,3 +1569,104 @@ fn a_sheet_metal_face_needs_its_profile_loop() {
     assert_eq!(t["features"][2]["original_type"], "sheet metal face");
     assert_eq!(t["features"][2]["reason"], "the face has no profile loop");
 }
+
+/// The classes of [`constrained_records`]: the base classes, the constraint set and four
+/// constraint classes (note AP).
+const SK_CLASSES: [u32; 16] = [
+    0x2b48_a42b,
+    0x9087_4d18,
+    0xce52_df35,
+    0x9087_4d11,
+    0xce52_df3a,
+    0x1111_1111,
+    0xf988_4c43,
+    0x9087_4d26,
+    0x9087_4d91,
+    0x4521_21b6,
+    0x656d_d01e,
+    0x9087_4d62, // 11 constraint set
+    0x9087_4d98, // 12 horizontal
+    0x9087_4d99, // 13 vertical
+    0x1105_8558, // 14 distance
+    0x1234_5678, // 15 a constraint class that is not read
+];
+
+/// A constraint record of the sketch's constraint set (record 19): entities from offset 30.
+fn constraint(refs: &[usize]) -> Vec<u8> {
+    let mut r = hdr(0, 0, 0);
+    r.extend(0u32.to_le_bytes());
+    r.extend(rf(19).to_le_bytes());
+    for &x in refs {
+        r.extend(rf(x).to_le_bytes());
+    }
+    r
+}
+
+/// The base rectangle with its constraints: sides horizontal and vertical, the width (points
+/// 3 to 4) `d1` = 2 cm and the height (lines 8 to 10) `d2` = 1 cm; `extra` adds a constraint
+/// of an unread class.
+fn constrained_records(extra: bool) -> Vec<(usize, Vec<u8>)> {
+    let mut r = base_records();
+    r.push((11, hdr(0, 0, 0))); // 19 constraint set
+    r.push((12, constraint(&[8]))); // 20
+    r.push((12, constraint(&[10]))); // 21
+    r.push((13, constraint(&[9]))); // 22
+    r.push((13, constraint(&[11]))); // 23
+    r.push((PARAM, param("d1", 2.0))); // 24
+    r.push((14, constraint(&[3, 4, 24]))); // 25
+    r.push((PARAM, param("d2", 1.0))); // 26
+    r.push((14, constraint(&[8, 10, 26]))); // 27
+    r.push((15, constraint(&[3]))); // 28
+    let mut sketch = hdr(rf(0), 0, 0);
+    sketch.extend(rf(2).to_le_bytes());
+    for k in 20..=if extra { 28 } else { 27 } {
+        sketch.extend(rf(k).to_le_bytes());
+    }
+    r[7].1 = sketch;
+    r
+}
+
+fn sketch_points(t: &Value) -> Vec<(f64, f64)> {
+    t["features"][0]["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p["x"].as_f64().unwrap(), p["y"].as_f64().unwrap()))
+        .collect()
+}
+
+/// An iPart member's row that changes a sketch dimension solves the sketch again (note AP);
+/// without a row, or with a row of feature parameters only, the sketch is read as saved.
+#[test]
+fn a_member_row_solves_the_sketch_again() {
+    use crate::inventor_features::feature_tree_with;
+    let part = inventor_dc_part(&SK_CLASSES, &constrained_records(false), &[]);
+    let read = |row: &[(String, f64)]| feature_tree_with(&part, "p.ipt", &Limits::default(), row, None).unwrap();
+    let (saved, used) = read(&[]);
+    assert!(used.is_empty());
+    assert_eq!(sketch_points(&saved), vec![(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]);
+    let (t, used) = read(&[("d0".into(), 0.7)]);
+    assert_eq!(sketch_points(&t), sketch_points(&saved));
+    assert_eq!(used, vec!["d0".to_string()]);
+    let (t, used) = read(&[("d1".into(), 3.0), ("d2".into(), 0.5)]);
+    assert!(used.contains(&"d1".to_string()) && used.contains(&"d2".to_string()));
+    let p = sketch_points(&t);
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    let (w, h) = (p[1].0 - p[0].0, p[3].1 - p[0].1);
+    assert!(close(w, 30.0) && close(h, 5.0), "{p:?}");
+    assert!(close(p[1].1, p[0].1) && close(p[2].0, p[1].0) && close(p[3].0, p[0].0) && close(p[2].1, p[3].1));
+    assert_eq!(t["features"][1]["type"], "extrude");
+}
+
+/// A constraint of a class that is not read refuses the sketch for a member row (the saved
+/// sketch is still read without one).
+#[test]
+fn an_unread_sketch_constraint_refuses_a_member_row() {
+    use crate::inventor_features::feature_tree_with;
+    let part = inventor_dc_part(&SK_CLASSES, &constrained_records(true), &[]);
+    let read = |row: &[(String, f64)]| feature_tree_with(&part, "p.ipt", &Limits::default(), row, None).unwrap().0;
+    assert_eq!(read(&[])["features"][1]["type"], "extrude");
+    let t = read(&[("d1".into(), 3.0)]);
+    assert_eq!(t["features"][0]["type"], "unsupported");
+    assert!(t["features"][0]["reason"].as_str().unwrap().contains("12345678 is not read"), "{t}");
+}
