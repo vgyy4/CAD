@@ -610,3 +610,39 @@ one part per process):
 No part of either corpus went from history to body. The 12 gained: 3 combines, 3 embosses, 2 splits, 4
 sheet-metal faces. Lofts were tried (the sections found as for the sheet-metal faces) and left out:
 Inventor pairs a square and a circle differently from a ruled loft (7e-5 in volume).
+
+## Amendment (2026-11-18, 16): Inventor round ipt5 - derived parts and iPart members from their base part
+
+The largest refused group of round 4 (203 parts, `8e29cbee`) are derived parts and iPart members: the file
+holds only the body of another part. Their base parts are mostly in the same folder (30 of the 31 names in
+the second corpus). Decision: such a part is rebuilt as its base part's feature history, followed by the
+derive's placement (mirror, move, scale) and the features the part adds after it; the unchanged rebuild
+check against the part's own stored body decides, as for any import. Layout notes: AO of
+`docs/formats/inventor-feature-tree.md`.
+
+The base is read from another file, so the lookup is narrow (the same rules as SolidWorks assemblies
+reading their parts, `gusset-commands/src/import.rs`):
+
+- only by the plain file name the part stores (no separators, drive prefixes, `.`/`..`, control
+  characters; `.ipt` only), and only if listing the part's own folder shows exactly that name;
+- opened without following links (`open_regular`), as a regular file, under the same size cap and cancel
+  flag as the import itself, and read with the same limits;
+- at most `MAX_DERIVE_DEPTH` levels of bases; a part that names itself, or a chain that returns to a part
+  already read, is a cycle and refused;
+- a missing or unreadable base is a reason naming it; the part then comes in as its body, as before. A part
+  that derives nothing reads exactly as before, and no other format is affected.
+
+An iPart member stores its row as its own parameters under the factory's names; the factory is read with
+the member's values. The factory stores its sketches solved for its saved row only, and the reader does not
+decode sketch dimensions, so a member whose row changes a sketch dimension does not rebuild (the rebuild
+check reports the difference); members that change only feature values (extrude distances etc.) do.
+
+| corpus | parts | history before | after | without a solid |
+|---|---|---|---|---|
+| first (Zenodo) | 47 | 28 | 28 | 0 |
+| second (57 sources) | 1639 | 574 | 585 | 46 |
+
+No part went from history to body. The 11 gained: 5 AN/MS fitting members, 2 aluminium channels, 2 sample
+parts, a mirrored terminal and one derived architecture part. Most of the remaining members need their
+factory's sketches solved again for their row; 22 derives name a same-named file elsewhere, and 5 Design
+Accelerator parts name a component without a file.

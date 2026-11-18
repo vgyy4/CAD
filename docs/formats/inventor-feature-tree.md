@@ -704,3 +704,24 @@ the sheet-metal face does; tried with the same sketch matching: `lf_basic`, a sq
 and the others need open or multi-region sections), 7 delete faces, 4 iFeatures, 3 face drafts
 (`f4fa0900`), 3 ribs. The 31 "cut or join before any body" parts start from an imported base body (STEP
 translator parts, McMaster framing): not a rebuild.
+
+## AO. Derived parts and iPart members `8e29cbee` (round ipt5)
+Confirmed on the 203 parts of the second corpus that hold one (201 derived parts and iPart members,
+`gusset_ole::inventor_derived`):
+
+- The derive feature's slot 2 leads, through a `2148c03c` record, to its definition: `3f3634a0` for a
+  derived part, `338634ac` for an iPart member (the base is the iPart factory).
+- The definition refers to a `255d7ed7` record holding the base file's plain name (length-prefixed
+  UTF-16, e.g. `AN806.ipt`; no folder), to a placement `90874d18` (the sketch placement's mask-compressed
+  4x4, cm; a mirrored part's is a reflection, a scaled part's carries the scale) and, through an options
+  record `3f36349f`, to the scale parameter.
+- Every derived part also holds a tagging feature `dfdb99e8`: no geometry, now left out.
+- An iPart member stores its row as its own parameters, under the factory's names (`d0`, `d1`, ...,
+  user parameters, plus `ScaleForDerivedMember`). The factory stores its sketches solved for the saved
+  row only: a member whose row differs in a sketch dimension needs the sketch solved again, which the
+  reader cannot do (sketch dimensions and constraints are not decoded). A member whose row differs only
+  in feature parameters (extrude distance etc.) is read with the member's values.
+- Not read: 22 parts whose derive names the part's own file name (a body taken from a same-named file
+  elsewhere) and whose definition has another layout (no scale found); 5 Design Accelerator parts whose
+  base is stored as a component name without a file (`Spur Gear1`, `Worm Gear`); multi-body derives
+  followed by features of the part (2).
