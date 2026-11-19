@@ -34,6 +34,8 @@ pub(crate) enum Request {
     Free(Vec<u64>),
     Extrude(Profile, ExtrudeSpec),
     ExtrudeToFace(Profile, Shape, u32, f64, bool, bool),
+    /// Up to the next face: `reverse`, `cut` (ADR 0061 amendment).
+    ExtrudeToNext(Profile, Shape, bool, bool),
     Revolve(Profile, RevolveSpec),
     Sweep(Profile, SweepPath, SweepSpec),
     Loft(Vec<Profile>, LoftSpec),
@@ -215,6 +217,13 @@ impl Request {
                 w.seq_len(ids.len())?;
                 ids.iter().for_each(|i| w.u64(*i));
             }
+            Request::ExtrudeToNext(p, target, reverse, cut) => {
+                w.u8(40);
+                p.put(&mut w, s)?;
+                put_shape(&mut w, s, target)?;
+                w.bool(*reverse);
+                w.bool(*cut);
+            }
             Request::ExtrudeToFace(p, target, face, offset, reverse, extend) => {
                 w.u8(37);
                 p.put(&mut w, s)?;
@@ -349,6 +358,7 @@ impl Request {
                 r.bool()?,
                 r.bool()?,
             ),
+            40 => Request::ExtrudeToNext(Profile::get(&mut r, s)?, get_shape(&mut r, s)?, r.bool()?, r.bool()?),
             3 => Request::Revolve(Profile::get(&mut r, s)?, RevolveSpec::get(&mut r, s)?),
             4 => Request::Sweep(Profile::get(&mut r, s)?, SweepPath::get(&mut r, s)?, SweepSpec::get(&mut r, s)?),
             5 => Request::Loft(Vec::<Profile>::get(&mut r, s)?, LoftSpec::get(&mut r, s)?),

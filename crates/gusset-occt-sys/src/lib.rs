@@ -138,6 +138,13 @@ mod raw {
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;
+        pub(crate) fn gs_extrude_to_next(
+            p: *const GsProfile,
+            target: *const GsShape,
+            flags: i32,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
         pub(crate) fn gs_extrude_curves(
             p: *const GsProfile,
             distance: f64,

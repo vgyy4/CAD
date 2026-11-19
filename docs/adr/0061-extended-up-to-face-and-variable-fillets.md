@@ -68,3 +68,38 @@ command `feature.fillet` `at`, tree field `vertex_radii: [{point, radius}]`):
   and later chamfer edges resolved. See `docs/formats/solidworks-feature-tree.md`.
 * Whether SolidWorks' "smooth transition" is OCCT's spline law is not measured; a straight
   transition (radius linear in arc length) would need intermediate points or a law OCCT keeps.
+
+## Amendment (2026-11-19): up to the next face
+
+Solid Edge's "through next" extent (extent 16 of a protrusion or cutout, ADR 0046 amendment 22)
+has no Gusset form: the reader wrote it as a blind reach through all, which cuts every wall
+behind the first one (a hole through both walls of a tank where Solid Edge opens one).
+
+**Decision.** `ExtrudeEnd::ToNext { reverse }`, text `to: next [, reverse: true]`, command
+`feature.up_to_next` (`op` add or cut), tree `end_condition: "to_next"`:
+
+* The kernel's `extrude_to_next(profile, target, reverse, cut)` sweeps a prism longer than the
+  target's box and splits it by the target (`BRepAlgoAPI_Splitter`); each piece lies inside the
+  target's material or outside it (the volume it shares with the target). The pieces holding a
+  piece of the start cap are the stretch next to the profile. **Adding**: the start pieces
+  outside the material, which must stop at the target (a piece reaching the prism's far end:
+  "meets no face"; a profile inside the material: "no next face"). **Cutting**: the start
+  pieces inside the material and the material pieces that share a face with a start piece
+  outside it (the first stretch of material the sweep meets, entered from the air). The result
+  is the tool solid; faces on the target's surfaces are its end cap. Remote workers carry it as
+  request 40.
+* Like `to: <face>` it takes no offset, extend or symmetric; it needs `op: add` or `op: cut`
+  (validation and evaluation say so). The end follows the model: it is found again on every
+  rebuild.
+* The rule is per connected piece, not per ray: where the air before a wall wraps round it
+  (a profile wider than an obstacle), the material it touches beyond the obstacle counts as
+  next too. Solid Edge's own rule for that case is not measured.
+* The tree import falls back to the blind `distance` given with `to_next` where the end up to
+  the next face does not build, so a reader can always give the old reach with it.
+
+**Consequences.** Golden tests (OCCT): a closed tank (walls 5 mm): adding up to the bottom face
+from below, up to the top wall from inside the cavity and down to the bottom wall reversed;
+cutting the bottom wall only from below, the top wall only from inside, the same from a profile
+on the bottom face, a side wall over its whole height; refusals above the tank and inside a
+wall. The Solid Edge reader writes `to_next` for extent 16 (both ways, side 6: a second feature
+reversed); measured gains in ADR 0046 amendment 22.

@@ -504,6 +504,10 @@ impl Kernel for RemoteKernel {
         self.op(&Request::ExtrudeToFace(profile.clone(), target.clone(), face, offset, reverse, extend))
     }
 
+    fn extrude_to_next(&self, profile: &Profile, target: &Shape, reverse: bool, cut: bool) -> KResult<OpResult> {
+        self.op(&Request::ExtrudeToNext(profile.clone(), target.clone(), reverse, cut))
+    }
+
     fn revolve(&self, profile: &Profile, spec: &RevolveSpec) -> KResult<OpResult> {
         self.op(&Request::Revolve(profile.clone(), *spec))
     }

@@ -2049,6 +2049,135 @@ int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face,
   GS_GUARD_END
 }
 
+// Extrudes the profile from its plane up to the next face of `target` (ADR 0061 amendment),
+// returning the swept tool solid. A prism longer than the target's box is split by the target;
+// each piece lies inside the target's material or outside it. The pieces holding the start cap
+// are the stretch next to the profile. Flag 2 clear (a protrusion to the next face): the pieces
+// outside the material that hold the start cap, which must stop at the target (not run to the
+// prism's far end). Flag 2 set (a cut through the next stretch of material): the pieces inside
+// the material that hold the start cap or share a face with a start piece outside it. Flag 1
+// reverses the sweep. Faces from the target's surfaces are the end caps.
+int gs_extrude_to_next(const GsProfile* p, const GsShape* target, int flags, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!p || !target || !out || !origins) return fail("null argument");
+  const bool reverse = (flags & 1) != 0;
+  const bool cut = (flags & 2) != 0;
+  Frame f = make_frame(p, 0.0);
+  const double sgn = reverse ? -1.0 : 1.0;
+  gp_Dir dir(f.n.X() * sgn, f.n.Y() * sgn, f.n.Z() * sgn);
+  std::vector<TaggedEdge> tagged;
+  std::vector<uint32_t> face_region;
+  std::vector<TopoDS_Face> faces = build_faces(p, f, tagged, face_region);
+  Bnd_Box ub;
+  for (const auto& fc : faces) BRepBndLib::Add(fc, ub);
+  BRepBndLib::Add(target->s, ub);
+  if (ub.IsVoid()) return fail("the extrusion has no extent");
+  const double len = 2.0 * std::sqrt(ub.SquareExtent()) + 1.0;
+  gp_Vec v(dir.X() * len, dir.Y() * len, dir.Z() * len);
+  TopoDS_Compound comp;
+  BRep_Builder bld;
+  bld.MakeCompound(comp);
+  std::vector<Rec> recs;
+  TopoDS_Shape single;
+  int nsolids = 0;
+  for (size_t ri = 0; ri < faces.size(); ++ri) {
+    BRepPrimAPI_MakePrism mk(faces[ri], v, true);
+    mk.Build();
+    if (!mk.IsDone()) return fail("extrusion failed");
+    std::vector<Rec> rr;
+    for (const auto& te : tagged) {
+      const ShapeList& gen = mk.Generated(te.e);
+      for (ShapeList::Iterator it(gen); it.More(); it.Next()) rr.push_back(Rec{it.Value(), GS_ORIGIN_LATERAL, int64_t(te.tag), 0});
+    }
+    const TopoDS_Shape start = mk.FirstShape(faces[ri]);
+    const TopoDS_Shape last = mk.LastShape(faces[ri]);
+    rr.push_back(Rec{start, GS_ORIGIN_CAP, 0, int64_t(face_region[ri])});
+    ShapeList args, tools;
+    args.Append(mk.Shape());
+    tools.Append(target->s);
+    BRepAlgoAPI_Splitter sp;
+    sp.SetArguments(args);
+    sp.SetTools(tools);
+    sp.Build();
+    if (!sp.IsDone() || sp.HasErrors()) return fail("could not split the extrusion by the body");
+    auto fragments = [&sp](const TopoDS_Shape& x) {
+      ShapeList m = sp.Modified(x);
+      if (m.IsEmpty() && !sp.IsDeleted(x)) m.Append(x);
+      return m;
+    };
+    const ShapeList starts = fragments(start), ends = fragments(last);
+    struct Piece {
+      TopoDS_Shape s;
+      ShapeMap faces;
+      bool inside, at_start, at_end;
+    };
+    std::vector<Piece> pieces;
+    for (TopExp_Explorer sx(sp.Shape(), TopAbs_SOLID); sx.More(); sx.Next()) {
+      Piece pc{sx.Current(), ShapeMap(), false, false, false};
+      TopExp::MapShapes(pc.s, TopAbs_FACE, pc.faces);
+      for (ShapeList::Iterator it(starts); it.More(); it.Next()) pc.at_start |= pc.faces.Contains(it.Value());
+      for (ShapeList::Iterator it(ends); it.More(); it.Next()) pc.at_end |= pc.faces.Contains(it.Value());
+      // Inside the material when most of the piece is shared with the target (a piece lies
+      // wholly on one side of the target's boundary).
+      const double vol = std::fabs(signed_volume(pc.s));
+      if (!(vol > 0.0)) continue;
+      BRepAlgoAPI_Common cm(pc.s, target->s);
+      if (!cm.IsDone() || cm.HasErrors()) return fail("could not tell the extrusion's pieces inside the body");
+      pc.inside = std::fabs(signed_volume(cm.Shape())) > 0.5 * vol;
+      pieces.push_back(pc);
+    }
+    std::vector<const Piece*> keep;
+    for (const auto& pc : pieces) {
+      if (!pc.at_start || pc.inside == !cut) continue;
+      if (!cut && pc.at_end) return fail("the extrusion meets no face of the body ahead of the profile");
+      keep.push_back(&pc);
+    }
+    if (cut) {
+      // Material next to the air the sweep starts in: the first stretch along the sweep.
+      std::vector<const Piece*> air;
+      for (const auto& pc : pieces)
+        if (pc.at_start && !pc.inside) air.push_back(&pc);
+      for (const auto& pc : pieces) {
+        if (!pc.inside || pc.at_start) continue;
+        bool next = false;
+        for (const Piece* a : air)
+          for (TopExp_Explorer fx(pc.s, TopAbs_FACE); fx.More() && !next; fx.Next()) next = a->faces.Contains(fx.Current());
+        if (next) keep.push_back(&pc);
+      }
+    }
+    if (keep.empty())
+      return fail(cut ? "the extrusion meets no material of the body ahead of the profile"
+                      : "the profile starts inside the body, so there is no next face to extrude up to");
+    std::vector<Rec> carried = rr;
+    carry_recs(sp, carried);
+    for (const Piece* pc : keep) {
+      ShapeMap known;
+      for (const auto& r : carried)
+        if (pc->faces.Contains(r.face)) {
+          recs.push_back(r);
+          known.Add(r.face);
+        }
+      // The rest are faces of the target's surfaces: the end of the sweep.
+      for (int i = 1; i <= pc->faces.Extent(); ++i)
+        if (!known.Contains(pc->faces(i))) recs.push_back(Rec{pc->faces(i), GS_ORIGIN_CAP, 1, int64_t(face_region[ri])});
+      bld.Add(comp, pc->s);
+      single = pc->s;
+      ++nsolids;
+    }
+  }
+  if (nsolids == 0) return fail("extrusion failed");
+  TopoDS_Shape result = nsolids == 1 ? single : TopoDS_Shape(comp);
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  emit_recs(recs, out_faces, o);
+  check_valid(result, "extrusion to the next face");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
 int gs_revolve(const GsProfile* p, const double axis_origin[2], const double axis_dir[2], double angle,
                GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN

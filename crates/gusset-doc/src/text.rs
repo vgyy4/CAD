@@ -273,6 +273,15 @@ fn parse_appearance(c: &mut Cursor<'_>) -> Result<Appearance, ParseError> {
 }
 
 /// `{"#rrggbb": [<face>, ...], ...}`: at most `MAX_LIST_ITEMS` faces in all.
+/// `next` as the end of an extrude (`to: next`), not the start of a face reference to a
+/// feature named `next` (`next/cap(end)`).
+fn eat_next(c: &mut Cursor<'_>) -> bool {
+    let rest = c.rest().trim_start();
+    rest.strip_prefix("next")
+        .is_some_and(|t| !t.starts_with(|ch: char| ch.is_ascii_alphanumeric() || ch == '_' || ch == '/' || ch == '.'))
+        && c.eat_kw("next")
+}
+
 fn parse_face_colors(c: &mut Cursor<'_>) -> Result<Vec<FaceColor>, ParseError> {
     c.expect('{')?;
     let mut out: Vec<FaceColor> = Vec::new();
@@ -528,6 +537,12 @@ fn print_feature(out: &mut String, f: &Feature) {
                     }
                     if *extend {
                         args.push("extend: true".into());
+                    }
+                }
+                ExtrudeEnd::ToNext { reverse } => {
+                    args.push("to: next".into());
+                    if *reverse {
+                        args.push("reverse: true".into());
                     }
                 }
             }
@@ -1390,6 +1405,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut full_round: Option<Vec<FaceRef>> = None;
     let mut radii: Vec<VertexRadius> = Vec::new();
     let mut to_face: Option<FaceRef> = None;
+    let mut to_next = false;
     let mut to_offset = None;
     let mut to_reverse = false;
     let mut to_extend = false;
@@ -1426,6 +1442,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
                 if kw == "extrude" { distance = Some(e) } else { size = Some(e) }
             }
             ("extrude", "symmetric") => symmetric = parse_bool(c)?,
+            ("extrude", "to") if eat_next(c) => to_next = true,
             ("extrude", "to") => to_face = Some(parse_face(c)?),
             ("extrude", "offset") => to_offset = Some(c.expr()?),
             ("extrude", "reverse") => to_reverse = parse_bool(c)?,
@@ -1501,6 +1518,17 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         "extrude" => FeatureKind::Extrude(ExtrudeDef {
             profile: profile.ok_or_else(|| missing(c, kw, "profile"))?,
             end: match (distance, to_face) {
+                (None, None) if to_next && !symmetric && to_offset.is_none() && !to_extend => {
+                    ExtrudeEnd::ToNext { reverse: to_reverse }
+                }
+                (None, None) if to_next => {
+                    return Err(
+                        c.err("an extrude up to the next face takes reverse only (no offset, extend or symmetric)")
+                    );
+                }
+                (Some(_), None) | (None, Some(_)) if to_next => {
+                    return Err(c.err("an extrude ends at one place: give distance:, to: <face> or to: next"));
+                }
                 (Some(_), Some(_)) => {
                     return Err(c.err_hint(
                         "an extrude takes distance or to, not both",

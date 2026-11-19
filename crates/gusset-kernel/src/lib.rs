@@ -192,6 +192,18 @@ pub trait Kernel: Send + Sync + Debug {
         unsupported("extrude up to a face", self.name())
     }
 
+    /// Linear sweep of a planar profile along its normal (against it when `reverse`) up to
+    /// the next face of `target` (ADR 0061 amendment): a protrusion to the first face of
+    /// `target` it meets, or (`cut`) a cut through the first stretch of `target`'s material it
+    /// meets (Solid Edge "through next"). Fails where a protrusion meets no face, a profile of a
+    /// protrusion starts inside the material, or a cut meets no material. The result is the
+    /// swept tool solid ([`FaceOrigin::Cap`] end: the faces on `target`'s surfaces); like an
+    /// extrude it is combined with a body by the caller.
+    fn extrude_to_next(&self, profile: &Profile, target: &Shape, reverse: bool, cut: bool) -> KResult<OpResult> {
+        let _ = (profile, target, reverse, cut);
+        unsupported("extrude up to the next face", self.name())
+    }
+
     /// Rotational sweep of a planar profile around an in-plane axis.
     fn revolve(&self, profile: &Profile, spec: &RevolveSpec) -> KResult<OpResult> {
         let _ = (profile, spec);

@@ -106,6 +106,10 @@ int gs_extrude(const GsProfile* p, double distance, int symmetric, GsShape** out
 // flags: bit 0 reverse, bit 1 extend the face's surface past its boundary (ADR 0061).
 int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face, double offset, int flags,
                        GsShape** out, GsBuf* origins);
+/* Extrudes a profile up to the next face of `target`: a protrusion to the first face it meets
+ * (flags bit 1 clear), or a cut through the first stretch of the target's material it meets
+ * (bit 1 set). Bit 0 reverses the sweep. Returns the swept tool solid (ADR 0061 amendment). */
+int gs_extrude_to_next(const GsProfile* p, const GsShape* target, int flags, GsShape** out, GsBuf* origins);
 int gs_revolve(const GsProfile* p, const double axis_origin[2], const double axis_dir[2], double angle,
                GsShape** out, GsBuf* origins);
 /* Sweeps the regions of `p` along a path: either sketch curves `path_curves` (one loop, an

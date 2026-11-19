@@ -234,10 +234,20 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
             | FeatureKind::Sweep(SweepDef { profile, op, body, body_name, .. }) => {
                 check_profile(n, profile, &seen, &mut out);
                 if let FeatureKind::Extrude(e) = &f.kind
-                    && matches!(e.end, ExtrudeEnd::ToFace { .. })
+                    && matches!(e.end, ExtrudeEnd::ToFace { .. } | ExtrudeEnd::ToNext { .. })
                     && e.symmetric
                 {
                     out.push(issue_h(n, "an extrude up to a face cannot be symmetric", "remove symmetric: true"));
+                }
+                if let FeatureKind::Extrude(e) = &f.kind
+                    && matches!(e.end, ExtrudeEnd::ToNext { .. })
+                    && !matches!(e.op, BodyOp::Add | BodyOp::Cut)
+                {
+                    out.push(issue_h(
+                        n,
+                        "an extrude up to the next face adds to or cuts a body",
+                        "use op: add or op: cut",
+                    ));
                 }
                 if let FeatureKind::Revolve(r) = &f.kind
                     && let AxisRef::SketchLine { sketch, entity } = &r.axis

@@ -1071,6 +1071,11 @@ pub enum ExtrudeEnd {
     /// may lie outside the face (SolidWorks "up to surface", Inventor "to face, extended");
     /// otherwise the face must cover the whole end of the sweep.
     ToFace { face: FaceRef, offset: Option<Expr>, reverse: bool, extend: bool },
+    /// Up to the next face of the target body (ADR 0061 amendment; Solid Edge "through next"):
+    /// the sweep runs along the sketch normal, or against it with `reverse`. Adding material,
+    /// it stops on the first face of the body it meets; cutting, it goes through the first
+    /// stretch of the body's material it meets and stops where that ends.
+    ToNext { reverse: bool },
 }
 
 impl ExtrudeEnd {
@@ -1078,7 +1083,7 @@ impl ExtrudeEnd {
     pub fn distance(&self) -> Option<&Expr> {
         match self {
             ExtrudeEnd::Distance(d) => Some(d),
-            ExtrudeEnd::ToFace { .. } => None,
+            ExtrudeEnd::ToFace { .. } | ExtrudeEnd::ToNext { .. } => None,
         }
     }
 
@@ -1087,6 +1092,7 @@ impl ExtrudeEnd {
         match self {
             ExtrudeEnd::Distance(d) => vec![d],
             ExtrudeEnd::ToFace { offset, .. } => offset.iter().collect(),
+            ExtrudeEnd::ToNext { .. } => Vec::new(),
         }
     }
 
@@ -1095,6 +1101,7 @@ impl ExtrudeEnd {
         match self {
             ExtrudeEnd::Distance(d) => vec![d],
             ExtrudeEnd::ToFace { offset, .. } => offset.iter_mut().collect(),
+            ExtrudeEnd::ToNext { .. } => Vec::new(),
         }
     }
 }

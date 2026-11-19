@@ -214,6 +214,21 @@ pub fn extrude_to_face(
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
+/// Extrudes a profile up to the next face of `target`: a protrusion to the first face it
+/// meets, or (`cut`) a cut through the first stretch of material it meets.
+pub fn extrude_to_next(p: &ProfileData, target: &RawShape, reverse: bool, cut: bool) -> ShimResult<OpOut> {
+    let flags = i32::from(reverse) | (i32::from(cut) << 1);
+    let raw = p.raw();
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    let rc = target.with(|t| {
+        // SAFETY: `raw` points into `p`'s vectors and `t` is locked and valid for the call; out-params are valid.
+        unsafe { sys::gs_extrude_to_next(&raw, t, flags, &mut out, &mut origins) }
+    });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
 /// Sheets swept from a profile's curves (ADR 0036).
 pub fn extrude_curves(p: &ProfileData, distance: f64, symmetric: bool) -> ShimResult<OpOut> {
     let raw = p.raw();

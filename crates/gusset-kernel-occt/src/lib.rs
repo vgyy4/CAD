@@ -490,6 +490,11 @@ mod imp {
             op_result(ffi::extrude_to_face(&p, raw(target)?, face, offset, reverse, extend)?)
         }
 
+        fn extrude_to_next(&self, profile: &Profile, target: &Shape, reverse: bool, cut: bool) -> KResult<OpResult> {
+            let p = profile_data(profile)?;
+            op_result(ffi::extrude_to_next(&p, raw(target)?, reverse, cut)?)
+        }
+
         fn revolve(&self, profile: &Profile, spec: &RevolveSpec) -> KResult<OpResult> {
             let p = profile_data(profile)?;
             op_result(ffi::revolve(&p, spec.axis_origin, spec.axis_dir, spec.angle)?)

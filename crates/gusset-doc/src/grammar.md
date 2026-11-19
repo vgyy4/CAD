@@ -289,7 +289,7 @@ extrude Extrude1 (profile: Sketch1.regions(l5), distance: 5 mm, op: new)
 ## Features
 
 ```
-extrude  <Name> (profile: <P>, distance: <expr> | to: <face> [, offset: <expr>] [, reverse: true], [symmetric: true], [op: new|add|cut|intersect], [body: <Feature>], [body_name: <Body>], [refine: false])
+extrude  <Name> (profile: <P>, distance: <expr> | to: <face> [, offset: <expr>] [, reverse: true] [, extend: true] | to: next [, reverse: true], [symmetric: true], [op: new|add|cut|intersect], [body: <Feature>], [body_name: <Body>], [refine: false])
 revolve  <Name> (profile: <P>, axis: X|Y|Z|<Sketch>.<line>|<edge>, angle: <expr>, [op: ...], [body: ...], [body_name: ...], [refine: false])
 fillet   <Name> (edges: [<edge>, ...], radius: <expr>)
 fillet   <Name> (full_round: [<face>, ...])
@@ -323,6 +323,12 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
   end cap is named like any extrude's (`Extrude1/cap(end)`); the face is a persistent
   reference, so it follows renames and model changes. `extrude E (profile: S, to: Base/cap(end),
   offset: 2 mm, op: cut, body: Base)` is a pocket up to that face plus 2 mm.
+- `to: next` (ADR 0061 amendment, Solid Edge "through next") ends the extrude at the next face
+  of the target body along the sweep (against the sketch normal with `reverse: true`). With
+  `op: add` the extrude runs from the profile to the first face of the body it meets (it fails
+  if the profile starts inside the material or meets no face); with `op: cut` it removes the
+  first stretch of material it meets, from where it enters to where it leaves, and nothing
+  beyond (a wall of a hollow part, not the wall behind it). No offset, extend or symmetric.
 - `refine: false` (extrude, revolve, sweep, loft, combine; default `true`) keeps the result of an
   `add`, `cut` or `intersect` as the boolean made it: coplanar faces and collinear edges are not
   unified, so two touching boxes stay split along the seam. FreeCAD files with `Refine = false`

@@ -146,6 +146,7 @@ fn base_specs() -> Vec<CommandSpec> {
         spec::<SketchMovePoint>(),
         spec::<Extrude>(),
         spec::<ExtrudeToFace>(),
+        spec::<ExtrudeToNext>(),
         spec::<Revolve>(),
         spec::<Fillet>(),
         spec::<Chamfer>(),
@@ -2373,6 +2374,54 @@ impl Command for ExtrudeToFace {
                 op: self.op,
                 body: self.body,
                 body_name: self.body_name,
+                name: self.name,
+            },
+        )
+    }
+}
+
+/// Extrudes closed sketch regions up to the next face of a body (ADR 0061 amendment).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExtrudeToNext {
+    pub sketch: String,
+    #[serde(default)]
+    pub regions: Vec<String>,
+    /// Sweep against the sketch normal.
+    #[serde(default)]
+    pub reverse: bool,
+    /// add or cut.
+    #[schemars(extend("x-essential" = true))]
+    pub op: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for ExtrudeToNext {
+    const ID: &'static str = "feature.up_to_next";
+    const TITLE: &'static str = "Extrude up to next face";
+    const DESCRIPTION: &'static str = "Extrude closed sketch regions to the next face of the body: op add runs from the profile to the first face it meets, op cut removes the first stretch of material it meets (one wall of a hollow part). Result: body_changes.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if !matches!(self.op.as_str(), "add" | "cut") {
+            return Err(CommandError::args(format!(
+                "op '{}': an extrude up to the next face takes add or cut",
+                self.op
+            )));
+        }
+        extrude_feature(
+            s,
+            ctx,
+            ExtrudeParts {
+                profile: profile_of(self.sketch, self.regions, None)?,
+                end: ExtrudeEnd::ToNext { reverse: self.reverse },
+                symmetric: false,
+                op: Some(self.op),
+                body: self.body,
+                body_name: None,
                 name: self.name,
             },
         )

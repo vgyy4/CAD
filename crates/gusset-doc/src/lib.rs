@@ -547,6 +547,35 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     }
 
     #[test]
+    fn extrude_up_to_the_next_face_round_trips_and_is_validated() {
+        let ok = format!(
+            "{HOLE_BASE}extrude E2 (profile: P, to: next, reverse: true, op: cut, body: E)\n\nextrude E3 (profile: P, to: next, op: add, body: E)\n"
+        );
+        let doc = Document::from_text(&ok).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Extrude(e) = &doc.feature("E2").unwrap().kind else { panic!() };
+        assert_eq!(e.end, ExtrudeEnd::ToNext { reverse: true });
+        assert!(e.end.distance().is_none() && e.end.exprs().is_empty());
+        // A feature named `next` is still a face reference.
+        let named = format!("{HOLE_BASE}extrude E2 (profile: P, to: next/cap(end), op: cut, body: E)\n");
+        let err = Document::from_text(&named).unwrap_err().to_string();
+        assert!(!err.contains("ends at one place"), "{err}");
+        for (bad, why) in [
+            ("to: next, distance: 1 mm", "one place"),
+            ("to: next, offset: 1 mm", "reverse only"),
+            ("to: next, extend: true", "reverse only"),
+            ("to: next, symmetric: true", "reverse only"),
+        ] {
+            let text = format!("{HOLE_BASE}extrude E2 (profile: P, {bad}, op: cut, body: E)\n");
+            let e = Document::from_text(&text).unwrap_err().to_string();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
+        let new_body = format!("{HOLE_BASE}extrude E2 (profile: P, to: next, op: new)\n");
+        let e = Document::from_text(&new_body).unwrap_err().to_string();
+        assert!(e.contains("adds to or cuts"), "{e}");
+    }
+
+    #[test]
     fn refine_false_round_trips_on_combining_features() {
         let ok = format!(
             "{HOLE_BASE}extrude E2 (profile: P, distance: 3 mm, op: add, body: E, refine: false)\n\nrevolve R1 (profile: P, axis: X, angle: 90 deg, op: cut, refine: false)\n\nextrude T (profile: P, distance: 2 mm, op: new)\n\ncombine C1 (body: E, tools: [T], op: add, refine: false)\n\nmirror M1 (body: E, plane: YZ, merge: true, refine: false)\n\npattern_linear PL (body: E, direction: X, count: 3, spacing: 40 mm, refine: false)\n\npattern_circular PC (body: E, axis: Z, count: 4, angle: 360 deg, refine: false)\n"

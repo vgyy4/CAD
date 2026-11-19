@@ -1107,6 +1107,40 @@ impl Evaluator {
                             err
                         })?
                     }
+                    ExtrudeEnd::ToNext { reverse } => {
+                        let cut = match e.op {
+                            BodyOp::Add => false,
+                            BodyOp::Cut => true,
+                            _ => {
+                                return Err(EvalError::new(
+                                    name,
+                                    ErrorCode::Expression,
+                                    "an extrude up to the next face adds to or cuts a body",
+                                )
+                                .with_hint("use op: add or op: cut"));
+                            }
+                        };
+                        let face_body = face_body_target(s, &e.profile, e.body.as_deref(), e.op);
+                        let wanted = e.body.as_deref().or(face_body.as_deref());
+                        let target = match wanted {
+                            Some(t) => s.bodies.iter().find(|b| b.feature == t),
+                            None => s.bodies.last(),
+                        }
+                        .ok_or_else(|| {
+                            EvalError::new(name, ErrorCode::NoTargetBody, "there is no body to extrude up to")
+                                .with_hint("an extrude up to the next face needs a body ahead of the profile")
+                        })?;
+                        k.extrude_to_next(&profile, &target.shape, *reverse, cut).map_err(|ke| {
+                            let mut err = kernel_err(name, "extrusion up to the next face", ke);
+                            if err.hint.is_none() {
+                                err.hint = Some(
+                                    "the body must lie ahead of the profile along the sweep (reverse flips the direction)"
+                                        .into(),
+                                );
+                            }
+                            err
+                        })?
+                    }
                 };
                 let ctx = input.ctx(name, &e.profile);
                 let face_body = face_body_target(s, &e.profile, e.body.as_deref(), e.op);

@@ -1942,6 +1942,65 @@ fn extrude_to_face_reverse_and_refusals() {
     assert!(k().extrude_to_face(&boxp(10.0, 10.0), &wall, 999, 0.0, false, false).is_err());
 }
 
+/// A `w` x `h` box profile on a plane parallel to XY through `at` (its corner).
+fn box_at(at: [f64; 3], w: f64, h: f64) -> Profile {
+    let mut p = boxp(w, h);
+    p.frame.origin = at;
+    p
+}
+
+/// A closed tank: 40 x 20 x 30 (z 10 to 40) with walls 5 thick (a 30 x 10 x 20 cavity).
+fn tank() -> Shape {
+    let outer = slab(10.0, 40.0, 20.0, 30.0);
+    let cavity = k().extrude(&box_at([5.0, 5.0, 15.0], 30.0, 10.0), &ExtrudeSpec { distance: 20.0, symmetric: false });
+    k().boolean(BoolOp::Cut, &outer, &cavity.unwrap().shape).unwrap().shape
+}
+
+#[test]
+fn extrude_to_the_next_face_adds_up_to_the_body_and_cuts_one_wall() {
+    let t = tank();
+    let square = |z: f64| box_at([12.0, 5.0, z], 10.0, 10.0);
+    // Adding from below: up to the bottom face (z 0 to 10); from inside the cavity: up to the
+    // top wall (z 20 to 35); against the normal from inside: down to the bottom wall.
+    let r = k().extrude_to_next(&square(0.0), &t, false, false).unwrap();
+    assert!(close(volume(&r.shape), 1000.0, 1e-9), "{}", volume(&r.shape));
+    let end = r.face_origins.iter().position(|o| o == &vec![FaceOrigin::Cap { end: CapEnd::End, region: 0 }]).unwrap();
+    assert!((k().topology(&r.shape).unwrap().faces[end].centroid[2] - 10.0).abs() < 1e-9);
+    assert_eq!(r.face_origins.iter().flatten().filter(|o| matches!(o, FaceOrigin::Lateral { .. })).count(), 4);
+    let up = k().extrude_to_next(&square(20.0), &t, false, false).unwrap();
+    assert!(close(volume(&up.shape), 1500.0, 1e-9), "{}", volume(&up.shape));
+    let down = k().extrude_to_next(&square(20.0), &t, true, false).unwrap();
+    assert!(close(volume(&down.shape), 500.0, 1e-9), "{}", volume(&down.shape));
+    // Cutting from below: the bottom wall only (z 10 to 15), not the top wall behind the
+    // cavity; from inside the cavity: the top wall only.
+    let c = k().extrude_to_next(&square(0.0), &t, false, true).unwrap();
+    assert!(close(volume(&c.shape), 500.0, 1e-9), "{}", volume(&c.shape));
+    let cut = k().boolean(BoolOp::Cut, &t, &c.shape).unwrap().shape;
+    assert!(close(volume(&cut), volume(&t) - 500.0, 1e-9));
+    let c = k().extrude_to_next(&square(20.0), &t, false, true).unwrap();
+    assert!(close(volume(&c.shape), 500.0, 1e-9), "{}", volume(&c.shape));
+    // Starting on the bottom face (the sketch on the body): the same wall.
+    let c = k().extrude_to_next(&square(10.0), &t, false, true).unwrap();
+    assert!(close(volume(&c.shape), 500.0, 1e-9), "{}", volume(&c.shape));
+    // Over a side wall (x 0 to 5 is wall the whole height): through that wall's stretch.
+    let c = k().extrude_to_next(&box_at([-5.0, 0.0, 0.0], 10.0, 10.0), &t, false, true).unwrap();
+    assert!(close(volume(&c.shape), 5.0 * 10.0 * 30.0, 1e-9), "{}", volume(&c.shape));
+}
+
+#[test]
+fn extrude_to_the_next_face_refusals() {
+    let t = tank();
+    let square = |z: f64| box_at([12.0, 5.0, z], 10.0, 10.0);
+    // Above the tank, sweeping up: no face, no material.
+    let e = k().extrude_to_next(&square(50.0), &t, false, false).unwrap_err();
+    assert!(e.message.contains("meets no face"), "{}", e.message);
+    let e = k().extrude_to_next(&square(50.0), &t, false, true).unwrap_err();
+    assert!(e.message.contains("no material"), "{}", e.message);
+    // Adding from inside a wall (z 12): no next face to grow to from there.
+    let e = k().extrude_to_next(&square(12.0), &t, false, false).unwrap_err();
+    assert!(e.message.contains("inside the body"), "{}", e.message);
+}
+
 #[test]
 fn extrude_to_an_extended_plane() {
     // A 4 x 4 plate over the 10 x 10 square: not covering, so refused unless extended (ADR 0061).

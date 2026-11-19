@@ -253,7 +253,10 @@ struct SolidF {
     /// parts it from the rest, its normal towards it.
     #[serde(default)]
     split_off: Option<v2::SplitOff>,
-    /// Extrude: `"blind"` (default, `distance`) or `"to_face"` (the sweep ends on `face`).
+    /// Extrude: `"blind"` (default, `distance`), `"to_face"` (the sweep ends on `face`) or
+    /// `"to_next"` (up to the next face of the target, ADR 0061 amendment; `reverse` sweeps
+    /// against the sketch normal). A `distance` with `"to_next"` is the blind reach to fall back
+    /// on where the end up to the next face does not build.
     #[serde(default)]
     end_condition: Option<String>,
     /// Extrude to a face: a point on the face (and its outward normal) as it is before this
@@ -1220,6 +1223,17 @@ pub fn apply_with(
                             };
                             solid(&mut g, s, &blind, false).map_err(|_| why)
                         }
+                        // Up to the next face where that does not build: the blind reach given with it.
+                        (Err(why), _)
+                            if kind == "extrude"
+                                && d.end_condition.as_deref() == Some("to_next")
+                                && d.distance.is_some_and(|v| v.abs() > 1e-9) =>
+                        {
+                            g.text.truncate(text_len);
+                            g.made.truncate(made_len);
+                            let blind = SolidF { end_condition: None, reverse: false, ..d.clone() };
+                            solid(&mut g, s, &blind, false).map_err(|_| why)
+                        }
                         (r, _) => r,
                     }
                 })
@@ -1864,7 +1878,19 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
                     args.push("extend: true".into());
                 }
             }
-            other => return Err(format!("end condition '{}' is not blind or to_face", short(other))),
+            "to_next" => {
+                if d.symmetric {
+                    return Err("an extrude up to the next face cannot be symmetric".into());
+                }
+                if !matches!(op, "add" | "cut") {
+                    return Err("an extrude up to the next face adds to or cuts a body".into());
+                }
+                args.push("to: next".into());
+                if d.reverse != flipped {
+                    args.push("reverse: true".into());
+                }
+            }
+            other => return Err(format!("end condition '{}' is not blind, to_face or to_next", short(other))),
         }
     }
     let taper = if revolve { None } else { d.taper_deg.filter(|t| *t != 0.0) };
