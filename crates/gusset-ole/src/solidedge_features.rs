@@ -2390,11 +2390,12 @@ fn helix(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
 /// to its section with the tangent magnitude in slot 13 (start) or 16 (end), a multiple of the
 /// distance between the sections (two sections; 038, 039, 068).
 fn loft(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), String> {
-    let sections: Vec<Profile> =
+    let mut sections: Vec<Profile> =
         f.list(2).iter().filter(|&&p| p != 0).map(|&p| profile(st, p)).collect::<Result<_, _>>()?;
     if sections.len() < 2 {
         return Err(format!("a loft of {} cross sections", sections.len()));
     }
+    let aligned = split_loft_circle(&mut sections);
     let op = if k == Kind::LoftedCutout {
         "cut"
     } else if s.first_body.is_none() {
@@ -2409,6 +2410,9 @@ fn loft(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), 
         names.push(n);
     }
     let mut j = json!({"type": "loft", "name": name, "sketches": names, "operation": op});
+    if aligned {
+        put(&mut j, "aligned", json!(true));
+    }
     let small = |i: usize| f.slot(i).and_then(|v| st.obj(v)).and_then(value);
     let code = |i: usize| small(i).filter(|v| v.fract() == 0.0 && v.abs() < 1e6).map(|v| v as i64);
     for (cond, mag, key) in [(11, 13, "start_tangent"), (14, 16, "end_tangent")] {
@@ -2434,6 +2438,91 @@ fn loft(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), 
         s.first_body = Some(name.to_string());
     }
     Ok(())
+}
+
+/// A loft of a whole circle and an outline of several lines and arcs: Solid Edge pairs them
+/// by length, the circle's share of each edge proportional to the edge's share of the
+/// outline, from the point of the circle at the outline's start (its polar angle about the
+/// centre) round the way the outline runs (068: a circle to a rectangle, its stored faces split
+/// the circle 80 and 100 degrees from the first corner). The circle becomes those arcs and the
+/// loft keeps the sections' starts (`aligned`). Whether the circle was split.
+fn split_loft_circle(sections: &mut [Profile]) -> bool {
+    let [a, b] = sections else { return false };
+    let (circle, outline) = match (a.curves.as_slice(), b.curves.as_slice()) {
+        ([Curve2::Circle(..)], [_, _, ..]) => (&*a, &*b),
+        ([_, _, ..], [Curve2::Circle(..)]) => (&*b, &*a),
+        _ => return false,
+    };
+    let Some(&Curve2::Circle(c, r)) = circle.curves.first() else { return false };
+    if circle.turned || outline.turned {
+        return false;
+    }
+    // The outline's edges in order: their ends (in the outline's plane) and lengths.
+    let mut ends = Vec::new();
+    for cv in &outline.curves {
+        match *cv {
+            Curve2::Line(p, q) => ends.push((p, q, libm::hypot(q[0] - p[0], q[1] - p[1]))),
+            Curve2::Arc(m, rr, a0, a1) => {
+                let at = |t: f64| [m[0] + rr * libm::cos(t), m[1] + rr * libm::sin(t)];
+                ends.push((at(a0), at(a1), rr * (a1 - a0).rem_euclid(std::f64::consts::TAU)));
+            }
+            _ => return false,
+        }
+    }
+    let near = |p: [f64; 2], q: [f64; 2]| libm::hypot(p[0] - q[0], p[1] - q[1]) < 1e-9;
+    // Chain them: each edge starts where the last ended (turning an edge drawn the other way).
+    let mut chain: Vec<[f64; 2]> = Vec::new();
+    for (i, &(p, q, _)) in ends.iter().enumerate() {
+        let Some(&(np, nq, _)) = ends.get((i + 1) % ends.len()) else { return false };
+        let shared = |x: [f64; 2]| near(x, np) || near(x, nq);
+        let start = match chain.last() {
+            None if shared(q) => p,
+            None if shared(p) => q,
+            Some(&last) if near(last, p) => p,
+            Some(&last) if near(last, q) => q,
+            _ => return false,
+        };
+        if chain.is_empty() {
+            chain.push(start);
+        }
+        chain.push(if near(start, p) { q } else { p });
+    }
+    if chain.first().zip(chain.last()).is_none_or(|(f, l)| !near(*f, *l)) {
+        return false;
+    }
+    chain.pop();
+    // The outline's corners in the circle's plane, about its centre.
+    let (ox, oy, cy) = (outline.x, outline.y(), circle.y());
+    let polar: Vec<[f64; 2]> = chain
+        .iter()
+        .map(|v| {
+            let (o, q) = (outline.origin, circle.origin);
+            let w: V3 = [
+                o[0] + v[0] * ox[0] + v[1] * oy[0] - q[0],
+                o[1] + v[0] * ox[1] + v[1] * oy[1] - q[1],
+                o[2] + v[0] * ox[2] + v[1] * oy[2] - q[2],
+            ];
+            [dot(w, circle.x) - c[0], dot(w, cy) - c[1]]
+        })
+        .collect();
+    let area: f64 = polar.iter().zip(polar.iter().cycle().skip(1)).map(|(p, q)| p[0] * q[1] - q[0] * p[1]).sum();
+    let total: f64 = ends.iter().map(|e| e.2.abs()).sum();
+    let Some(&first) = polar.first() else { return false };
+    if total.is_nan() || total <= 0.0 || area.abs() < 1e-18 || libm::hypot(first[0], first[1]) < 1e-9 {
+        return false;
+    }
+    let sense = area.signum();
+    let mut t = libm::atan2(first[1], first[0]);
+    let mut arcs = Vec::new();
+    for e in &ends {
+        let next = t + sense * std::f64::consts::TAU * e.2.abs() / total;
+        arcs.push(if sense > 0.0 { Curve2::Arc(c, r, t, next) } else { Curve2::Arc(c, r, next, t) });
+        t = next;
+    }
+    let circle = if matches!(a.curves.as_slice(), [Curve2::Circle(..)]) { a } else { b };
+    circle.backwards = vec![false; arcs.len()];
+    circle.curves = arcs;
+    true
 }
 
 /// A round (slot 2: the edge set, 3: kind, 1 constant radius; 4: the radius) or an equal
