@@ -1393,7 +1393,8 @@ fn edge_profile(b: &[u8]) -> Result<Profile, String> {
     }
 }
 
-/// The bytes after a copied profile's frame: five zero bytes, `01 01 00 00 00` and a class id.
+/// The bytes after a copied profile's frame: four zero bytes, a byte 0 or 1, `01 01 00 00 00` and a
+/// class id.
 const COPY_FRAME_END: [u8; 26] = [
     0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0x40, 0x11, 0x7d, 0xba, 0x44, 0x76, 0x1b, 0x10, 0xac, 0x07, 0x08, 0x00, 0x36, 0x01,
     0xb1, 0x4e,
@@ -1470,7 +1471,15 @@ fn turned_over(c: &Curve2) -> Curve2 {
 
 /// A copied profile's plane: origin, normal and x direction (see [`copied_profile`]).
 pub(crate) fn copy_frame(b: &[u8]) -> Option<(V3, V3, V3)> {
-    let at = b.windows(COPY_FRAME_END.len()).position(|w| w == COPY_FRAME_END)?.checked_sub(72)?;
+    // The fifth byte is 1 in some copies of a pattern (109's flats), 0 in most.
+    let at = b
+        .windows(COPY_FRAME_END.len())
+        .position(|w| {
+            w.get(..4) == COPY_FRAME_END.get(..4)
+                && w.get(4).is_some_and(|&f| f <= 1)
+                && w.get(5..) == COPY_FRAME_END.get(5..)
+        })?
+        .checked_sub(72)?;
     let (o, n, x) = (v3_at(b, at)?, v3_at(b, at + 24)?, v3_at(b, at + 48)?);
     if !(finite3(o) && o.iter().all(|v| v.abs() < 1e6)) {
         return None;

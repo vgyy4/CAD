@@ -498,6 +498,11 @@ fn copied(members: &[u32], o: [f64; 3], n: [f64; 3], x: [f64; 3], from: u32) -> 
 fn a_pattern_copied_profile_lies_on_its_stored_plane() {
     let b = copied(&[4], [0.0, 0.0, 0.01], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0], 31);
     assert_eq!(copy_frame(&b), Some(([0.0, 0.0, 0.01], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0])));
+    // The fifth byte of the frame's end may be 1.
+    let mut flagged = b.clone();
+    let end = flagged.windows(10).position(|w| w == [0, 0, 0, 0, 0, 1, 1, 0, 0, 0]).unwrap();
+    flagged[end + 4] = 1;
+    assert_eq!(copy_frame(&flagged), copy_frame(&b));
     // Not unit or not square: none.
     assert_eq!(copy_frame(&copied(&[4], [0.0; 3], [0.0, 0.0, 2.0], [0.0, 1.0, 0.0], 31)), None);
     assert_eq!(copy_frame(&copied(&[4], [0.0; 3], [0.0, 0.0, 1.0], [0.0, 0.6, 0.8], 31)), None);
