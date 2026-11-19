@@ -2386,7 +2386,9 @@ fn helix(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
 }
 
 /// A loft (`JMLofted*Function`): slot 2 the cross sections in order, each a sketch of its own.
-/// The ends' conditions (slots 11 to 16) are not read: the rebuild check tells.
+/// Slots 11 and 14 are the start's and the end's conditions: 113 a free end, 20 an end square
+/// to its section with the tangent magnitude in slot 13 (start) or 16 (end), a multiple of the
+/// distance between the sections (two sections; 038, 039, 068).
 fn loft(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), String> {
     let sections: Vec<Profile> =
         f.list(2).iter().filter(|&&p| p != 0).map(|&p| profile(st, p)).collect::<Result<_, _>>()?;
@@ -2407,6 +2409,22 @@ fn loft(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), 
         names.push(n);
     }
     let mut j = json!({"type": "loft", "name": name, "sketches": names, "operation": op});
+    let small = |i: usize| f.slot(i).and_then(|v| st.obj(v)).and_then(value);
+    let code = |i: usize| small(i).filter(|v| v.fract() == 0.0 && v.abs() < 1e6).map(|v| v as i64);
+    for (cond, mag, key) in [(11, 13, "start_tangent"), (14, 16, "end_tangent")] {
+        match code(cond) {
+            Some(20) => {
+                let m =
+                    small(mag).filter(|m| m.is_finite() && *m > 0.0).ok_or("a loft end tangent with no magnitude")?;
+                if sections.len() != 2 {
+                    return Err(format!("a loft of {} cross sections with end tangents", sections.len()));
+                }
+                put(&mut j, key, json!(m));
+            }
+            Some(113) | None => {}
+            Some(c) => return Err(format!("a loft end condition {c} (not read)")),
+        }
+    }
     if op != "new" {
         let fb = s.first_body.clone().ok_or("a cut before any body")?;
         put(&mut j, "target", json!(fb));
