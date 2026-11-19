@@ -1287,7 +1287,7 @@ fn extrude_draft(d: &[u8], slots: &[(String, usize)]) -> Option<f64> {
 }
 
 /// The centre of the first box object of a span (`01 00 TT 8X 01 00 00 00`, then the centre and
-/// the diagonal, m; as a contour's box), in mm.
+/// the diagonal, m, as a contour's box; `moBBoxCenterData_c`), in mm.
 fn revolve_box_centre(d: &[u8], a: usize, b: usize) -> Option<V3> {
     (a..b.min(d.len()).saturating_sub(40)).find_map(|q| {
         let head = d.get(q..q + 8)?;
@@ -1298,7 +1298,9 @@ fn revolve_box_centre(d: &[u8], a: usize, b: usize) -> Option<V3> {
             return None;
         }
         let v = f64s_at::<4>(d, q + 8)?;
-        (v.iter().all(|x| x.is_finite() && x.abs() < 10.0) && v[3] > 0.0).then(|| [v[0], v[1], v[2]].map(mm))
+        // Older files write -1 for the diagonal (8020's T-nut).
+        (v.iter().all(|x| x.is_finite() && x.abs() < 10.0) && (v[3] > 0.0 || is(v[3], -1.0)))
+            .then(|| [v[0], v[1], v[2]].map(mm))
     })
 }
 
