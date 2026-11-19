@@ -281,17 +281,28 @@ impl Writer<'_> {
             }
             "TORUS" => {
                 let (ma, mi) = (g.real(s, "major_radius")?, g.real(s, "minor_radius")?);
-                if !(ma > 0.0 && mi > 0.0) {
+                if !(ma != 0.0 && ma.is_finite() && mi > 0.0 && mi.is_finite()) {
                     self.warnings
-                        .push(format!("torus {s} has a non-positive radius ({ma}, {mi}); its faces are left out"));
+                        .push(format!("torus {s} has a zero or negative radius ({ma}, {mi}); its faces are left out"));
                     return None;
                 }
                 // A lemon (minor > major) is written as it is: the face's edges select the part
-                // and its natural normal is XT's (see ADR 0035).
-                let a = self.place(g.vec3(s, "centre")?, g.vec3(s, "axis")?, g.vec3(s, "x_axis")?);
+                // and its natural normal is XT's (see ADR 0035). A negative major radius is the
+                // same point set: P(u, v) with major -R is P(u + pi, pi - v) with major R, so the
+                // torus is written with major R and its x axis reversed, and the reversal of v
+                // turns its natural normal round.
+                let (x, flip) = match g.vec3(s, "x_axis")? {
+                    x if ma < 0.0 => (geom::scale(x, -1.0), true),
+                    x => (x, false),
+                };
+                let a = self.place(g.vec3(s, "centre")?, g.vec3(s, "axis")?, x);
                 Some((
-                    self.add(&format!("TOROIDAL_SURFACE('',#{a},{},{})", real(ma * self.mm()), real(mi * self.mm()))),
-                    false,
+                    self.add(&format!(
+                        "TOROIDAL_SURFACE('',#{a},{},{})",
+                        real(ma.abs() * self.mm()),
+                        real(mi * self.mm())
+                    )),
+                    flip,
                 ))
             }
             "B_SURFACE" => {

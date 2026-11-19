@@ -569,8 +569,13 @@ fn apple_and_lemon_tori_are_both_written() {
     assert!(line.ends_with(",0.5,1.0);") && !flipped && w.is_empty(), "{line} {w:?}");
     // A horn torus (equal radii) is written too.
     assert!(!crate::step::surface_text(&torus_graph(0.001, 0.001), 2).0.unwrap().1);
-    // Non-positive radii cannot be written.
-    for (a, b) in [(0.0, 0.001), (-0.001, 0.002), (0.002, 0.0), (0.002, -0.001)] {
+    // A negative major radius is the same spindle torus with its x axis and natural normal
+    // reversed (Solid Edge's revolved arcs that cross the axis).
+    let (neg, w) = crate::step::surface_text(&torus_graph(-0.0005, 0.001), 2);
+    let (line, flipped) = neg.unwrap();
+    assert!(line.ends_with(",0.5,1.0);") && flipped && w.is_empty(), "{line} {w:?}");
+    // Zero and negative minor radii cannot be written.
+    for (a, b) in [(0.0, 0.001), (0.002, 0.0), (0.002, -0.001)] {
         let (r, w) = crate::step::surface_text(&torus_graph(a, b), 2);
         assert!(r.is_none() && w.len() == 2, "{a} {b}: {w:?}");
     }
