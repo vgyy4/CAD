@@ -1232,3 +1232,75 @@ fn a_blind_hole_with_a_drill_point_cuts_a_cone_below_it() {
     let ys: Vec<f64> = sk["points"].as_array().unwrap().iter().map(|p| p["y"].as_f64().unwrap()).collect();
     assert!(ys.iter().any(|y| (y - (2.0 + tip)).abs() < 1e-6), "{sk}");
 }
+
+/// A fast pattern's sketch (objects 21 to 28): a plane z = 0, the profile, its `Profile2d` with
+/// a key point and the `JPattern2dFunction`, whose circle is centred at (0.01, 0) and turns
+/// counter-clockwise (`ccw`), `count` copies `step` radians apart.
+fn pattern_sketch(ccw: u8, count: f64, step: f64) -> Vec<u8> {
+    let mut v = obj(6, 21, &plane_payload([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]));
+    let mut prof = func("JProfileRecomputeEx", &[&[21], &[22]]);
+    prof.extend(23u32.to_le_bytes());
+    prof.push(9 * 8);
+    prof.extend("Profile2d".encode_utf16().flat_map(u16::to_le_bytes));
+    v.extend(obj(26, 22, &prof));
+    let mut p2 = 2u32.to_le_bytes().to_vec();
+    p2.extend(24u32.to_le_bytes());
+    p2.extend(25u32.to_le_bytes());
+    v.extend(obj(65, 23, &p2));
+    v.extend(obj(41, 24, &[1, 1, 2, 0, 0, 0, 0, 1, 0, 0x41]));
+    v.extend(obj(42, 25, &func("JPattern2dFunction", &[&[25], &[26], &[0], &[0], &[0], &[27], &[0], &[28]])));
+    let mut a = vec![0, 0];
+    a.extend(f64s(&[0.01, 0.0, 0.03]));
+    a.push(ccw);
+    a.extend(f64s(&[0.0, 6.28]));
+    a.extend([1, 0, 0, 0x80]);
+    v.extend(obj(37, 26, &a));
+    v.extend(obj(36, 27, &small(count)));
+    v.extend(obj(36, 28, &small(step)));
+    v
+}
+
+#[test]
+fn a_fast_pattern_turns_its_features_about_the_circle_centre() {
+    // Slot 2 the pattern's sketch, 4 the features copied (a group entry stands for the feature
+    // in its slot 1), 5 the last of them.
+    let mut more = pattern_sketch(1, 4.0, std::f64::consts::FRAC_PI_2);
+    more.extend(obj(38, 29, &func("JMGroupDummyFastPatternFunction", &[&[29], &[11], &[11]])));
+    more.extend(obj(38, 30, &func("JMFastPatternFunction", &[&[30], &[12], &[22], &[0], &[11, 29], &[11], &[0]])));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = &t["features"][2];
+    assert_eq!(
+        f,
+        &json!({"type": "pattern_circular", "name": "FastPattern_1", "features": ["Protrusion_1", "Protrusion_1"],
+                "target": "Protrusion_1", "axis": {"origin": [10.0, 0.0, 0.0], "direction": [0.0, 0.0, 1.0]},
+                "angle": 360.0, "count": 4}),
+        "{t}"
+    );
+    // A partial pattern turned clockwise: the angle spans the copies, about -z.
+    let mut more = pattern_sketch(0, 3.0, 0.5);
+    more.extend(obj(38, 30, &func("JMFastPatternFunction", &[&[30], &[12], &[22], &[0], &[11], &[11], &[0]])));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = &t["features"][2];
+    assert_eq!((&f["angle"], &f["axis"]["direction"]), (&json!(57.295779513), &json!([0.0, 0.0, -1.0])), "{t}");
+}
+
+#[test]
+fn a_body_pattern_copies_the_whole_body_or_mirrors_it_in_a_plane() {
+    let mut more = pattern_sketch(1, 16.0, std::f64::consts::PI / 8.0);
+    more.extend(obj(38, 30, &func("JMBodyPatternFunction", &[&[30], &[12], &[22], &[0], &[11], &[0], &[0]])));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = &t["features"][2];
+    assert_eq!((&f["type"], &f["features"], &f["count"]), (&json!("pattern_circular"), &json!([]), &json!(16)), "{t}");
+    // Slot 2 a reference plane (the plane laid out as a plane object's, then its function).
+    let mut rp = plane_payload([0.0, 0.0, 0.005], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+    rp.extend(func("JMCreateReferencePlane", &[&[20]]));
+    let mut more = obj(6, 20, &rp);
+    more.extend(obj(38, 30, &func("JMBodyPatternFunction", &[&[30], &[12], &[20], &[0], &[11], &[0], &[0]])));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    assert_eq!(
+        t["features"][2],
+        json!({"type": "mirror", "name": "BodyPattern_1", "features": [], "target": "Protrusion_1", "merge": true,
+               "plane": {"origin": [0.0, 0.0, 5.0], "normal": [0.0, 0.0, 1.0]}}),
+        "{t}"
+    );
+}

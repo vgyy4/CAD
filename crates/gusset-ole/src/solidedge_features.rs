@@ -22,6 +22,9 @@
 //!   the curve the part stored for it in the feature's edge set (lines, circles, arcs,
 //!   ellipses, B-splines).
 //!
+//! * circular fast patterns of features and body patterns (the pattern's circle, count and
+//!   angle in its sketch), and body patterns on a plane (a mirror of the body).
+//!
 //! Anything else (thin walls, holes, other patterns...) is an `unsupported` feature: the
 //! caller rebuilds the tree and keeps it only when it gives the part's own body.
 //!
@@ -1286,18 +1289,24 @@ fn profile(st: &Store, serial: u32) -> Result<Profile, String> {
     if f.class != "JProfileRecomputeEx" {
         return Err(format!("the profile is a {} (not a sketch profile)", label(&f.class)));
     }
-    let pl = f.slot(0).and_then(|p| st.obj(p)).and_then(plane).ok_or("the profile's plane is not readable")?;
-    let b = st.obj(serial).ok_or("the profile is missing")?;
-    let tag: Vec<u8> = "Profile2d".encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let at = b.windows(tag.len()).position(|w| w == tag.as_slice()).ok_or("the profile has no 2D profile")?;
-    let p2 = at.checked_sub(5).and_then(|k| u32_at(b, k)).ok_or("the 2D profile is not readable")?;
-    let pb = st.obj(p2).ok_or("the 2D profile is missing")?;
+    let (pl, pb) = profile_2d(st, serial, &f)?;
     let n = u32_at(pb, 8).ok_or("the 2D profile is cut short")?;
     if n > MAX_MEMBERS {
         return Err("the profile has too many members".into());
     }
     let (curves, backwards) = members(st, pb, 12, n, Some(pl))?;
     Ok(Profile { origin: pl.0, normal: pl.1, x: pl.2, curves, turned: false, backwards })
+}
+
+/// A sketch profile's (`JProfileRecomputeEx`, `f`) plane (slot 0) and its `Profile2d` object:
+/// `u32 n` at +8, then the `n` member serials.
+fn profile_2d<'a>(st: &'a Store, serial: u32, f: &Func) -> Result<((V3, V3, V3), &'a [u8]), String> {
+    let pl = f.slot(0).and_then(|p| st.obj(p)).and_then(plane).ok_or("the profile's plane is not readable")?;
+    let b = st.obj(serial).ok_or("the profile is missing")?;
+    let tag: Vec<u8> = "Profile2d".encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let at = b.windows(tag.len()).position(|w| w == tag.as_slice()).ok_or("the profile has no 2D profile")?;
+    let p2 = at.checked_sub(5).and_then(|k| u32_at(b, k)).ok_or("the 2D profile is not readable")?;
+    Ok((pl, st.obj(p2).ok_or("the 2D profile is missing")?))
 }
 
 /// The curves of a profile's `n` members, listed (`u32` serials) from `at` in `b`. A member kept
@@ -1818,6 +1827,9 @@ enum Kind {
     Hole,
     /// A mirror copy of features (`JMMirrorCopyFunction`, `JMFastMirrorFunction`).
     Mirror,
+    /// A fast pattern of features (`JMFastPatternFunction`), or a body pattern laid out as one
+    /// (`JMBodyPatternFunction` whose slot 2 is a sketch profile).
+    FastPattern,
     /// A cosmetic thread: no geometry.
     Thread,
     /// The start of an older part's history, before its first feature.
@@ -1839,6 +1851,7 @@ fn kind(class: &str) -> Kind {
         "JMChamferFunction" => Kind::Chamfer,
         "JMHoleFunction" => Kind::Hole,
         "JMThreadFunction" => Kind::Thread,
+        "JMFastPatternFunction" | "JMBodyPatternFunction" => Kind::FastPattern,
         "JMThinwallAssocFunctionNew" => Kind::ThinWall,
         "JMMirrorCopyFunction" | "JMFastMirrorFunction" => Kind::Mirror,
         "JMHelixProtrusionFunction" => Kind::HelixProtrusion,
@@ -2494,6 +2507,68 @@ fn mirror(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), String>
     Ok(())
 }
 
+/// A fast pattern (`JMFastPatternFunction`): slot 2 the pattern's sketch profile, 4 the features
+/// copied (a `JMGroupDummyFastPatternFunction` there stands for its slot 1, a feature such as a
+/// mirror), 5 the last of them. The profile lists key points and a `JPattern2dFunction` whose slot
+/// 1 is the pattern's circle (an arc member: centre, radius, the seed's angle twice, its sense),
+/// slot 5 the count and slot 7 the angle between copies (value objects). Read as a circular
+/// pattern about the profile normal through the circle's centre; only circular patterns are known.
+/// A body pattern (`JMBodyPatternFunction`) is laid out the same and copies the whole body; one
+/// whose slot 2 is a reference plane instead of a profile mirrors the body in that plane.
+fn fast_pattern(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), String> {
+    let target = s.first_body.clone().ok_or("a pattern before any body")?;
+    let ps = f.slot(2).ok_or("the pattern has no profile")?;
+    let body = f.class == "JMBodyPatternFunction";
+    if body && st.func(ps).is_some_and(|p| p.class == "JMCreateReferencePlane") {
+        // A body pattern on a reference plane: the body mirrored in it, kept with the body.
+        let (o, n, _) = st.obj(ps).and_then(plane).ok_or("the pattern's plane is not readable")?;
+        s.out.push(json!({"type": "mirror", "name": name, "features": [], "target": target, "merge": true,
+                          "plane": {"origin": arr_mm(o), "normal": arr(n)}}));
+        return Ok(());
+    }
+    let pf = st.func(ps).filter(|p| p.class == "JProfileRecomputeEx").ok_or("the pattern profile is not a sketch")?;
+    let ((o, n, x), pb) = profile_2d(st, ps, &pf)?;
+    let k = u32_at(pb, 8).filter(|&k| k <= MAX_MEMBERS).ok_or("the pattern profile is not readable")?;
+    let pattern = (0..k as usize)
+        .filter_map(|i| u32_at(pb, 12 + 4 * i))
+        .filter_map(|m| st.func(m))
+        .find(|m| m.class == "JPattern2dFunction")
+        .ok_or("the pattern profile has no pattern")?;
+    let circle = pattern.slot(1).and_then(|c| st.obj(c)).ok_or("the pattern has no circle")?;
+    let (centre, ccw) = match curve(circle) {
+        Some(Curve2::Arc(c, ..)) => (c, circle.get(34) != Some(&0)),
+        Some(Curve2::Circle(c, _)) => (c, true),
+        _ => return Err("the pattern is not circular (not read)".into()),
+    };
+    let num = |slot: usize| pattern.slot(slot).and_then(|v| st.obj(v)).and_then(value);
+    let count =
+        num(5).filter(|c| c.fract() == 0.0 && (2.0..=500.0).contains(c)).ok_or("the pattern count is not readable")?;
+    let step = num(7)
+        .filter(|a| a.abs() > 1e-9 && a.abs() < core::f64::consts::TAU)
+        .ok_or("the pattern angle is not readable")?;
+    let full = (step.abs() * count - core::f64::consts::TAU).abs() < 1e-6;
+    let total = if full { 360.0 } else { rnd(step.to_degrees() * (count - 1.0)) };
+    let y = cross(n, x);
+    let c3 = [0, 1, 2].map(|i| o[i] + centre[0] * x[i] + centre[1] * y[i]);
+    let dir = if ccw { n } else { n.map(|v| -v) };
+    let mut features = Vec::new();
+    // A body pattern copies the whole body (slot 4 lists the feature before it).
+    let seeds = if body { &[][..] } else { f.list(4) };
+    for &seed in seeds.iter().filter(|&&x| x != 0) {
+        let named = s.names.get(&seed).or_else(|| {
+            let g = st.func(seed).filter(|g| g.class == "JMGroupDummyFastPatternFunction")?;
+            s.names.get(&g.slot(1)?)
+        });
+        features.push(json!(named.ok_or("a patterned feature was not read")?));
+    }
+    if features.is_empty() && !body {
+        return Err("the pattern copies no feature".into());
+    }
+    s.out.push(json!({"type": "pattern_circular", "name": name, "features": features, "target": target,
+                      "axis": {"origin": arr_mm(c3), "direction": arr(dir)}, "angle": total, "count": count as u32}));
+    Ok(())
+}
+
 /// Reads a Solid Edge part's ordered feature history as a feature tree.
 ///
 /// # Errors
@@ -2573,6 +2648,11 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             }
             Kind::Mirror => {
                 if let Err(why) = mirror(&st, &mut s, func, &name) {
+                    s.out.push(unsupported(&name, what, &why));
+                }
+            }
+            Kind::FastPattern => {
+                if let Err(why) = fast_pattern(&st, &mut s, func, &name) {
                     s.out.push(unsupported(&name, what, &why));
                 }
             }
