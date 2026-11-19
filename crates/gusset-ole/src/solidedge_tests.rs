@@ -227,9 +227,18 @@ fn part_full(side: f64, extent: f64, second: Option<f64>, taper: Option<(f64, f6
         c.extend(obj(36, 14, &small(angle)));
         c.extend(obj(36, 15, &small(way)));
     }
-    c.extend(obj(36, 16, &small(13.0)));
+    // The second extent: finite 2 mm, or (with a first extent to a key point) up to a key
+    // point 2 mm along -z.
+    c.extend(obj(36, 16, &small(if extent == 72.0 { 72.0 } else { 13.0 })));
     c.extend(obj(36, 17, &small(second.unwrap_or(0.0))));
-    c.extend(obj(36, 18, &small(0.002)));
+    if extent == 72.0 {
+        let mut kp = func("JMLinearKeyPointFunction", &[&[18], &[1], &[2], &[0]]);
+        kp.extend(1u32.to_le_bytes());
+        kp.extend(f64s(&[0.002, 0.0, 0.0, -1.0]));
+        c.extend(obj(37, 18, &kp));
+    } else {
+        c.extend(obj(36, 18, &small(0.002)));
+    }
     c.extend(obj(41, 19, &[1, 1, 2, 0, 0, 0, 0, 1, 0, 0x41]));
     c.extend(more);
     ole(&[("PSMcluster0", &c), ("PSMtypetable", &[])])
@@ -338,6 +347,9 @@ fn a_key_point_extent_stores_its_reach() {
     assert_eq!((&t["features"][1]["distance"], &t["features"][1]["symmetric"]), (&json!(4.0), &json!(false)), "{t}");
     let t = feature_tree(&part(3.0, 72.0), "p.par", &crate::Limits::default()).unwrap();
     assert_eq!((&t["features"][1]["distance"], &t["features"][1]["symmetric"]), (&json!(8.0), &json!(true)), "{t}");
+    // A second extent up to a key point (020's Protrusion_3): its reach along the normal.
+    let t = feature_tree(&part2(2.0, 72.0, Some(1.0)), "p.par", &crate::Limits::default()).unwrap();
+    assert_eq!((&t["features"][1]["distance"], &t["features"][1]["distance2"]), (&json!(4.0), &json!(-2.0)), "{t}");
 }
 
 /// An edge set's curve list: a head, the list's class id, `u32 1, n, 0, u8 2` and the curves

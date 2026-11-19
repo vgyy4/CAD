@@ -2129,10 +2129,21 @@ fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Ki
         if let Some(e2) = code(12) {
             let reach = match e2 {
                 13 => small(14).ok_or("the second depth is not readable")?.abs() * MM,
-                14 => THROUGH,
-                e => return Err(format!("second extent {e} (not finite or through all)")),
+                14 | 72 => THROUGH,
+                e => return Err(format!("second extent {e} (not finite, through all or to a key point)")),
             };
             let d2 = match code(13) {
+                // Up to a key point (slot 14): its reach signed along the normal, as the first's.
+                _ if e2 == 72 => {
+                    let kp = f.slot(14).ok_or("the second key point is missing")?;
+                    let d =
+                        st.obj(kp).and_then(key_point_reach).ok_or("the second key point's reach is not readable")?;
+                    let along = dot(d.1, profiles.first().map_or([0.0; 3], |p| p.normal));
+                    if (along.abs() - 1.0).abs() > 1e-6 || d.0.abs() < 1e-12 {
+                        return Err("the second key point's reach is not along the profile normal".into());
+                    }
+                    d.0 * along * MM
+                }
                 Some(1) => -reach,
                 Some(2) => reach,
                 other => return Err(format!("second side {other:?}")),
