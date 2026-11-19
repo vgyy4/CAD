@@ -1264,7 +1264,7 @@ fn pattern_sketch(ccw: u8, count: f64, step: f64) -> Vec<u8> {
     let mut a = vec![0, 0];
     a.extend(f64s(&[0.01, 0.0, 0.03]));
     a.push(ccw);
-    a.extend(f64s(&[0.0, 6.28]));
+    a.extend(f64s(&[0.0, 6.2]));
     a.extend([1, 0, 0, 0x80]);
     v.extend(obj(37, 26, &a));
     v.extend(obj(36, 27, &small(count)));

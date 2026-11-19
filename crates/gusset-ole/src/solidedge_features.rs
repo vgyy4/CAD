@@ -58,6 +58,8 @@ const THROUGH: f64 = 1e4;
 const POINT_EPS: f64 = 1e-6;
 
 type V3 = [f64; 3];
+/// A plane's origin, unit normal and unit x direction.
+type PlaneFrame = (V3, V3, V3);
 
 fn u16_at(b: &[u8], k: usize) -> Option<u16> {
     Some(u16::from_le_bytes(b.get(k..k.checked_add(2)?)?.try_into().ok()?))
@@ -1300,7 +1302,7 @@ fn profile(st: &Store, serial: u32) -> Result<Profile, String> {
 
 /// A sketch profile's (`JProfileRecomputeEx`, `f`) plane (slot 0) and its `Profile2d` object:
 /// `u32 n` at +8, then the `n` member serials.
-fn profile_2d<'a>(st: &'a Store, serial: u32, f: &Func) -> Result<((V3, V3, V3), &'a [u8]), String> {
+fn profile_2d<'a>(st: &'a Store, serial: u32, f: &Func) -> Result<(PlaneFrame, &'a [u8]), String> {
     let pl = f.slot(0).and_then(|p| st.obj(p)).and_then(plane).ok_or("the profile's plane is not readable")?;
     let b = st.obj(serial).ok_or("the profile is missing")?;
     let tag: Vec<u8> = "Profile2d".encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -2586,7 +2588,11 @@ fn fast_pattern(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), S
     let full = (step.abs() * count - core::f64::consts::TAU).abs() < 1e-6;
     let total = if full { 360.0 } else { rnd(step.to_degrees() * (count - 1.0)) };
     let y = cross(n, x);
-    let c3 = [0, 1, 2].map(|i| o[i] + centre[0] * x[i] + centre[1] * y[i]);
+    let c3 = [
+        o[0] + centre[0] * x[0] + centre[1] * y[0],
+        o[1] + centre[0] * x[1] + centre[1] * y[1],
+        o[2] + centre[0] * x[2] + centre[1] * y[2],
+    ];
     let dir = if ccw { n } else { n.map(|v| -v) };
     let mut features = Vec::new();
     // A body pattern copies the whole body (slot 4 lists the feature before it).
