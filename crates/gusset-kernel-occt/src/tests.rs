@@ -2572,6 +2572,50 @@ fn a_concave_round_at_a_step_across_a_ring_ends_on_its_cylinders() {
     assert!(f.face_origins.iter().all(|o| !o.is_empty()));
 }
 
+#[test]
+fn a_round_of_a_ring_ends_inner_edge_wider_than_the_ring() {
+    // Half a ring (radii 20 and 23, 5 high, y < 0): a 5 mm round of each end's inner edge, wider
+    // than the 3 mm wall (part 094). The ball touches the inner cylinder and the end face's
+    // outer edge: its centre lies 25 from the axis and 5 from (23, 0). The corner taken off is
+    // bounded by the end face, the ball's arc and the inner circle; its area by Green's theorem.
+    let ring = k().boolean(BoolOp::Cut, &disc(23.0, 5.0, 0.0).shape, &disc(20.0, 7.0, -1.0).shape).unwrap();
+    let b = k().boolean(BoolOp::Cut, &ring.shape, &block_at(-30.0, 0.0, 60.0, 30.0, -1.0, 7.0).shape).unwrap();
+    let es = [edge_with_midpoint(&b, [20.0, 0.0, 2.5]), edge_with_midpoint(&b, [-20.0, 0.0, 2.5])];
+    let f = k().fillet(&b.shape, &es, 5.0).map_err(|e| e.message).unwrap();
+    let (r, rr, d) = (5.0f64, 20.0f64, 23.0f64);
+    let a = ((rr + r).powi(2) - r * r + d * d) / (2.0 * d);
+    let o = [a, -((rr + r).powi(2) - a * a).sqrt()];
+    let tho = o[1].atan2(o[0]);
+    let n = 100_000;
+    let mut pts = vec![[rr, 0.0], [d, 0.0]];
+    let (a1, a2) = ((0.0 - o[1]).atan2(d - o[0]), (rr * tho.sin() - o[1]).atan2(rr * tho.cos() - o[0]));
+    pts.extend((1..=n).map(|i| {
+        let t = a1 + (a2 - a1) * i as f64 / n as f64;
+        [o[0] + r * t.cos(), o[1] + r * t.sin()]
+    }));
+    pts.extend((1..n).map(|i| {
+        let t = tho * (1.0 - i as f64 / n as f64);
+        [rr * t.cos(), rr * t.sin()]
+    }));
+    let area = 0.5
+        * (0..pts.len())
+            .map(|i| {
+                let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+                p[0] * q[1] - q[0] * p[1]
+            })
+            .sum::<f64>()
+            .abs();
+    let before = k().mass_properties(&b.shape).unwrap().volume;
+    let got = k().mass_properties(&f.shape).unwrap().volume;
+    assert!(close(before - got, 2.0 * 5.0 * area, 1e-7), "{} vs {}", before - got, 10.0 * area);
+    // Nothing is left of the end faces.
+    let t = k().topology(&f.shape).unwrap();
+    assert!(!t.faces.iter().any(|x| x.kind == SurfaceKind::Plane && x.normal[1].abs() > 0.5));
+    for e in es {
+        assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+    }
+}
+
 fn block_at(x0: f64, y0: f64, w: f64, h: f64, z0: f64, d: f64) -> OpResult {
     let p = Profile {
         frame: Frame { origin: [x0, y0, z0], ..Frame::XY },

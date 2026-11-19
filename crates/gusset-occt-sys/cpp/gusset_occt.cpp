@@ -2728,7 +2728,13 @@ bool strip_far_point(const TopoDS_Face& f, const TopoDS_Edge& e, const BRepAdapt
     const TopoDS_Edge g = TopoDS::Edge(ex.Current());
     if (g.IsSame(e) || seen.Contains(g) || BRep_Tool::Degenerated(g)) continue;
     seen.Add(g);
-    if (BRep_Tool::IsClosed(g, f)) continue;  // a seam
+    // A seam: in the face twice (an edge on the surface's period boundary may have two pcurves
+    // and still bound the face once: a half cylinder's side from a boolean).
+    if (BRep_Tool::IsClosed(g, f)) {
+      int uses = 0;
+      for (TopExp_Explorer ey(f, TopAbs_EDGE); ey.More(); ey.Next()) uses += ey.Current().IsSame(g) ? 1 : 0;
+      if (uses > 1) continue;
+    }
     BRepAdaptor_Curve cg(g);
     if (line) {
       TopoDS_Vertex g0, g1;
@@ -2949,6 +2955,213 @@ bool section_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>& fs
   return !out.face.IsNull() && out.ideal > 0;
 }
 
+// The corner of a convex fillet of a straight edge between a plane along it and a cylinder
+// about an axis along it (094 Round1: the end of a ring segment 6.35 mm thick, rounded by 12.7
+// at its inner cylinder): the section is the same all along the edge, a line and a circle. The
+// ball touches both, or, where the plane face is narrower than its touching point, the
+// cylinder and the plane face's far edge (or the other way round): the blend takes that face
+// whole (a cliff edge, as `section_corner` makes it between planes). Each face must be a strip
+// beside the edge (`strip_far_point`).
+bool prism_cylinder_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>& fs, const BlendEdge& x,
+                           Corner& out, double e0 = 0, double e1 = 0) {
+  if (fs.size() != 2) return false;
+  BRepAdaptor_Curve c(x.e);
+  if (c.GetType() != GeomAbs_Line) return false;
+  const double t0 = c.FirstParameter(), t1 = c.LastParameter();
+  const gp_Pnt p = c.Value(t0), pm = c.Value(0.5 * (t0 + t1));
+  const gp_Vec along(p, c.Value(t1));
+  if (!(along.Magnitude() > 1e-9)) return false;
+  const gp_Dir dir(along);
+  BRepAdaptor_Surface s0(fs[0], false), s1(fs[1], false);
+  const bool plane_first = s0.GetType() == GeomAbs_Plane;
+  const TopoDS_Face& pf = plane_first ? fs[0] : fs[1];
+  const TopoDS_Face& cf = plane_first ? fs[1] : fs[0];
+  const BRepAdaptor_Surface& ps = plane_first ? s0 : s1;
+  const BRepAdaptor_Surface& cs = plane_first ? s1 : s0;
+  if (ps.GetType() != GeomAbs_Plane || cs.GetType() != GeomAbs_Cylinder) return false;
+  const gp_Cylinder cyl = cs.Cylinder();
+  if (!cyl.Axis().Direction().IsParallel(dir, 1e-9)) return false;
+  if (std::fabs(ps.Plane().Axis().Direction().Dot(dir)) > 1e-9) return false;
+  const double r = x.a, R = cyl.Radius();
+  if (!(r > 0)) return false;
+  gp_Dir np, nc;
+  if (!outward_normal(pf, pm, np) || !outward_normal(cf, pm, nc)) return false;
+  // Convex: the material fills the wedge between the faces.
+  {
+    BRepClass3d_SolidClassifier in(body, pm.Translated(-(gp_Vec(np) + gp_Vec(nc)) * (1e-3 * r)), 1e-9);
+    if (in.State() != TopAbs_IN) return false;
+  }
+  gp_Pnt qa, qb;
+  if (!strip_far_point(pf, x.e, c, p, qa) || !strip_far_point(cf, x.e, c, p, qb)) return false;
+  // The section through `p`: the axis there, and which side of the circle the material is on.
+  const gp_Pnt O = ElCLib::Value(ElCLib::Parameter(gp_Lin(cyl.Axis()), p), gp_Lin(cyl.Axis()));
+  const double tol = 1e-7 * std::max(1.0, std::max(r, R));
+  if (std::fabs(O.Distance(p) - R) > tol || std::fabs(O.Distance(qb) - R) > tol) return false;
+  const bool inside = gp_Vec(O, p).Dot(gp_Vec(nc)) > 0;  // the material towards the axis
+  const double rc = inside ? R - r : R + r;
+  if (!(rc > tol)) return false;
+  const gp_Vec ua(p, qa);
+  const double la = ua.Magnitude();
+  if (la < 1e-9) return false;
+  const gp_Vec uad = ua / la;
+  const gp_Vec nin = -gp_Vec(np);  // into the material, across the plane
+  // The angle round the axis from `p`, positive the way the cylinder face leaves the edge (at
+  // a convex edge, into the plane's side of the material), in [0, 2 pi).
+  const gp_Vec rp = gp_Vec(O, p) / R;
+  gp_Vec side = gp_Vec(dir).Crossed(rp);
+  if (side.Dot(nin) < 0) side.Reverse();
+  auto angle_of = [&](const gp_Pnt& q) {
+    const gp_Vec w(O, q);
+    const double an = std::atan2(w.Dot(side), w.Dot(rp));
+    return an < -1e-12 ? an + 2 * M_PI : an;
+  };
+  const double ab = angle_of(qb);
+  if (!(ab > 1e-9)) return false;
+  // A centre's touching points: on the plane its foot, on the cylinder along the radius.
+  auto foot_a = [&](const gp_Pnt& o) { return o.Translated(gp_Vec(np) * gp_Vec(o, p).Dot(gp_Vec(np))); };
+  auto foot_b = [&](const gp_Pnt& o) {
+    gp_Vec w(O, o);
+    w -= gp_Vec(dir) * w.Dot(gp_Vec(dir));
+    return O.Translated(w.Normalized() * R);
+  };
+  auto on_a = [&](const gp_Pnt& t) {
+    const double sa = gp_Vec(p, t).Dot(uad);
+    return sa > tol && sa <= la + tol;
+  };
+  auto on_b = [&](const gp_Pnt& t) {
+    const double an = angle_of(t);
+    return an > 1e-9 && an <= ab + 1e-9;
+  };
+  // In the section plane: a point at `f` along `uad` and `g` along `nin` from `p`.
+  auto at = [&](double f, double g) { return p.Translated(uad * f + nin * g); };
+  // The centres r inside the plane and rc from the axis: |p + f uad + r nin - O| = rc.
+  std::vector<gp_Pnt> cands;
+  auto line_circle = [&](const gp_Pnt& q0, const gp_Pnt& ctr, double rad, std::vector<gp_Pnt>& res) {
+    const gp_Vec w(ctr, q0);
+    const double bq = 2 * w.Dot(uad), cq = w.SquareMagnitude() - rad * rad, disc = bq * bq - 4 * cq;
+    if (disc < 0) return;
+    for (double f : {(-bq - std::sqrt(disc)) / 2, (-bq + std::sqrt(disc)) / 2}) res.push_back(q0.Translated(uad * f));
+  };
+  gp_Pnt ctr, ta, tb;
+  bool found = false;
+  auto take = [&](const gp_Pnt& o, const gp_Pnt& a, const gp_Pnt& b) {
+    if (found && o.Distance(p) >= ctr.Distance(p)) return;
+    ctr = o;
+    ta = a;
+    tb = b;
+    found = true;
+  };
+  // Both faces wide enough: the ball touches both.
+  line_circle(at(0, r), O, rc, cands);
+  bool narrow_a = false, narrow_b = false;
+  for (const gp_Pnt& o : cands) {
+    const gp_Pnt a = foot_a(o), b = foot_b(o);
+    const double sa = gp_Vec(p, a).Dot(uad);
+    if (sa <= tol) continue;
+    if (on_a(a) && on_b(b)) take(o, a, b);
+    narrow_a = narrow_a || sa > la + tol;
+    narrow_b = narrow_b || (sa > tol && angle_of(b) > ab + 1e-9);
+  }
+  if (!found && narrow_a) {
+    // The plane face is narrow: the ball touches the cylinder and the plane's far edge.
+    const gp_Vec w(O, qa);
+    gp_Vec wp = w - gp_Vec(dir) * w.Dot(gp_Vec(dir));
+    const double dd = wp.Magnitude();
+    if (dd > 1e-12 && dd <= rc + r && dd >= std::fabs(rc - r)) {
+      const double aa = (rc * rc - r * r + dd * dd) / (2 * dd), hh = std::sqrt(std::max(0.0, rc * rc - aa * aa));
+      const gp_Vec ex = wp / dd, ey = gp_Vec(dir).Crossed(ex);
+      for (double sg : {1.0, -1.0}) {
+        const gp_Pnt o = O.Translated(ex * aa + ey * (sg * hh));
+        // Inside the plane and its foot past the far edge.
+        if (gp_Vec(p, o).Dot(nin) <= 0) continue;
+        const gp_Pnt b = foot_b(o);
+        if (gp_Vec(p, foot_a(o)).Dot(uad) > la + tol && on_b(b)) take(o, qa, b);
+      }
+    }
+  }
+  if (!found && narrow_b) {
+    // The cylinder face is narrow: the ball touches the plane and the cylinder's far edge.
+    std::vector<gp_Pnt> cc;
+    line_circle(at(0, r), qb, r, cc);
+    for (const gp_Pnt& o : cc) {
+      const gp_Pnt a = foot_a(o);
+      // The ball's touching point on the cylinder lies past its far edge.
+      if (on_a(a) && angle_of(foot_b(o)) > ab + 1e-9 && std::fabs(o.Distance(O) - rc) > tol) take(o, a, qb);
+    }
+  }
+  if (!found) return false;
+  gp_Vec mid = gp_Vec(ctr, ta).Normalized() + gp_Vec(ctr, tb).Normalized();
+  if (mid.Magnitude() < 1e-9) return false;
+  const gp_Pnt m = ctr.Translated(mid.Normalized() * r);
+  if (m.Distance(p) >= ctr.Distance(p)) return false;
+  // The outward normal of the cylinder at a point of it.
+  auto out_b = [&](const gp_Pnt& q) {
+    gp_Vec w(O, q);
+    w -= gp_Vec(dir) * w.Dot(gp_Vec(dir));
+    w.Normalize();
+    return inside ? w : -w;
+  };
+  auto circle_mid = [&](const gp_Pnt& a, const gp_Pnt& b) {
+    gp_Vec w = gp_Vec(O, a).Normalized() + gp_Vec(O, b).Normalized();
+    return O.Translated(w.Normalized() * R);
+  };
+  const double d = 0.25 * std::min(r, std::min(la, p.Distance(qb)));
+  if (!(d > 1e-6)) return false;
+  auto section = [&](bool reach) -> std::pair<TopoDS_Face, TopoDS_Edge> {
+    GC_MakeArcOfCircle arc(ta, m, tb);
+    if (!arc.IsDone()) throw Standard_Failure("could not build the corner");
+    TopoDS_Edge blend = BRepBuilderAPI_MakeEdge(arc.Value()).Edge();
+    BRepBuilderAPI_MakeWire mw;
+    mw.Add(blend);
+    const gp_Pnt bm = circle_mid(tb, p);
+    if (reach) {
+      const gp_Pnt b2 = tb.Translated(out_b(tb) * d), b3 = bm.Translated(out_b(bm) * d);
+      const gp_Pnt k = p.Translated((gp_Vec(np) + out_b(p)) * d), a2 = ta.Translated(gp_Vec(np) * d);
+      mw.Add(BRepBuilderAPI_MakeEdge(tb, b2).Edge());
+      mw.Add(BRepBuilderAPI_MakeEdge(b2, b3).Edge());
+      mw.Add(BRepBuilderAPI_MakeEdge(b3, k).Edge());
+      mw.Add(BRepBuilderAPI_MakeEdge(k, a2).Edge());
+      mw.Add(BRepBuilderAPI_MakeEdge(a2, ta).Edge());
+    } else {
+      GC_MakeArcOfCircle face_arc(tb, bm, p);
+      if (!face_arc.IsDone()) throw Standard_Failure("could not build the corner");
+      mw.Add(BRepBuilderAPI_MakeEdge(face_arc.Value()).Edge());
+      mw.Add(BRepBuilderAPI_MakeEdge(p, ta).Edge());
+    }
+    if (!mw.IsDone()) throw Standard_Failure("could not build the corner");
+    BRepBuilderAPI_MakeFace mf(mw.Wire(), true);
+    if (!mf.IsDone()) throw Standard_Failure("could not build the corner");
+    return {mf.Face(), blend};
+  };
+  out.line = true;
+  out.end0 = p;
+  out.end1 = c.Value(t1);
+  out.dir = dir;
+  auto solid_of = [&](const TopoDS_Face& f, const TopoDS_Edge& blend, TopoDS_Shape& face, bool longer) {
+    const double l0 = longer ? e0 : 0.0, l1 = longer ? e1 : 0.0;
+    gp_Trsf back;
+    back.SetTranslation(-gp_Vec(dir) * l0);
+    const TopLoc_Location loc(back);
+    BRepPrimAPI_MakePrism mk(f.Moved(loc), along + gp_Vec(dir) * (l0 + l1));
+    mk.Build();
+    if (!mk.IsDone()) throw Standard_Failure("could not build the corner");
+    const ShapeList& g = mk.Generated(blend.Moved(loc));
+    if (!g.IsEmpty()) face = g.First();
+    TopoDS_Shape sh = mk.Shape();
+    if (signed_volume(sh) < 0) sh.Reverse();
+    return sh;
+  };
+  auto [fi, bi] = section(false);
+  TopoDS_Shape unused;
+  out.exact = solid_of(fi, bi, unused, false);
+  out.ideal = std::fabs(measured_volume(out.exact));
+  if (e0 > 0 || e1 > 0) out.exact_long = solid_of(fi, bi, unused, true);
+  auto [fc, bc] = section(true);
+  out.cutter = solid_of(fc, bc, out.face, true);
+  out.concave = false;
+  return !out.face.IsNull() && out.ideal > 0;
+}
+
 // The corner of a convex edge between two perpendicular faces whose section is the same all
 // along it: a straight edge between two planes (the corner is a prism) or a circle between a
 // plane across its axis and a cylinder about it (the corner is revolved; an arc's corner ends
@@ -2986,7 +3199,7 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   gp_Dir n1, n2;
   if (!outward_normal(fs[0], p0, n1) || !outward_normal(fs[1], p0, n2)) return false;
   if (line && fillet && (s0.GetType() == GeomAbs_Cylinder || s1.GetType() == GeomAbs_Cylinder))
-    return plane_cylinder_corner(body, fs, a, c, out);
+    return prism_cylinder_corner(body, fs, x, out, e0, e1) || plane_cylinder_corner(body, fs, a, c, out);
   // Square to 1e-6 rad: Fusion stores angles to 7 digits (5998's Fillet5: a slot turned 20
   // degrees whose end stands 1e-7 rad off square to its sides). The corner made square is
   // then off by some 1e-6 of a blend size, below the volume check's 1e-7 of the body.
