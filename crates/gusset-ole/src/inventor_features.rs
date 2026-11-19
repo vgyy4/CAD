@@ -2801,9 +2801,9 @@ fn loft(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
                 .ok_or("a loft section has no loop")?;
         let (k, sk, _) = loop_sketch(r, c).map_err(|w| format!("a loft section: {w}"))?;
         names.push(sk.name.clone());
-        if !st.done.contains_key(&k) {
+        if let std::collections::hash_map::Entry::Vacant(e) = st.done.entry(k) {
             used.push(sk.json());
-            st.done.insert(k, ());
+            e.insert(());
         }
     }
     if names.len() < 2 {
