@@ -801,8 +801,16 @@ fn an_open_revolve_profile_is_closed_against_its_axis() {
         assert!(matches!(c.last(), Some(Curve2::Line(_, b)) if *b == [0.0, 1.0]), "{c:?}");
         assert!(c.iter().all(|k| matches!(k, Curve2::Line(a, b) if a[0] >= 0.0 && b[0] >= 0.0)), "{c:?}");
     }
-    // No end on the axis, or a side not given: refused; a closed profile stays as it is.
-    assert!(close_on_axis(&mut vec![Curve2::Line([1.0, 0.0], [2.0, 0.0])], &[false], axis, Some(1)).is_err());
+    // Both ends off the axis on one side (a crown arc over a hoop): each runs on to the box,
+    // closed round it on the side named; nothing crosses the axis.
+    let mut c = vec![Curve2::Line([1.0, 1.0], [1.0, 2.0])];
+    close_on_axis(&mut c, &[false], axis, Some(1)).unwrap();
+    assert!(c.len() > 3, "{c:?}");
+    assert!(c.iter().all(|k| matches!(k, Curve2::Line(a, b) if a[0] >= 0.0 && b[0] >= 0.0)), "{c:?}");
+    // Left of the line as drawn (towards the axis) is inside: the closure runs along the axis.
+    assert!(c.iter().any(|k| matches!(k, Curve2::Line(a, b) if a[0] == 0.0 && b[0] == 0.0)), "{c:?}");
+    // Ends either side of the axis, or a side not given: refused; a closed profile stays.
+    assert!(close_on_axis(&mut vec![Curve2::Line([-1.0, 0.0], [2.0, 0.0])], &[false], axis, Some(1)).is_err());
     assert!(close_on_axis(&mut vec![Curve2::Line([0.0, 0.0], [2.0, 0.0])], &[false], axis, None).is_err());
     let mut c = vec![Curve2::Circle([3.0, 0.0], 1.0)];
     close_on_axis(&mut c, &[false], axis, None).unwrap();

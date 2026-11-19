@@ -1674,7 +1674,8 @@ const ON_AXIS: f64 = 1e-7;
 /// profile's frame): a chain whose two ends lie on the axis is closed along it; a cutout's chain
 /// with one end on it runs on from its other end, along its direction, to a box
 /// [`OPEN_REACH`] round it on the profile's side of the axis, and is closed round that box to
-/// the end on the axis on the side slot 5 names (1 left of the chain as drawn, 2 right).
+/// the end on the axis on the side slot 5 names (1 left of the chain as drawn, 2 right). A
+/// chain with both ends off the axis, on one side of it, runs on from both ends to that box.
 pub(crate) fn close_on_axis(
     curves: &mut Vec<Curve2>,
     backwards: &[bool],
@@ -1691,12 +1692,16 @@ pub(crate) fn close_on_axis(
     // Coordinates along the axis and off it.
     let along = |x: [f64; 2]| (x[0] - p[0]) * u[0] + (x[1] - p[1]) * u[1];
     let off = |x: [f64; 2]| (x[1] - p[1]) * u[0] - (x[0] - p[0]) * u[1];
-    match (off(a.0).abs() < ON_AXIS, off(b.0).abs() < ON_AXIS) {
+    let on = (off(a.0).abs() < ON_AXIS, off(b.0).abs() < ON_AXIS);
+    match on {
         (true, true) => {
             curves.push(Curve2::Line(b.0, a.0));
             return Ok(());
         }
-        (false, false) => return Err("an open revolve profile with no end on its axis".into()),
+        // Both ends off the axis: on the same side of it, each runs on to the box below.
+        (false, false) if off(a.0) * off(b.0) <= 0.0 => {
+            return Err("an open revolve profile with its ends either side of its axis".into());
+        }
         _ => {}
     }
     let side = match side {
@@ -1704,23 +1709,28 @@ pub(crate) fn close_on_axis(
         Some(2) => -1.0,
         other => return Err(format!("an open profile's side {other:?}")),
     };
-    // `e` the free end off the axis, `o` the one on it; `t` the chain's way at `e` as drawn.
-    let (e, o, t) = if off(a.0).abs() < ON_AXIS { (b, a, b.1) } else { (a, b, [-a.1[0], -a.1[1]]) };
+    // `e` a free end off the axis, `o` the other end; `t` the chain's way at `e` as drawn.
+    let (e, o, t) = if on.0 { (b, a, b.1) } else { (a, b, [-a.1[0], -a.1[1]]) };
     let sv = off(e.0).signum();
     let from = |s: f64, v: f64| [p[0] + s * u[0] - v * sv * u[1], p[1] + s * u[1] + v * sv * u[0]];
     let (se, ve) = (along(e.0), off(e.0) * sv);
-    let r = OPEN_REACH + se.abs().max(ve).max(along(o.0).abs());
-    // The box: along the axis -r..r, off it 0..r (on the end's side); `e` lies inside it.
-    let (ds, dv) = (e.1[0] * u[0] + e.1[1] * u[1], (e.1[1] * u[0] - e.1[0] * u[1]) * sv);
-    let hit = [(ds, r - se), (-ds, r + se), (dv, r - ve), (-dv, ve)]
-        .iter()
-        .filter(|(d, room)| *d > 1e-12 && *room >= 0.0)
-        .map(|(d, room)| room / d)
-        .fold(f64::INFINITY, f64::min);
-    if !hit.is_finite() {
-        return Err("an open revolve profile that runs nowhere".into());
-    }
-    let f = [se + hit * ds, ve + hit * dv];
+    let (so, vo) = (along(o.0), off(o.0) * sv);
+    let r = OPEN_REACH + se.abs().max(ve).max(so.abs()).max(vo);
+    // The box: along the axis -r..r, off it 0..r (on the ends' side); the ends lie inside it.
+    // Where an end, run on along its outward direction, meets the box.
+    let run_on = |x: End| -> Option<[f64; 2]> {
+        let (sx, vx) = (along(x.0), off(x.0) * sv);
+        let (ds, dv) = (x.1[0] * u[0] + x.1[1] * u[1], (x.1[1] * u[0] - x.1[0] * u[1]) * sv);
+        let hit = [(ds, r - sx), (-ds, r + sx), (dv, r - vx), (-dv, vx)]
+            .iter()
+            .filter(|(d, room)| *d > 1e-12 && *room >= 0.0)
+            .map(|(d, room)| room / d)
+            .fold(f64::INFINITY, f64::min);
+        hit.is_finite().then(|| [sx + hit * ds, vx + hit * dv])
+    };
+    let f = run_on(e).ok_or("an open revolve profile that runs nowhere")?;
+    // The other end: on the axis it stays where it is.
+    let g = if on.0 || on.1 { Some([so, 0.0]) } else { run_on(o) }.ok_or("an open revolve profile that runs nowhere")?;
     // Perimeter positions, counter-clockwise from (-r, 0): the axis, then the far sides.
     let tol = 1e-9 * r;
     let pos = |s: f64, v: f64| {
@@ -1735,7 +1745,7 @@ pub(crate) fn close_on_axis(
         }
     };
     let corners = [(0.0, (-r, 0.0)), (2.0 * r, (r, 0.0)), (4.0 * r, (r, r)), (6.0 * r, (-r, r))];
-    let (pf, po) = (pos(f[0], f[1]), pos(along(o.0), 0.0));
+    let (pf, po) = (pos(f[0], f[1]), pos(g[0], g[1]));
     let ring = |ccw: bool| -> Vec<Curve2> {
         let mut out = vec![Curve2::Line(e.0, from(f[0], f[1]))];
         let mut cs: Vec<(f64, (f64, f64))> = corners
@@ -1755,6 +1765,11 @@ pub(crate) fn close_on_axis(
             let n = from(s, v);
             out.push(Curve2::Line(last, n));
             last = n;
+        }
+        let og = from(g[0], g[1]);
+        if libm::hypot(og[0] - o.0[0], og[1] - o.0[1]) > 1e-12 {
+            out.push(Curve2::Line(last, og));
+            last = og;
         }
         out.push(Curve2::Line(last, o.0));
         out
