@@ -1191,6 +1191,9 @@ pub fn apply_with(
         let at = at.or_else(|| g.text.find('\n').map(|i| i + 1)).unwrap_or(g.text.len());
         g.text.insert_str(at, &param_lines);
     }
+    // Where the last feature that rebuilt began in the text and in `made`, when it was a cut
+    // (`before_cut`).
+    let mut last_cut: Option<(usize, usize)> = None;
     for (fi, f) in tree.features.iter().enumerate() {
         let kind = f.get("type").and_then(Value::as_str).unwrap_or("");
         let src_name = f.get("name").and_then(Value::as_str).unwrap_or("Feature").to_string();
@@ -1238,9 +1241,18 @@ pub fn apply_with(
                     }
                 })
             }
-            "fillet" | "chamfer" => serde_json::from_value::<EdgeF>(f.clone())
-                .map_err(|e| e.to_string())
-                .and_then(|d| edges(&mut g, s, &d, kind == "fillet")),
+            "fillet" | "chamfer" => {
+                serde_json::from_value::<EdgeF>(f.clone()).map_err(|e| e.to_string()).and_then(|d| {
+                    match (edges(&mut g, s, &d, kind == "fillet"), last_cut) {
+                        (Err(why), Some(at)) if why.starts_with("it does not build here") => {
+                            g.text.truncate(text_len);
+                            g.made.truncate(made_len);
+                            before_cut(&mut g, s, &d, kind == "fillet", at).map_err(|_| why)
+                        }
+                        (r, _) => r,
+                    }
+                })
+            }
             "hole" | "pattern_linear" | "pattern_circular" | "mirror" | "shell" | "sweep" | "loft" | "stored_body"
             | "move_body" | "draft" | "scale_body" | "remove_body" | "offset_face" | "split" | "thread"
                 if tree.version < 2 =>
@@ -1307,6 +1319,11 @@ pub fn apply_with(
             }
             other => Err(format!("feature type '{}' is not known", short(other))),
         };
+        let cut = matches!(kind, "extrude" | "revolve") && f.get("operation").and_then(Value::as_str) == Some("cut");
+        // A sketch between the cut and the blend moves with the cut.
+        if kind != "sketch" {
+            last_cut = (r.is_ok() && cut).then_some((text_len, made_len));
+        }
         match r {
             Ok(()) => {
                 if matches!(
@@ -2711,6 +2728,40 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         g.blends.insert(d.name.clone(), blends);
     }
     g.made.extend(made);
+    Ok(())
+}
+
+/// A blend whose edges the cut just before it broke into pieces (a screw head's rim across its
+/// slot), where the kernel does not blend the pieces: the blend goes before the cut, on the whole
+/// edge, and the cut after it trims the blend as it trimmed the edge. `at` is where the cut's text
+/// and its entries of `made` begin. On failure everything is as it was.
+fn before_cut(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool, at: (usize, usize)) -> Result<(), String> {
+    let (Some(cut_text), Some(cut_made)) =
+        (g.text.get(at.0..).map(str::to_string), g.made.get(at.1..).map(<[String]>::to_vec))
+    else {
+        return Err("no cut".into());
+    };
+    g.text.truncate(at.0);
+    g.made.truncate(at.1);
+    let restore = |g: &mut Gen| {
+        g.text.truncate(at.0);
+        g.made.truncate(at.1);
+        g.text.push_str(&cut_text);
+        g.made.extend(cut_made.iter().cloned());
+        g.features.remove(&d.name);
+        g.blends.remove(&d.name);
+    };
+    if let Err(why) = edges(g, s, d, fillet) {
+        restore(g);
+        return Err(why);
+    }
+    g.text.push_str(&cut_text);
+    g.made.extend(cut_made.iter().cloned());
+    let ok = g.evaluate(s).is_ok_and(|ev| ev.errors().iter().all(|e| !cut_made.contains(&e.feature)));
+    if !ok {
+        restore(g);
+        return Err("the cut after it does not build".into());
+    }
     Ok(())
 }
 
