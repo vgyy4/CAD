@@ -743,21 +743,21 @@ fn a_face_set_lists_plane_faces_with_their_boundaries() {
 
 #[test]
 fn a_thin_wall_opens_its_stored_faces() {
-    // The protrusion part, then a thin wall of 1 mm (side 4: inside) opening its top face.
-    for (side, read) in [(4.0, true), (5.0, false)] {
+    // The protrusion part, then a thin wall of 1 mm (side 4 inside, 5 outside) opening its top face.
+    for (side, read) in [(4.0, Some("inside")), (5.0, Some("outside")), (6.0, None)] {
         let mut more = obj(40, 21, &face_set_bytes(&[top_face()]));
         more.extend(obj(36, 22, &small(side)));
         more.extend(obj(36, 23, &small(0.001)));
         more.extend(obj(38, 24, &func("JMThinwallAssocFunctionNew", &[&[24], &[12], &[22], &[23], &[21]])));
         let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
         let f = &t["features"][2];
-        if !read {
+        let Some(read) = read else {
             assert_eq!(f["type"], "unsupported", "{t}");
             continue;
-        }
+        };
         assert_eq!(
             (&f["type"], &f["name"], &f["side"], &f["thickness"]),
-            (&json!("shell"), &json!("Thinwall_1"), &json!("inside"), &json!(1.0)),
+            (&json!("shell"), &json!("Thinwall_1"), &json!(read), &json!(1.0)),
             "{t}"
         );
         assert_eq!(f["faces"].as_array().unwrap().len(), 1);

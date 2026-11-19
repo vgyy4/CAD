@@ -2476,13 +2476,14 @@ fn variable_radii(st: &Store, f: &Func) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
-/// A thin wall (`JMThinwallAssocFunctionNew`): slot 2 the side (4 the wall inside the body),
+/// A thin wall (`JMThinwallAssocFunctionNew`): slot 2 the side (4 the wall inside the body, 5 outside),
 /// 3 the thickness, 4 the face set of the faces it opens.
 fn thin_wall(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), String> {
     let target = s.first_body.clone().ok_or("a thin wall before any body")?;
     let small = |i: usize| f.slot(i).and_then(|v| st.obj(v)).and_then(value);
     let side = match small(2) {
         Some(4.0) => "inside",
+        Some(5.0) => "outside",
         other => return Err(format!("thin wall side {other:?} (not read)")),
     };
     let t = small(3).map(|v| v * MM).filter(|v| *v > 1e-9).ok_or("the thickness is not readable")?;
