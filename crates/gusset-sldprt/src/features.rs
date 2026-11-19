@@ -4122,6 +4122,18 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 }
             } else {
                 js.insert("distance".into(), json!(distance));
+                // A boss of end type 2 stops at the next face it meets (round sw12: mid_elbow's
+                // pins, written through all, ran 360 mm out of a 35 mm part); the reach through
+                // all stays as the fallback where that does not build.
+                if op != "cut"
+                    && typ == Some(2)
+                    && let Some(d) = distance
+                {
+                    js.insert("end_condition".into(), json!("to_next"));
+                    if d < 0.0 {
+                        js.insert("reverse".into(), json!(true));
+                    }
+                }
                 // A blind extrude with a second length `D2` runs that far to the other side of its
                 // sketch too (SolidWorks' "Direction 2": the pulleys' hubs, 2 mm one way and 7 mm
                 // the other).

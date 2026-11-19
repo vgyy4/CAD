@@ -1080,6 +1080,28 @@ fn a_shell_removes_the_first_face_of_its_last_record() {
     assert!(why.contains("Shell1") && why.contains("not resolved"), "{why}");
 }
 
+/// A boss of end type 2 runs up to the next face, with the reach through all to fall back on
+/// (round sw12).
+#[test]
+fn a_boss_of_end_type_two_runs_up_to_the_next_face() {
+    let mut extra = feature_node("moProfileFeature_c", "Sketch2", 8);
+    let base = feature_stream(&[]);
+    let sk = base.windows(4).position(|w| w == [0x01, 0x80, 2, 0]).unwrap();
+    let ex = base.windows(13).position(|w| w == b"moExtrusion_c").unwrap() - 6;
+    extra.extend(&base[sk..ex]);
+    extra.extend(feature_node("moExtrusion_c", "Boss-Extrude2", 9));
+    extra.extend(class_decl("moEndSpec_c"));
+    extra.extend([0, 0, 1, 0, 0, 0]);
+    extra.extend([0u8; 10]);
+    extra.extend(2u32.to_le_bytes());
+    extra.extend([0u8; 12]);
+    let t = history(&feature_stream(&extra)).unwrap().unwrap();
+    let boss = t["features"].as_array().unwrap().iter().find(|f| f["name"] == "Boss-Extrude2").unwrap().clone();
+    assert_eq!(boss["operation"], "join", "{boss}");
+    assert_eq!(boss["end_condition"], "to_next", "{boss}");
+    assert!(boss["distance"].as_f64().is_some_and(|d| d > 100.0), "{boss}");
+}
+
 /// A blind boss with a second length `D2` runs that far to the other side of its sketch too
 /// (round sw12: "Direction 2").
 #[test]
