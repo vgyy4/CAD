@@ -5879,6 +5879,93 @@ mod end_face_tests {
     }
 
     #[test]
+    fn a_converted_segment_without_a_chain_is_read_where_it_is() {
+        // Back_sup_low's base line: byte 4 in the 0.0, eight zero bytes, then the segment
+        // (points 0 and 1, the word 1, -1.0); the next entity's pair must not be taken.
+        let mut e = vec![0u8; 40];
+        e.extend([0, 4, 0, 0, 0, 0, 0, 0]);
+        e.extend(ONE.get(8..).unwrap());
+        e.extend([0u8; 8]);
+        e.extend([0, 0, 1, 0, 1, 0, 0, 0]);
+        e.extend((-1.0f64).to_le_bytes());
+        e.extend([0u8; 40]);
+        e.extend(ONE);
+        assert_eq!(payload(&e, 0), Some((Some(64), true)));
+    }
+
+    #[test]
+    fn an_open_revolve_profile_is_closed_along_its_axis() {
+        // Tommy Bar: the axis (0,0)-(290,0); a bar from the axis up and along to (275,10), a
+        // line back down to (275,0) and a ball arc from (275,10) to (277,0).
+        let seg = |kind, s, e, c, construction| Seg {
+            kind,
+            id: 1,
+            a: 1,
+            s,
+            e,
+            c,
+            dir: -1,
+            construction,
+            centerline: construction,
+            external: false,
+        };
+        let g = Geometry {
+            pts: vec![pt(0.0, 0.0), pt(0.29, 0.0), pt(0.0, 0.006), pt(0.275, 0.01), pt(0.275, 0.0), pt(0.251, 0.0), pt(0.277, 0.0)],
+            segs: vec![
+                seg(SegKind::Line, 0, 1, 0, true),
+                seg(SegKind::Line, 0, 2, 0, false),
+                seg(SegKind::Line, 2, 3, 0, false),
+                seg(SegKind::Line, 3, 4, 0, false),
+                seg(SegKind::Arc, 6, 3, 5, false),
+            ],
+            ellipse_axes: Vec::new(),
+        };
+        assert_eq!(axis_closure(&g, 0), vec![(0, 4), (4, 6)]);
+        // A closed profile touching the axis has no loose end there.
+        let mut closed = g.clone();
+        closed.segs.remove(3);
+        closed.segs.push(seg(SegKind::Line, 6, 0, 0, false));
+        assert!(axis_closure(&closed, 0).is_empty());
+    }
+
+    #[test]
+    fn a_box_object_gives_the_revolve_axis_point() {
+        let mut d = vec![0u8; 3];
+        d.extend([1, 0, 0xb7, 0x81, 1, 0, 0, 0]);
+        for v in [-0.0032, -0.0088, 0.0, 0.0468] {
+            d.extend(f64::to_le_bytes(v));
+        }
+        d.extend([0u8; 8]);
+        let c = revolve_box_centre(&d, 0, d.len()).unwrap();
+        assert!((c[0] + 3.2).abs() < 1e-9 && (c[1] + 8.8).abs() < 1e-9, "{c:?}");
+        // Older files write -1 for the diagonal; other values are no box.
+        d[35..43].copy_from_slice(&(-1.0f64).to_le_bytes());
+        assert!(revolve_box_centre(&d, 0, d.len()).is_some());
+        d[35..43].copy_from_slice(&(-2.0f64).to_le_bytes());
+        assert_eq!(revolve_box_centre(&d, 0, d.len()), None);
+    }
+
+    #[test]
+    fn an_extrude_draft_is_a_placed_half_degree_d3() {
+        // The value at 0, its display position 31 bytes on.
+        let slot = |v: f64, pos: f64| {
+            let mut d = f64::to_le_bytes(v).to_vec();
+            d.resize(31, 0);
+            d.extend(f64::to_le_bytes(pos));
+            d.extend([0u8; 8]);
+            d
+        };
+        let names = vec![("D3".to_string(), 0usize)];
+        let deg45 = TAU / 8.0;
+        assert_eq!(extrude_draft(&slot(deg45, 0.012), &names), Some(deg45));
+        // Unplaced (Toolbox washers), not whole half degrees (a start offset in metres), or
+        // another parameter: no draft.
+        assert_eq!(extrude_draft(&slot(deg45, 0.0), &names), None);
+        assert_eq!(extrude_draft(&slot(0.0008, 0.012), &names), None);
+        assert_eq!(extrude_draft(&slot(deg45, 0.012), &[("D4".to_string(), 0)]), None);
+    }
+
+    #[test]
     fn a_revolved_rim_cut_by_two_flats_is_the_piece_its_vertex_faces_bound() {
         // A ring about the y axis of the Front plane: r 11 to 21 mm, y 0 to 6 mm; the rim
         // between the outer wall (key 2) and the top (key 3) is the circle r 21 at y 6.
