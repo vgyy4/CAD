@@ -1012,6 +1012,8 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     }
     let ext = |i: Option<usize>| i.and_then(|i| tail_u16(&r.dc, i));
     let mut axis_line = None;
+    // A copy of the sketch the extrude starts from instead (extent 12).
+    let mut start = None;
     if typ == FeatType::Extrude {
         // Slot 2 is the sweep direction: the sketch normal, or (three extrudes of one part, note
         // AR) the other way; slot 3 turns it round.
@@ -1060,7 +1062,7 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                     }
                     Err(w) => {
                         let d = (e == 7)
-                            .then(|| end_plane_reach(r, &s, &sketch))
+                            .then(|| end_plane_reach(r, &s, 18, &sketch))
                             .flatten()
                             .ok_or_else(|| format!("extrude extent {e}: {w}"))?;
                         put(&mut j, "distance", json!(rnd(d)));
@@ -1089,6 +1091,23 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                     None => {}
                 }
             }
+            // From a face (extent 12): the distance runs from the face slot 17 keeps, parallel to
+            // the sketch: the sketch moved onto that face (note AS).
+            Some(12) => {
+                let off = end_plane_reach(r, &s, 17, &sketch).ok_or("extrude extent 12: the start face is not read")?;
+                let (o, x, y) = frame(&sketch.m);
+                let n = unit3(cross(x, y));
+                let mut moved = sketch.json();
+                let name2 = format!("{}_from_{name}", sketch.name);
+                put(&mut moved, "name", json!(name2));
+                if let Some(pl) = moved.get_mut("plane") {
+                    put(pl, "origin", json!([rnd(o[0] + off * n[0]), rnd(o[1] + off * n[1]), rnd(o[2] + off * n[2])]));
+                }
+                start = Some(moved);
+                put(&mut j, "sketch", json!(name2));
+                put(&mut j, "distance", json!(rnd(if rev { -dist } else { dist })));
+                put(&mut j, "symmetric", json!(false));
+            }
             e => return Err(format!("extrude extent {e:?}")),
         }
     } else {
@@ -1113,6 +1132,9 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     if !st.done.contains_key(&sk) {
         st.out.push(sketch.json());
         st.done.insert(sk, ());
+    }
+    if let Some(moved) = start {
+        st.out.push(moved);
     }
     // An axis in the sketch plane off its origin or axes: a construction line of the sketch
     // along it (from the axis point, in its direction) is the axis.
@@ -2459,10 +2481,11 @@ fn combine(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
 }
 
 /// The reach (mm along the sketch normal) of an extrude that ends on a face, from the plane
-/// of that face its slot 18 keeps (`151280f0`, the last 72 bytes as a work plane's; note AS).
+/// of that face its slot 18 keeps (`151280f0`, the last 72 bytes as a work plane's; note AS);
+/// slot 17 keeps the face an extrude starts from in the same way.
 /// `None` when the slot holds no plane or the plane is not parallel to the sketch.
-fn end_plane_reach(r: &Reader, s: &Slots, sk: &Sketch) -> Option<f64> {
-    let i = s.get(18).filter(|&i| r.dc.class(i) == 0x1512_80f0)?;
+fn end_plane_reach(r: &Reader, s: &Slots, slot: usize, sk: &Sketch) -> Option<f64> {
+    let i = s.get(slot).filter(|&i| r.dc.class(i) == 0x1512_80f0)?;
     let (p, pn) = work_plane(&r.dc, i).ok()?;
     let (o, x, y) = frame(&sk.m);
     let n = unit3(cross(x, y));
