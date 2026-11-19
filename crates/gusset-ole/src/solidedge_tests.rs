@@ -1304,3 +1304,13 @@ fn a_body_pattern_copies_the_whole_body_or_mirrors_it_in_a_plane() {
         "{t}"
     );
 }
+
+#[test]
+fn curves_and_face_splits_are_left_out() {
+    let mut more = obj(38, 20, &func("JMProjectCurveAssocFunc", &[&[20], &[12]]));
+    more.extend(obj(38, 21, &func("JMSplitFaceAssocFunc", &[&[21], &[20]])));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    assert_eq!(t["features"].as_array().map(Vec::len), Some(2), "{t}");
+    assert_eq!(t["source"]["omitted"][1]["name"], "ProjectCurve_1", "{t}");
+    assert_eq!(t["source"]["omitted"][2]["name"], "SplitFace_1", "{t}");
+}

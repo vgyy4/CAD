@@ -1832,6 +1832,9 @@ enum Kind {
     FastPattern,
     /// A cosmetic thread: no geometry.
     Thread,
+    /// Curves and face splits (projected, wrapped and helical curves, split faces): no change
+    /// to the body's material.
+    Construction,
     /// The start of an older part's history, before its first feature.
     BaseBody,
     Other,
@@ -1852,6 +1855,9 @@ fn kind(class: &str) -> Kind {
         "JMHoleFunction" => Kind::Hole,
         "JMThreadFunction" => Kind::Thread,
         "JMFastPatternFunction" | "JMBodyPatternFunction" => Kind::FastPattern,
+        "JMProjectCurveAssocFunc" | "JMWrapSketchAssocFunc" | "JMHelicalCurveAssocFunc" | "JMSplitFaceAssocFunc" => {
+            Kind::Construction
+        }
         "JMThinwallAssocFunctionNew" => Kind::ThinWall,
         "JMMirrorCopyFunction" | "JMFastMirrorFunction" => Kind::Mirror,
         "JMHelixProtrusionFunction" => Kind::HelixProtrusion,
@@ -2657,6 +2663,8 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
                 }
             }
             Kind::Thread => s.omitted.push(json!({"name": name, "why": "cosmetic thread"})),
+            // Left out: if a later feature used it, the rebuild check finds the body differs.
+            Kind::Construction => s.omitted.push(json!({"name": name, "why": "curves or face splits, no material"})),
             // Left out: if it held geometry, the rebuild check finds the body short.
             Kind::BaseBody if s.out.is_empty() => s.omitted.push(json!({"name": name, "why": "base body feature"})),
             Kind::Other | Kind::BaseBody => s.out.push(unsupported(&name, what, "feature kind not read yet")),
