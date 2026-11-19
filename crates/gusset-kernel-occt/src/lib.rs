@@ -565,7 +565,7 @@ mod imp {
                     *t = m;
                 }
             }
-            if tangents != [0.0; 2] && (sections.len() != 2 || spec.ruled) {
+            if (spec.start_tangent.is_some() || spec.end_tangent.is_some()) && (sections.len() != 2 || spec.ruled) {
                 return Err(invalid("loft end tangents need exactly two profiles and a smooth (not ruled) loft")
                     .with_hint("loft between two profiles, or leave the ends free"));
             }
