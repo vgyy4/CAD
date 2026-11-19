@@ -1052,6 +1052,12 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                     Ok(d) => Some(d),
                     // No face of it is left in the result: the face it ran to is kept as a
                     // plane (slot 18, note AS); parallel to the sketch, the reach is its distance.
+                    // To the next face (extent 4): the next face as the model is built here.
+                    Err(_) if e == 4 && taper == 0.0 && matches!(op, "join" | "cut") => {
+                        put(&mut j, "end_condition", json!("to_next"));
+                        put(&mut j, "reverse", json!(rev));
+                        None
+                    }
                     Err(w) => {
                         let d = (e == 7)
                             .then(|| end_plane_reach(r, &s, &sketch))
