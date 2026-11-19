@@ -1037,3 +1037,38 @@ bulges about 4 mm further than OCCT's smooth loft, and whose next join is invali
 built that way generalises this round's end tangents and is the next step there; 169); round edges not found 2 (061, 173) and 059; thin walls 2 (111,
 145); profiles 9 (012, 015, 018, 052, 069 and 070 - thirty lofted cutouts each, a feature group
 owner listed among a profile's members -, 144, 168, 176).
+
+## Amendment (2026-11-19, 25): Solid Edge round xt1 - stored bodies that convert
+
+Of the 91 parts not rebuilt as history after se7, 40 had stored bodies that gusset-xt did not
+convert to a closed solid, so no rebuild of them could be checked. ADR 0035's amendment of the
+same day converts them: rolling-ball and cliff-edge blends from their true spine, SP-curves
+across blends, lemon tori of negative major radius, contact curves of blends refined onto
+the ball's contacts (measured causes and rules there).
+
+**Conversion (the 40 stored bodies, OCCT's STEP read and `BRepCheck`).** Before: none a valid
+closed solid (open shells, OCCT volumes from -2.1e8 to 3.7e8 mm3; the rebuild check saw NaN or
+an open body). After: **36 valid closed solids**, with no warning but bodies the reader leaves
+aside (010 and 014's mesh body, 011 and 016's empty body, 031 and 109's wire body). Left
+invalid: 011 (faces on its lemon dome keep self-intersecting parameter wires after OCCT's
+healing), 050 (a closed contact curve on a closed offset B-surface keeps the chart's fit, 2 mm
+off, because the refined ring makes OCCT's healing throw), 137 (a B-surface face bounded only
+by a ring on the surface's own edge, area 0), 166 (OCCT's healing throws on an offset surface,
+`Geom_RectangularTrimmedSurface::U parameters out of range`, and drops the parameter curves).
+
+**Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before (se7): 89 as
+history. After: **89 as history**, none lost, every other part with the same first reason
+except 067, whose rebuild is now compared: the features give 5638513.24 mm3, the stored body
+5638334.80 (3.2e-5, the check is 2e-5; its four cliff-edge rounds are not what OCCT's fillet
+builds). The same conversion measured on the other formats: SolidWorks 294 of 1352 as
+history (was 293, none lost; `Lock Collar`'s stored body measured 662.7199 mm3 against its
+features' 662.6970 and now agrees within the check), Inventor 678 of 1686 as before (no
+Parasolid there; every part with the same outcome).
+
+**What blocks the 40 now (first reasons, measured).** Round features OCCT does not build: 27
+(fillet failed 19, radius too large for the edge 7, an edge not found 1); 19 of them are parts
+whose stored body has cliff-edge blends, where Solid Edge's ball rolls along an edge that
+OCCT's fillet has no mode for (a cliff-edge round in the kernel is the next step for these).
+Other rebuild failures 5 (023 sweep path, 091 and 175 booleans, 109 chamfer, 115 revolve),
+feature kinds not read 3 (011, 014, 066), profiles 2 (010, 031), lofts and sweeps 2 (050's
+loft of cross sections with end tangents, 137's sweep of cross sections), 067 above.

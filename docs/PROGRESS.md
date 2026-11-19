@@ -11,7 +11,8 @@ Phase 3 has started (see Next).
 ## Done
 - Importer status (2026-11-14), feature history that rebuilds under the unchanged strict check:
   Fusion 277 of 318 (paused after rounds 33-34 gained none; docs/formats/fusion-corpus-tally.md);
-  SolidWorks 293 of 1352 (rounds sw1-sw11, ADR 0043; was 85; sw11 reads drafts and fillet edges on pattern copies); Inventor 650 of 1639 on the new corpus
+  SolidWorks 294 of 1352 (rounds sw1-sw11 and xt1, ADR 0043; was 85; sw11 reads drafts and fillet edges on pattern copies; xt1's
+  Parasolid blends gain Lock Collar, whose stored body measured 3.5e-5 off); Inventor 650 of 1639 on the new corpus
   and 28 of 47 on the old (rounds ipt1-ipt8 and op1, ADR 0046 amendments 8-10, 15-19; was 263 and 25; ipt4 reads coils,
   embosses, combines, splits and unfolded sheet-metal faces; ipt5 rebuilds derived parts and iPart members
   from their base part in the same folder; ipt6 solves an iPart factory's sketches again for a member's
@@ -21,13 +22,17 @@ Phase 3 has started (see Next).
   plane or face, and says when a part starts from an imported body (43 parts: not rebuildable); op1 extends the
   face of an extrude to a face (ADR 0061); left: Design
   Accelerator gear teeth, surface consumers, blends whose supports were used up, tapers, sketch text); Solid Edge 89
-  of 180 measured ordered parts (rounds se1-se7 and op2, ADR 0046 amendments 11-13 and 20-24; op2 builds
+  of 180 measured ordered parts (rounds se1-se7, xt1 and op2, ADR 0046 amendments 11-13 and 20-25; op2 builds
   rounds OCCT's fillet does not from their corners, ADR 0004 amendment 2026-11-19; se5 reads fast and
   body patterns, leaves curves out and adds the end up to the next face, ADR 0061 amendment; se6 reads
   ends through all as ends to the next face, mirror copies' own seeds and drafts; se7 reads loft end
   conditions as Gusset's new loft end tangents, ADR 0017 amendment, and pairs a lofted circle with an
-  outline by length; left: stored bodies gusset-xt cannot measure (40), OCCT fillet failures, rebuilds
-  that differ, an OCCT fuse defect on revolves sharing a cone apex, part copies). Sample corpora are
+  outline by length; xt1 makes gusset-xt convert the stored bodies of 36 of the 40 that did not
+  measure - blends from their true spine, cliff-edge blends, SP-curves across blends, lemon tori,
+  blend contact curves, ADR 0035 amendment 2026-11-19 - which gains no history part: 27 of the 40
+  stop at rounds OCCT's fillet does not build, 19 of them in parts with cliff-edge rounds; left:
+  a cliff-edge round in the kernel, other OCCT fillet failures, rebuilds that differ, an OCCT fuse
+  defect on revolves sharing a cone apex, part copies). Sample corpora are
   openly licensed downloads kept in scratch, never committed. Two in-process import crashes fixed (an
   unbounded face in mass properties, OCCT patch gusset-0005; the hole fit check meshes only the hole's
   face). Some Inventor rules take a value from the part's stored result where the file's record is not
@@ -354,7 +359,9 @@ Phase 3 has started (see Next).
      schema-driven reader of text and neutral binary, V4/V9 layouts inferred from NIST
      samples, V12 from the public Reference, V14+ embedded deltas; converted to STEP and imported
      by the sandboxed worker; `.x_t`/`.x_b`/`.xmt_txt` in `import.file`; fuzz target `xt_read`;
-     OCCT golden test against NIST's samples). Blends and SP-curves are sampled and fitted, body names
+     OCCT golden test against NIST's samples). Rolling-ball and cliff-edge blends are the ball's arcs
+     along their true spine, SP-curves are fitted (exact arcs across blends), lemon tori are revolved
+     arcs (amendment 2026-11-19), body names
      come from attributes, assemblies keep their placements, the B-surface pole order is
      chosen by the faces' vertices. Colours done (face and body colours as STEP styles, ADR 0045). Not yet: V12
      attribute definitions, deltas and binary are unverified without sample files.
