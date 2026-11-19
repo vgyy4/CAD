@@ -863,3 +863,53 @@ on the sphere next to the sphere's edge with the cylinder (133-135; one edge fai
 builds); B-spline and revolved supports (045, 063, 100, 107); rounds wider than a lobe of the
 outline (177, 178); a window under a round's contact line (008); a hole rim on a face 0.15 mm wider
 than the hole (016); hole rims rounded wider than the plate (110, its corners not all material).
+
+## Amendment (2026-11-19, 22): Solid Edge round se5 - fast and body patterns, curves, ends to the next face
+
+`gusset_ole::solidedge_features` reads more feature kinds (layout notes F14 of
+`docs/formats/solidedge-feature-tree.md`; clean room, from the sample bytes):
+
+- **Fast patterns** (`JMFastPatternFunction`): the pattern's own sketch holds a
+  `JPattern2dFunction` (the circle, count and angle between copies); read as a Gusset circular
+  feature pattern about the sketch normal through the circle's centre. A group entry stands for
+  a feature (a fast mirror) patterned with the others.
+- **Body patterns** (`JMBodyPatternFunction`): laid out as a fast pattern, they copy the whole
+  body; one on a reference plane mirrors the body in it.
+- **Curves and face splits** (projected, wrapped and helical curves, split faces) are left out
+  with a note: they add or remove no material, and the rebuild check still decides.
+- **A second extent up to a key point** (as the first's).
+- **Extent 16 (to the next face)** is written as Gusset's new end up to the next face (ADR 0061
+  amendment: `to: next`, kernel `extrude_to_next`), the old through-all reach given to fall back
+  on; both ways as two features.
+
+Shared code: the kernel, document, evaluator, commands and tree import gain the end up to the
+next face (ADR 0061 amendment); nothing else outside `gusset-ole` changed. The rebuild check is
+unchanged (volume 2e-5, box 1e-4).
+
+**Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before (b901843): 76
+as history. After: **80 as history**, none lost; new: 138 (two fast patterns, 4 and 5 copies),
+151 (a body mirrored in a reference plane), 073 (a projected curve and a split face left out),
+029 (three wrapped sketches left out). 100 bodies.
+
+**The end up to the next face gains no part.** Every part with a cut to the next face that came
+in as history still does (026, 033, 053, 073, 076, 077, 105); none of those that differ changes
+outcome: 027 and 028 differ at their first such cut because the cut's region also takes tabs
+Solid Edge keeps (a profile or side question, not the end); in 042 (a tube, holes from planes
+tangent to it) Solid Edge's result lies between cutting the near wall only (2.1e5 mm3 too much
+material) and cutting through all (9.7e4 mm3 too little); 093 and 095 are through-all
+protrusions with a second extent in hollow parts (the end up to the next face does not combine
+with a second extent here). Measured, so the rule stays as decided in ADR 0061's amendment.
+
+**What blocks the rest (first reasons of the 100 bodies, measured).**
+
+- *Rounds and shells the kernel does not build* (34): fillet failed 21, radius too large for the
+  edge 6, round edge not found 4, a face with no usable origin 1; thin walls (shell failed) 2
+  (111, and 145 now that its patterns are read).
+- *Rebuilds that differ* (17): 12 by volume (above, and 035, 039, 068 loft ends, 153, 163's
+  first revolve, 020's Protrusion_4 that makes a body the part does not keep, 174's sweep after
+  its 16-fold body pattern), 5 whose stored body does not measure (open `BLENDED_EDGE` shells).
+- *Feature kinds not read* (8, was 16): part copies 4 (the copied part is another file),
+  simplified base features 2, a smart boss 1, delete faces 1.
+- Synchronous parts 5; round kind 17: 3 (read as kind 1, 051 and 058 reach their rounds, which do
+  not build: still unconfirmed, not read); profile reading singletons (members kept elsewhere,
+  open revolve profiles, through-all reach along a slanted normal, ...) about 20.

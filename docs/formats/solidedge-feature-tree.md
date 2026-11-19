@@ -279,3 +279,38 @@ checked by exact rebuilds in `par_history` where a part reaches it.
   stored with it), part copies, smart bosses, ribs, wraps, simplified base features, delete faces.
 * Coverage of round se4 (OCCT test `par_history`, 180 ordered parts, one part per process): **71 as
   history** (was 63; none lost), 109 as exact bodies. What blocks the rest: ADR 0046 amendment 20.
+
+
+## F14: round se5 (2026-11-19): fast and body patterns, curves left out, ends to the next face
+Same corpus (180 ordered parts). All from the sample bytes; each rule checked by exact rebuilds in
+`par_history` where a part reaches it.
+
+* **Fast patterns** (`JMFastPatternFunction`): slot 1 the previous feature, 2 the pattern's sketch
+  profile (a `JProfileRecomputeEx` on its own plane), 4 the features copied, 5 the last of them.
+  A `JMGroupDummyFastPatternFunction` in slot 4 stands for the feature in its slot 1 (a fast
+  mirror patterned with the features it copies). The pattern's `Profile2d` lists key points and
+  a `JPattern2dFunction` whose slot 1 is the pattern's circle (a 55-byte arc member: centre,
+  radius, `u8` sense, the seed's angle twice), slot 5 the count and slot 7 the angle between
+  copies (value objects: 4 and pi/2, 5 and 2 pi/5, 3 and 2 pi/3 in the corpus; every one a full
+  turn). CONFIRMED by 138 (two patterns, 4 and 5 copies). Rectangular pattern sketches are not
+  in the corpus.
+* **Body patterns** (`JMBodyPatternFunction`): the same layout; slot 4 lists only the feature
+  before it, and the whole body is copied (174: 16 copies of a fan blade; the part still differs
+  at its sweep). With a reference plane (`JMCreateReferencePlane`, a plane object) in slot 2
+  instead of a profile, the body is mirrored in the plane and kept with it. CONFIRMED by 151.
+* **Curves and face splits** (`JMProjectCurveAssocFunc`, `JMWrapSketchAssocFunc`,
+  `JMHelicalCurveAssocFunc`, `JMSplitFaceAssocFunc`) add or remove no material: left out with a
+  note (073, 029 rebuild so; 029's cuts use their own sketches, the wrapped curves are not needed).
+* **A second extent up to a key point** (slot 12 = 72): the key point in slot 14, its reach signed
+  along the profile normal as the first's (020's Protrusion_3 matches its stored box).
+* **Extent 16 (to the next face)** is written as Gusset's end up to the next face (ADR 0061
+  amendment), with the through-all reach to fall back on; both ways (side 6) as two features.
+  Measured: no part changes outcome. 027 and 028 differ at their first such cut (the cut's region
+  also takes tabs Solid Edge keeps); in 042 Solid Edge's result lies between cutting the near
+  wall only (2.1e5 mm3 too much material) and cutting through all (9.7e4 too little), so its rule
+  for holes started on a plane tangent to a tube is neither.
+* **Round kind 17** read as kind 1 makes 051 and 058 reach their rounds, which then do not build
+  (fillet failed; a face with no usable origin): still not read, unconfirmed.
+* Not read: part copies, simplified base features, smart bosses, ribs, delete faces and regions.
+* Coverage of round se5 (OCCT test `par_history`, 180 ordered parts, one part per process): **80 as
+  history** (was 76; none lost), 100 as exact bodies. What blocks the rest: ADR 0046 amendment 22.
