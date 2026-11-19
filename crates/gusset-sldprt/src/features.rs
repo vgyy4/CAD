@@ -1221,6 +1221,71 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
     Some(g)
 }
 
+/// Whether a side of an extrude of sketch `g` (on `jp`) would lie on a side of an earlier
+/// extrude along the same axis: a line on the plane of one of its lines, or an arc on the
+/// cylinder of one of its arcs.
+fn continues_sides<'a>(
+    g: &Geometry,
+    jp: JsonPlane,
+    (dist, symmetric): (f64, bool),
+    mut earlier: impl Iterator<Item = &'a Swept>,
+    sketches: &[Geometry],
+) -> bool {
+    let n = cross(jp.x, jp.y);
+    let model = |q: Pt| -> V3 { comb(comb(jp.origin, 1.0, jp.x, q.x * 1000.0), 1.0, jp.y, q.y * 1000.0) };
+    let len = |v: V3| dot(v, v).sqrt();
+    let ours: Vec<(&Seg, V3, V3, Option<V3>)> = g
+        .segs
+        .iter()
+        .filter(|s| !s.construction && !s.centerline && s.kind != SegKind::Ellipse)
+        .filter_map(|s| {
+            let c = (s.kind == SegKind::Arc).then(|| point(&g.pts, s.c).map(model)).flatten();
+            Some((s, model(point(&g.pts, s.s)?), model(point(&g.pts, s.e)?), c))
+        })
+        .collect();
+    earlier.any(|f| {
+        let nf = normal(f);
+        if len(cross(nf, n)) > 1e-9 {
+            return false;
+        }
+        // The two must meet along the axis (heights along `nf` from `f`'s sketch plane).
+        let span = |o: f64, d: f64, sym: bool| if sym { (o - d.abs() / 2.0, o + d.abs() / 2.0) } else { (o + d.min(0.0), o + d.max(0.0)) };
+        let (f0, f1) = if f.through { (f64::NEG_INFINITY, f64::INFINITY) } else { span(0.0, f.distance, f.symmetric) };
+        let (g0, g1) = span(dot(sub(jp.origin, f.plane.origin), nf), dist * dot(n, nf), symmetric);
+        if g0 > f1 + 1e-6 || f0 > g1 + 1e-6 {
+            return false;
+        }
+        let Some(gf) = sketches.get(f.sketch) else { return false };
+        gf.segs.iter().filter(|t| !t.construction && !t.centerline).any(|t| {
+            let at = |i: usize| point(&gf.pts, i).map(|q| lift(f, q.x * 1000.0, q.y * 1000.0, 0.0));
+            let (Some(a), Some(b)) = (at(t.s), at(t.e)) else { return false };
+            ours.iter().any(|(s, p, q, c)| match (t.kind, s.kind) {
+                (SegKind::Line, SegKind::Line) => {
+                    let m = cross(sub(b, a), nf);
+                    let lm = len(m);
+                    lm > 1e-9 && (dot(sub(*p, a), m) / lm).abs() < 1e-6 && (dot(sub(*q, a), m) / lm).abs() < 1e-6
+                }
+                (SegKind::Arc, SegKind::Arc) => {
+                    let (Some(cf), Some(c)) = (at(t.c), c) else { return false };
+                    len(cross(sub(*c, cf), nf)) < 1e-6 && (len(sub(*p, *c)) - len(sub(a, cf))).abs() < 1e-6
+                }
+                _ => false,
+            })
+        })
+    })
+}
+
+/// An extrude's draft angle (rad): its `D3`, an angle of whole half degrees under 90 whose
+/// dimension is placed (the two `f64` of its display position, 31 bytes after the value, are not
+/// both zero: Toolbox washers keep an unused 1 degree `D3` and `D4` with no position).
+fn extrude_draft(d: &[u8], slots: &[(String, usize)]) -> Option<f64> {
+    let &(_, at) = slots.iter().find(|(k, _)| k == "D3")?;
+    let v = f64_at(d, at)?;
+    let half_degrees = v.to_degrees() * 2.0;
+    let placed = f64s_at::<2>(d, at + 31).is_some_and(|w| w.iter().any(|x| x.is_finite() && *x != 0.0));
+    (v > 1e-6 && v < TAU / 4.0 && (half_degrees - half_degrees.round()).abs() < 1e-6 && placed).then_some(v)
+}
+
 /// The centre of the first box object of a span (`01 00 TT 8X 01 00 00 00`, then the centre and
 /// the diagonal, m; as a contour's box), in mm.
 fn revolve_box_centre(d: &[u8], a: usize, b: usize) -> Option<V3> {
@@ -4125,10 +4190,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             // behind. `D2` is the second direction's length instead (below; round sw12:
             // gt2_pulley 2's Cut-Extrude5, 10 mm each way; idler_single_v1's bore, 10 mm one way
             // and 1 mm the other, which round sw2 read as a start 1 mm behind: the same solid).
+            let draft_angle = extrude_draft(rf, &param_slots(rf, a, b, nt)?);
             let start_offset = named_params(rf, a, b, nt)?
                 .iter()
                 .find(|(k, _)| {
                     k.strip_prefix('D').is_some_and(|n| n != "1" && n != "2" && n.bytes().all(|c| c.is_ascii_digit()))
+                        && (draft_angle.is_none() || k != "D3")
                 })
                 .map(|(_, v)| mm(*v))
                 .filter(|_| op == "cut" && typ == Some(0) && !symmetric);
@@ -4243,7 +4310,52 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     },
                 );
             }
+            // Draft while extruding: the side faces lean by the angle, the sketch plane the
+            // neutral plane, pulled the way the feature runs into the part (a symmetric one: against
+            // the sketch normal, Retainer's through cut from its top face).
+            let draft = match (draft_angle, last_sketch.as_ref().and_then(|sk| sketch_by_name.get(sk))) {
+                (Some(angle), Some(&(i, jp))) if !flip => {
+                    let normal = cross(jp.x, jp.y);
+                    let reach = end_s.or(distance).filter(|d| d.abs() > 1e-9);
+                    let sign = if symmetric { -1.0 } else { reach.map_or(0.0, f64::signum) };
+                    let depth = if through_all || symmetric { 0.01 } else { reach.map_or(0.0, |d| d.abs() / 2.0) };
+                    let dir = normal.map(|c| c * sign);
+                    let points: Vec<Value> = sketches
+                        .get(i)
+                        .map(|g| {
+                            g.segs
+                                .iter()
+                                .filter(|s| !s.construction && !s.centerline)
+                                .filter_map(|s| {
+                                    let uv = seg_uv(g, s)?;
+                                    // A line's midpoint, an arc's middle sample.
+                                    let (u, v) = match uv.as_slice() {
+                                        [(u0, v0), (u1, v1)] => (f64::midpoint(*u0, *u1), f64::midpoint(*v0, *v1)),
+                                        _ => *uv.get(uv.len() / 2)?,
+                                    };
+                                    let p = comb(comb(jp.origin, 1.0, jp.x, u * 1000.0), 1.0, jp.y, v * 1000.0);
+                                    Some(json!({"point": json_v3(comb(p, 1.0, dir, depth).map(|c| round_to(c, 9) + 0.0))}))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (sign != 0.0 && !points.is_empty()).then(|| {
+                        json!({"type": "draft", "name": format!("{}-Draft", n.name), "angle": round_to(angle.to_degrees(), 9),
+                            "faces": points, "plane": {"origin": json_v3(jp.origin), "normal": json_v3(dir)}})
+                    })
+                }
+                _ => None,
+            };
+            // The extrude keeps its own side faces (no merge with coplanar faces of the body it
+            // joins), so the draft leans those only (Link 3's end piece on the arm's sides).
+            if draft.is_some()
+                && let Some(&(i, jp)) = last_sketch.as_ref().and_then(|sk| sketch_by_name.get(sk))
+                && sketches.get(i).is_some_and(|g| continues_sides(g, jp, (end_s.or(distance).unwrap_or(0.0), symmetric), swept.iter().filter(|(k, _)| **k != n.id).map(|(_, f)| f), &sketches))
+            {
+                js.insert("refine".into(), json!(false));
+            }
             feats.push(Value::Object(js));
+            feats.extend(draft);
             solid = true;
             if first_solid.as_deref().is_none_or(str::is_empty) {
                 first_solid = Some(n.name.clone());
