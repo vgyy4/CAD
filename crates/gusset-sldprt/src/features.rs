@@ -2025,7 +2025,7 @@ fn square_chamfer(
 ) -> Option<Vec<Value>> {
     let mut out = Vec::new();
     for (_, reps) in sel {
-        let (m, path) = revolve_circle(reps, revolved, sketches)?;
+        let (m, path) = revolve_circle(reps, revolved, sketches, None)?;
         let [r0, r1, ..] = reps.as_slice() else { return None };
         let rv = revolved.get(&r0.fid)?;
         let g = sketches.get(rv.on.sketch)?;
@@ -2100,7 +2100,18 @@ fn square_chamfer(
 /// segment): a point on it, opposite the profile plane, and the whole circle as a closed
 /// path. `None` for anything else (a construction segment, segments that do not meet, the
 /// axis).
-fn revolve_circle(reps: &[Rep], revolved: &HashMap<u32, Revolved>, sketches: &[Geometry]) -> Option<(V3, Vec<V3>)> {
+///
+/// `ends`: the planes of the record's two vertex faces, when they are faces of other features
+/// that cut the circle into pieces (round sw12: the nut's flats cut its rims in two). The edge
+/// is then the piece that runs from the first plane to the second with the first face on its
+/// left (as for two meeting points of extrude sides: the cross of the outward normals points
+/// along the run), the shortest such run; its midpoint and its own path.
+fn revolve_circle(
+    reps: &[Rep],
+    revolved: &HashMap<u32, Revolved>,
+    sketches: &[Geometry],
+    ends: Option<[(V3, V3); 2]>,
+) -> Option<(V3, Vec<V3>)> {
     let [r0, r1, ..] = reps else { return None };
     if r0.fid != r1.fid {
         return None;
@@ -2148,8 +2159,40 @@ fn revolve_circle(reps: &[Rep], revolved: &HashMap<u32, Revolved>, sketches: &[G
             round_to(c + cs * a + sn * b, 6) + 0.0
         })
     };
-    let path = (0..=steps).map(|k| at(TAU * f64::from(k) / f64::from(steps))).collect();
-    Some((at(TAU / 2.0), path))
+    let Some([(o1, n1), (o2, n2)]) = ends else {
+        let path = (0..=steps).map(|k| at(TAU * f64::from(k) / f64::from(steps))).collect();
+        return Some((at(TAU / 2.0), path));
+    };
+    // The run's sense about the axis: the outward normals at the profile point.
+    let p = lift(&rv.on, v.x * 1000.0, v.y * 1000.0, 0.0);
+    let (na, nb) = (side_out(&rv.on, g, &sa, p)?, side_out(&rv.on, g, &sb, p)?);
+    let turn = dot(cross(na, nb), e2);
+    if turn.abs() < 1e-9 {
+        return None;
+    }
+    let sense = turn.signum();
+    // Where a plane cuts the circle: cos(t) a + sin(t) b = k.
+    let cuts = |o: V3, n: V3| -> Vec<f64> {
+        let (a, b, k) = (dot(r0v, n), dot(e2, n), dot(sub(o, c), n));
+        let r = libm::hypot(a, b);
+        if r < 1e-9 || k.abs() > r {
+            return Vec::new();
+        }
+        let (phi, d) = (libm::atan2(b, a), libm::acos(k / r));
+        vec![phi - d, phi + d]
+    };
+    let mut best: Option<(f64, f64)> = None;
+    for t1 in cuts(o1, n1) {
+        for t2 in cuts(o2, n2) {
+            let span = (sense * (t2 - t1)).rem_euclid(TAU);
+            if span > 1e-9 && best.is_none_or(|(_, s)| span < s) {
+                best = Some((t1, span));
+            }
+        }
+    }
+    let (t1, span) = best?;
+    let path = (0..=steps).map(|k| at(t1 + sense * span * f64::from(k) / f64::from(steps))).collect();
+    Some((at(t1 + sense * span / 2.0), path))
 }
 
 /// A solid feature an edge can name: its sketch, plane and signed depth (mm).
@@ -4366,7 +4409,17 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let mut by_faces = 0usize;
             for (k, (_, reps)) in sel.iter().enumerate() {
                 let number = k + 1;
-                if let Some((m, path)) = revolve_circle(reps, &revolved, &sketches) {
+                // The planes of vertex faces of other features that cut the circle.
+                let ends = match reps.as_slice() {
+                    [r0, _, r2, r3, ..] if r2.fid != r0.fid && r3.fid != r0.fid => {
+                        let plane = |r: &Rep| {
+                            face_of(r, &swept, &rounds, &sketches, &cap_tags).and_then(|f| face_plane(&f, &sketches))
+                        };
+                        plane(r2).zip(plane(r3)).map(|(a, b)| [a, b])
+                    }
+                    _ => None,
+                };
+                if let Some((m, path)) = revolve_circle(reps, &revolved, &sketches, ends) {
                     mids.push(Some(m));
                     made.push(None);
                     edges.push(json!({"midpoint": m, "path": path, "selection": number}));
@@ -5531,6 +5584,54 @@ mod end_face_tests {
         let (p, n, _) = face_pick(&r, &swept, &[g], &HashSet::from([9u16])).unwrap();
         assert_eq!(n, [0.0, 0.0, 1.0]);
         assert!((p[0] + 9.899).abs() < 1e-6 && p[1].abs() < 1e-6 && (p[2] - 5.0).abs() < 1e-9, "{p:?}");
+    }
+
+    #[test]
+    fn a_revolved_rim_cut_by_two_flats_is_the_piece_its_vertex_faces_bound() {
+        // A ring about the y axis of the Front plane: r 11 to 21 mm, y 0 to 6 mm; the rim
+        // between the outer wall (key 2) and the top (key 3) is the circle r 21 at y 6.
+        let seg = |a, s, e| Seg {
+            kind: SegKind::Line,
+            id: a,
+            a,
+            s,
+            e,
+            c: 0,
+            dir: 1,
+            construction: false,
+            centerline: false,
+            external: false,
+        };
+        let sketches = vec![Geometry {
+            pts: vec![pt(0.011, 0.0), pt(0.021, 0.0), pt(0.021, 0.006), pt(0.011, 0.006)],
+            segs: vec![seg(1, 0, 1), seg(2, 1, 2), seg(3, 2, 3), seg(4, 3, 0)],
+            ellipse_axes: Vec::new(),
+        }];
+        let on = Swept {
+            sketch: 0,
+            plane: JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] },
+            distance: 0.0,
+            symmetric: false,
+            through: false,
+            cut: false,
+        };
+        let axis =
+            [Pt { x: 0.0, y: 0.0, ext: false, id: 0, alone: 0 }, Pt { x: 0.0, y: 0.01, ext: false, id: 0, alone: 0 }];
+        let revolved = HashMap::from([(34, Revolved { on, axis })]);
+        let rep = |fid, idx| Rep { tag: 1, fid, idx, ext: false, ext2: false, via: None, copy: 0 };
+        let reps = [rep(34, 2), rep(34, 3), rep(55, 2), rep(55, 6)];
+        // Uncut: a point opposite the profile, and the whole circle.
+        let (m, path) = revolve_circle(&reps, &revolved, &sketches, None).unwrap();
+        assert_eq!(m, [-21.0, 6.0, 0.0]);
+        assert_eq!(path.len(), 201);
+        // Flats at x = -15 and x = 15 leave two arcs, |x| < 15; the vertex faces' order picks one.
+        let (left, right) = (([-15.0, 0.0, 0.0], [-1.0, 0.0, 0.0]), ([15.0, 0.0, 0.0], [1.0, 0.0, 0.0]));
+        let (m, path) = revolve_circle(&reps, &revolved, &sketches, Some([left, right])).unwrap();
+        assert_eq!(m, [0.0, 6.0, -21.0]);
+        let ends = (path.first().copied().unwrap(), path.last().copied().unwrap());
+        assert!((ends.0[0] + 15.0).abs() < 1e-6 && (ends.1[0] - 15.0).abs() < 1e-6, "{ends:?}");
+        let (m, _) = revolve_circle(&reps, &revolved, &sketches, Some([right, left])).unwrap();
+        assert_eq!(m, [0.0, 6.0, 21.0]);
     }
 
     #[test]
