@@ -177,12 +177,13 @@ impl Sketch {
             }
         }
         // A line shorter than the profile tolerance (5e-8 mm between two points the file keeps
-        // apart, note AR) closes no gap: left out, its ends are one point to the regions.
+        // apart, note AR) closes no gap: left out, its ends are one point to the regions. So is
+        // an arc of no radius (a sketch fillet of radius 0: centre and ends at one place).
         let at: HashMap<usize, (f64, f64)> = self.points.iter().map(|&(i, u, v, _)| (i, (u, v))).collect();
+        let near = |a: usize, b: usize| matches!((at.get(&a), at.get(&b)), (Some(p), Some(q)) if libm::hypot(p.0 - q.0, p.1 - q.1) < 1e-6);
         let empty = |c: &Curve| match *c {
-            Curve::Line { a, b, .. } => {
-                matches!((at.get(&a), at.get(&b)), (Some(p), Some(q)) if libm::hypot(p.0 - q.0, p.1 - q.1) < 1e-6)
-            }
+            Curve::Line { a, b, .. } => near(a, b),
+            Curve::Arc { c, s, e, .. } => near(c, s) && near(c, e),
             _ => false,
         };
         let curves: Vec<Value> = self
@@ -193,6 +194,14 @@ impl Sketch {
                 let (mut j, con) = match *c {
                     Curve::Line { id, a, b, con } => {
                         (json!({"id": format!("l{id}"), "type": "line", "start": format!("p{a}"), "end": format!("p{b}")}), con)
+                    }
+                    // An arc whose ends meet runs the whole turn (as the profile picks read it).
+                    Curve::Arc { id, c, s, e, con } if near(s, e) => {
+                        let r = match (at.get(&c), at.get(&s)) {
+                            (Some(p), Some(q)) => rnd(libm::hypot(p.0 - q.0, p.1 - q.1)),
+                            _ => 0.0,
+                        };
+                        (json!({"id": format!("a{id}"), "type": "circle", "center": format!("p{c}"), "radius": r}), con)
                     }
                     Curve::Arc { id, c, s, e, con } => (
                         json!({"id": format!("a{id}"), "type": "arc", "center": format!("p{c}"), "start": format!("p{s}"), "end": format!("p{e}")}),
