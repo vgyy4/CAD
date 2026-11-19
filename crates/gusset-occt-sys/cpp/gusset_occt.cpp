@@ -13,8 +13,6 @@
 #include <cstring>
 #include <exception>
 #include <sstream>
-#include <fstream>
-#include <unistd.h>
 #include <string>
 #include <vector>
 
@@ -1008,36 +1006,7 @@ int blend(const GsShape* s, const uint32_t* edges, size_t nedges, double size, b
     es.push_back(BlendEdge{edge_by_index(s->s, edges[i]), TopoDS_Face(), size, size, 0});
     idx.push_back(edges[i]);
   }
-  std::string base; // OP2DUMP
-  if (const char* d = std::getenv("GUSSET_OP2_DUMP")) {
-    static std::atomic<int> n{0};
-    base = std::string(d) + "/" + (fillet ? "f" : "c") + std::to_string(getpid()) + "_" + std::to_string(n.fetch_add(1));
-    BRepTools::Write(s->s, (base + ".brep").c_str());
-    std::ofstream m(base + ".txt");
-    m << (fillet ? "fillet" : "chamfer") << " " << size << " " << nedges;
-    for (size_t i = 0; i < nedges; ++i) m << " " << edges[i];
-    m << "\n";
-  }
-  int rc = blend_edges<Mk>(s, es, idx, fillet, out, origins);
-  if (std::getenv("GUSSET_OP2_DUMP")) fprintf(stderr, "OP2 blend n=%zu size=%g rc=%d base=%s\n", nedges, size, rc, base.c_str());
-  if (rc == GS_OK && !base.empty()) {
-    ShapeMap fo;
-    TopExp::MapShapes((*out)->s, TopAbs_FACE, fo);
-    std::vector<int> has(fo.Extent(), 0);
-    const int64_t* rec = (const int64_t*)origins->ptr;
-    for (size_t k = 0; k + 3 < origins->len; k += 4)
-      if (rec[k] >= 0 && rec[k] < fo.Extent()) has[rec[k]]++;
-    int orph = 0;
-    for (int h : has) orph += h ? 0 : 1;
-    if (orph == 0) {
-      std::remove((base + ".brep").c_str());
-      std::remove((base + ".txt").c_str());
-    } else {
-      std::ofstream m(base + ".orph");
-      m << orph << "\n";
-    }
-  }
-  return rc;
+  return blend_edges<Mk>(s, es, idx, fillet, out, origins);
 }
 
 // Does the shape have a face that is not a plane, cylinder, cone, sphere or torus?
@@ -2904,21 +2873,14 @@ bool section_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>& fs
     d = std::min(d, 0.25 * std::min(axis.Distance(p), std::min(axis.Distance(ta), axis.Distance(tb))));
   }
   if (!(d > 1e-6)) return false;
-#ifdef GX_DEBUG
-  auto pr = [](const char* n, const gp_Pnt& q) { fprintf(stderr, "%s (%g,%g,%g)\n", n, q.X(), q.Y(), q.Z()); };
-  pr("p", p); pr("qa", qa); pr("qb", qb); pr("ta", ta); pr("tb", tb); pr("ctr", ctr); pr("m", m);
-#endif
   auto section = [&](bool reach) -> std::pair<TopoDS_Face, TopoDS_Edge> {
     GC_MakeArcOfCircle arc(ta, m, tb);
-    if (!arc.IsDone()) throw Standard_Failure("could not build the corner 1");
+    if (!arc.IsDone()) throw Standard_Failure("could not build the corner");
     TopoDS_Edge blend = BRepBuilderAPI_MakeEdge(arc.Value()).Edge();
     BRepBuilderAPI_MakeWire mw;
     mw.Add(blend);
     if (reach) {
       const gp_Pnt b2 = tb.Translated(ob * d), k = p.Translated((oa + ob) * d), a2 = ta.Translated(oa * d);
-#ifdef GX_DEBUG
-      pr("b2", b2); pr("k", k); pr("a2", a2); gp_Ax1 axx = c.Circle().Axis(); pr("axis", axx.Location()); pr("dir", gp_Pnt(axx.Direction().XYZ()));
-#endif
       mw.Add(BRepBuilderAPI_MakeEdge(tb, b2).Edge());
       mw.Add(BRepBuilderAPI_MakeEdge(b2, k).Edge());
       mw.Add(BRepBuilderAPI_MakeEdge(k, a2).Edge());
@@ -2927,9 +2889,9 @@ bool section_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>& fs
       mw.Add(BRepBuilderAPI_MakeEdge(tb, p).Edge());
       mw.Add(BRepBuilderAPI_MakeEdge(p, ta).Edge());
     }
-    if (!mw.IsDone()) throw Standard_Failure("could not build the corner 2");
+    if (!mw.IsDone()) throw Standard_Failure("could not build the corner");
     BRepBuilderAPI_MakeFace mf(mw.Wire(), true);
-    if (!mf.IsDone()) throw Standard_Failure("could not build the corner 3");
+    if (!mf.IsDone()) throw Standard_Failure("could not build the corner");
     return {mf.Face(), blend};
   };
   gp_Vec along;
@@ -2950,14 +2912,14 @@ bool section_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>& fs
       const TopLoc_Location loc(back);
       BRepPrimAPI_MakePrism mk(f.Moved(loc), along + gp_Vec(out.dir) * (l0 + l1));
       mk.Build();
-      if (!mk.IsDone()) throw Standard_Failure("could not build the corner 4");
+      if (!mk.IsDone()) throw Standard_Failure("could not build the corner");
       sh = mk.Shape();
       const ShapeList& g = mk.Generated(blend.Moved(loc));
       if (!g.IsEmpty()) face = g.First();
     } else {
       BRepPrimAPI_MakeRevol mk(f, c.Circle().Axis(), 2 * M_PI);
       mk.Build();
-      if (!mk.IsDone()) throw Standard_Failure("could not build the corner 5");
+      if (!mk.IsDone()) throw Standard_Failure("could not build the corner");
       sh = mk.Shape();
       const ShapeList& g = mk.Generated(blend);
       if (!g.IsEmpty()) face = g.First();
