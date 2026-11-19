@@ -1249,7 +1249,9 @@ fn continues_sides<'a>(
             return false;
         }
         // The two must meet along the axis (heights along `nf` from `f`'s sketch plane).
-        let span = |o: f64, d: f64, sym: bool| if sym { (o - d.abs() / 2.0, o + d.abs() / 2.0) } else { (o + d.min(0.0), o + d.max(0.0)) };
+        let span = |o: f64, d: f64, sym: bool| {
+            if sym { (o - d.abs() / 2.0, o + d.abs() / 2.0) } else { (o + d.min(0.0), o + d.max(0.0)) }
+        };
         let (f0, f1) = if f.through { (f64::NEG_INFINITY, f64::INFINITY) } else { span(0.0, f.distance, f.symmetric) };
         let (g0, g1) = span(dot(sub(jp.origin, f.plane.origin), nf), dist * dot(n, nf), symmetric);
         if g0 > f1 + 1e-6 || f0 > g1 + 1e-6 {
@@ -1338,10 +1340,13 @@ fn axis_closure(g: &Geometry, k: usize) -> Vec<(usize, usize)> {
         return Vec::new();
     }
     loose.sort_by(|x, y| x.0.total_cmp(&y.0));
-    loose.windows(2).filter_map(|w| match w {
-        [(_, p), (_, q)] => Some((*p, *q)),
-        _ => None,
-    }).collect()
+    loose
+        .windows(2)
+        .filter_map(|w| match w {
+            [(_, p), (_, q)] => Some((*p, *q)),
+            _ => None,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4352,7 +4357,15 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             // joins), so the draft leans those only (Link 3's end piece on the arm's sides).
             if draft.is_some()
                 && let Some(&(i, jp)) = last_sketch.as_ref().and_then(|sk| sketch_by_name.get(sk))
-                && sketches.get(i).is_some_and(|g| continues_sides(g, jp, (end_s.or(distance).unwrap_or(0.0), symmetric), swept.iter().filter(|(k, _)| **k != n.id).map(|(_, f)| f), &sketches))
+                && sketches.get(i).is_some_and(|g| {
+                    continues_sides(
+                        g,
+                        jp,
+                        (end_s.or(distance).unwrap_or(0.0), symmetric),
+                        swept.iter().filter(|(k, _)| **k != n.id).map(|(_, f)| f),
+                        &sketches,
+                    )
+                })
             {
                 js.insert("refine".into(), json!(false));
             }
@@ -5910,7 +5923,15 @@ mod end_face_tests {
             external: false,
         };
         let g = Geometry {
-            pts: vec![pt(0.0, 0.0), pt(0.29, 0.0), pt(0.0, 0.006), pt(0.275, 0.01), pt(0.275, 0.0), pt(0.251, 0.0), pt(0.277, 0.0)],
+            pts: vec![
+                pt(0.0, 0.0),
+                pt(0.29, 0.0),
+                pt(0.0, 0.006),
+                pt(0.275, 0.01),
+                pt(0.275, 0.0),
+                pt(0.251, 0.0),
+                pt(0.277, 0.0),
+            ],
             segs: vec![
                 seg(SegKind::Line, 0, 1, 0, true),
                 seg(SegKind::Line, 0, 2, 0, false),
