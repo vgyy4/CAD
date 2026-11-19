@@ -333,3 +333,27 @@ is an error (empty result). Validation treats it as a feature that creates a bod
 command for it yet: it comes from the Fusion tree import (Split Body) and the code view.
 `shell` with `faces: []` and `body:` hollows the whole body: the body keeps its skin and gets the
 offset skin as a closed void (`thickness < 0`: the offset skin outside, the old body the void).
+
+## Amendment (2026-11-19): blends OCCT's fillet does not build
+A `fillet` or `chamfer` means the rolling-ball (or setback) blend of its edges, as the CAD systems
+we import make it. Where OCCT's `BRepFilletAPI` fails (or gives an invalid solid), the OCCT kernel
+tries, in order: the edges one at a time, concave ones first, then the blend as booleans of its
+corners (each edge's corner region cut away, or filled for a concave edge), then a solid of
+revolution, a moved seam, a tapered loop (chamfers). The corner booleans are accepted only where
+the material removed (added) equals the corners' own volume to 1e-7 of the body and every face of
+the result has an origin, so a fallback gives the intended geometry or nothing. Rules of the
+corners, as the importers' stored bodies show them (Solid Edge 040, 053, 065, 026, 105, 094):
+
+- *Cliff edge.* Where a face beside the edge is narrower than the blend's touching line on it,
+  the ball rolls on the other face and on that face's far edge: the blend takes the face whole and
+  ends on the face beyond (straight edges between planes at any angle, whole circles between
+  planes, cylinders and cones about their axis, straight edges between a plane and a cylinder
+  along them).
+- *Mitre.* Two straight fillet edges of one radius that meet at a vertex of three edges meet on
+  the plane bisecting the faces beside them.
+- *Ends on a slanting or curved face.* A straight corner whose end lies on one more face (a plane
+  at an angle, a cylinder) runs on to that face's surface and is trimmed by it; the new faces on
+  that surface keep that face's origin. Its volume is measured face by face (Gauss-Kronrod): the
+  default quadrature is some 5e-6 off on cylinders bounded by B-spline intersections.
+- *Contact along an edge.* A fillet whose touching line runs exactly along another edge of its face
+  is not given to OCCT (it crashes there, `BRepBlend_SurfRstConstRad`); only the corners are tried.
