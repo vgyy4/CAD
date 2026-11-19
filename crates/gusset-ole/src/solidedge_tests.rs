@@ -985,31 +985,35 @@ fn a_mirror_copy_builds_its_features_again_reflected() {
 #[test]
 fn a_helix_protrusion_carries_its_profile_along_the_axis() {
     // The protrusion part's rectangle swept half a turn (slot 8) up 12 mm of the z axis from
-    // z = 3 mm (slot 2: a line object, point, direction and its range), right-handed (slot 7).
-    let mut a = vec![0u8; 4];
-    a.push(0x03);
-    a.extend(f64s(&[0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.003, 0.015]));
-    let mut more = obj(30, 21, &a);
-    more.extend(obj(36, 22, &small(0.5)));
-    more.extend(obj(36, 23, &small(0.0)));
-    more.extend(obj(
-        38,
-        25,
-        &func("JMHelixProtrusionFunction", &[&[25], &[12], &[21], &[0], &[2], &[0], &[0], &[23], &[22]]),
-    ));
-    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
-    let f = &t["features"][3];
-    assert_eq!(
-        (&f["type"], &f["operation"], &f["target"]),
-        (&json!("sweep"), &json!("join"), &json!("Protrusion_1")),
-        "{t}"
-    );
-    assert_eq!(
-        f["helix"],
-        json!({"origin": [0.0, 0.0, 3.0], "axis": [0.0, 0.0, 1.0], "radius": 1.0, "pitch": 24.0, "height": 12.0,
-               "left_handed": false})
-    );
-    assert_eq!(t["features"][2]["type"], "sketch");
+    // z = 3 mm (slot 2: a line object, point, direction and its range), right-handed (slot 6);
+    // or, with no turns given, at a pitch of 4 mm (slot 7).
+    for (pitch, turns, want) in [(0.0, 0.5, 24.0), (0.004, 0.0, 4.0)] {
+        let mut a = vec![0u8; 4];
+        a.push(0x03);
+        a.extend(f64s(&[0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.003, 0.015]));
+        let mut more = obj(30, 21, &a);
+        more.extend(obj(36, 22, &small(turns)));
+        more.extend(obj(36, 23, &small(0.0)));
+        more.extend(obj(36, 24, &small(pitch)));
+        more.extend(obj(
+            38,
+            25,
+            &func("JMHelixProtrusionFunction", &[&[25], &[12], &[21], &[0], &[2], &[0], &[23], &[24], &[22]]),
+        ));
+        let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+        let f = &t["features"][3];
+        assert_eq!(
+            (&f["type"], &f["operation"], &f["target"]),
+            (&json!("sweep"), &json!("join"), &json!("Protrusion_1")),
+            "{t}"
+        );
+        assert_eq!(
+            f["helix"],
+            json!({"origin": [0.0, 0.0, 3.0], "axis": [0.0, 0.0, 1.0], "radius": 1.0, "pitch": want, "height": 12.0,
+                   "left_handed": false})
+        );
+        assert_eq!(t["features"][2]["type"], "sketch");
+    }
 }
 
 /// A vertex set: the list head of an edge set, then each point as a class id and three

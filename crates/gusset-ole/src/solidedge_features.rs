@@ -2330,8 +2330,9 @@ fn sweep(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
 }
 
 /// A helical protrusion or cutout (`JMHelix*Function`): slot 2 the axis (a line object whose
-/// range is the helix's length), 4 the cross section's profile, 8 the turns; the profile is
-/// carried along the axis by the screw motion.
+/// range is the helix's length), 4 the cross section's profile, 6 the hand (0 right), 7 the
+/// pitch and 8 the turns (one of them 0); the profile is carried along the axis by the screw
+/// motion.
 fn helix(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), String> {
     let small = |i: usize| f.slot(i).and_then(|v| st.obj(v)).and_then(value);
     let section = f.slot(4).ok_or("the helix has no cross section")?;
@@ -2341,11 +2342,17 @@ fn helix(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     let (t0, t1) =
         (f64_at(b, 61).ok_or("the helix axis is cut short")?, f64_at(b, 69).ok_or("the helix axis is cut short")?);
     let height = (t1 - t0) * MM;
-    let turns = small(8).ok_or("the helix turns are not readable")?;
+    // The turns (slot 8), or with none given the pitch (slot 7, a length).
+    let turns = match (small(8), small(7)) {
+        (Some(t), Some(p)) if t.abs() < 1e-12 && p > 1e-9 => height / (p * MM),
+        (Some(t), _) => t,
+        _ => return Err("the helix turns are not readable".into()),
+    };
     if !(height.is_finite() && height > 1e-6 && turns.is_finite() && turns > 1e-6 && turns < 2000.0) {
         return Err("the helix height or turns are out of range".into());
     }
-    let left = match small(7) {
+    // The hand: slot 6, 0 in every sample (right-handed); slot 7 is the pitch.
+    let left = match small(6) {
         Some(0.0) => false,
         Some(1.0) => true,
         other => return Err(format!("helix hand {other:?} (not read)")),
