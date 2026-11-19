@@ -2538,6 +2538,40 @@ fn a_round_whose_contact_runs_along_a_pockets_rim() {
     assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
 }
 
+#[test]
+fn a_concave_round_at_a_step_across_a_ring_ends_on_its_cylinders() {
+    // A ring (radii 10 and 16) 7 high on the side y > 0 and 4 high on the other: rounding the
+    // foot of each 3 mm step by 3 (part 026) fills the corner between the ring's cylinders.
+    // Per step, with y + 3 = 3 sin t: the section's height 3 - 3 cos t at y, times the ring's
+    // width there, sqrt(256 - y^2) - sqrt(100 - y^2).
+    let ring = k().boolean(BoolOp::Cut, &disc(16.0, 7.0, 0.0).shape, &disc(10.0, 9.0, -1.0).shape).unwrap();
+    let b = k().boolean(BoolOp::Cut, &ring.shape, &block_at(-20.0, -20.0, 40.0, 20.0, 4.0, 4.0).shape).unwrap();
+    let es = [edge_with_midpoint(&b, [13.0, 0.0, 4.0]), edge_with_midpoint(&b, [-13.0, 0.0, 4.0])];
+    let f = k().fillet(&b.shape, &es, 3.0).map_err(|e| e.message).unwrap();
+    let n = 20_000;
+    let dt = std::f64::consts::FRAC_PI_2 / n as f64;
+    let g = |t: f64| {
+        let y = -3.0 + 3.0 * t.sin();
+        (3.0 - 3.0 * t.cos()) * ((256.0 - y * y).sqrt() - (100.0 - y * y).sqrt()) * 3.0 * t.cos()
+    };
+    // Simpson's rule.
+    let fill: f64 = (0..n)
+        .map(|i| {
+            let a = i as f64 * dt;
+            (g(a) + 4.0 * g(a + 0.5 * dt) + g(a + dt)) * dt / 6.0
+        })
+        .sum();
+    let before = k().mass_properties(&b.shape).unwrap().volume;
+    let got = k().mass_properties(&f.shape).unwrap().volume;
+    // To 1e-6 of the body: the default quadrature measures the cylinders bounded by the
+    // round's B-spline edges some 2e-7 of the body off (Gauss-Kronrod: the fill to 1e-7).
+    assert!(close(got, before + 2.0 * fill, 1e-6), "{} vs {}", got - before, 2.0 * fill);
+    for e in es {
+        assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+    }
+    assert!(f.face_origins.iter().all(|o| !o.is_empty()));
+}
+
 fn block_at(x0: f64, y0: f64, w: f64, h: f64, z0: f64, d: f64) -> OpResult {
     let p = Profile {
         frame: Frame { origin: [x0, y0, z0], ..Frame::XY },

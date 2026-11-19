@@ -62,6 +62,7 @@
 #include <TopExp_Explorer.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <functional>
 #include <memory>
 #include <ShapeFix_Shape.hxx>
 #include <ShapeFix_ShapeTolerance.hxx>
@@ -124,6 +125,7 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeHalfSpace.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <ElCLib.hxx>
 #include <BRep_Builder.hxx>
@@ -1131,12 +1133,14 @@ struct SummedProps : GProp_GProps {
 // and the centre is the default quadrature's (a moment about the point cancels out on a face
 // round it: an extruded circle's side took 3 s).
 // The area: the adaptive quadrature (the wound faces the default one). `area` may be null.
-// A shape with an unbounded face (`has_unbounded_face`) has neither.
-void measured_props(const TopoDS_Shape& s, GProp_GProps& vol, GProp_GProps* area) {
+// A shape with an unbounded face (`has_unbounded_face`) has neither. `precise`: every shape
+// face by face (the default quadrature is off by some 5e-6 of the volume on cylinders bounded
+// by their B-spline intersections with other cylinders: 026's round between a ring's sides).
+void measured_props(const TopoDS_Shape& s, GProp_GProps& vol, GProp_GProps* area, bool precise = false) {
   if (has_unbounded_face(s)) {
     throw Standard_Failure("a face of the shape has no edges round an unbounded surface, so it has no volume or area");
   }
-  if (!has_freeform_face(s) && !has_torus_face(s)) {
+  if (!precise && !has_freeform_face(s) && !has_torus_face(s)) {
     BRepGProp::VolumeProperties(s, vol);
     if (area) BRepGProp::SurfaceProperties(s, *area);
     return;
@@ -1234,9 +1238,9 @@ double signed_volume(const TopoDS_Shape& s) {
 // The volume as `gs_mass` measures it (`measured_props`). The default quadrature is off by
 // some 1e-7 of the volume on tori trimmed by planes, which is the tolerance the corner blends
 // check their volumes to (3777's rim round, cut off by flats).
-double measured_volume(const TopoDS_Shape& s) {
+double measured_volume(const TopoDS_Shape& s, bool precise = false) {
   GProp_GProps g;
-  measured_props(s, g, nullptr);
+  measured_props(s, g, nullptr, precise);
   return g.Mass();
 }
 
@@ -3147,10 +3151,12 @@ struct CornerCut {
   std::vector<TopoDS_Face> orphans;
   std::vector<Corner> cs;
   bool concave = false;
+  // The faces trimmed corners end on (`end_trims`).
+  std::vector<TopoDS_Face> ends;
 };
 
 int mixed_corners(const GsShape* s, const std::vector<uint32_t>& idx, const ShapeList& tools, const ShapeList& cave,
-                  double ideal, double ideal_cave, bool longer, CornerCut& cut);
+                  double ideal, double ideal_cave, bool longer, CornerCut& cut, bool precise);
 template <typename Op, typename Gone>
 int corner_origins(Op& op, Gone gone, const TopoDS_Shape& in, const TopoDS_Shape& result,
                    const std::vector<uint32_t>& idx, CornerCut& cut);
@@ -3253,9 +3259,166 @@ TopoDS_Shape mitred(const TopoDS_Shape& s, const Mitre& m, TopoDS_Shape* face) {
   return one;
 }
 
+// A straight blend that ends on a face slanting across it or curved (a plane at an angle to the
+// edge, or a cylinder): the blend runs on until it meets that face's surface (026 Round1: a
+// concave round at a step across a ring, between its inner and outer cylinders, whose fill
+// is bounded by the two cylinders). Per edge and end: the solid on the edge's side of that
+// surface (a half space, or a cylinder kept or cut away) and how far past the end the corner
+// must run to reach it; `tool` is null where the end needs no trim (a plane square to the edge,
+// or not one face). False where an end's surface does not meet the corner's lines near it.
+// Do two faces lie on one plane or one cylinder (to 1e-7)?
+bool same_surface(const TopoDS_Face& a, const TopoDS_Face& b) {
+  BRepAdaptor_Surface sa(a, false), sb(b, false);
+  if (sa.GetType() != sb.GetType()) return false;
+  const double tol = 1e-7;
+  if (sa.GetType() == GeomAbs_Plane) {
+    const gp_Pln pa = sa.Plane(), pb = sb.Plane();
+    return pa.Axis().IsParallel(pb.Axis(), 1e-9) && pa.Distance(pb.Location()) < tol;
+  }
+  if (sa.GetType() == GeomAbs_Cylinder) {
+    const gp_Cylinder ca = sa.Cylinder(), cb = sb.Cylinder();
+    return ca.Axis().IsParallel(cb.Axis(), 1e-9) && gp_Lin(ca.Axis()).Distance(cb.Location()) < tol &&
+           std::fabs(ca.Radius() - cb.Radius()) < tol;
+  }
+  return false;
+}
+
+struct EndTrim {
+  TopoDS_Shape tool;
+  TopoDS_Face face;  // the face the corner ends on
+  bool keep_inside = true;
+  double reach = 0;
+};
+bool end_trims(const TopoDS_Shape& body, const AncMap& anc, const std::vector<BlendEdge>& es,
+               std::vector<std::array<EndTrim, 2>>& out) {
+  out.assign(es.size(), {});
+  AncMap vf;
+  TopExp::MapShapesAndAncestors(body, TopAbs_VERTEX, TopAbs_FACE, vf);
+  bool any = false;
+  for (size_t i = 0; i < es.size(); ++i) {
+    const BlendEdge& x = es[i];
+    BRepAdaptor_Curve c(x.e);
+    if (c.GetType() != GeomAbs_Line) continue;
+    const int ei = anc.FindIndex(x.e);
+    if (ei <= 0) continue;
+    const double t0 = c.FirstParameter(), t1 = c.LastParameter();
+    const gp_Pnt mid = c.Value(0.5 * (t0 + t1));
+    const gp_Vec along(c.Value(t0), c.Value(t1));
+    if (!(along.Magnitude() > 1e-9)) continue;
+    const gp_Dir dir(along);
+    // How far from the edge the corner and its cutter reach, across it (the blend sizes and the
+    // cutter's reach, a quarter of them, out of the faces). Whether the corner really ran on
+    // to the surface is checked once it is trimmed (`cut_corners`).
+    const double rho = 1.8 * std::max(x.a, x.mode == 1 ? x.b : x.a);
+    TopoDS_Vertex v0, v1;
+    TopExp::Vertices(x.e, v0, v1);
+    if (v0.IsNull() || v1.IsNull()) continue;
+    // The vertex at the curve's start first.
+    if (BRep_Tool::Pnt(v0).Distance(c.Value(t0)) > BRep_Tool::Pnt(v1).Distance(c.Value(t0))) std::swap(v0, v1);
+    for (size_t k = 0; k < 2; ++k) {
+      const TopoDS_Vertex v = k == 0 ? v0 : v1;
+      const int vi = vf.FindIndex(v);
+      if (vi <= 0) continue;
+      std::vector<TopoDS_Face> third;
+      for (ShapeList::Iterator it(vf(vi)); it.More(); it.Next()) {
+        bool own = false;
+        for (ShapeList::Iterator jt(anc(ei)); jt.More(); jt.Next()) own = own || jt.Value().IsSame(it.Value());
+        for (const auto& g : third) own = own || g.IsSame(it.Value());
+        if (!own) third.push_back(TopoDS::Face(it.Value()));
+      }
+      if (third.size() != 1) continue;
+      const gp_Pnt p = BRep_Tool::Pnt(v);
+      // Away from the edge, past this end.
+      const gp_Vec out_dir = k == 0 ? -gp_Vec(dir) : gp_Vec(dir);
+      BRepAdaptor_Surface sf(third[0], false);
+      // Where the line through `q` along the edge meets the surface, nearest `q` (signed, past
+      // the end positive); false where it does not.
+      std::function<bool(const gp_Pnt&, double&)> meet;
+      EndTrim t;
+      if (sf.GetType() == GeomAbs_Plane) {
+        const gp_Pln pl = sf.Plane();
+        const gp_Vec n(pl.Axis().Direction());
+        if (std::fabs(n.Dot(gp_Vec(dir))) >= 1 - 1e-12) continue;  // square to the edge
+        if (std::fabs(n.Dot(gp_Vec(dir))) < 1e-3) return false;
+        meet = [=](const gp_Pnt& q, double& sv) {
+          sv = n.Dot(gp_Vec(q, pl.Location())) / n.Dot(out_dir);
+          return true;
+        };
+        TopoDS_Face pf = BRepBuilderAPI_MakeFace(pl).Face();
+        t.tool = BRepPrimAPI_MakeHalfSpace(pf, mid).Solid();
+        t.keep_inside = true;
+      } else if (sf.GetType() == GeomAbs_Cylinder) {
+        const gp_Cylinder cy = sf.Cylinder();
+        const gp_Ax1 ax = cy.Axis();
+        const double rr = cy.Radius();
+        const gp_Vec az(ax.Direction());
+        // The line q + s out_dir against |(P - O) x az| = rr.
+        meet = [=](const gp_Pnt& q, double& sv) {
+          const gp_Vec w = gp_Vec(ax.Location(), q).Crossed(az), u = out_dir.Crossed(az);
+          const double qa = u.SquareMagnitude(), qb = 2 * w.Dot(u), qc = w.SquareMagnitude() - rr * rr;
+          if (qa < 1e-18) return false;
+          const double disc = qb * qb - 4 * qa * qc;
+          if (disc < 0) return false;
+          const double r1 = (-qb - std::sqrt(disc)) / (2 * qa), r2 = (-qb + std::sqrt(disc)) / (2 * qa);
+          sv = std::fabs(r1) <= std::fabs(r2) ? r1 : r2;
+          return true;
+        };
+        const double h = 4 * rho + along.Magnitude() + 1.0;
+        const double z = gp_Vec(ax.Location(), p).Dot(az);
+        const gp_Pnt base = ax.Location().Translated(az * (z - h));
+        t.tool = BRepPrimAPI_MakeCylinder(gp_Ax2(base, ax.Direction()), rr, 2 * h).Solid();
+        t.keep_inside = gp_Lin(ax).Distance(mid) < rr;
+      } else {
+        return false;
+      }
+      // The surface must pass through the end and be met within reach by every line along the
+      // edge near it (points round the end, across the edge, out to `rho`).
+      double sv = 0;
+      if (!meet(p, sv) || std::fabs(sv) > 1e-7 * std::max(1.0, rho)) return false;
+      gp_Vec e1 = gp_Vec(dir).Crossed(gp_Vec(0, 0, 1));
+      if (e1.Magnitude() < 1e-6) e1 = gp_Vec(dir).Crossed(gp_Vec(1, 0, 0));
+      e1.Normalize();
+      const gp_Vec e2 = gp_Vec(dir).Crossed(e1);
+      double reach = 0;
+      for (int a = 0; a < 16; ++a) {
+        const double ang = a * M_PI / 8;
+        for (double f : {0.5, 1.0}) {
+          const gp_Pnt q = p.Translated((e1 * std::cos(ang) + e2 * std::sin(ang)) * (f * rho));
+          if (!meet(q, sv) || std::fabs(sv) > 8 * rho) return false;
+          reach = std::max(reach, sv);
+        }
+      }
+      t.reach = 1.5 * reach + 1e-3 * std::max(1.0, rho);
+      t.face = third[0];
+      out[i][k] = t;
+      any = true;
+    }
+  }
+  return any;
+}
+
+// `s` trimmed at an end (`t`); `face`, a face of `s`, follows.
+TopoDS_Shape end_trimmed(const TopoDS_Shape& s, const EndTrim& t, TopoDS_Shape* face) {
+  std::unique_ptr<BRepAlgoAPI_BooleanOperation> op;
+  if (t.keep_inside) op = std::make_unique<BRepAlgoAPI_Common>(s, t.tool);
+  else op = std::make_unique<BRepAlgoAPI_Cut>(s, t.tool);
+  if (!op->IsDone() || op->Shape().IsNull()) throw Standard_Failure("could not trim the corner");
+  if (face && !face->IsNull()) {
+    const ShapeList& mods = op->Modified(*face);
+    if (!mods.IsEmpty()) *face = mods.First();
+    else if (op->IsDeleted(*face)) *face = TopoDS_Shape();
+  }
+  TopExp_Explorer ex(op->Shape(), TopAbs_SOLID);
+  if (!ex.More()) throw Standard_Failure("could not trim the corner");
+  TopoDS_Shape one = ex.Current();
+  ex.Next();
+  if (ex.More()) throw Standard_Failure("could not trim the corner");
+  return one;
+}
+
 int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge>& es,
                 const std::vector<uint32_t>& idx, bool fillet, const std::vector<std::array<double, 2>>& ext,
-                CornerCut& cut) {
+                CornerCut& cut, bool trim = false) {
   std::vector<Corner>& cs = cut.cs;
   ShapeList args, tools, cave;
   args.Append(s->s);
@@ -3263,6 +3426,8 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
   bool longer = false;
   std::vector<std::array<Mitre, 2>> mitres;
   if (fillet && !fillet_mitres(s->s, es, mitres)) mitres.clear();
+  std::vector<std::array<EndTrim, 2>> trims;
+  if (trim && !end_trims(s->s, anc, es, trims)) return fail("no corner");
   for (size_t i = 0; i < es.size(); ++i) {
     Corner c;
     double turn0 = -1, turn1 = -1;
@@ -3271,7 +3436,36 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
     const std::array<Mitre, 2>* m = i < mitres.size() ? &mitres[i] : nullptr;
     if (m)
       for (size_t k = 0; k < 2; ++k) e[k] = std::max(e[k], (*m)[k].reach);
+    // An end trimmed where no mitre ends the corner.
+    std::array<const EndTrim*, 2> tr{nullptr, nullptr};
+    if (i < trims.size())
+      for (size_t k = 0; k < 2; ++k)
+        if (!trims[i][k].tool.IsNull() && !(m && (*m)[k].reach > 0)) {
+          tr[k] = &trims[i][k];
+          e[k] = std::max(e[k], tr[k]->reach);
+        }
     if (!corner_of(s->s, anc, es[i], fillet, c, e[0], e[1], turn0, turn1)) return fail("no corner");
+    if (tr[0] || tr[1]) {
+      if (c.exact_long.IsNull()) return fail("no corner");
+      TopoDS_Shape ex = c.exact_long;
+      for (size_t k = 0; k < 2; ++k) {
+        if (!tr[k]) continue;
+        ex = end_trimmed(ex, *tr[k], nullptr);
+        c.cutter = end_trimmed(c.cutter, *tr[k], &c.face);
+        cut.ends.push_back(tr[k]->face);
+      }
+      // The surface must have cut the corner off short of the end of its run past the edge:
+      // no vertex of it left that far out.
+      for (TopExp_Explorer vx(ex, TopAbs_VERTEX); vx.More(); vx.Next()) {
+        const gp_Pnt q = BRep_Tool::Pnt(TopoDS::Vertex(vx.Current()));
+        const double past0 = gp_Vec(q, c.end0).Dot(gp_Vec(c.dir)), past1 = gp_Vec(c.end1, q).Dot(gp_Vec(c.dir));
+        if ((tr[0] && past0 > e[0] - 1e-6) || (tr[1] && past1 > e[1] - 1e-6)) return fail("no corner");
+      }
+      if (c.face.IsNull()) return fail("no corner");
+      c.exact = ex;
+      c.exact_long = ex;
+      c.ideal = std::fabs(measured_volume(ex, true));
+    }
     if (m && ((*m)[0].reach > 0 || (*m)[1].reach > 0)) {
       // Mitred: a convex corner up to its edge's end (the rest of it lies out of the body), a
       // concave one run on to the mitre plane; each and its cutter on its side of that plane.
@@ -3283,7 +3477,7 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
       }
       if (c.face.IsNull()) return fail("no corner");
       c.exact = ex;
-      c.ideal = std::fabs(measured_volume(ex));
+      c.ideal = std::fabs(measured_volume(ex, trim));
     }
     longer = longer || ext[i][0] > 0 || ext[i][1] > 0;
     if (c.concave) {
@@ -3295,7 +3489,8 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
     }
     cs.push_back(c);
   }
-  if (!tools.IsEmpty() && !cave.IsEmpty()) return mixed_corners(s, idx, tools, cave, ideal, ideal_cave, longer, cut);
+  if (!tools.IsEmpty() && !cave.IsEmpty())
+    return mixed_corners(s, idx, tools, cave, ideal, ideal_cave, longer, cut, trim);
   const bool concave = !cave.IsEmpty();
   cut.concave = concave;
   if (concave) {
@@ -3324,7 +3519,7 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
   auto b = run_boolean_checked(concave ? GS_BOOL_UNION : GS_BOOL_CUT, args, tools);
   TopoDS_Shape result = b->Shape();
   if (result.IsNull()) return fail("no result");
-  const double before = std::fabs(measured_volume(s->s)), after = std::fabs(measured_volume(result));
+  const double before = std::fabs(measured_volume(s->s, trim)), after = std::fabs(measured_volume(result, trim));
   const double change = concave ? after - before : before - after;
   const double tol = 1e-7 * std::max(1.0, before);
   if (longer ? change < ideal - tol : std::fabs(change - ideal) > tol)
@@ -3337,7 +3532,7 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
 // 6 mm apart on one face, both rounded by 3 mm, which leaves nothing of that face; OCCT's
 // fillet cannot end a blend on a face it uses up).
 int mixed_corners(const GsShape* s, const std::vector<uint32_t>& idx, const ShapeList& tools, const ShapeList& cave,
-                  double ideal, double ideal_cave, bool longer, CornerCut& cut) {
+                  double ideal, double ideal_cave, bool longer, CornerCut& cut, bool precise) {
   ShapeList args;
   args.Append(s->s);
   auto b1 = run_boolean_checked(GS_BOOL_CUT, args, tools);
@@ -3348,8 +3543,8 @@ int mixed_corners(const GsShape* s, const std::vector<uint32_t>& idx, const Shap
   auto b2 = run_boolean_checked(GS_BOOL_UNION, mids, cave);
   const TopoDS_Shape result = b2->Shape();
   if (result.IsNull()) return fail("no result");
-  const double before = std::fabs(measured_volume(s->s)), between = std::fabs(measured_volume(mid)),
-               after = std::fabs(measured_volume(result));
+  const double before = std::fabs(measured_volume(s->s, precise)), between = std::fabs(measured_volume(mid, precise)),
+               after = std::fabs(measured_volume(result, precise));
   const double tol = 1e-7 * std::max(1.0, before);
   const double cut_away = before - between, filled = after - between;
   if (longer ? cut_away < ideal - tol : std::fabs(cut_away - ideal) > tol)
@@ -3425,14 +3620,46 @@ int corner_end_of(const Corner& c, const TopoDS_Face& f) {
 // by it: the corner then runs on past that end until it leaves the body. The longer cut must
 // still remove all of the corners along the edges and leave no face without an origin (so it
 // ran out of the body before its far end).
+//
+// Where that fails, straight corners that end on a slanting or curved face run on to it and are
+// trimmed by its surface (`end_trims`), their material again checked exactly.
 int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const std::vector<uint32_t>& idx, bool fillet,
                      GsShape** out, GsBuf* origins) {
   AncMap anc;
   TopExp::MapShapesAndAncestors(s->s, TopAbs_EDGE, TopAbs_FACE, anc);
   std::vector<std::array<double, 2>> ext(es.size(), {0.0, 0.0});
   CornerCut cut;
-  int st = cut_corners(s, anc, es, idx, fillet, ext, cut);
-  if (st != GS_OK) return st;
+  bool trim = false;
+  int st = GS_ERR;
+  std::string first = "the corners could not be cut";
+  try {
+    st = cut_corners(s, anc, es, idx, fillet, ext, cut);
+    if (st != GS_OK) first = gs_last_error();
+  } catch (const Standard_Failure&) {
+  }
+  if (st != GS_OK) {
+    trim = true;
+    try {
+      st = cut_corners(s, anc, es, idx, fillet, ext, cut = CornerCut(), true);
+    } catch (const Standard_Failure&) {
+      st = GS_ERR;
+    }
+    if (st != GS_OK) return fail(first);
+    // A filled corner's end lies on the surface of the face it ends on (that face carried on).
+    ShapeMap in_faces;
+    TopExp::MapShapes(s->s, TopAbs_FACE, in_faces);
+    ShapeMap out_faces;
+    TopExp::MapShapes(cut.result, TopAbs_FACE, out_faces);
+    std::vector<TopoDS_Face> left;
+    for (const auto& f : cut.orphans) {
+      int from = 0;
+      for (const auto& g : cut.ends)
+        if (from == 0 && same_surface(f, g)) from = in_faces.FindIndex(g);
+      if (from > 0) push_origin(cut.o, out_faces.FindIndex(f) - 1, GS_ORIGIN_INPUT, 0, from - 1);
+      else left.push_back(f);
+    }
+    cut.orphans = left;
+  }
   if (!cut.orphans.empty() && !cut.concave) {
     bool placed_all = true;
     for (const auto& f : cut.orphans) {
@@ -3448,7 +3675,7 @@ int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const s
     }
     if (placed_all) {
       CornerCut longer;
-      st = cut_corners(s, anc, es, idx, fillet, ext, longer);
+      st = cut_corners(s, anc, es, idx, fillet, ext, longer, trim);
       if (st != GS_OK) return st;
       if (!longer.orphans.empty()) return fail("a corner left a face with no origin");
       cut = std::move(longer);
