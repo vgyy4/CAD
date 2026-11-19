@@ -543,15 +543,37 @@ impl Reader<'_> {
         if !on_face {
             return Ok(None);
         }
-        let (o, ..) = frame(&sk.m);
-        let found: Vec<V3> = self
-            .sources(s)?
-            .into_iter()
+        let (o, x, y) = frame(&sk.m);
+        let sources = self.sources(s)?;
+        let found: Vec<V3> = sources
+            .iter()
             .filter(|src| libm::sqrt(dot(sub3(src.old, o), sub3(src.old, o))) < TOL)
             .map(|src| src.new)
             .collect();
         let Some(&first) = found.first() else {
-            return Err(format!("sketch '{}' lies on a face the member's row may move (not read yet)", sk.name));
+            // No earlier point at its origin: the face moves as the points of earlier sketches
+            // that lie in its plane move across it (they must all agree); the origin keeps its
+            // place in the plane.
+            let n = unit3(cross(x, y));
+            let d = match self.plane_shift(s, o, n) {
+                Ok(Some(d)) => d,
+                Ok(None) => {
+                    return Err(format!(
+                        "sketch '{}' lies on a face the member's row may move (not read yet)",
+                        sk.name
+                    ));
+                }
+                Err(_) => {
+                    return Err(format!("sketch '{}' lies on a face that several earlier sketches explain", sk.name));
+                }
+            };
+            let mut m = sk.m;
+            for (k, c) in [3usize, 7, 11].into_iter().zip([o[0] + d * n[0], o[1] + d * n[1], o[2] + d * n[2]]) {
+                if let Some(e) = m.get_mut(k) {
+                    *e = c / CM;
+                }
+            }
+            return Ok(Some(m));
         };
         if found.iter().any(|q| libm::sqrt(dot(sub3(*q, first), sub3(*q, first))) > TOL) {
             return Err(format!("sketch '{}' lies on a face that several earlier sketches explain", sk.name));
@@ -563,6 +585,24 @@ impl Reader<'_> {
             }
         }
         Ok(Some(m))
+    }
+
+    /// How far (mm, along unit `n`) the member's row moves a plane through `o`: as the points of
+    /// the sketches before sketch `s` that lie in it move across it, which must all agree.
+    /// `None` when no such point lies in the plane.
+    fn plane_shift(&self, s: usize, o: V3, n: V3) -> Result<Option<f64>, String> {
+        const TOL: f64 = 1e-5;
+        let shifts: Vec<f64> = self
+            .sources(s)?
+            .iter()
+            .filter(|src| dot(sub3(src.old, o), n).abs() < TOL)
+            .map(|src| dot(sub3(src.new, src.old), n))
+            .collect();
+        let Some(&d) = shifts.first() else { return Ok(None) };
+        if shifts.iter().any(|e| (e - d).abs() > TOL) {
+            return Err("a plane that several earlier sketches explain".into());
+        }
+        Ok(Some(d))
     }
 
     /// A sketch entity projected from the model's edges (not the origin's point or axes: those
@@ -1213,7 +1253,30 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
         // the centres come from the hole's faces in the result body (notes AF).
         None => Vec::new(),
     };
-    let m = r.dc.placement(s.need(8)?).ok_or("the hole placement is not readable")?;
+    let mut m = r.dc.placement(s.need(8)?).ok_or("the hole placement is not readable")?;
+    // For an iPart member's row: the centres' sketch as the row solves and places it; when it
+    // is not solved again (its centres are projected from the model), as its face moves.
+    let mut solved: HashMap<usize, (f64, f64)> = HashMap::new();
+    let owner = items
+        .iter()
+        .flatten()
+        .find(|&&it| r.dc.role(it) == Role::SkPoint)
+        .and_then(|&it| r.back().get(it)?.iter().copied().find(|&j| r.dc.role(j) == Role::Sketch));
+    if r.dc.has_row()
+        && let Some(owner) = owner
+    {
+        match r.sketch(owner) {
+            Ok(sk) => {
+                m = sk.m;
+                solved = sk.points.iter().map(|&(i, u, v, _)| (i, (u / CM, v / CM))).collect();
+            }
+            Err(_) => {
+                if let Ok(Some(moved)) = r.saved_sketch(owner).and_then(|sk| r.moved_placement(owner, &sk)) {
+                    m = moved;
+                }
+            }
+        }
+    }
     let (o, x, y) = frame(&m);
     let mut pos: Vec<V3> = Vec::new();
     for it in items.into_iter().flatten() {
@@ -1222,7 +1285,9 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
         }
         let rec = r.dc.r(it);
         let b = r.dc.body(it);
-        let (Some(u), Some(v)) = (f64_at(rec, b + 8), f64_at(rec, b + 16)) else {
+        let (Some(u), Some(v)) =
+            solved.get(&it).map_or_else(|| (f64_at(rec, b + 8), f64_at(rec, b + 16)), |&(u, v)| (Some(u), Some(v)))
+        else {
             return Err("a hole centre is cut short".into());
         };
         // Some projected centres (flags 0x40) carry one more byte before their coordinates,
@@ -1285,7 +1350,7 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
     if through {
         put(&mut j, "through", json!(true));
     } else {
-        depth = if extent == Some(7) { to_depth(r, &s, f, &pos, nd)? } else { rnd(r.pval(&s, 2)? * CM) };
+        depth = if extent == Some(7) { to_depth(r, &s, f, &pos, nd, owner)? } else { rnd(r.pval(&s, 2)? * CM) };
         put(&mut j, "depth", json!(depth));
         if let Ok(pa) = r.pval(&s, 6)
             && pa != 0.0
@@ -1312,13 +1377,21 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
 /// The depth (mm) of a hole that ends at a plane or face (extent 7, note AR): slot 13 a work
 /// plane (the depth to it along the hole, the same from every centre), else the face named
 /// through the naming records, measured on the hole's faces in the result body.
-fn to_depth(r: &Reader, s: &Slots, f: &Feature, pos: &[V3], nd: V3) -> Result<f64, String> {
+fn to_depth(r: &Reader, s: &Slots, f: &Feature, pos: &[V3], nd: V3, owner: Option<usize>) -> Result<f64, String> {
     const G_PLANE: u32 = 0xce52_df42;
     let u = unit3(nd);
     let first = *pos.first().ok_or("the hole has no centre")?;
     if let Some(pl) = s.get(13).filter(|&pl| r.dc.class(pl) == G_PLANE) {
         let (o, n) = work_plane(&r.dc, pl).map_err(|w| format!("the hole's end {w}"))?;
-        let o = [o[0] * CM, o[1] * CM, o[2] * CM];
+        let mut o = [o[0] * CM, o[1] * CM, o[2] * CM];
+        // An iPart member's row moves the plane with the faces of earlier sketches in it.
+        if r.dc.has_row()
+            && let Some(owner) = owner
+            && let Some(d) = r.plane_shift(owner, o, unit3(n))?
+        {
+            let n = unit3(n);
+            o = [o[0] + d * n[0], o[1] + d * n[1], o[2] + d * n[2]];
+        }
         let along = dot(u, n);
         if along.abs() < 1e-9 {
             return Err("the hole's end plane lies along the hole".into());
