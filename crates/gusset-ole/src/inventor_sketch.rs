@@ -301,13 +301,27 @@ pub(crate) fn resolve(
     });
     for ((by_radius, tolerance), hold, collapse) in tries {
         let max_iterations = if tolerance >= LOOSE { 1000 } else { 100 };
-        let (g, ids) = system(dc, sk, &cons, moved, projected, Mode { by_radius, hold, collapse })?;
-        let r =
-            gusset_sketch::solve_continued(&g, &SolveOptions { tolerance, max_iterations, ..SolveOptions::default() });
+        let mode = Mode { by_radius, hold, collapse, t: 1.0 };
+        let (g, ids) = system(dc, sk, sk, &cons, moved, projected, mode)?;
+        let opts = SolveOptions { tolerance, max_iterations, ..SolveOptions::default() };
+        let r = gusset_sketch::solve_continued(&g, &opts);
         if r.status != SolveStatus::Failed && r.conflicting.is_empty() {
             let out = solved(sk, &ids, &r.sketch)?;
             // A solve that turns a line round found another shape than Inventor's.
             if !turned(sk, &out, &pairs) {
+                // An arc the solve swung to the other side of its chord (a groove's fillet arc
+                // from 45 to 225 degrees): the row's values reached in steps keep the arc on
+                // its side, as Inventor's solve does.
+                if flipped(sk, &out) {
+                    for steps in [8, 32] {
+                        if let Some(o) = stepped(dc, sk, &cons, moved, projected, mode, &opts, steps)?
+                            && !flipped(sk, &o)
+                            && !turned(sk, &o, &pairs)
+                        {
+                            return Ok(Some(o));
+                        }
+                    }
+                }
                 return Ok(Some(out));
             }
             first.get_or_insert_with(|| "it turns a line round".to_string());
@@ -325,6 +339,65 @@ pub(crate) fn resolve(
         }
     }
     Err(format!("its sketch does not solve for the member's row: {}", first.unwrap_or_default()))
+}
+
+/// The sketch solved with the row's values reached in `steps` equal steps from the saved ones,
+/// each solve starting where the last ended; `None` when a step does not solve.
+#[allow(clippy::too_many_arguments)]
+fn stepped(
+    dc: &Dc,
+    sk: &Sketch,
+    cons: &[Con],
+    moved: &HashMap<usize, P2>,
+    projected: &dyn Fn(usize) -> bool,
+    mode: Mode,
+    opts: &SolveOptions,
+    steps: u32,
+) -> Result<Option<Sketch>, String> {
+    let mut start = sk.clone();
+    for k in 1..=steps {
+        let t = f64::from(k) / f64::from(steps);
+        let (g, ids) = system(dc, sk, &start, cons, moved, projected, Mode { t, ..mode })?;
+        let r = gusset_sketch::solve_continued(&g, opts);
+        if r.status == SolveStatus::Failed || !r.conflicting.is_empty() {
+            return Ok(None);
+        }
+        if k == steps {
+            return solved(sk, &ids, &r.sketch).map(Some);
+        }
+        let id = |i: usize| ids.get(&i).copied();
+        for p in &mut start.points {
+            let q = id(p.0).and_then(|x| r.sketch.point(x)).ok_or("a solved point is missing")?;
+            (p.1, p.2) = (q[0], q[1]);
+        }
+        for cv in &mut start.curves {
+            if let Curve::Circle { id: rec, r: rad, .. } = cv {
+                *rad = id(*rec).and_then(|x| r.sketch.radius(x)).ok_or("a solved circle is missing")?;
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Whether an arc of the solved sketch turns more than a quarter turn further or less far
+/// than in the saved one (its middle now on the other side of its chord).
+fn flipped(before: &Sketch, after: &Sketch) -> bool {
+    let at = |sk: &Sketch| -> HashMap<usize, P2> { sk.points.iter().map(|&(i, u, v, _)| (i, (u, v))).collect() };
+    let (p0, p1) = (at(before), at(after));
+    let sweep = |pts: &HashMap<usize, P2>, c: usize, s: usize, e: usize| -> Option<f64> {
+        let (c, s, e) = (pts.get(&c)?, pts.get(&s)?, pts.get(&e)?);
+        let a = libm::atan2(s.1 - c.1, s.0 - c.0);
+        let b = libm::atan2(e.1 - c.1, e.0 - c.0);
+        let tau = 2.0 * std::f64::consts::PI;
+        Some((b - a).rem_euclid(tau))
+    };
+    after.curves.iter().any(|cv| match *cv {
+        Curve::Arc { c, s, e, .. } => match (sweep(&p0, c, s, e), sweep(&p1, c, s, e)) {
+            (Some(w0), Some(w1)) => (w1 - w0).abs() > std::f64::consts::FRAC_PI_2,
+            _ => false,
+        },
+        _ => false,
+    })
 }
 
 /// Whether a line of the solved sketch, or one of the point pairs `pairs`, runs the other way
@@ -377,18 +450,24 @@ fn solved(sk: &Sketch, ids: &HashMap<usize, EntityId>, g: &Gs) -> Result<Sketch,
 fn system(
     dc: &Dc,
     sk: &Sketch,
+    start: &Sketch,
     cons: &[Con],
     moved: &HashMap<usize, P2>,
     projected: &dyn Fn(usize) -> bool,
     mode: Mode,
 ) -> Result<(Gs, HashMap<usize, EntityId>), String> {
-    let Mode { by_radius, hold, collapse } = mode;
-    let (mut g, ids) = to_gs(sk)?;
-    // Projected points the row moves start (and are fixed) where they move to.
+    let Mode { by_radius, hold, collapse, t: step } = mode;
+    let (mut g, ids) = to_gs(start)?;
+    // Projected points the row moves start (and are fixed) where they move to (`step` of the
+    // way there from where the file saved them).
     let mut order: Vec<(&usize, &P2)> = moved.iter().collect();
     order.sort_by_key(|x| *x.0);
     for (&p, &(u, v)) in order {
         let e = ids.get(&p).copied().ok_or("a projected point is missing")?;
+        let (u, v) = match sk.points.iter().find(|q| q.0 == p) {
+            Some(&(_, u0, v0, _)) if step < 1.0 => (u0 + step * (u - u0), v0 + step * (v - v0)),
+            _ => (u, v),
+        };
         g.set_point(e, [u, v]).map_err(|x| format!("its sketch is not usable: {x}"))?;
     }
     let t = topo(sk);
@@ -443,6 +522,7 @@ fn system(
             let (_, now) = dc.param(p).ok_or("a sketch dimension's parameter is not readable")?;
             let (_, was) = dc.param_saved(p).ok_or("a sketch dimension's parameter is not readable")?;
             let unit = if c.kind == Kind::Angle { 1.0 } else { CM };
+            let now = if step < 1.0 { was + step * (now - was) } else { now };
             Ok((now * unit, was * unit))
         };
         match c.kind {
@@ -650,6 +730,8 @@ struct Mode {
     by_radius: bool,
     hold: bool,
     collapse: Option<usize>,
+    /// How far the row's values are taken from the saved ones (1: all the way).
+    t: f64,
 }
 
 /// The arc a line ends tangent on (a tangent constraint names both and the line's end is one
