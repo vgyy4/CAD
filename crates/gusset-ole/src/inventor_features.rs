@@ -2577,10 +2577,21 @@ fn plate(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     let (k, sketch, profiles) = loop_sketch(r, c)?;
     let t = r.pval(&s, 3)? * CM;
     let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
-    let d = r.swept_distance(&sketch, fid)?;
-    if (d.abs() - t).abs() > 1e-6 * t.max(1.0) {
-        return Err(format!("the face reaches {} mm, its thickness is {} mm", rnd(d.abs()), rnd(t)));
-    }
+    // Slot 2 (`5e50b969`) is the side the face grows to: 0 along the sketch normal, 1 against
+    // it, 2 both ways (note AS). Older files without it: the side its faces lie on in the result.
+    let side = s.get(2).filter(|&i| r.dc.class(i) == 0x5e50_b969).and_then(|i| tail_u16(&r.dc, i));
+    let (d, symmetric) = match side {
+        Some(0) => (t, false),
+        Some(1) => (-t, false),
+        Some(2) => (t, true),
+        _ => {
+            let d = r.swept_distance(&sketch, fid)?;
+            if (d.abs() - t).abs() > 1e-6 * t.max(1.0) {
+                return Err(format!("the face reaches {} mm, its thickness is {} mm", rnd(d.abs()), rnd(t)));
+            }
+            (d, false)
+        }
+    };
     let mut op = match s.get(16).and_then(|i| tail_u16(&r.dc, i)) {
         Some(2) => "cut",
         Some(1) => "new",
@@ -2593,7 +2604,7 @@ fn plate(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
         op = "new";
     }
     let mut j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": profiles,
-                       "operation": op, "distance": rnd(d), "symmetric": false});
+                       "operation": op, "distance": rnd(d), "symmetric": symmetric});
     if op != "new" {
         let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
         put(&mut j, "target", json!(fb));
