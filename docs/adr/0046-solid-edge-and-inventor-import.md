@@ -884,7 +884,8 @@ than the hole (016); hole rims rounded wider than the plate (110, its corners no
 
 Shared code: the kernel, document, evaluator, commands and tree import gain the end up to the
 next face (ADR 0061 amendment); nothing else outside `gusset-ole` changed. The rebuild check is
-unchanged (volume 2e-5, box 1e-4).
+unchanged (volume 2e-5, box 1e-4). Inventor (678 of 1686) and SolidWorks (293 of 1352) come in
+as before, every part with the same outcome.
 
 **Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before (b901843): 76
 as history. After: **80 as history**, none lost; new: 138 (two fast patterns, 4 and 5 copies),
@@ -897,8 +898,8 @@ outcome: 027 and 028 differ at their first such cut because the cut's region als
 Solid Edge keeps (a profile or side question, not the end); in 042 (a tube, holes from planes
 tangent to it) Solid Edge's result lies between cutting the near wall only (2.1e5 mm3 too much
 material) and cutting through all (9.7e4 mm3 too little); 093 and 095 are through-all
-protrusions with a second extent in hollow parts (the end up to the next face does not combine
-with a second extent here). Measured, so the rule stays as decided in ADR 0061's amendment.
+protrusions (extent 14, with a second extent) in hollow parts, which the reader does not write
+as ends up to the next face. Measured, so the rule stays as decided in ADR 0061's amendment.
 
 **What blocks the rest (first reasons of the 100 bodies, measured).**
 
