@@ -1326,3 +1326,30 @@ fn curves_and_face_splits_are_left_out() {
     assert_eq!(t["source"]["omitted"][1]["name"], "ProjectCurve_1", "{t}");
     assert_eq!(t["source"]["omitted"][2]["name"], "SplitFace_1", "{t}");
 }
+
+#[test]
+fn a_cut_to_the_next_face_ends_there_each_way() {
+    // The protrusion part, then cutouts of its rectangle to the next face (extent 16): against
+    // the normal (side 1), and both ways (side 6: a second feature for the other way).
+    let mut more = obj(36, 31, &small(16.0));
+    more.extend(obj(36, 32, &small(1.0)));
+    more.extend(obj(36, 33, &small(6.0)));
+    more.extend(obj(38, 34, &func("JMCutoutFunction", &[&[34], &[12], &[2], &[31], &[32], &[0], &[10]])));
+    more.extend(obj(38, 35, &func("JMCutoutFunction", &[&[35], &[34], &[2], &[31], &[33], &[0], &[10]])));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = t["features"].as_array().unwrap();
+    let ends: Vec<_> = f
+        .iter()
+        .filter(|x| x["type"] == "extrude" && x["operation"] == "cut")
+        .map(|x| (x["name"].clone(), x["end_condition"].clone(), x["reverse"].clone(), x["distance"].clone()))
+        .collect();
+    assert_eq!(
+        ends,
+        vec![
+            (json!("Cutout_1"), json!("to_next"), json!(true), json!(-10000.0)),
+            (json!("Cutout_2"), json!("to_next"), json!(false), json!(10000.0)),
+            (json!("Cutout_2_back"), json!("to_next"), json!(true), json!(-10000.0)),
+        ],
+        "{t}"
+    );
+}

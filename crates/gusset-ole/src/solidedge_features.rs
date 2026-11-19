@@ -2023,6 +2023,8 @@ fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Ki
     };
     let mut j = json!({"type": if revolve {"revolve"} else {"extrude"}, "name": name, "sketch": sketch,
                        "profiles": "all", "operation": op});
+    // A second feature the first needs (the other way of a cut to the next face both ways).
+    let mut second = None;
     if op != "new" {
         let fb = s.first_body.clone().ok_or("a cut before any body")?;
         put(&mut j, "target", json!(fb));
@@ -2176,12 +2178,30 @@ fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Ki
         if extent == 14 {
             put(&mut j, "through_all", json!(true));
         }
-        if extent == 16 {
-            put(&mut j, "through_next", json!(true));
+        // To the next face (a cut through the next stretch of material): Gusset's end up to
+        // the next face, the reach above kept to fall back on. To the next face both ways
+        // (side 6): one such end each way, the second a feature of its own.
+        if extent == 16 && code(12).is_none() && (!symmetric || side == 6) {
+            put(&mut j, "end_condition", json!("to_next"));
+            if side == 6 {
+                put(&mut j, "distance", json!(THROUGH));
+                put(&mut j, "symmetric", json!(false));
+                put(&mut j, "reverse", json!(false));
+                let mut back = j.clone();
+                put(&mut back, "name", json!(format!("{name}_back")));
+                put(&mut back, "distance", json!(-THROUGH));
+                put(&mut back, "reverse", json!(true));
+                second = Some(back);
+            } else {
+                put(&mut j, "reverse", json!(dist < 0.0));
+            }
         }
     }
     s.out.push(sk);
     s.out.push(j);
+    if let Some(b) = second {
+        s.out.push(b);
+    }
     if s.first_body.is_none() {
         s.first_body = Some(name.to_string());
     }
