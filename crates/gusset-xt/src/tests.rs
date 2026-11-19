@@ -49,7 +49,9 @@ impl TextFile {
         self.push(&n(ty));
         if layout.variable() {
             let var = layout.fields.iter().find(|f| f.count == Count::Var).unwrap();
-            self.push(&n(given.get(var.name.as_str()).map_or(0, |v| v.len())));
+            // A list of vectors counts vectors, three numbers each.
+            let per = if matches!(var.code, Code::V | Code::H) { 3 } else { 1 };
+            self.push(&n(given.get(var.name.as_str()).map_or(0, |v| v.len() / per)));
         }
         self.push(&n(idx));
         for f in &layout.fields {
@@ -908,4 +910,25 @@ fn a_tolerant_edge_takes_the_fin_curve_off_the_blend() {
     crate::model::edge(&g, 20, &mut m);
     let e = &m.edges[&20];
     assert_eq!((e.curve, e.same_sense), (25, false));
+}
+
+#[test]
+fn a_blend_boundary_curve_is_refined_onto_the_balls_contacts() {
+    // The contact of the plane-plane blend with z = 0 is the line x = r, z = 0: an
+    // intersection of z = 0 and the blend's boundary, its chart a little off that line.
+    let r = 0.002;
+    let mut f = blend_sp_file(r, 0.004);
+    f.node(59, 30, &[("boundary", vec![n(0)]), ("blend", vec![n(4)])]);
+    f.node(38, 31, &[("surface", vec![n(2), n(30)]), ("chart", vec![n(32)])]);
+    let pts: Vec<[f64; 3]> =
+        (0..5).map(|i| [r + 1e-5 * f64::from(i % 2), 0.01 * f64::from(i) / 4.0, 1e-5 * f64::from(i % 2)]).collect();
+    let hvec: Vec<W> = pts.iter().flat_map(|p| v3(*p)).collect();
+    f.node(40, 32, &[("hvec", hvec)]);
+    let g = decode(&f.finish(), &Limits::default()).unwrap();
+    let c = crate::refine::intersection(&g, 31, &pts).unwrap();
+    let (k0, k1) = (c.knots[0][0], *c.knots[0].last().unwrap());
+    for i in 0..=50 {
+        let p = crate::geom::eval_curve(&c, k0 + (k1 - k0) * f64::from(i) / 50.0).unwrap();
+        assert!((p[0] - r).abs() < 1e-12 && p[2].abs() < 1e-12, "{p:?}");
+    }
 }
