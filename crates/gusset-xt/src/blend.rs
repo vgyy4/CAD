@@ -634,7 +634,8 @@ fn surface(st: &[Station]) -> Option<Nurbs> {
     })
 }
 
-/// How far the surface strays from the ball's envelope between stations `i` and `i + 1`.
+/// How far the surface strays from the ball's envelope midway between the stations at knots
+/// `u0` and `u1` (`near`: the first one's centre).
 fn stray(g: &Graph, b: u32, n: &Nurbs, u0: f64, u1: f64, r: f64, near: V3) -> Option<f64> {
     let mut worst: f64 = 0.0;
     let u = 0.5 * (u0 + u1);
@@ -785,9 +786,9 @@ pub(crate) enum SpCurve {
     Points(Vec<V3>),
 }
 
-/// The blend's spine parameter law: a point of the spine curve at parameter `u` (an
-/// intersection's chart runs from `base_parameter` by `base_scale` times the chord length along its
-/// points), and the parameter of the spine curve's point nearest `x`.
+/// The spine curve's point at parameter `u`: an intersection's chart runs from
+/// `base_parameter` by `base_scale` times the chord length along its points (past its ends
+/// along the end chords); other curves by their own law.
 fn spine_param_point(g: &Graph, spine: u32, u: f64) -> Option<V3> {
     match g.type_name(spine)? {
         "INTERSECTION" => {
@@ -799,10 +800,11 @@ fn spine_param_point(g: &Graph, spine: u32, u: f64) -> Option<V3> {
                 .filter_map(|v| if let Val::Vec3(p) = v { Some(*p) } else { None })
                 .collect();
             let mut s = (u - base) / k;
-            for w in pts.windows(2) {
+            let last = pts.len().saturating_sub(2);
+            for (i, w) in pts.windows(2).enumerate() {
                 let &[a, b] = w else { continue };
                 let l = norm(sub(b, a));
-                if s <= l || std::ptr::eq(w.as_ptr(), pts.get(pts.len().saturating_sub(2))?) {
+                if s <= l || i == last {
                     return Some(add(a, scale(sub(b, a), if l > 0.0 { s / l } else { 0.0 })));
                 }
                 s -= l;
@@ -813,6 +815,7 @@ fn spine_param_point(g: &Graph, spine: u32, u: f64) -> Option<V3> {
     }
 }
 
+/// The spine curve's parameter at its point nearest `x` (see [`spine_param_point`]).
 fn spine_param_of(g: &Graph, spine: u32, x: V3) -> Option<f64> {
     match g.type_name(spine)? {
         "INTERSECTION" => {
