@@ -2865,6 +2865,16 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
         *n += 1;
         let name = format!("{what}_{n}");
         let k = kind(&func.class);
+        let cut = matches!(
+            k,
+            Kind::Cutout | Kind::RevolvedCutout | Kind::SweptCutout | Kind::LoftedCutout | Kind::HelixCutout
+        );
+        if cut && s.first_body.is_none() {
+            // A cut before any body removes nothing (176's first cutout); left out, the rebuild
+            // check still decides.
+            s.omitted.push(json!({"name": name, "why": "a cut before any body"}));
+            continue;
+        }
         match k {
             Kind::Protrusion | Kind::Cutout | Kind::RevolvedProtrusion | Kind::RevolvedCutout => {
                 let before = s.out.len();
