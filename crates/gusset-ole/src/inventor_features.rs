@@ -46,6 +46,18 @@ fn sub3(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
+fn add3(a: V3, b: V3) -> V3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+/// `a` turned by `t` radians about the unit vector `k` (right-handed).
+fn rotate(a: V3, k: V3, t: f64) -> V3 {
+    let (c, s) = (libm::cos(t), libm::sin(t));
+    let kxa = cross(k, a);
+    let ka = dot(k, a) * (1.0 - c);
+    [a[0] * c + kxa[0] * s + k[0] * ka, a[1] * c + kxa[1] * s + k[1] * ka, a[2] * c + kxa[2] * s + k[2] * ka]
+}
+
 fn unit3(a: V3) -> V3 {
     let l = libm::sqrt(dot(a, a));
     [a[0] / l, a[1] / l, a[2] / l]
@@ -1014,6 +1026,8 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let mut axis_line = None;
     // A copy of the sketch the extrude starts from instead (extent 12).
     let mut start = None;
+    // A revolve whose sketch is turned about its axis (point, unit direction, radians) first.
+    let mut turned: Option<(V3, V3, f64)> = None;
     if typ == FeatType::Extrude {
         // Slot 2 is the sweep direction: the sketch normal, or (three extrudes of one part, note
         // AR) the other way; slot 3 turns it round.
@@ -1120,14 +1134,17 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                            "direction": [rnd(v[0]), rnd(v[1]), rnd(v[2])]}),
         );
         axis_line = sketch_axis_line(&sketch, [p0[0] * CM, p0[1] * CM, p0[2] * CM], v, f.rec);
-        put(
-            &mut j,
-            "angle",
-            match ext(s.get(3)) {
-                Some(3) => json!(360.0),
-                _ => json!(rnd(r.param(&s, 4)?.to_degrees())),
-            },
-        );
+        let angle = match ext(s.get(3)) {
+            Some(3) => 360.0,
+            _ => r.param(&s, 4)?.to_degrees(),
+        };
+        put(&mut j, "angle", json!(rnd(angle)));
+        // Slot 5 (`c7a06ac2`) 2: the angle runs half each way from the sketch (note AS). The
+        // revolve turns a copy of its sketch turned back by half the angle about the axis.
+        let both = s.get(5).filter(|&i| r.dc.class(i) == 0xc7a0_6ac2).and_then(|i| tail_u16(&r.dc, i)) == Some(2);
+        if both && angle < 360.0 {
+            turned = Some(([p0[0] * CM, p0[1] * CM, p0[2] * CM], unit3(v), -angle.to_radians() / 2.0));
+        }
     }
     if !st.done.contains_key(&sk) {
         st.out.push(sketch.json());
@@ -1152,6 +1169,25 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
             }
             put(&mut j, "axis", json!({"line": id}));
         }
+    }
+    if let Some((p0, v, t)) = turned {
+        let entry = st.out.iter().rev().find(|o| {
+            o.get("type").and_then(Value::as_str) == Some("sketch")
+                && o.get("name").and_then(Value::as_str) == Some(&sketch.name)
+        });
+        let mut copy = entry.cloned().ok_or("the revolve's sketch is not written")?;
+        let name2 = format!("{}_turned_{name}", sketch.name);
+        put(&mut copy, "name", json!(name2));
+        let (o, x, y) = frame(&sketch.m);
+        let o2 = add3(p0, rotate(sub3(o, p0), v, t));
+        if let Some(pl) = copy.get_mut("plane") {
+            put(pl, "origin", json!([rnd(o2[0]), rnd(o2[1]), rnd(o2[2])]));
+            let (x2, y2) = (rotate(x, v, t), rotate(y, v, t));
+            put(pl, "x_axis", json!([rnd(x2[0]), rnd(x2[1]), rnd(x2[2])]));
+            put(pl, "y_axis", json!([rnd(y2[0]), rnd(y2[1]), rnd(y2[2])]));
+        }
+        st.out.push(copy);
+        put(&mut j, "sketch", json!(name2));
     }
     st.out.push(j);
     if st.first_body.is_none() {
