@@ -2477,6 +2477,67 @@ fn a_convex_and_a_concave_round_that_use_up_their_face() {
     }
 }
 
+fn edge_with_midpoint(r: &OpResult, m: [f64; 3]) -> u32 {
+    let t = k().topology(&r.shape).unwrap();
+    t.edges.iter().position(|e| (0..3).all(|i| (e.midpoint[i] - m[i]).abs() < 1e-9)).unwrap() as u32
+}
+
+#[test]
+fn a_round_wider_than_its_side_face_takes_it_whole() {
+    // A 30 x 10 x 1 plate: a 3 mm round of its top front edge is wider than the 1 mm front face.
+    // The ball rolls on the top face and on the front face's bottom edge (a cliff edge): its
+    // axis lies at (y, z) = (sqrt 5, -2), and the corner taken off is the triangle (0, 0),
+    // (0, 1), (sqrt 5, 1) less the circular segment over the chord from (0, 0) to (sqrt 5, 1).
+    let b = plain_box(30.0, 10.0, 1.0);
+    let e = edge_with_midpoint(&b, [15.0, 0.0, 1.0]);
+    let f = k().fillet(&b.shape, &[e], 3.0).map_err(|e| e.message).unwrap();
+    let alpha = 2.0 * (6.0f64.sqrt() / 6.0).asin();
+    let corner = 5.0f64.sqrt() / 2.0 - 4.5 * (alpha - alpha.sin());
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, 300.0 - 30.0 * corner, 1e-7), "{} vs {}", m.volume, 300.0 - 30.0 * corner);
+    // Nothing is left of the front face.
+    let t = k().topology(&f.shape).unwrap();
+    assert!(!t.faces.iter().any(|x| x.kind == SurfaceKind::Plane && (x.normal[1] + 1.0).abs() < 1e-9));
+    assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+}
+
+#[test]
+fn rounds_of_two_edges_as_high_as_their_sides_meet_mitred() {
+    // A 10 x 10 x 2 block: its two top edges at the corner (0, 0) rounded by 2, the block's
+    // height, use up both side faces. The rounds meet on the plane x = y: each edge's corner
+    // prism (section r^2 (1 - pi/4)) loses at the mitre the integral of the distance from the
+    // side face over its section, r^3 (5/6 - pi/4).
+    let b = plain_box(10.0, 10.0, 2.0);
+    let es = [edge_with_midpoint(&b, [5.0, 0.0, 2.0]), edge_with_midpoint(&b, [0.0, 5.0, 2.0])];
+    let f = k().fillet(&b.shape, &es, 2.0).unwrap();
+    let pi = std::f64::consts::PI;
+    let r: f64 = 2.0;
+    let removed = 2.0 * (r * r * (1.0 - pi / 4.0) * 10.0 - r.powi(3) * (5.0 / 6.0 - pi / 4.0));
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, 200.0 - removed, 1e-7), "{} vs {}", m.volume, 200.0 - removed);
+    for e in es {
+        assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+    }
+}
+
+#[test]
+fn a_round_whose_contact_runs_along_a_pockets_rim() {
+    // A 40 x 40 x 20 block with a 30 x 10 x 3 pocket in its bottom face, 5 mm in from the front:
+    // a 5 mm round of the bottom front edge touches the bottom face exactly along the pocket's
+    // rim (part 040; OCCT's fillet crashes there). The corner is a prism of section
+    // 25 (1 - pi/4) along the whole edge.
+    let b = plain_box(40.0, 40.0, 20.0);
+    let pocket = block_at(5.0, 5.0, 30.0, 10.0, 0.0, 3.0);
+    let b = k().boolean(BoolOp::Cut, &b.shape, &pocket.shape).unwrap();
+    let e = edge_with_midpoint(&b, [20.0, 0.0, 0.0]);
+    let f = k().fillet(&b.shape, &[e], 5.0).unwrap();
+    let pi = std::f64::consts::PI;
+    let want = 40.0 * 40.0 * 20.0 - 900.0 - 40.0 * 25.0 * (1.0 - pi / 4.0);
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, want, 1e-7), "{} vs {want}", m.volume);
+    assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+}
+
 fn block_at(x0: f64, y0: f64, w: f64, h: f64, z0: f64, d: f64) -> OpResult {
     let p = Profile {
         frame: Frame { origin: [x0, y0, z0], ..Frame::XY },

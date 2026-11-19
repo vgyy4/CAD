@@ -2824,10 +2824,12 @@ bool section_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>& fs
   const double cosa = ua.Dot(ub);
   if (cosa <= -1 + 1e-9 || cosa >= 1 - 1e-9) return false;
   const double alpha = std::acos(cosa);
-  // Convex: the material fills the wedge between the faces.
+  // Convex: the material fills the wedge between the faces (tried at the middle of the edge: a
+  // straight edge's start lies on the face across its end).
   {
     const double eps = 1e-3 * std::min(r, std::min(la, lb));
-    BRepClass3d_SolidClassifier in(body, p.Translated((ua + ub) * eps), 1e-9);
+    const gp_Pnt pm = c.Value(0.5 * (t0 + t1));
+    BRepClass3d_SolidClassifier in(body, pm.Translated((ua + ub) * eps), 1e-9);
     if (in.State() != TopAbs_IN) return false;
   }
   const double t = r / std::tan(0.5 * alpha);
