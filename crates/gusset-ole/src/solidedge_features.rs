@@ -1186,7 +1186,7 @@ pub(crate) fn curve(b: &[u8]) -> Option<Curve2> {
         55 => {
             let (cx, cy, r) = (f64_at(b, 10)?, f64_at(b, 18)?, f64_at(b, 26)?);
             if !([cx, cy].into_iter().all(ok) && r.is_finite() && r > 0.0 && r < 1e6) {
-                return None;
+                return whole_ellipse(b);
             }
             if f64_at(b, 34)?.to_bits() == 0 && f64_at(b, 42)?.to_bits() == 1f64.to_bits() {
                 return Some(Curve2::Circle([cx, cy], r));
@@ -1194,7 +1194,7 @@ pub(crate) fn curve(b: &[u8]) -> Option<Curve2> {
             let ccw = *b.get(34)?;
             let (a0, a1) = (f64_at(b, 35)?, f64_at(b, 43)?);
             if ccw > 1 || !(a0.is_finite() && a1.is_finite() && a0.abs() < 20.0 && a1.abs() < 20.0) {
-                return None;
+                return whole_ellipse(b);
             }
             Some(if ccw == 1 { Curve2::Arc([cx, cy], r, a0, a1) } else { Curve2::Arc([cx, cy], r, a1, a0) })
         }
@@ -1206,6 +1206,19 @@ pub(crate) fn curve(b: &[u8]) -> Option<Curve2> {
 /// An ellipse member (71 bytes): after `u8 0, u8 flags`, the centre, the axis the angles
 /// start from (a vector, its length the semi-axis), the other semi-axis over it, `u8 ccw`
 /// and the angles from and to (as an arc's).
+/// A whole ellipse member (55 bytes, laid out as an ellipse arc's head without its sense and
+/// angles): centre, the major axis as a vector, the other semi-axis over it.
+fn whole_ellipse(b: &[u8]) -> Option<Curve2> {
+    let ok = |v: f64| v.is_finite() && v.abs() < 1e6;
+    let (cx, cy, ux, uy, k) = (f64_at(b, 10)?, f64_at(b, 18)?, f64_at(b, 26)?, f64_at(b, 34)?, f64_at(b, 42)?);
+    if ![cx, cy, ux, uy, k].into_iter().all(ok) || libm::hypot(ux, uy) < 1e-12 || !(k > 1e-9 && k < 1e9) {
+        return None;
+    }
+    // A ratio over 1: the other axis is the major one.
+    let (u, k) = if k > 1.0 { ([-uy * k, ux * k], 1.0 / k) } else { ([ux, uy], k) };
+    Some(Curve2::Ellipse([cx, cy], u, k, None))
+}
+
 fn ellipse(b: &[u8]) -> Option<Curve2> {
     let ok = |v: f64| v.is_finite() && v.abs() < 1e6;
     let (cx, cy, ux, uy, k) = (f64_at(b, 10)?, f64_at(b, 18)?, f64_at(b, 26)?, f64_at(b, 34)?, f64_at(b, 42)?);

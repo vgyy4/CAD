@@ -147,6 +147,14 @@ fn profile_curves() {
     assert_eq!(curve(&arc(1)), Some(Curve2::Arc([1.0, 2.0], 0.5, 0.5, 1.5)));
     assert_eq!(curve(&arc(0)), Some(Curve2::Arc([1.0, 2.0], 0.5, 1.5, 0.5)));
     assert_eq!(curve(&obj(1, 4, &[0u8; 30])), None);
+    // A whole ellipse (a circle's layout): centre, the major axis as a vector (here along y,
+    // its x a negative zero), the other semi-axis over it.
+    let mut e = vec![0, 0];
+    e.extend(f64s(&[0.0, 0.0, -0.0, 0.02, 0.6]));
+    e.extend([1, 1, 0, 0, 0x80]);
+    let e = obj(28, 5, &e);
+    assert_eq!(e.len(), 55);
+    assert_eq!(curve(&e), Some(Curve2::Ellipse([0.0, 0.0], [-0.0, 0.02], 0.6, None)));
 }
 
 #[test]
