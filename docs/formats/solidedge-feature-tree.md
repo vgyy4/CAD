@@ -314,3 +314,48 @@ Same corpus (180 ordered parts). All from the sample bytes; each rule checked by
 * Not read: part copies, simplified base features, smart bosses, ribs, delete faces and regions.
 * Coverage of round se5 (OCCT test `par_history`, 180 ordered parts, one part per process): **80 as
   history** (was 76; none lost), 100 as exact bodies. What blocks the rest: ADR 0046 amendment 22.
+
+
+## F15: round se6 (2026-11-19): ends through all, drafts, whole ellipses, mirror seeds
+Same corpus (180 ordered parts). All from the sample bytes; each rule checked by exact rebuilds in
+`par_history` where a part reaches it.
+
+* **Extent 14 (through all)** behaves in the corpus as extent 16: in the tank parts (093, 095) a
+  protrusion through all (side 1, with a finite second extent the other way) is a boss only
+  between its profile plane and the dome below it, and a cut through all both ways (side 6) a
+  hole through the dome only; the stored bodies have no material in the hollow below. Written
+  as Gusset's end up to the next face, the through-all reach kept to fall back on; a finite
+  second extent (slot 12 = 13) becomes a blind feature of its own (`_second`). 093 and 095
+  rebuild to 1e-9, 027's cuts through all match too; every part whose ends through all came in
+  before still does (040, 072, 104: the two ends agree there). A protrusion through all along
+  a slanted normal has no reach in the stored box: the reach through all is the fall-back.
+* **Open revolve profiles with both ends off the axis**, on one side of it (091's crown arc,
+  centre 1.77 m away, over a pair of hoops): each end runs on to the box round the profile, the
+  box is followed round on the side slot 5 names.
+* **Whole ellipse members** (55 bytes, a circle's layout): centre, the major axis as a vector,
+  the other semi-axis over it, `u8 1|0` and `01 00 00 80`. A circle is the case of the vector
+  `(r, 0)` and ratio 1; where the vector is not along x or the ratio not 1 (and the bytes are
+  no arc: its sense byte at +34 above 1), the member is a whole ellipse (166, 173 lofts).
+* **Thin wall side 5** (166): the wall outside the body.
+* **Open protrusion profiles** (055: three lines bridging a tube) run on to the body; closed by
+  the line between their ends, which lies inside it.
+* **Drafts** (`JMAddDraftAssocFuntionEx`, so spelt, so the history chain broke at them and the
+  features before were lost: 018, 066, 080): slot 1 the previous feature, 2 the angle (radians,
+  a relation: 15, 10, 25 degrees), 3 the faces drafted (a face set, `JMTransmigrate`), 4 the way
+  (4 or 5), 5 the neutral plane (a plane object), 8 three option values (86, 44, 91|92). 080's
+  draft (way 4, plane z = 0 with normal -z, 15 degrees on the four sides of a block) keeps the
+  stored box only when the sides lean in going up: way 4 is Gusset's draft flipped; way 5 is
+  read as the other sense (no rebuild reaches one).
+* **Mirror copies of several features**: slot 3 lists all of them (152: a protrusion and a
+  revolved cutout); a copied profile's seed is the one whose `Profile2d` lists the copy's
+  first member, not the first listed. 152, 028 and 092 (whose mirrored tabs were the "tabs
+  Solid Edge keeps" of round se5) rebuild so.
+* **Helices**: slot 6 the hand (0 in every sample), 7 the pitch (a length) and 8 the turns,
+  one of them 0 (109: pitch 19.05 mm over 361.95 mm, turns 0; 144, 169, 170: pitch 0 and the
+  turns). The reader took slot 7 for the hand, which held only while it was 0.
+* **Pattern copies' frames**: the fifth byte before `01 01 00 00 00` and the class id is 1 in
+  some copies (109's flats), 0 in most; the frame before it reads the same.
+* Not read: lofts with end conditions (038, 039, 068 differ only there: the stored boxes of the
+  features before agree), sweeps whose path is model edges (168), multi-section sweeps (137),
+  sweeps whose profile lies at a joint of the path (023: two sweeps from the joint would do;
+  its stored body loses faces anyway), ribs and web networks, part copies.

@@ -914,3 +914,60 @@ as ends up to the next face. Measured, so the rule stays as decided in ADR 0061'
 - Synchronous parts 5; round kind 17: 3 (read as kind 1, 051 and 058 reach their rounds, which do
   not build: still unconfirmed, not read); profile reading singletons (members kept elsewhere,
   open revolve profiles, through-all reach along a slanted normal, ...) about 20.
+
+## Amendment (2026-11-19, 23): Solid Edge round se6 - ends through all, mirror seeds, drafts
+
+`gusset_ole::solidedge_features` reads more of a part's history (layout notes F15 of
+`docs/formats/solidedge-feature-tree.md`; clean room, from the sample bytes):
+
+- **Ends through all** (extent 14) are written as ends up to the next face (ADR 0061 amendment),
+  as extent 16 already was, the through-all reach kept to fall back on. Measured on the tank
+  parts: a protrusion through all stops at the first face it meets (093, 095: the stored bodies
+  hold a boss only between the profile plane and the dome) and a cut through all both ways
+  takes only the wall it starts in; both rebuild to 1e-9 so, and 027's cuts match too. A finite
+  second extent becomes a blind feature of its own; along a slanted normal (no reach in the
+  stored box) the reach through all is the fall-back. Every part whose ends through all came in
+  before still does (040, 072, 104).
+- **Mirror copies of several features**: the copied profile's seed is the mirrored feature whose
+  profile lists the copy's first member (the reader took the first listed): 152, 028 and 092
+  rebuild (028's "tabs Solid Edge keeps" of amendment 22 were mirrored tabs on the wrong plane).
+- **Drafts** (`JMAddDraftAssocFuntionEx`, so spelt): a Gusset draft of the stored faces about the
+  neutral plane; the history chain no longer breaks at them (018, 066, 080 lost the features
+  before). 080's way 4 matches its stored boxes flipped; way 5 is the other sense, unconfirmed.
+- **Open profiles**: a revolved cutout's chain with both ends off the axis runs on from both
+  ends (091); a protrusion's open chain is closed between its ends, which lie on the body (055).
+- **Whole ellipse members** (a circle's 55-byte layout with another axis or ratio: 166, 173),
+  **thin walls outside** the body (side 5: 166), **helix pitch** (slot 7; the hand is slot 6:
+  109) and **pattern copies** whose frame end carries a flag byte (109's flats).
+
+No shared code changed (the gusset-xt converter was tried for negative-major-radius tori, which
+091's and 011's stored bodies lose: the faces then convert but the lemon trims wrongly, 2.6e11
+mm3; reverted). The rebuild check is unchanged (volume 2e-5, box 1e-4).
+
+**Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before (3f31fe2): 80
+as history. After: **86 as history**, none lost; new: 027, 093, 095 (ends through all), 028,
+092, 152 (mirror seeds). 94 bodies. 055, 080, 091, 109, 166 and 173 now read every feature and
+stop later (at rounds, a chamfer or a boolean the kernel does not build).
+
+**What blocks the rest (first reasons of the 94 bodies, measured).**
+
+- *Rounds and chamfers the kernel does not build* (37): fillet failed 24, radius too large for
+  the edge 9, chamfers 4 (now 109's too); round edge not found 4 (050 and 061 after features whose stored boxes
+  agree; 136's profile takes a member whose store object is a line of another sketch while
+  `SKETCH.P_B` keeps the ellipse it means, keyed by member and sketch; 173 after a loft along a
+  helical curve), a face with no usable origin 1; thin walls (shell failed) 2.
+- *Rebuilds that differ* (14): 9 by volume - lofts with end conditions (038, 039, 068: every
+  feature before agrees with its stored box), a cut to the next face in a tube (042, as
+  amendment 22), 035's inner skin, 020's last protrusion (its stored box is not a box of the
+  part), 153, 163 and 174 (B-spline profiles whose stored boxes are their poles' and say
+  nothing); 5 whose stored body does not measure (open or inside-out shells after conversion).
+- *Feature kinds not read* (9): part copies 4, simplified base features 2, a smart boss, delete
+  faces, a web network.
+- Synchronous parts 5; round kind 17: 3; booleans the kernel refuses 4 (091's hoops, 160's
+  five 135-degree revolves of one pentagon, 171, 175); sweeps the kernel refuses 2 (023's
+  profile sits at a joint of its path: two sweeps from the joint would do; 169); single
+  profile cases about 13 (members kept only in another sketch or not at all: 010, 012, 015,
+  031; sweeps along model edges or of two sections: 052, 137, 168; lofted cutouts of curves
+  not read: 069, 070; a draft face set with a cylinder band not bounded by circles: 018; an
+  open revolved protrusion: 144; a revolve that crosses its axis in the kernel: 115; a cut
+  before any body: 176).
