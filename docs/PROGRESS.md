@@ -20,12 +20,14 @@ Phase 3 has started (see Next).
   one-way pattern counts and fit spacing, new solid bodies, body mirrors that remove the original, holes to a
   plane or face, and says when a part starts from an imported body (43 parts: not rebuildable); op1 extends the
   face of an extrude to a face (ADR 0061); left: Design
-  Accelerator gear teeth, surface consumers, blends whose supports were used up, tapers, sketch text); Solid Edge 86
-  of 180 measured ordered parts (rounds se1-se6 and op2, ADR 0046 amendments 11-13 and 20-23; op2 builds
+  Accelerator gear teeth, surface consumers, blends whose supports were used up, tapers, sketch text); Solid Edge 89
+  of 180 measured ordered parts (rounds se1-se7 and op2, ADR 0046 amendments 11-13 and 20-24; op2 builds
   rounds OCCT's fillet does not from their corners, ADR 0004 amendment 2026-11-19; se5 reads fast and
   body patterns, leaves curves out and adds the end up to the next face, ADR 0061 amendment; se6 reads
-  ends through all as ends to the next face, mirror copies' own seeds and drafts; left: OCCT fillet
-  failures, lofts with end conditions and other rebuilds that differ, part copies). Sample corpora are
+  ends through all as ends to the next face, mirror copies' own seeds and drafts; se7 reads loft end
+  conditions as Gusset's new loft end tangents, ADR 0017 amendment, and pairs a lofted circle with an
+  outline by length; left: stored bodies gusset-xt cannot measure (40), OCCT fillet failures, rebuilds
+  that differ, an OCCT fuse defect on revolves sharing a cone apex, part copies). Sample corpora are
   openly licensed downloads kept in scratch, never committed. Two in-process import crashes fixed (an
   unbounded face in mass properties, OCCT patch gusset-0005; the hole fit check meshes only the hole's
   face). Some Inventor rules take a value from the part's stored result where the file's record is not

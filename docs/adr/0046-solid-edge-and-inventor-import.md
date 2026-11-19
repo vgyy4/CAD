@@ -971,3 +971,69 @@ stop later (at rounds, a chamfer or a boolean the kernel does not build).
   not read: 069, 070; a draft face set with a cylinder band not bounded by circles: 018; an
   open revolved protrusion: 144; a revolve that crosses its axis in the kernel: 115; a cut
   before any body: 176).
+
+## Amendment (2026-11-19, 24): Solid Edge round se7 - loft end conditions, circles paired by length
+
+`gusset_ole::solidedge_features` reads more of a part's lofts (layout notes F16 of
+`docs/formats/solidedge-feature-tree.md`; clean room, from the sample bytes and the stored
+bodies' loft faces):
+
+- **Loft end conditions**: slots 11 and 14 are the start's and the end's codes, 113 free and 20
+  square to the section with the tangent magnitude in slot 13 or 16. Written as Gusset's new
+  loft end tangents (ADR 0017 amendment: `start_tangent` / `end_tangent`, a multiple of the
+  distance between the two profiles' centres; text, command, tree import, kernel and worker
+  request, golden test). Solid Edge's stored faces are cubic across the sections with the inner
+  rows a third of the tangent from the sections and a free end without bend, which Gusset now
+  builds; their length scale is 0.2-0.3 % longer than the centre distance (a Parasolid rule
+  not recovered), so the rebuilds agree to 7e-6 (038, 039) of the part's volume, inside the
+  unchanged check. Codes other than 20 and 113 (none in the corpus) are refused.
+- **A circle lofted to an outline** of lines and arcs is split into arcs in proportion to the
+  outline's edges, from the outline's start round its sense, and the loft keeps the sections'
+  starts (`aligned`): 068's stored faces split its circle 80/100/80/100 degrees against a
+  rectangle; OCCT's own pairing (at the corners' polar angles) was 110 mm3 off, now 2.2e-6.
+- **A cut before any body** is left out with a note (176's first cutout removes nothing); 176
+  then stops at a profile member kept in no sketch.
+
+Shared code: the kernel (`LoftSpec`, the OCCT shim's loft), the worker protocol (version 13),
+the document (`LoftDef`, text, validation, grammar), the evaluator, the loft command and the
+tree import. The rebuild check is unchanged (volume 2e-5, box 1e-4). Inventor (678 of 1686) and
+SolidWorks (293 of 1352) come in as before, every part with the same outcome.
+
+**Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before (21aacdc): 86
+as history. After: **89 as history**, none lost; new: 038, 039 (loft end tangents), 068 (an end
+tangent and a circle paired by length with a rectangle).
+
+**Tried and measured, not kept.**
+
+- *160's booleans* are an OCCT defect, reproduced outside Gusset: two 135-degree revolves of one
+  regular pentagon, each about one of its edges (adjacent edges), share the pentagon as a start
+  face and a cone apex at the common vertex; OCCT's general fuse returns an empty shape (the
+  builder of solids cannot orient the split faces; four `BOPAlgo_AlertUnableToOrientTheShape`),
+  common gives nothing and each cut gives its argument back, at every fuzzy value from 1e-7 to
+  1e-2; revolves about edges two apart (144 degrees) hang the boolean. Converting the solids to
+  B-splines gives a union, but one whose volume moves by 2e-5 with which argument is converted.
+  Not fixable in Gusset's use of OCCT without an OCCT patch.
+- *111's thin wall*: OCCT's thick solid is invalid; the revolved-cavity fall-back (ADR 0004)
+  refuses its section (concave corners off the axis from the revolved groove). 145's body is
+  polyhedral with dozens of small features: the offset is invalid too.
+- *059*: its first round on a tab rounded on both sides leaves a sliver face without history
+  (an origin from the face it lies on names it); the next round, two fillets of half the tab's
+  width, is a full round of the tab's top, but the base rounds already fill the sides, so a full
+  round leaves a step Solid Edge does not have. Both reverted.
+- *061*: Round_2's edges (the bosses' corners at x = +-101.6) are not edges of the rebuilt body
+  while every stored box agrees; the boss's side face continues past them, so an earlier
+  feature (a cut to the next face or the bosses' extent) differs where the boxes cannot tell.
+
+**What blocks the rest (first reasons of the 91 parts not as history, measured).** Stored bodies
+that do not measure (BLENDED_EDGE faces gusset-xt cannot convert, tori of negative radius, SP
+curves): 40, among them most of the round failures (081-090, 133-135, 177, 178, ...), 050 and
+136. Of the 51 that measure: no feature history 5, feature kinds not read 6, round kind 17: 3;
+fillet or chamfer failures 10 (008, 044, 055, 094, 110; chamfers 007, 019, 112; radius too
+large 167, 170); rebuilds that differ 10 (020, 035, 042, 153, 163, 174 by volume; 054, 056, 060,
+140 whose features give no volume); booleans and sweeps the kernel refuses 3 (160 above; 171, a
+smooth loft through three spline sections whose stored faces are a C2 cubic spline across the
+sections, knots 0, 0.5 and 1 (an interpolating spline with uniform parameters, free ends), which
+bulges about 4 mm further than OCCT's smooth loft, and whose next join is invalid: a Gusset loft
+built that way generalises this round's end tangents and is the next step there; 169); round edges not found 2 (061, 173) and 059; thin walls 2 (111,
+145); profiles 9 (012, 015, 018, 052, 069 and 070 - thirty lofted cutouts each, a feature group
+owner listed among a profile's members -, 144, 168, 176).

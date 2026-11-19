@@ -359,3 +359,25 @@ Same corpus (180 ordered parts). All from the sample bytes; each rule checked by
   features before agree), sweeps whose path is model edges (168), multi-section sweeps (137),
   sweeps whose profile lies at a joint of the path (023: two sweeps from the joint would do;
   its stored body loses faces anyway), ribs and web networks, part copies.
+
+## F16: round se7 (2026-11-19): loft end conditions, circles paired with outlines
+Same corpus (180 ordered parts). From the sample bytes and the stored Parasolid bodies' loft faces.
+
+* **Loft end conditions**: slot 11 (start) and slot 14 (end) are codes, 113 a free end (every
+  loft in the corpus but four ends) and 20 an end square to its section; the magnitudes are
+  slots 13 and 16 (f64, 1.0 when free; 050 keeps -3.25 under a free end, ignored). The stored
+  faces are cubic in the loft direction (one Bezier span, `(0,1)` knots, multiplicity 4): the
+  inner rows of poles sit a third of the tangent from the section rows, the tangent the
+  magnitude times a length within 0.3 % of the distance between the section centres (038:
+  38.217 for 38.100, 039: 52.433 for 52.347; both ends' offsets give the same length, so the
+  ratio of the two magnitudes is exact). A free end has no bend: in 068 (start 20, end 113)
+  the third row is halfway between the second and the fourth, to 1e-4. Read as Gusset's loft
+  `start_tangent` / `end_tangent` (ADR 0017 amendment); 038, 039 and 068 rebuild to 7e-6, 7e-6
+  and 2e-6. Codes seen in the corpus: 113 (280 ends) and 20 (8); any other is refused.
+* **A circle lofted to an outline** (068: a circle of radius 25.4 to a 50.8 x 63.5 rectangle):
+  the stored faces split the circle at 80, 100, 80 and 100 degrees, the rectangle's edges'
+  shares of its perimeter, from the polar angle of the rectangle's first corner (-128.66
+  degrees, the outline's start) round the way the outline runs; within a face, angle and length
+  correspond linearly. OCCT's loft splits the circle at the corners' polar angles instead
+  (77.3 and 102.7 degrees; 110 mm3 off). The reader splits such a circle into those arcs and
+  keeps the sections' starts (`aligned`). 144 is the only other part with such a loft.
