@@ -11,16 +11,17 @@ Phase 3 has started (see Next).
 ## Done
 - Importer status (2026-11-14), feature history that rebuilds under the unchanged strict check:
   Fusion 277 of 318 (paused after rounds 33-34 gained none; docs/formats/fusion-corpus-tally.md);
-  SolidWorks 293 of 1352 (rounds sw1-sw11, ADR 0043; was 85; sw11 reads drafts and fillet edges on pattern copies); Inventor 650 of 1639 on the new corpus
-  and 28 of 47 on the old (rounds ipt1-ipt8 and op1, ADR 0046 amendments 8-10, 15-19; was 263 and 25; ipt4 reads coils,
+  SolidWorks 293 of 1352 (rounds sw1-sw11, ADR 0043; was 85; sw11 reads drafts and fillet edges on pattern copies); Inventor 686 of 1639 on the new corpus
+  and 28 of 47 on the old (rounds ipt1-ipt9 and op1, ADR 0046 amendments 8-10, 15-19, 25; was 263 and 25; ipt4 reads coils,
   embosses, combines, splits and unfolded sheet-metal faces; ipt5 rebuilds derived parts and iPart members
   from their base part in the same folder; ipt6 solves an iPart factory's sketches again for a member's
   row; ipt7 names features through their owned name record, reads body moves and scales, leaves surfaces
   out, fixes trimmed-torus and seam-split blend picks and the order record; ipt8 reads sketch splines,
   one-way pattern counts and fit spacing, new solid bodies, body mirrors that remove the original, holes to a
   plane or face, and says when a part starts from an imported body (43 parts: not rebuildable); op1 extends the
-  face of an extrude to a face (ADR 0061); left: Design
-  Accelerator gear teeth, surface consumers, blends whose supports were used up, tapers, sketch text); Solid Edge 89
+  face of an extrude to a face (ADR 0061); ipt9 reads tapers, face planes of extrudes to and from a face,
+  half-way revolves, lofts, and moves iPart member sketches and holes with their faces; left: Design
+  Accelerator gear teeth, surface consumers, blends whose supports were used up, ISO 7046 tapers, sketch text); Solid Edge 89
   of 180 measured ordered parts (rounds se1-se7 and op2, ADR 0046 amendments 11-13 and 20-24; op2 builds
   rounds OCCT's fillet does not from their corners, ADR 0004 amendment 2026-11-19; se5 reads fast and
   body patterns, leaves curves out and adds the end up to the next face, ADR 0061 amendment; se6 reads
