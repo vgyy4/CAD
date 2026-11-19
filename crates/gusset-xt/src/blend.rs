@@ -17,7 +17,7 @@ use crate::reader::Val;
 /// How deeply supports may nest (a blend on a blend on an offset ...).
 const DEPTH: u32 = 6;
 /// Most rows of one blend surface.
-const MAX_ROWS: usize = 600;
+const MAX_ROWS: usize = 240;
 /// Rounds of adding rows where the surface strays.
 const ROUNDS: usize = 8;
 
@@ -553,6 +553,8 @@ struct Station {
     t: V3,
     row: Row,
     drow: Row,
+    /// The stray of the span this station was inserted into (infinite for the first ones).
+    split: f64,
 }
 
 fn station(g: &Graph, b: u32, x: V3, dir: V3, flip: bool, max_move: f64) -> Option<Station> {
@@ -574,7 +576,7 @@ fn station(g: &Graph, b: u32, x: V3, dir: V3, flip: bool, max_move: f64) -> Opti
             *v = (rp.get(i)?.get(j)? - rm.get(i)?.get(j)?) / span;
         }
     }
-    Some(Station { c, t, row: r0, drow })
+    Some(Station { c, t, row: r0, drow, split: f64::INFINITY })
 }
 
 /// The length of spine between two stations (the arc through both with their tangents).
@@ -641,8 +643,12 @@ fn stray(g: &Graph, b: u32, n: &Nurbs, u0: f64, u1: f64, r: f64, near: V3) -> Op
     let u = 0.5 * (u0 + u1);
     for v in [0.1, 0.5, 0.9] {
         let p = crate::eval::nurbs_surface_at(n, u, v)?;
-        // The nearest spine point to p, from the station's centre.
-        let q = spine_nearest_from(g, b, p, near, 0)?;
+        // The nearest point of the spine (its fitted curve, within 1e-11 m of the true one,
+        // when there is one; else Newton from the station's centre).
+        let q = match spine_point(g, b, p, 1) {
+            Some(q) if norm(sub(q, near)) < 4.0 * r + norm(sub(p, near)) => q,
+            _ => spine_nearest_from(g, b, p, near, 0)?,
+        };
         worst = worst.max((norm(sub(p, q)) - r).abs());
     }
     Some(worst)
@@ -690,11 +696,21 @@ pub(crate) fn blend_surface(g: &Graph, b: u32, hint: &[V3]) -> Option<Nurbs> {
     }
     let spine = g.ptr(b, "spine");
     let flip = g.ch(spine, "sense") == Some(b'-');
-    let pts = spine_points(g, b, hint)?;
-    if pts.len() < 2 {
+    let all = spine_points(g, b, hint)?;
+    if all.len() < 2 {
         return None;
     }
-    let closed = pts.len() > 2 && norm(sub(*pts.first()?, *pts.last()?)) < 1e-9;
+    let closed = all.len() > 2 && norm(sub(*all.first()?, *all.last()?)) < 1e-9;
+    // Rows start at no more than 17 of the samples (both ends kept); the refinement adds rows
+    // where the surface needs them (a long chart's every point made hundreds of rows, slow to
+    // integrate in OCCT's mass properties).
+    let step = (all.len() - 1).div_ceil(16).max(1);
+    let mut pts: Vec<V3> = all.iter().step_by(step).copied().collect();
+    if let (Some(l), Some(p)) = (all.last(), pts.last())
+        && norm(sub(*l, *p)) > 0.0
+    {
+        pts.push(*l);
+    }
     // Stations at the samples; one more beyond each open end when the ball still fits there.
     let mut st: Vec<Station> = Vec::new();
     let n = pts.len();
@@ -740,7 +756,11 @@ pub(crate) fn blend_surface(g: &Graph, b: u32, hint: &[V3]) -> Option<Nurbs> {
             st.push(e);
         }
     }
-    let tol = (1e-6 * r).max(1e-10);
+    // Within 1e-6 of the radius, on numerical supports no finer than their closest points
+    // settle (1e-8 m), and spans no shorter than a fiftieth of the radius.
+    let analytic = unbounded(s1) && unbounded(s2);
+    let tol = (1e-6 * r).max(if analytic { 1e-10 } else { 1e-8 });
+    let shortest = 0.02 * r;
     let mut fit = surface(&st)?;
     for _ in 0..ROUNDS {
         let knots = fit.knots[0].clone();
@@ -753,8 +773,10 @@ pub(crate) fn blend_surface(g: &Graph, b: u32, hint: &[V3]) -> Option<Nurbs> {
                 continue;
             }
             // A span that cannot be measured is left as it is.
-            let e = stray(g, b, &fit, u0, u1, r, s.c).unwrap_or(0.0);
-            if e > tol {
+            let e = if u1 - u0 > 2.0 * shortest { stray(g, b, &fit, u0, u1, r, s.c).unwrap_or(0.0) } else { 0.0 };
+            // Halving a converging span divides its stray by 16: one whose stray did not even
+            // halve since its parent span was split will not settle, and is left as it is.
+            if e > tol && e < 0.5 * s.split.min(t.split) {
                 // The Hermite midpoint predicts the spine there (a long chord of a curved spine
                 // has its midpoint far off it); the corrector may move a quarter chord.
                 let l = gap(s, t);
@@ -763,7 +785,7 @@ pub(crate) fn blend_surface(g: &Graph, b: u32, hint: &[V3]) -> Option<Nurbs> {
                     && dot(sub(m.c, s.c), s.t) > 0.0
                     && dot(sub(t.c, m.c), t.t) > 0.0
                 {
-                    next.push(m);
+                    next.push(Station { split: e, ..m });
                     grew = true;
                 }
             }

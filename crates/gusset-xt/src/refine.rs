@@ -68,11 +68,24 @@ fn pair(g: &Graph, s1: u32, s2: u32) -> Option<Pair> {
         let ours = g.list(blend, "surface").iter().any(|v| matches!(v, Val::Ptr(p) if *p == other));
         (g.type_name(blend)? == "BLENDED_EDGE" && ours).then_some(Pair::Contact { blend, support: other })
     };
+    // Swept and spun surfaces (and offsets of them) keep the chart's fit: their closest points
+    // are a search along the section or profile, and refining 174's extruded-spline edges took
+    // 53 s where the chart's fit takes a tenth of a second.
+    let cheap = |mut s: u32| {
+        for _ in 0..4 {
+            match g.type_name(s) {
+                Some("OFFSET_SURF") => s = g.ptr(s, "surface"),
+                Some("SWEPT_SURF" | "SPUN_SURF") | None => return false,
+                Some(_) => return true,
+            }
+        }
+        false
+    };
     match (g.type_name(s1)?, g.type_name(s2)?) {
         ("BLEND_BOUND", "BLEND_BOUND") => None,
         ("BLEND_BOUND", _) => bound(s1, s2),
         (_, "BLEND_BOUND") => bound(s2, s1),
-        _ => Some(Pair::Surfaces([s1, s2])),
+        _ => (cheap(s1) && cheap(s2)).then_some(Pair::Surfaces([s1, s2])),
     }
 }
 
