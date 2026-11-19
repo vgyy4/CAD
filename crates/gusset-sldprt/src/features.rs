@@ -1221,6 +1221,22 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
     Some(g)
 }
 
+/// The centre of the first box object of a span (`01 00 TT 8X 01 00 00 00`, then the centre and
+/// the diagonal, m; as a contour's box), in mm.
+fn revolve_box_centre(d: &[u8], a: usize, b: usize) -> Option<V3> {
+    (a..b.min(d.len()).saturating_sub(40)).find_map(|q| {
+        let head = d.get(q..q + 8)?;
+        if head.get(..2) != Some(&[1, 0][..])
+            || head.get(3).is_none_or(|b| b & 0x80 == 0)
+            || head.get(4..) != Some(&[1, 0, 0, 0][..])
+        {
+            return None;
+        }
+        let v = f64s_at::<4>(d, q + 8)?;
+        (v.iter().all(|x| x.is_finite() && x.abs() < 10.0) && v[3] > 0.0).then(|| [v[0], v[1], v[2]].map(mm))
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Plane {
     feature_id: Option<u32>,
@@ -4275,17 +4291,51 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 } else if first.is_some_and(one_sided) {
                     first
                 } else {
-                    (0..g.segs.len())
-                        .find(|&k| {
+                    // Centerlines before construction lines (Linear Bearing Inner: a centerline
+                    // across the profile, a construction line at its end, then the axis).
+                    let one_sided_of = |centerline: bool| {
+                        (0..g.segs.len()).find(|&k| {
                             g.segs.get(k).is_some_and(|s| {
-                                line(s) && s.id != 0xffff_ffff && (s.centerline || s.construction) && one_sided(k)
+                                line(s)
+                                    && s.id != 0xffff_ffff
+                                    && (s.centerline || (!centerline && s.construction))
+                                    && one_sided(k)
                             })
                         })
+                    };
+                    one_sided_of(true)
+                        .or_else(|| one_sided_of(false))
                         .or_else(|| {
                             (0..g.segs.len())
                                 .find(|&k| g.segs.get(k).is_some_and(|s| line(s) && on_sketch_axis(s)) && one_sided(k))
                         })
                         .or(first)
+                };
+                // A full revolve writes its body's box (centre and diagonal, model space); the
+                // centre lies on the axis. Where the line chosen above misses it, the line through
+                // it with the profile on one side is the axis (126p-door-stop-roller: a profile
+                // edge off the sketch's axes; 126p-rosette: a lone line).
+                let full = ang.is_none_or(|v| (v.abs() - TAU).abs() < 1e-9);
+                let through = |k: usize, c: V3| -> bool {
+                    let (Some(s), Some(&(_, jp))) =
+                        (g.segs.get(k).filter(|s| line(s)), sketch_by_name.get(last_sketch.as_deref().unwrap_or("")))
+                    else {
+                        return false;
+                    };
+                    let model =
+                        |q: Pt| -> V3 { comb(comb(jp.origin, 1.0, jp.x, q.x * 1000.0), 1.0, jp.y, q.y * 1000.0) };
+                    let (Some(p), Some(q)) = (point(&g.pts, s.s), point(&g.pts, s.e)) else { return false };
+                    let (p, q) = (model(p), model(q));
+                    let u = sub(q, p);
+                    let len = dot(u, u).sqrt();
+                    let w = cross(sub(c, p), u);
+                    len > 1e-9 && dot(w, w).sqrt() / len < 1e-5
+                };
+                let axis = match (named, revolve_box_centre(rf, a, b)) {
+                    (None, Some(c)) if full && !axis.is_some_and(|k| through(k, c)) => (0..g.segs.len())
+                        .find(|&k| g.segs.get(k).is_some_and(|s| s.id != 0xffff_ffff) && through(k, c) && one_sided(k))
+                        .or(axis),
+                    _ => axis,
                 };
                 let axis_json = match (axis, named) {
                     (Some(k), _) => json!({"line": format!("c{k}")}),
