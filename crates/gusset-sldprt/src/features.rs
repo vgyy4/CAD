@@ -1108,8 +1108,12 @@ fn payload(d: &[u8], h: usize) -> Option<(Option<usize>, bool)> {
         let marked = d.get(p..p + 8).is_some_and(|w| {
             w.first() == Some(&0) && w.get(1).is_some_and(|&b| b != 0) && w.iter().skip(2).all(|&b| b == 0)
         });
+        // A converted segment marks itself the same way (Back_sup_low's base line, byte 4): its
+        // payload is two point indices, the word 1 or 0 and -1.0.
         let q = after(p + 16);
-        if marked && d.get(p + 8..p + 16) == ONE.get(8..) && matches!(u16_at(d, q), Some(0x1e | 0x1f)) {
+        let point = matches!(u16_at(d, q), Some(0x1e | 0x1f));
+        let segment = u16_at(d, q + 4).is_some_and(|w| w <= 1) && f64_at(d, q + 8).is_some_and(|m| is(m, -1.0));
+        if marked && d.get(p + 8..p + 16) == ONE.get(8..) && (point || segment) {
             return Some((Some(q), true));
         }
     }
