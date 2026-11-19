@@ -1372,3 +1372,72 @@ Gained (sw-more): am-1305 500 Hex Spacer (draft, then a fillet with edges on pat
 drafts stop elsewhere: the HTD pulley at a circular pattern of a whole body (CirPattern3), the Lego arm at a
 3D-sketch loft, the SHARP sensor at an imported surface (their Draft2/3 have neutral faces the reader cannot place).
 4in 2013 Hub, refused before at Split1, now stops earlier: its fillet's pattern-copy edges exceed the work budget.
+## L23. Round 17 (sw12: volume mismatches by face lists, split lines, second directions)
+Measured from round sw11's logs (293 of 1352): of the refusals that are not STEP imports (550, "the history is the
+imported bodies only"), the largest groups were volume mismatches (96), fillet/chamfer edges (about 80) and
+feature kinds the reader refuses (148). The volume mismatches were compared face by face: the part's stored body
+and the unchecked tree's rebuild, each face's kind, area and centroid (a scratch harness over the session's
+topology), which names the feature that differs.
+
+* **Split lines** (`moPLine_c`, 8 parts, 6 of them the V-Slot extrusions' fixture lines): skipped like sketches;
+  every one of the 7 whose other features build gives the stored body's volume and box.
+* **A fillet's own face records.** Newer files write, before the picked edges, one record per face the fillet or
+  chamfer made: the face (the feature's own id, its face number) and its four neighbours, or a neighbour's
+  description that mentions the new faces. `selection` started at the first of those, read one edge from it (round
+  sw9's "own face first" rule) and ended the run there (they are 284 bytes apart). Power Supply Unit's Fillet1:
+  four such records, then the four corner edges 132 bytes apart; RobotSocketMotor's Fillet1 likewise. The run now
+  starts at the first record that names none of the feature's own faces, where there is one.
+* **Pieces of a revolved circle.** An edge record of a full revolve's circle whose vertex faces are other features'
+  faces names a piece of the circle (the nut's rims, cut by its flats into two arcs each; records 3 and 5 differ
+  only in the order of the vertex faces). The piece runs from the first vertex face's plane to the second with the
+  first face on its left (the cross of the outward normals along the run, the round sw5 rule), the shortest such
+  run.
+* **Drill angle.** A hole wizard's `Drill Angle` parameter (rad) is the point angle; 180 degrees is a flat bottom
+  (GripperbaseNEW's 2 mm holes: volume, area and face count then equal the body's). Seen values: 118, 180, and 0
+  in files where the angle is not used (kept at 118).
+* **Second direction.** An extrude whose named parameters start with `D1` and include `D2` runs `D2` to the other
+  side of its sketch (tree `distance2`): the pulleys' hubs (2 mm one way, 7 mm the other: the stored body has the
+  hub on both faces), gt2_pulley 2's slot (10 mm each way), Part8, Leadscrew Nut, 126p-zawias. Round sw2 had read a
+  cut's `D2` as a start offset from idler_single_v1's bore (10 mm and 1 mm), which gives the same solid there; the
+  start offset is now a later `D<n>` only (MicroGearMotor's `D19`). A thin feature's parameters start with
+  `Thickness` and are left alone.
+* **End type 2 on a boss** is up to the next face (`to_next`, ADR 0061 amendment), with the reach through all as
+  the fallback: mid_elbow's and mid_RT_Shoulder's pins ran 360 mm out of a 35 mm part. One pin of each starts
+  inside the body, where Gusset's up-to-next refuses, so those parts still differ.
+* **Projected points without an object chain.** A sketch point of a projected entity writes a nonzero byte (1 in
+  older files, 3 in newer) at the second byte of the 0.0 before its payload instead of an object chain; the reader
+  took that for a chain and searched on for the next 0.0/1.0 pair, so the point got the next entity's coordinates.
+  A circle centred on it lost its centre to its own start point (dropped as a circle through its centre) or got a
+  wrong radius: the 126p rods' groove (circles of 2.85 and 4 mm about the rod axis, read as one of 1.15 mm about a
+  point on the first), 5 Hole 90 Degree Joining Plate.
+* **Variable fillets, measured not wired.** In r3's VarFillet2 each `moVertDim_c` holds its radius parameter (`D0`,
+  `D01`, ...) and then a record of the faces that meet at its vertex: the edge's two faces and the vertex faces at
+  that end (four references at the end on Boss-Extrude1's sides, three at the end on the dish). Matching those with
+  the edge record's two end faces says which end each radius belongs to (0.4 mm at the sides, 2 mm at the dish).
+  Not written: none of the variable-fillet parts can pass the rebuild check yet. The 14 r3 keycaps' stored bodies
+  do not convert (gusset-xt: a torus with a negative major radius, the dish arc centred 0.8 mm off the axis;
+  `BLENDED_EDGE` surfaces of the variable fillet; `SP_CURVE` edges): the body comes out a sheet of volume 0.
+  126p-visor-mount has a radius of 0, OeMga's middle two edges of its variable fillet the reader cannot name.
+* **Left, with their causes.** The OpenBuilds ball bearings (4 parts): Chamfer1 lists eight edge records but the
+  stored body has four of the chamfers (volume, area, face count and centroid match exactly records 1, 5, 7 and 8);
+  no byte found tells the other four apart. stepper motor shaft (2): OCCT's cut by a D-profile whose arc lies on
+  the shaft's cylinder leaves a sliver face, and the next fillet then rebuilds without the cut (kernel). Retainer:
+  its hexagon pockets are drawn smaller than the body has them (inradius 2.17 against 2.33 mm). piston: the stored
+  holes sit one degree round from the pattern as read. Toolbox screws and gears (about 12): their sketches keep only
+  dimensions in the configuration stream, no geometry.
+
+**Coverage after the round** (rebuild check unchanged):
+
+| corpus | round sw11 | round sw12 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 253 / 1253 | **274** / 1253 |
+| all | 293 / 1352 | **314** / 1352 |
+
+Gained (sw-more, 21): split lines 7 (Practice Model - Lego Head1, the six V-Slot extrusions), own face records 4
+(CIM Motor SW, Power Supply Unit, RobotSocketMotor, Sensor holder), revolved circle pieces (nut), drill angle (GripperbaseNEW), second directions 6 (pulley_large, pulley_small, gt2_pulley 2, Part8, Leadscrew
+Nut, 126p-zawias-klapy-silnika), projected points 2 (126p-sunshield-diy-rod, 126p-visor-diy-rod). None lost.
+StationUpper and 5 Hole 90 Degree Joining Plate rebuild to the body's volume from the tree alone but not through
+the part import (stored bodies there); mid_elbow and mid_RT_Shoulder keep one pin each that starts inside the body.
