@@ -1020,6 +1020,12 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         let rev = (s.get(3).and_then(|i| r.dc.r(i).last().copied()) == Some(1)) != away;
         let both = s.get(7).and_then(|i| r.dc.r(i).last().copied()) == Some(1);
         let dist = r.param(&s, 4)? * CM;
+        // Slot 5: the taper (radians; positive widens the solid away from its sketch, note AS).
+        let taper = s.get(5).filter(|&i| r.dc.role(i) == Role::Param).and_then(|i| r.dc.param(i)).map_or(0.0, |p| p.1);
+        let taper = if taper.abs() > 1e-12 { taper.to_degrees() } else { 0.0 };
+        if taper != 0.0 {
+            put(&mut j, "taper_deg", json!(rnd(taper)));
+        }
         match ext(s.get(6)) {
             Some(2) => {
                 put(&mut j, "distance", json!(rnd(dist)));
@@ -1058,7 +1064,7 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                 put(&mut j, "symmetric", json!(false));
                 // Up to the face it ran to, as the result shows it (notes AB); the measured
                 // reach is the blind form the caller falls back to.
-                match measured.map(|d| (d, r.sweep_end_pick(&sketch, fid))) {
+                match measured.map(|d| (d, (taper == 0.0).then(|| r.sweep_end_pick(&sketch, fid)).flatten())) {
                     Some((d, Some(face))) => {
                         put(&mut j, "end_condition", json!("to_face"));
                         put(&mut j, "face", face);
@@ -1068,6 +1074,11 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                         put(&mut j, "extend", json!(true));
                         put(&mut j, "_blind", json!(rnd(d)));
                     }
+                    // A tapered extrude is blind (Gusset tapers no extrude that ends on a face).
+                    // Its faces' corners may stop short of where its walls meet a curved end
+                    // face (a cross recess filled up to its cone): a join runs on into the
+                    // material behind that face.
+                    Some((d, None)) if taper != 0.0 && op == "join" => put(&mut j, "distance", json!(rnd(d * 1.1))),
                     Some((d, None)) => put(&mut j, "distance", json!(rnd(d))),
                     None => {}
                 }
