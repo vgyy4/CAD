@@ -1090,6 +1090,14 @@ fn a_second_boss_length_is_the_other_side() {
     let t = history(&feature_stream(&[])).unwrap().unwrap();
     let f = t["features"].as_array().unwrap().iter().find(|x| x["name"] == "Boss-Extrude1").unwrap().clone();
     assert!(f.get("distance2").is_none(), "{f}");
+    // A depth that is not the first named parameter (a thin feature's `Thickness`) is not one.
+    let mut v = feature_stream(&[]);
+    let at = v.windows(4).position(|w| w == [b'D', 0, b'1', 0]).unwrap();
+    v.splice(at - 6..at + 4, node_name("Thickness"));
+    v.extend(parameter("D2", 0.002));
+    let t = history(&v).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap().iter().find(|x| x["name"] == "Boss-Extrude1").unwrap().clone();
+    assert!(f.get("distance2").is_none(), "{f}");
 }
 
 /// A split line (`moPLine_c`) only divides faces: it is left out like a sketch, where an

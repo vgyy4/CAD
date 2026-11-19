@@ -4047,15 +4047,18 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     }
                 }
             }
-            // A blind cut with a second length (`D2`, or `D<n+1>` after the `n` dimensions of its
-            // own sketch) starts that far from its sketch plane. With an end spec of X 1 the start
+            // A blind cut with a further length (`D<n+1>` after the `n` dimensions of its own
+            // sketch) starts that far from its sketch plane. With an end spec of X 1 the start
             // lies ahead along the cut direction (MicroGearMotor Cut-Extrude2: D1 4.25 mm, offset
             // 0.8 mm, the void spans z -5.05 .. -0.8 from the Front plane); with X 0 it lies
-            // behind (idler_single_v1: D1 10 mm, D2 1 mm, the truth's bore spans x -1 .. 2.9 from
-            // the Right plane, running along the normal).
+            // behind. `D2` is the second direction's length instead (below; round sw12:
+            // gt2_pulley 2's Cut-Extrude5, 10 mm each way; idler_single_v1's bore, 10 mm one way
+            // and 1 mm the other, which round sw2 read as a start 1 mm behind: the same solid).
             let start_offset = named_params(rf, a, b, nt)?
                 .iter()
-                .find(|(k, _)| k.strip_prefix('D').is_some_and(|n| n != "1" && n.bytes().all(|c| c.is_ascii_digit())))
+                .find(|(k, _)| {
+                    k.strip_prefix('D').is_some_and(|n| n != "1" && n != "2" && n.bytes().all(|c| c.is_ascii_digit()))
+                })
                 .map(|(_, v)| mm(*v))
                 .filter(|_| op == "cut" && typ == Some(0) && !symmetric);
             if let (Some(off), Some(sk), Some(d)) = (start_offset, last_sketch.as_ref(), distance)
@@ -4119,11 +4122,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 }
             } else {
                 js.insert("distance".into(), json!(distance));
-                // A blind boss with a second length `D2` runs that far to the other side of its
+                // A blind extrude with a second length `D2` runs that far to the other side of its
                 // sketch too (SolidWorks' "Direction 2": the pulleys' hubs, 2 mm one way and 7 mm
-                // the other). Cuts read `D2` as a start offset (above).
-                if op != "cut"
-                    && typ == Some(0)
+                // the other).
+                if typ == Some(0)
                     && !symmetric
                     && let Some(d) = distance.filter(|d| d.abs() > 1e-9)
                     && let named = named_params(rf, a, b, nt)?
