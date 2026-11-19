@@ -351,13 +351,15 @@ pub fn sweep(p: &ProfileData, path: &SweepPath<'_>, follow: bool, twist: f64) ->
 
 /// Lofts through the sections (one region each); `aligned` keeps the sections' own alignment
 /// (their wires correspond from their starts) instead of realigning them.
-pub fn loft(sections: &[ProfileData], ruled: bool, aligned: bool) -> ShimResult<OpOut> {
+/// `tangents`: the start and end tangent magnitudes, 0 for a free end (two sections only).
+pub fn loft(sections: &[ProfileData], ruled: bool, aligned: bool, tangents: [f64; 2]) -> ShimResult<OpOut> {
     let raws: Vec<GsProfile> = sections.iter().map(ProfileData::raw).collect();
     let mut out = std::ptr::null_mut();
     let mut origins = GsBuf::default();
+    let [t0, t1] = tangents;
     // SAFETY: `raws` points into the sections' vectors, alive for the call.
     let rc = unsafe {
-        sys::gs_loft(raws.as_ptr(), raws.len(), i32::from(ruled), i32::from(aligned), &mut out, &mut origins)
+        sys::gs_loft(raws.as_ptr(), raws.len(), i32::from(ruled), i32::from(aligned), t0, t1, &mut out, &mut origins)
     };
     check(rc)?;
     Ok((RawShape::from_ptr(out)?, take(origins)))

@@ -426,7 +426,7 @@ revolve Revolve1 (profile: Sketch1, axis: Sketch1.l8, angle: 360 deg, op: new, b
 
 ```
 sweep <Name> (profile: <P>, path: <path>, [orientation: frenet|fixed], [twist: <angle>], [op: ...], [body: ...], [body_name: ...], [refine: false])
-loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [aligned: true], [op: ...], [body: ...], [body_name: ...], [refine: false])
+loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [aligned: true], [start_tangent: <n>], [end_tangent: <n>], [op: ...], [body: ...], [body_name: ...], [refine: false])
 ```
 
 - `sweep` moves a closed profile along a path. `<path>` is a sketch (`Path`: all its curves must
@@ -449,6 +449,11 @@ loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [aligned: true], [op: ..
   surface passes through all of them. The sections are normally aligned to run untwisted;
   `aligned: true` keeps them as drawn instead: their outlines correspond edge for edge from
   their start points, so a twist between them stays (an imported loft joined that way).
+- `start_tangent: <n>` and `end_tangent: <n>` (a smooth loft of two profiles only) make the loft
+  leave its first profile, or reach its last, square to the profile's plane, with a tangent `n`
+  times the distance between the two profiles' centres (above 0, at most 100; 1 is a gentle
+  bulge, larger numbers carry the direction further). An end without one is free: the surface
+  does not bend there, so a loft with neither is the straight one.
 - Faces: both give `<Feature>/cap(start)` and `cap(end)`. Sweep sides are
   `<Feature>/side(<profile sketch>/<entity>)`, plus `_p1`, `_p2`, ... on the entity when the
   path has several edges (`side(Profile/c2_p1)` is the second path edge). Loft sides are named

@@ -611,10 +611,12 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     #[test]
     fn sweep_and_loft_round_trip_and_are_validated() {
         let ok = format!(
-            "{SWEEP_BASE}sweep S1 (profile: P.regions(c2), path: Q.curves(l4, l5), orientation: frenet, twist: turn, op: new, body_name: Pipe)\n\nsweep S2 (profile: P, path: Q, orientation: fixed, op: add, body: S1)\n\nsweep S3 (profile: P, path: [edge(S1/cap(end), S1/side(P/c2)), edge(S1/cap(end), S1/side(P/c2_p1))], orientation: frenet, op: add, body: S1)\n\nloft L1 (profiles: [P, P.regions(c2)], ruled: true, aligned: true, op: new)\n"
+            "{SWEEP_BASE}sweep S1 (profile: P.regions(c2), path: Q.curves(l4, l5), orientation: frenet, twist: turn, op: new, body_name: Pipe)\n\nsweep S2 (profile: P, path: Q, orientation: fixed, op: add, body: S1)\n\nsweep S3 (profile: P, path: [edge(S1/cap(end), S1/side(P/c2)), edge(S1/cap(end), S1/side(P/c2_p1))], orientation: frenet, op: add, body: S1)\n\nloft L1 (profiles: [P, P.regions(c2)], ruled: true, aligned: true, op: new)\n\nloft L2 (profiles: [P, P.regions(c2)], start_tangent: 1.1011466735541613, end_tangent: 0.5, op: new)\n"
         );
         let doc = Document::from_text(&ok).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Loft(l) = &doc.feature("L2").unwrap().kind else { panic!() };
+        assert_eq!((l.start_tangent, l.end_tangent), (Some(1.1011466735541613), Some(0.5)));
         let FeatureKind::Sweep(d) = &doc.feature("S1").unwrap().kind else { panic!() };
         assert_eq!(d.path, PathRef::Sketch { sketch: "Q".into(), curves: vec!["l4".into(), "l5".into()] });
         assert_eq!(d.orientation, Orientation::Frenet);
@@ -651,6 +653,10 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             ("sweep S1 (profile: P, path: Q, body_name: B, op: add)", "only be used with op: new"),
             ("loft L1 (profiles: [P], op: new)", "at least two"),
             ("loft L1 (profiles: [P, Q], op: cut)", "needs an existing body"),
+            ("loft L1 (profiles: [P, Q, P], start_tangent: 1, op: new)", "exactly two profiles"),
+            ("loft L1 (profiles: [P, Q], ruled: true, end_tangent: 1, op: new)", "exactly two profiles"),
+            ("loft L1 (profiles: [P, Q], start_tangent: 0, op: new)", "above 0"),
+            ("loft L1 (profiles: [P, Q], end_tangent: 101, op: new)", "at most 100"),
         ] {
             let d = text::parse(&format!("{SWEEP_BASE}{bad}\n")).unwrap_or_else(|e| panic!("{bad}: {e}"));
             let issues = validate::validate(&d);
@@ -665,6 +671,7 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             "loft L1 (profiles: P)",
             "loft L1 (profiles: [P, ])",
             "loft L1 (profiles: [P, P], twist: 1 deg)",
+            "loft L1 (profiles: [P, P], start_tangent: big)",
         ] {
             assert!(text::parse(&format!("{SWEEP_BASE}{bad}\n")).is_err(), "{bad}");
         }

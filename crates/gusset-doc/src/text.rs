@@ -612,6 +612,12 @@ fn print_feature(out: &mut String, f: &Feature) {
             if d.aligned {
                 args.push("aligned: true".into());
             }
+            if let Some(t) = d.start_tangent {
+                args.push(format!("start_tangent: {t}"));
+            }
+            if let Some(t) = d.end_tangent {
+                args.push(format!("end_tangent: {t}"));
+            }
             args.push(format!("op: {}", d.op.keyword()));
             push_body(&mut args, &d.body);
             if let Some(b) = &d.body_name {
@@ -1880,13 +1886,17 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
     let mut twist = None;
     let mut ruled = false;
     let mut aligned = false;
+    let mut start_tangent = None;
+    let mut end_tangent = None;
     let mut op = None;
     let mut body = None;
     let mut body_name = None;
     let mut refine = true;
     let allowed = match kw {
         "sweep" => "profile, path, orientation, twist, op, body, body_name, refine, label, group, suppressed",
-        _ => "profiles, ruled, aligned, op, body, body_name, refine, label, group, suppressed",
+        _ => {
+            "profiles, ruled, aligned, start_tangent, end_tangent, op, body, body_name, refine, label, group, suppressed"
+        }
     };
     parse_args(c, |key, c| {
         match (kw, key) {
@@ -1929,6 +1939,8 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             }
             ("loft", "ruled") => ruled = parse_bool(c)?,
             ("loft", "aligned") => aligned = parse_bool(c)?,
+            ("loft", "start_tangent") => start_tangent = Some(c.number()?),
+            ("loft", "end_tangent") => end_tangent = Some(c.number()?),
             (_, key) => return Err(unknown_arg(c, kw, key, allowed)),
         }
         Ok(())
@@ -1952,6 +1964,8 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             profiles: profiles.ok_or_else(|| missing(c, kw, "profiles"))?,
             ruled,
             aligned,
+            start_tangent,
+            end_tangent,
             op,
             body,
             body_name,

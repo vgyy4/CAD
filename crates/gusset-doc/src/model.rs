@@ -1239,6 +1239,12 @@ pub struct LoftDef {
     /// Keep the profiles' alignment: their outlines correspond from their start points, so a
     /// twist between them stays (imported lofts whose source joins the sections that way).
     pub aligned: bool,
+    /// The loft leaves its first profile along the profile's normal, with a tangent this many
+    /// times the distance between the two profiles' centres (two profiles, not ruled); `None`
+    /// leaves the end free (ADR 0017 amendment).
+    pub start_tangent: Option<f64>,
+    /// As `start_tangent`, where the loft reaches its last profile.
+    pub end_tangent: Option<f64>,
     pub op: BodyOp,
     pub body: Option<String>,
     /// Name of the body this feature creates (`op: new` only); `None` = the feature name.
@@ -1249,6 +1255,9 @@ pub struct LoftDef {
 
 /// Most profiles one loft may use.
 pub const MAX_LOFT_PROFILES: usize = 64;
+
+/// Largest loft end tangent, as a multiple of the distance between the profiles.
+pub const MAX_LOFT_TANGENT: f64 = 100.0;
 
 /// Fillet (size = radius) or chamfer (size = distance).
 #[derive(Debug, Clone, PartialEq)]

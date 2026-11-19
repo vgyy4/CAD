@@ -260,7 +260,23 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 let target = BodyTarget { op: *op, body: body.as_deref(), body_name: body_name.as_deref() };
                 check_body_op(n, &target, live_bodies, &seen, &consumed, &mut out);
             }
-            FeatureKind::Loft(LoftDef { profiles, op, body, body_name, .. }) => {
+            FeatureKind::Loft(LoftDef { profiles, op, body, body_name, ruled, start_tangent, end_tangent, .. }) => {
+                for t in [start_tangent, end_tangent].into_iter().flatten() {
+                    if !(t.is_finite() && *t > 0.0 && *t <= MAX_LOFT_TANGENT) {
+                        out.push(issue_h(
+                            n,
+                            format!("end tangent {t}: it must be above 0 and at most {MAX_LOFT_TANGENT}"),
+                            "give it as a multiple of the distance between the sections, e.g. 1",
+                        ));
+                    }
+                }
+                if (start_tangent.is_some() || end_tangent.is_some()) && (profiles.len() != 2 || *ruled) {
+                    out.push(issue_h(
+                        n,
+                        "end tangents need exactly two profiles and a smooth (not ruled) loft",
+                        "loft between two profiles, or leave the ends free",
+                    ));
+                }
                 if profiles.len() < 2 {
                     out.push(issue_h(
                         n,

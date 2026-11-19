@@ -170,6 +170,13 @@ pub(super) struct LoftF {
     /// lofts joined at their connectors).
     #[serde(default)]
     aligned: bool,
+    /// The loft leaves its first section square to it, tangent this many times the distance
+    /// between the two sections (Solid Edge's end conditions); free if absent.
+    #[serde(default)]
+    start_tangent: Option<f64>,
+    /// As `start_tangent`, arriving at the last section.
+    #[serde(default)]
+    end_tangent: Option<f64>,
     #[serde(default)]
     operation: Option<String>,
     #[serde(default)]
@@ -1382,6 +1389,14 @@ pub(super) fn loft(g: &mut Gen, s: &Session, d: &LoftF) -> Result<(), String> {
     }
     if d.aligned {
         args.push("aligned: true".into());
+    }
+    for (key, t) in [("start_tangent", d.start_tangent), ("end_tangent", d.end_tangent)] {
+        if let Some(t) = t {
+            if !t.is_finite() {
+                return Err(format!("its {key} is not a number"));
+            }
+            args.push(format!("{key}: {t}"));
+        }
     }
     args.push(format!("op: {op}"));
     if op != "new"

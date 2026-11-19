@@ -199,6 +199,8 @@ mod raw {
             nsections: usize,
             ruled: i32,
             aligned: i32,
+            start_tangent: f64,
+            end_tangent: f64,
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;

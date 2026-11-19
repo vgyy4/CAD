@@ -108,6 +108,13 @@ pub struct Loft {
     /// Straight instead of smooth surfaces.
     #[serde(default)]
     pub ruled: bool,
+    /// Two smooth profiles only: leave the first square to its plane, tangent this many times
+    /// the distance between the profiles (free end if absent).
+    #[serde(default)]
+    pub start_tangent: Option<f64>,
+    /// As start_tangent, arriving at the last profile.
+    #[serde(default)]
+    pub end_tangent: Option<f64>,
     /// new (default), add, cut, intersect.
     #[serde(default)]
     pub op: Option<String>,
@@ -134,6 +141,18 @@ impl Command for Loft {
         if self.profiles.len() > MAX_LOFT_PROFILES {
             return Err(CommandError::args(format!("at most {MAX_LOFT_PROFILES} profiles per loft")));
         }
+        for t in [self.start_tangent, self.end_tangent].into_iter().flatten() {
+            if !(t.is_finite() && t > 0.0 && t <= MAX_LOFT_TANGENT) {
+                return Err(CommandError::args(format!(
+                    "end tangent {t}: it must be above 0 and at most {MAX_LOFT_TANGENT}"
+                ))
+                .hint("give it as a multiple of the distance between the profiles, e.g. 1"));
+            }
+        }
+        if (self.start_tangent.is_some() || self.end_tangent.is_some()) && (self.profiles.len() != 2 || self.ruled) {
+            return Err(CommandError::args("end tangents need exactly two profiles and a smooth (not ruled) loft")
+                .hint("loft between two profiles, or leave the ends free"));
+        }
         let profiles = self
             .profiles
             .iter()
@@ -156,6 +175,8 @@ impl Command for Loft {
                         profiles,
                         ruled: self.ruled,
                         aligned: false,
+                        start_tangent: self.start_tangent,
+                        end_tangent: self.end_tangent,
                         op,
                         body,
                         body_name,

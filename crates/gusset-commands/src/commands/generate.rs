@@ -371,6 +371,8 @@ impl Command for GenerateGear {
                         profiles: vec![profile, ProfileRef { sketch: toe_sk, regions: vec![toe.region], face: None }],
                         ruled: true,
                         aligned: false,
+                        start_tangent: None,
+                        end_tangent: None,
                         op: BodyOp::New,
                         body: None,
                         body_name: None,

@@ -741,10 +741,22 @@ impl Wire for LoftSpec {
     fn put(&self, w: &mut Writer, _s: &dyn ShapeRefs) -> Result<(), WireError> {
         w.bool(self.ruled);
         w.bool(self.aligned);
+        // 0 stands for a free end (a set tangent is positive).
+        w.f64(self.start_tangent.unwrap_or(0.0));
+        w.f64(self.end_tangent.unwrap_or(0.0));
         Ok(())
     }
     fn get(r: &mut Reader<'_>, _s: &dyn ShapeRefs) -> Result<Self, WireError> {
-        Ok(LoftSpec { ruled: r.bool()?, aligned: r.bool()? })
+        let (ruled, aligned) = (r.bool()?, r.bool()?);
+        let mut tangent = || -> Result<Option<f64>, WireError> {
+            let t = r.f64()?;
+            if !t.is_finite() || t < 0.0 {
+                return Err(WireError("a loft end tangent is not a positive number".into()));
+            }
+            Ok((t > 0.0).then_some(t))
+        };
+        let (start_tangent, end_tangent) = (tangent()?, tangent()?);
+        Ok(LoftSpec { ruled, aligned, start_tangent, end_tangent })
     }
 }
 
@@ -1283,8 +1295,10 @@ mod tests {
         rt(&ChamferSpec::Equal(1.5));
         rt(&ChamferSpec::TwoDistances { first: 2.0, second: 3.0 });
         rt(&ChamferSpec::DistanceAngle { distance: 2.0, angle: 0.5 });
-        rt(&LoftSpec { ruled: true, aligned: false });
-        rt(&LoftSpec { ruled: false, aligned: true });
+        rt(&LoftSpec { ruled: true, aligned: false, ..LoftSpec::default() });
+        rt(&LoftSpec { ruled: false, aligned: true, ..LoftSpec::default() });
+        rt(&LoftSpec { start_tangent: Some(1.25), end_tangent: None, ..LoftSpec::default() });
+        rt(&LoftSpec { start_tangent: None, end_tangent: Some(0.5), ..LoftSpec::default() });
         rt(&TessellationParams::default());
         rt(&TessellationParams { linear_deflection: 1e-6, angular_deflection: 3.0 });
         for (origin, normal) in [([0.0; 3], [0.0, 0.0, 1.0]), ([1.0, 2.0, 3.0], [1.0, 1.0, 0.0])] {

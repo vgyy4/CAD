@@ -553,7 +553,23 @@ mod imp {
                 }
                 data.push(profile_data(s)?);
             }
-            op_result(ffi::loft(&data, spec.ruled, spec.aligned)?)
+            let mut tangents = [0.0; 2];
+            for (t, given) in tangents.iter_mut().zip([spec.start_tangent, spec.end_tangent]) {
+                if let Some(m) = given {
+                    if !(m.is_finite() && m > 0.0 && m <= MAX_LOFT_TANGENT) {
+                        return Err(invalid(format!(
+                            "a loft end tangent must be above 0 and at most {MAX_LOFT_TANGENT}"
+                        ))
+                        .with_hint("give the tangent as a multiple of the distance between the sections, e.g. 1"));
+                    }
+                    *t = m;
+                }
+            }
+            if tangents != [0.0; 2] && (sections.len() != 2 || spec.ruled) {
+                return Err(invalid("loft end tangents need exactly two profiles and a smooth (not ruled) loft")
+                    .with_hint("loft between two profiles, or leave the ends free"));
+            }
+            op_result(ffi::loft(&data, spec.ruled, spec.aligned, tangents)?)
         }
 
         fn boolean(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {

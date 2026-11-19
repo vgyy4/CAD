@@ -1738,6 +1738,133 @@ void carry_recs(BRepAlgoAPI_BuilderAlgo& op, std::vector<Rec>& recs) {
   recs = out;
 }
 
+// A lateral face of a two-section loft as rows of B-spline poles: its edge on the first
+// section and its edge on the second, with the same knots and weights so that their poles
+// correspond. The face's iso curves along the sections are used where they lie on the
+// section planes (cones, the loft's own B-spline faces); a plane's straight edges otherwise.
+bool loft_rows(const TopoDS_Face& f, const gp_Pln& p0, const gp_Pln& p1, occ::handle<Geom_BSplineCurve>& c0,
+               occ::handle<Geom_BSplineCurve>& c1) {
+  double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+  BRepTools::UVBounds(f, u0, u1, v0, v1);
+  const occ::handle<Geom_Surface> s = BRep_Tool::Surface(f);
+  if (s.IsNull()) return false;
+  const double tol = 1e-6 * (1.0 + p0.Location().Distance(p1.Location()));
+  auto on = [tol](const occ::handle<Geom_BSplineCurve>& c, const gp_Pln& pl) {
+    for (int i = 1; i <= c->NbPoles(); ++i)
+      if (pl.Distance(c->Pole(i)) > tol) return false;
+    return true;
+  };
+  auto bs = [](const occ::handle<Geom_Curve>& c, double a, double b) {
+    occ::handle<Geom_BSplineCurve> r = GeomConvert::CurveToBSplineCurve(new Geom_TrimmedCurve(c, a, b));
+    if (!r.IsNull() && r->IsPeriodic()) r->SetNotPeriodic();
+    return r;
+  };
+  auto pair_up = [&](occ::handle<Geom_BSplineCurve> a, occ::handle<Geom_BSplineCurve> b) {
+    if (a.IsNull() || b.IsNull()) return false;
+    if (on(b, p0) && on(a, p1)) std::swap(a, b);
+    if (!on(a, p0) || !on(b, p1)) return false;
+    c0 = a;
+    c1 = b;
+    return true;
+  };
+  if (BRepAdaptor_Surface(f, false).GetType() != GeomAbs_Plane) {
+    if (pair_up(bs(s->VIso(v0), u0, u1), bs(s->VIso(v1), u0, u1))) return true;
+    return pair_up(bs(s->UIso(u0), v0, v1), bs(s->UIso(u1), v0, v1));
+  }
+  // A plane between two straight edges: they correspond end for end, start to the nearer end.
+  std::vector<occ::handle<Geom_BSplineCurve>> on0, on1;
+  for (TopExp_Explorer ex(f, TopAbs_EDGE); ex.More(); ex.Next()) {
+    const TopoDS_Edge& e = TopoDS::Edge(ex.Current());
+    if (BRep_Tool::Degenerated(e)) continue;
+    double a = 0, b = 0;
+    const occ::handle<Geom_Curve> c = BRep_Tool::Curve(e, a, b);
+    if (c.IsNull()) continue;
+    occ::handle<Geom_BSplineCurve> bc = bs(c, a, b);
+    if (bc.IsNull()) continue;
+    if (on(bc, p0)) on0.push_back(bc);
+    else if (on(bc, p1)) on1.push_back(bc);
+  }
+  if (on0.size() != 1 || on1.size() != 1) return false;
+  c0 = on0[0];
+  c1 = on1[0];
+  const gp_Pnt s0 = c0->StartPoint(), s1 = c1->StartPoint(), e1 = c1->EndPoint();
+  if (s0.Distance(e1) < s0.Distance(s1)) c1->Reverse();
+  return true;
+}
+
+// A two-section loft whose ends leave the first section and reach the last along `t0` and
+// `t1` (ADR 0017 amendment): each lateral face of `loft` (a loft through the two sections)
+// becomes a cubic across the sections. A set end tangent fixes the second (or third) row of
+// poles a third of it from the section; a free end has no bend there (zero second
+// derivative), so two free ends give the straight loft back. The caps stay. `moved` gets
+// each face of `loft` and the face that replaces it.
+TopoDS_Shape tangent_loft(const TopoDS_Shape& loft, const TopoDS_Shape& cap0, const TopoDS_Shape& cap1,
+                          const gp_Pln& p0, const gp_Pln& p1, const gp_Vec* t0, const gp_Vec* t1,
+                          std::vector<std::pair<TopoDS_Shape, TopoDS_Shape>>& moved) {
+  BRepBuilderAPI_Sewing sew(1e-6 * (1.0 + p0.Location().Distance(p1.Location())));
+  std::vector<std::pair<TopoDS_Shape, TopoDS_Shape>> made;
+  for (TopExp_Explorer ex(loft, TopAbs_FACE); ex.More(); ex.Next()) {
+    const TopoDS_Face& f = TopoDS::Face(ex.Current());
+    if (f.IsSame(cap0) || f.IsSame(cap1)) {
+      made.emplace_back(f, f);
+      sew.Add(f);
+      continue;
+    }
+    occ::handle<Geom_BSplineCurve> c0, c1;
+    if (!loft_rows(f, p0, p1, c0, c1))
+      throw Standard_Failure("loft end tangents need side faces that run straight from section to section");
+    if (c0->NbPoles() != c1->NbPoles() || c0->Degree() != c1->Degree() || c0->NbKnots() != c1->NbKnots())
+      throw Standard_Failure("loft end tangents need sections of matching curves (both circles, both lines, ...)");
+    const int n = c0->NbPoles();
+    NCollection_Array2<gp_Pnt> poles(1, n, 1, 4);
+    NCollection_Array2<double> weights(1, n, 1, 4);
+    for (int i = 1; i <= n; ++i) {
+      const double w = c0->Weight(i);
+      if (std::fabs(c1->Weight(i) - w) > 1e-12 * std::fabs(w))
+        throw Standard_Failure("loft end tangents need sections of matching curves (both circles, both lines, ...)");
+      const gp_XYZ a = c0->Pole(i).XYZ(), d = c1->Pole(i).XYZ();
+      gp_XYZ b, c;
+      if (t0) b = a + t0->XYZ() / 3.0;
+      if (t1) c = d - t1->XYZ() / 3.0;
+      if (t0 && !t1) c = (b + d) / 2.0;
+      if (t1 && !t0) b = (a + c) / 2.0;
+      if (!t0 && !t1) {
+        b = (2.0 * a + d) / 3.0;
+        c = (a + 2.0 * d) / 3.0;
+      }
+      poles(i, 1) = gp_Pnt(a);
+      poles(i, 2) = gp_Pnt(b);
+      poles(i, 3) = gp_Pnt(c);
+      poles(i, 4) = gp_Pnt(d);
+      for (int j = 1; j <= 4; ++j) weights(i, j) = w;
+    }
+    NCollection_Array1<double> uk(1, c0->NbKnots()), vk(1, 2);
+    NCollection_Array1<int> um(1, c0->NbKnots()), vm(1, 2);
+    c0->Knots(uk);
+    c0->Multiplicities(um);
+    vk(1) = 0;
+    vk(2) = 1;
+    vm(1) = 4;
+    vm(2) = 4;
+    occ::handle<Geom_BSplineSurface> surf =
+        new Geom_BSplineSurface(poles, weights, uk, vk, um, vm, c0->Degree(), 3, false, false);
+    BRepBuilderAPI_MakeFace mf(surf, Precision::Confusion());
+    if (!mf.IsDone()) throw Standard_Failure("a loft side with end tangents could not be made");
+    made.emplace_back(f, mf.Face());
+    sew.Add(mf.Face());
+  }
+  sew.Perform();
+  BRepBuilderAPI_MakeSolid ms;
+  int shells = 0;
+  for (TopExp_Explorer ex(sew.SewedShape(), TopAbs_SHELL); ex.More(); ex.Next(), ++shells)
+    ms.Add(TopoDS::Shell(ex.Current()));
+  if (shells != 1 || sew.NbFreeEdges() != 0 || !ms.IsDone())
+    throw Standard_Failure("the loft with end tangents does not close");
+  TopoDS_Shape solid = ms.Solid();
+  for (const auto& m : made) moved.emplace_back(m.first, sew.IsModified(m.second) ? sew.Modified(m.second) : m.second);
+  return solid;
+}
+
 }  // namespace
 
 extern "C" {
@@ -2403,15 +2530,21 @@ static bool similar_wires(const std::vector<TopoDS_Wire>& ws) {
   return true;
 }
 
-int gs_loft(const GsProfile* sections, size_t nsections, int ruled, int aligned, GsShape** out, GsBuf* origins) {
+int gs_loft(const GsProfile* sections, size_t nsections, int ruled, int aligned, double start_tangent,
+            double end_tangent, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   if (!sections || !out || !origins) return fail("null argument");
   if (nsections < 2) return fail("a loft needs at least two profiles");
+  const bool tangents = start_tangent != 0 || end_tangent != 0;
+  if (!std::isfinite(start_tangent) || !std::isfinite(end_tangent) || start_tangent < 0 || end_tangent < 0)
+    return fail("loft end tangents must be positive numbers");
+  if (tangents && (nsections != 2 || ruled != 0)) return fail("loft end tangents need exactly two profiles and a smooth loft");
   BRepOffsetAPI_ThruSections ts(true, ruled != 0);
   std::vector<std::vector<TaggedEdge>> tags(nsections);
   std::vector<TopoDS_Wire> wires;
   std::vector<gp_Dir> normals;
   std::vector<gp_Pnt> centres;
+  std::vector<gp_Pln> planes;
   for (size_t k = 0; k < nsections; ++k) {
     const GsProfile* sp = sections + k;
     Frame f = make_frame(sp, 0.0);
@@ -2425,6 +2558,7 @@ int gs_loft(const GsProfile* sections, size_t nsections, int ruled, int aligned,
     wires.push_back(w);
     normals.push_back(f.n);
     centres.push_back(g.CentreOfMass());
+    planes.emplace_back(f.at(0.0, 0.0), f.n);
   }
   // Profiles are counter-clockwise about their own normals; make them run the same way
   // round the direction of the loft so the sections do not twist against each other.
@@ -2443,6 +2577,26 @@ int gs_loft(const GsProfile* sections, size_t nsections, int ruled, int aligned,
   if (!ts.IsDone()) return fail("the profiles cannot be lofted (are they similar, in a sensible order and not twisted?)");
   TopoDS_Shape result = ts.Shape();
   if (result.IsNull()) return fail("the loft produced no shape");
+  // End tangents: along each end section's normal, turned the way the loft runs, scaled by
+  // the distance between the sections' centres.
+  std::vector<std::pair<TopoDS_Shape, TopoDS_Shape>> moved;
+  if (tangents) {
+    const gp_Vec d(centres.front(), centres.back());
+    if (d.Magnitude() < 1e-9) return fail("loft end tangents need sections whose centres are apart");
+    auto along = [&](const gp_Dir& n, double m) {
+      gp_Vec v(n);
+      if (v.Dot(d) < 0) v.Reverse();
+      return v * (m * d.Magnitude());
+    };
+    const gp_Vec t0 = along(normals.front(), start_tangent), t1 = along(normals.back(), end_tangent);
+    result = tangent_loft(result, ts.FirstShape(), ts.LastShape(), planes.front(), planes.back(),
+                          start_tangent != 0 ? &t0 : nullptr, end_tangent != 0 ? &t1 : nullptr, moved);
+  }
+  auto now = [&moved](const TopoDS_Shape& f) {
+    for (const auto& m : moved)
+      if (m.first.IsSame(f)) return m.second;
+    return f;
+  };
   double vol = signed_volume(result);
   if (std::fabs(vol) < 1e-9) return fail("the loft has no volume (are all the profiles on the same plane?)");
   if (vol < 0) result.Reverse();
@@ -2456,17 +2610,18 @@ int gs_loft(const GsProfile* sections, size_t nsections, int ruled, int aligned,
       if (!wire_edges.Contains(te.e)) continue;
       TopoDS_Shape gf = ts.GeneratedFace(te.e);
       if (!gf.IsNull()) {
-        recs.push_back(Rec{gf, GS_ORIGIN_SECTION, int64_t(te.tag), int64_t(k)});
+        recs.push_back(Rec{now(gf), GS_ORIGIN_SECTION, int64_t(te.tag), int64_t(k)});
         continue;
       }
       const ShapeList& gen = ts.Generated(te.e);
       for (ShapeList::Iterator it(gen); it.More(); it.Next()) {
-        if (it.Value().ShapeType() == TopAbs_FACE) recs.push_back(Rec{it.Value(), GS_ORIGIN_SECTION, int64_t(te.tag), int64_t(k)});
+        if (it.Value().ShapeType() == TopAbs_FACE)
+          recs.push_back(Rec{now(it.Value()), GS_ORIGIN_SECTION, int64_t(te.tag), int64_t(k)});
       }
     }
   }
-  const TopoDS_Shape& a = ts.FirstShape();
-  const TopoDS_Shape& b = ts.LastShape();
+  const TopoDS_Shape a = ts.FirstShape().IsNull() ? TopoDS_Shape() : now(ts.FirstShape());
+  const TopoDS_Shape b = ts.LastShape().IsNull() ? TopoDS_Shape() : now(ts.LastShape());
   if (!a.IsNull()) recs.push_back(Rec{a, GS_ORIGIN_CAP, 0, 0});
   if (!b.IsNull()) recs.push_back(Rec{b, GS_ORIGIN_CAP, 1, 0});
   std::vector<int64_t> o;

@@ -339,7 +339,10 @@ pub struct HlrCurve {
     pub source: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Largest loft end tangent, as a multiple of the distance between the sections.
+pub const MAX_LOFT_TANGENT: f64 = 100.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct LoftSpec {
     /// Ruled surfaces between neighbouring profiles (sharp transitions), else a smooth
     /// surface through all of them.
@@ -347,6 +350,12 @@ pub struct LoftSpec {
     /// The sections' outlines correspond edge for edge from their starts: their alignment (a
     /// twist from one section to the next) is kept, not recomputed to untwist them.
     pub aligned: bool,
+    /// The loft leaves its first section along the section's normal, with a tangent this many
+    /// times the distance between the two sections' centres (two sections, not ruled). `None`:
+    /// a free end (the surface does not bend there).
+    pub start_tangent: Option<f64>,
+    /// As `start_tangent`, where the loft reaches its last section.
+    pub end_tangent: Option<f64>,
 }
 
 /// A connected chain of curves in a plane: the path of a sweep. The edges run from the

@@ -128,3 +128,33 @@ Guide curves and multiple guide rails, scaling or other laws along a sweep, tang
 conditions at loft ends, closed (periodic) lofts, lofts with holes, twisting closed paths,
 sweeping a profile along a path that starts elsewhere than the profile plane (use a plane
 through the path start).
+
+## Amendment (2026-11-19): loft end tangents
+
+A smooth loft of two profiles may set how it leaves its first profile and reaches its last:
+`loft L (profiles: [A, B], start_tangent: 1.1, end_tangent: 2.1)` (text, `feature.loft`, tree
+import `start_tangent` / `end_tangent`, kernel `LoftSpec::start_tangent` / `end_tangent`, sent to
+the worker; protocol version 13). Decided:
+
+- **Direction and size.** A set end leaves (reaches) its profile square to the profile's plane,
+  turned the way the loft runs (from the first profile's centre to the last's); the tangent is
+  the number times the distance between the two profiles' centres. The number is above 0 and
+  at most 100.
+- **Surface.** Each side of the loft is a cubic across the profiles: the first and last rows of
+  poles are the two profiles' curves (as the straight loft pairs them), the inner rows a third
+  of the tangent from them. A free end does not bend there (zero second derivative): with one
+  end set the other inner row lies halfway between its neighbours, and with neither the
+  straight loft comes back, so lofts without tangents do not change. The OCCT kernel builds
+  the straight loft, replaces each side by its cubic and sews the caps back; the sides must
+  pair curves of one kind (a circle with a circle, lines with lines, the loft's own B-spline
+  sides), otherwise the loft fails with that reason.
+- **Two profiles only**, not ruled: the kernel, the validator and the command refuse more
+  profiles (a C1 spline through several sections with end conditions is later work).
+
+This is Solid Edge's loft end condition 20 (amendment 24 of ADR 0046): its stored loft faces are
+such cubics, the tangent offsets in the ratio of its two magnitudes; Parasolid scales them by a
+length 0.2-0.3 % longer than the distance between the centres (38.217 for 38.100 in 038,
+52.433 for 52.347 in 039, varying along the rows in 068), a rule not recovered, so the rebuild
+agrees to some 7e-6 of the part's volume, inside the rebuild check. Golden test:
+`loft_end_tangents_give_the_cubic_between_the_sections` (coaxial circles and squares against the
+exact volume of the cubic stack, both ends, one end, and the refusals).

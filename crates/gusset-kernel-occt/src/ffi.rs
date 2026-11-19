@@ -68,10 +68,12 @@ pub(crate) fn sweep_helix(p: &ProfileData, h: &[f64; 10], pitch: f64, height: f6
     })
 }
 
-pub(crate) fn loft(sections: &[ProfileData], ruled: bool, aligned: bool) -> KResult<OpOut> {
-    safe::loft(sections, ruled, aligned).map_err(|e| {
+pub(crate) fn loft(sections: &[ProfileData], ruled: bool, aligned: bool, tangents: [f64; 2]) -> KResult<OpOut> {
+    safe::loft(sections, ruled, aligned, tangents).map_err(|e| {
         let ke = err(KernelErrorKind::OperationFailed)(e);
-        let hint = if ke.message.contains("no volume") {
+        let hint = if ke.message.contains("tangent") {
+            "give end tangents to a smooth loft of two similar profiles (circle to circle, polygon to polygon)"
+        } else if ke.message.contains("no volume") {
             "put the profiles on different planes, for example sketches on datum planes at different offsets"
         } else {
             "use profiles with similar outlines (the same number of corners, in the same order) on separate planes"

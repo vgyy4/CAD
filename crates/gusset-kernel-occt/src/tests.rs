@@ -1184,7 +1184,7 @@ fn an_aligned_loft_keeps_the_twist_between_its_sections() {
     };
     let sections = [disc(0.0, 0.0), disc(turn, h)];
     let vol = |aligned| {
-        let sh = k().loft(&sections, &LoftSpec { ruled: true, aligned }).unwrap().shape;
+        let sh = k().loft(&sections, &LoftSpec { ruled: true, aligned, ..LoftSpec::default() }).unwrap().shape;
         k().mass_properties(&sh).unwrap().volume
     };
     let pi = std::f64::consts::PI;
@@ -1196,7 +1196,7 @@ fn an_aligned_loft_keeps_the_twist_between_its_sections() {
 #[test]
 fn loft_golden_volumes_history_and_errors() {
     let up = Frame { origin: [0.0, 0.0, 15.0], ..Frame::XY };
-    let spec = LoftSpec { ruled: true, aligned: false };
+    let spec = LoftSpec { ruled: true, aligned: false, ..LoftSpec::default() };
     let r = k().loft(&[centred_square(10.0, Frame::XY), centred_square(5.0, up)], &spec).unwrap();
     let m = k().mass_properties(&r.shape).unwrap();
     assert!(close(m.volume, 3500.0, 1e-9), "{}", m.volume);
@@ -1220,6 +1220,85 @@ fn loft_golden_volumes_history_and_errors() {
     let e = k().loft(&[centred_square(10.0, Frame::XY), holed], &spec).unwrap_err();
     assert_eq!(e.kind, KernelErrorKind::InvalidInput);
     assert!(k().loft(&[centred_square(10.0, Frame::XY), centred_square(5.0, Frame::XY)], &spec).is_err());
+}
+
+/// Lofts with end tangents (ADR 0017 amendment): across the sections each side is a cubic,
+/// its inner rows of poles a third of the tangent from the sections; a free end does not
+/// bend. Two coaxial circles give a solid of revolution whose radius and height are cubic
+/// Beziers of one parameter, a square to a square a stack of squares likewise.
+#[test]
+fn loft_end_tangents_give_the_cubic_between_the_sections() {
+    let pi = std::f64::consts::PI;
+    // The volume of the stack whose half-width (or radius) w and height z follow the Beziers
+    // `w` and `z`, a slice of area `area(w)`; Simpson's rule on 4096 steps is exact to 1e-12 for the degree-8 integrand.
+    let stack = |w: [f64; 4], z: [f64; 4], area: &dyn Fn(f64) -> f64| {
+        let b = |p: [f64; 4], t: f64| {
+            let s = 1.0 - t;
+            s * s * s * p[0] + 3.0 * s * s * t * p[1] + 3.0 * s * t * t * p[2] + t * t * t * p[3]
+        };
+        let d = |p: [f64; 4], t: f64| {
+            let s = 1.0 - t;
+            3.0 * (s * s * (p[1] - p[0]) + 2.0 * s * t * (p[2] - p[1]) + t * t * (p[3] - p[2]))
+        };
+        let n = 4096;
+        (0..=n)
+            .map(|i| {
+                let t = f64::from(i) / f64::from(n);
+                let wt = if i == 0 || i == n {
+                    1.0
+                } else if i % 2 == 1 {
+                    4.0
+                } else {
+                    2.0
+                };
+                wt * area(b(w, t)) * d(z, t)
+            })
+            .sum::<f64>()
+            / (3.0 * f64::from(n))
+    };
+    let (r0, r1, h) = (12.7, 22.225, 38.1);
+    let disc = |r: f64, z: f64| Profile {
+        frame: Frame { origin: [0.0, 0.0, z], ..Frame::XY },
+        regions: vec![Region2 {
+            outer: Loop2 { edges: vec![ProfileEdge { seg: Seg2::Circle { center: [0.0, 0.0], radius: r }, tag: 1 }] },
+            holes: vec![],
+        }],
+    };
+    let circles = [disc(r0, 0.0), disc(r1, h)];
+    let spec = |a: Option<f64>, b: Option<f64>| LoftSpec { start_tangent: a, end_tangent: b, ..LoftSpec::default() };
+    let round = |w: f64| pi * w * w;
+    // Both ends set: rows at a third of each tangent (1.1 h and 2.1 h) along the axis.
+    let r = k().loft(&circles, &spec(Some(1.1), Some(2.1))).unwrap();
+    let want = stack([r0, r0, r1, r1], [0.0, 1.1 * h / 3.0, h - 2.1 * h / 3.0, h], &round);
+    let got = k().mass_properties(&r.shape).unwrap().volume;
+    assert!(close(got, want, 1e-8), "{got} vs {want}");
+    let t = k().topology(&r.shape).unwrap();
+    assert_eq!((t.faces.len(), t.solids), (3, 1));
+    let caps = r.face_origins.iter().flatten().filter(|o| matches!(o, FaceOrigin::Cap { .. })).count();
+    let sides = r.face_origins.iter().flatten().filter(|o| matches!(o, FaceOrigin::Section { .. })).count();
+    assert!(caps == 2 && sides >= 1, "{:?}", r.face_origins);
+    // The start set, the end free: the third row halfway between the second and the last.
+    let r = k().loft(&circles, &spec(Some(1.5), None)).unwrap();
+    let z1 = 1.5 * h / 3.0;
+    let want = stack([r0, r0, (r0 + r1) / 2.0, r1], [0.0, z1, (z1 + h) / 2.0, h], &round);
+    let got = k().mass_properties(&r.shape).unwrap().volume;
+    assert!(close(got, want, 1e-8), "{got} vs {want}");
+    // A square of half-width 10 to one of 5 (plane sides when straight), the end set.
+    let up = Frame { origin: [0.0, 0.0, 15.0], ..Frame::XY };
+    let r = k().loft(&[centred_square(10.0, Frame::XY), centred_square(5.0, up)], &spec(None, Some(1.0))).unwrap();
+    let z2 = 15.0 - 15.0 / 3.0;
+    let want = stack([10.0, 7.5, 5.0, 5.0], [0.0, z2 / 2.0, z2, 15.0], &|w| 4.0 * w * w);
+    let got = k().mass_properties(&r.shape).unwrap().volume;
+    assert!(close(got, want, 1e-8), "{got} vs {want}");
+    // Two profiles, smooth, a positive finite tangent.
+    let third = disc(r0, 2.0 * h);
+    let e = k().loft(&[disc(r0, 0.0), disc(r1, h), third], &spec(Some(1.0), None)).unwrap_err();
+    assert_eq!(e.kind, KernelErrorKind::InvalidInput);
+    let ruled = LoftSpec { ruled: true, ..spec(Some(1.0), None) };
+    assert_eq!(k().loft(&circles, &ruled).unwrap_err().kind, KernelErrorKind::InvalidInput);
+    for bad in [0.0, -1.0, f64::NAN, 1e3] {
+        assert_eq!(k().loft(&circles, &spec(Some(bad), None)).unwrap_err().kind, KernelErrorKind::InvalidInput);
+    }
 }
 
 #[test]
@@ -2932,7 +3011,7 @@ fn a_wound_face_beside_a_trimmed_spline_is_measured_face_by_face() {
     let disc =
         |r: f64, z: f64| Profile { frame: at(z), regions: vec![Region2 { outer: circle_loop(r, 1), holes: vec![] }] };
     let sections = [disc(12.0, -5.0), disc(11.6, -4.0), disc(10.4, -3.0), disc(9.6, -2.0)];
-    let lofted = k().loft(&sections, &LoftSpec { ruled: false, aligned: false }).unwrap().shape;
+    let lofted = k().loft(&sections, &LoftSpec { ruled: false, aligned: false, ..LoftSpec::default() }).unwrap().shape;
     let v = |sh: &Shape| k().mass_properties(sh).unwrap().volume;
     let whole = k().boolean(BoolOp::Intersect, &prism, &lofted).unwrap().shape;
     let nut = k().boolean(BoolOp::Intersect, &threaded, &lofted).unwrap().shape;
