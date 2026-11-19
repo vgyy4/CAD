@@ -2705,6 +2705,62 @@ fn plate(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     Ok(())
 }
 
+/// A loft (`2f54efe0`; note AS): slot 0 lists its sections (`4b3150e8`), each naming the
+/// history body of its loop (`cc0f7521`) as a sheet-metal face does; slot 1 the operation. A
+/// section is the sketch whose curves its loop runs along; two sections are joined by
+/// straight lines.
+fn loft(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    const G_SECTION: u32 = 0x4b31_50e8;
+    let s = r.slots(f)?;
+    let (items, _) = r.dc.first_list(s.need(0)?, None).ok_or("the loft has no section list")?;
+    let mut names = Vec::new();
+    let mut used = Vec::new();
+    for it in items {
+        let sec = it.ok_or("a loft section is empty")?;
+        if r.dc.class(sec) != G_SECTION {
+            return Err("a loft section is not a profile".into());
+        }
+        let c =
+            r.dc.refs(sec)
+                .into_iter()
+                .map(|(_, y)| y)
+                .find(|&y| r.dc.class(y) == super::inventor_dc::G_LOOP_BODY)
+                .ok_or("a loft section has no loop")?;
+        let (k, sk, _) = loop_sketch(r, c).map_err(|w| format!("a loft section: {w}"))?;
+        names.push(sk.name.clone());
+        if !st.done.contains_key(&k) {
+            used.push(sk.json());
+            st.done.insert(k, ());
+        }
+    }
+    if names.len() < 2 {
+        return Err("a loft takes two sections or more".into());
+    }
+    let mut op = match s.get(1).and_then(|i| tail_u16(&r.dc, i)) {
+        Some(2) => "cut",
+        Some(1) => "new",
+        Some(4) => "intersect",
+        _ => "join",
+    };
+    if st.first_body.is_some() && op == "new" {
+        op = "join";
+    }
+    if st.first_body.is_none() && op == "join" {
+        op = "new";
+    }
+    let mut j = json!({"type": "loft", "name": name, "sketches": names, "ruled": names.len() == 2, "operation": op});
+    if op != "new" {
+        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        put(&mut j, "target", json!(fb));
+    }
+    st.out.extend(used);
+    st.out.push(j);
+    if st.first_body.is_none() {
+        st.first_body = Some(name.to_string());
+    }
+    Ok(())
+}
+
 fn unsupported(name: &str, what: &str, reason: Option<String>) -> Value {
     let mut v = json!({"type": "unsupported", "name": name, "original_type": what});
     if let Some(r) = reason {
@@ -3225,6 +3281,7 @@ pub fn feature_tree_with(
             FeatType::Combine => combine(&r, &mut st, f, &name),
             FeatType::Split => split(&r, &mut st, f, &name),
             FeatType::Plate => plate(&r, &mut st, f, &name),
+            FeatType::Other(0x2f54_efe0) => loft(&r, &mut st, f, &name),
             // Move Bodies, and the direct edits Move and Scale of whole bodies (note AQ).
             FeatType::Other(0x2b83_9fe9 | 0x8fa6_a6de | 0x5bcb_6fff) => body_transform(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.
