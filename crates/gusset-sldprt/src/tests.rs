@@ -817,6 +817,13 @@ fn a_hole_wizard_becomes_a_hole_at_its_placement_points() {
     assert_eq!(hole["positions"], serde_json::json!([[2.0, 3.0, 5.0], [7.0, 3.0, 5.0]]));
     assert_eq!(hole["face"]["normal"], serde_json::json!([0.0, 0.0, 1.0]));
     assert!(hole.get("head_clearance").is_none());
+    assert_eq!(hole["point_angle"].as_f64(), Some(118.0));
+    // A `Drill Angle` of 180 degrees is a flat bottom (round sw12).
+    let mut flat = hole_wizard(false);
+    flat.extend(parameter("Drill Angle", core::f64::consts::PI));
+    let t2 = history(&feature_stream(&flat)).unwrap().unwrap();
+    let h2 = t2["features"].as_array().unwrap().iter().find(|x| x["type"] == "hole").unwrap().clone();
+    assert_eq!(h2["point_angle"].as_f64(), Some(180.0), "{h2}");
     // Both sketches of the wizard are kept and none is the extrude's profile.
     assert_eq!(f.iter().filter(|x| x["type"] == "sketch").count(), 3);
     assert_eq!(f.iter().find(|x| x["name"] == "Boss-Extrude1").unwrap()["sketch"], "Sketch1");

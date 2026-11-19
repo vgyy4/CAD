@@ -3366,7 +3366,13 @@ fn finish_hole(h: HoleState) -> Value {
     }
     if let Some(d) = dep {
         o.insert("depth".into(), json!(mm(d)));
-        o.insert("point_angle".into(), json!(118.0));
+        // The drill point: `Drill Angle` where the hole writes one (180 degrees is a flat
+        // bottom: GripperbaseNEW's 2 mm holes), else the usual 118 degrees.
+        let tip = get(&["Drill Angle"])
+            .map(f64::to_degrees)
+            .filter(|a| (30.0..=180.0 + 1e-9).contains(a))
+            .map_or(118.0, |a| round_to(a.min(180.0), 9));
+        o.insert("point_angle".into(), json!(tip));
     }
     if let Some(d) = cs_d {
         o.insert("variant".into(), json!("countersink"));
