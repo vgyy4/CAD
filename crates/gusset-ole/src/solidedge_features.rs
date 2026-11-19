@@ -1439,7 +1439,8 @@ fn copied_profile(st: &Store, serial: u32, f: &Func) -> Result<Profile, String> 
                 let k = usize::try_from(u32_at(pb, 8)?).ok()?.min(MAX_MEMBERS as usize);
                 (0..k).any(|i| u32_at(pb, 12 + 4 * i) == first).then_some(pl)
             });
-            let (so, sn, sx) = seed.or_else(|| seed_feature(3)).ok_or("the mirrored profile's plane is not readable")?;
+            let (so, sn, sx) =
+                seed.or_else(|| seed_feature(3)).ok_or("the mirrored profile's plane is not readable")?;
             let (curves, backwards) = members(st, b, 16, n, Some((so, sn, sx)))?;
             let flip = |v: V3| {
                 let k = 2.0 * dot(v, mn);
@@ -1760,11 +1761,12 @@ pub(crate) fn close_on_axis(
             .filter(|(d, room)| *d > 1e-12 && *room >= 0.0)
             .map(|(d, room)| room / d)
             .fold(f64::INFINITY, f64::min);
-        hit.is_finite().then(|| [sx + hit * ds, vx + hit * dv])
+        hit.is_finite().then_some([sx + hit * ds, vx + hit * dv])
     };
     let f = run_on(e).ok_or("an open revolve profile that runs nowhere")?;
     // The other end: on the axis it stays where it is.
-    let g = if on.0 || on.1 { Some([so, 0.0]) } else { run_on(o) }.ok_or("an open revolve profile that runs nowhere")?;
+    let g =
+        if on.0 || on.1 { Some([so, 0.0]) } else { run_on(o) }.ok_or("an open revolve profile that runs nowhere")?;
     // Perimeter positions, counter-clockwise from (-r, 0): the axis, then the far sides.
     let tol = 1e-9 * r;
     let pos = |s: f64, v: f64| {
@@ -2251,22 +2253,23 @@ fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Ki
         // feature of its own; a finite second extent is a blind feature of its own too.
         let finite_second = code(12) == Some(13);
         if matches!(extent, 14 | 16) && (code(12).is_none() || finite_second) && (!symmetric || side == 6) {
-            if finite_second && side != 6 {
-                if let Some(d2) = j.get("distance2").cloned() {
-                    let mut other = j.clone();
-                    if let Some(o) = j.as_object_mut() {
-                        o.remove("distance2");
-                    }
-                    if let Some(o) = other.as_object_mut() {
-                        o.remove("distance2");
-                        o.remove("through_all");
-                    }
-                    put(&mut other, "name", json!(format!("{name}_second")));
-                    put(&mut other, "distance", d2);
-                    put(&mut other, "operation", json!(if op == "new" { "join" } else { op }));
-                    put(&mut other, "target", json!(s.first_body.clone().unwrap_or_else(|| name.to_string())));
-                    second = Some(other);
+            if finite_second
+                && side != 6
+                && let Some(d2) = j.get("distance2").cloned()
+            {
+                let mut other = j.clone();
+                if let Some(o) = j.as_object_mut() {
+                    o.remove("distance2");
                 }
+                if let Some(o) = other.as_object_mut() {
+                    o.remove("distance2");
+                    o.remove("through_all");
+                }
+                put(&mut other, "name", json!(format!("{name}_second")));
+                put(&mut other, "distance", d2);
+                put(&mut other, "operation", json!(if op == "new" { "join" } else { op }));
+                put(&mut other, "target", json!(s.first_body.clone().unwrap_or_else(|| name.to_string())));
+                second = Some(other);
             }
             put(&mut j, "end_condition", json!("to_next"));
             if side == 6 {
