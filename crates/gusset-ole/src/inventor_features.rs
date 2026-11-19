@@ -1042,12 +1042,24 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
             }
             Some(e @ (4 | 7)) => {
                 let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
-                let d = r.swept_distance(&sketch, fid).map_err(|w| format!("extrude extent {e}: {w}"))?;
+                let measured = match r.swept_distance(&sketch, fid) {
+                    Ok(d) => Some(d),
+                    // No face of it is left in the result: the face it ran to is kept as a
+                    // plane (slot 18, note AS); parallel to the sketch, the reach is its distance.
+                    Err(w) => {
+                        let d = (e == 7)
+                            .then(|| end_plane_reach(r, &s, &sketch))
+                            .flatten()
+                            .ok_or_else(|| format!("extrude extent {e}: {w}"))?;
+                        put(&mut j, "distance", json!(rnd(d)));
+                        None
+                    }
+                };
                 put(&mut j, "symmetric", json!(false));
                 // Up to the face it ran to, as the result shows it (notes AB); the measured
                 // reach is the blind form the caller falls back to.
-                match r.sweep_end_pick(&sketch, fid) {
-                    Some(face) => {
+                match measured.map(|d| (d, r.sweep_end_pick(&sketch, fid))) {
+                    Some((d, Some(face))) => {
                         put(&mut j, "end_condition", json!("to_face"));
                         put(&mut j, "face", face);
                         put(&mut j, "reverse", json!(d < 0.0));
@@ -1056,7 +1068,8 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                         put(&mut j, "extend", json!(true));
                         put(&mut j, "_blind", json!(rnd(d)));
                     }
-                    None => put(&mut j, "distance", json!(rnd(d))),
+                    Some((d, None)) => put(&mut j, "distance", json!(rnd(d))),
+                    None => {}
                 }
             }
             e => return Err(format!("extrude extent {e:?}")),
@@ -2426,6 +2439,21 @@ fn combine(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
     }
     st.out.push(json!({"type": "combine", "name": name, "target": target, "tools": tools, "operation": op}));
     Ok(())
+}
+
+/// The reach (mm along the sketch normal) of an extrude that ends on a face, from the plane
+/// of that face its slot 18 keeps (`151280f0`, the last 72 bytes as a work plane's; note AS).
+/// `None` when the slot holds no plane or the plane is not parallel to the sketch.
+fn end_plane_reach(r: &Reader, s: &Slots, sk: &Sketch) -> Option<f64> {
+    let i = s.get(18).filter(|&i| r.dc.class(i) == 0x1512_80f0)?;
+    let (p, pn) = work_plane(&r.dc, i).ok()?;
+    let (o, x, y) = frame(&sk.m);
+    let n = unit3(cross(x, y));
+    if dot(pn, n).abs() < 1.0 - 1e-9 {
+        return None;
+    }
+    let d = dot(sub3([p[0] * CM, p[1] * CM, p[2] * CM], o), n);
+    (d.abs() > 1e-6).then_some(d)
 }
 
 /// A work plane record (`ce52df42`): a point (cm) and two unit vectors, the last 72 bytes;
