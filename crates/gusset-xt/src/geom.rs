@@ -308,6 +308,12 @@ pub(crate) fn eval_curve(c: &Nurbs, u: f64) -> Option<V3> {
     (r[3].abs() > 1e-300).then(|| [r[0] / r[3], r[1] / r[3], r[2] / r[3]])
 }
 
+/// A box grown to hold `q`.
+pub(crate) fn grow(b: (V3, V3), q: V3) -> (V3, V3) {
+    let (lo, hi) = b;
+    ([lo[0].min(q[0]), lo[1].min(q[1]), lo[2].min(q[2])], [hi[0].max(q[0]), hi[1].max(q[1]), hi[2].max(q[2])])
+}
+
 /// The circular arc `m + r (cos t x + sin t y)` for `t` from `t0` to `t1` (`x`, `y` unit and
 /// perpendicular) as a rational quadratic B-spline of four equal spans.
 pub(crate) fn arc(m: V3, x: V3, y: V3, r: f64, t0: f64, t1: f64) -> Option<Nurbs> {

@@ -269,14 +269,17 @@ pub(crate) fn project_uv(g: &Graph, s: u32, p: V3) -> Option<(V3, [f64; 2])> {
         }
         Some((uv, false))
     };
-    // Successive queries on one surface are close: start from the last answer, and search the
-    // whole box only when that does not settle.
+    // Successive queries on one surface are close: start from the last answer when the point is
+    // near the last one asked for (a far point may have its foot on another part of the
+    // surface), and search the whole box when that does not settle.
     let warm = g.cache.borrow().uv.get(&s).copied();
-    let found = match warm.and_then(newton) {
-        Some((uv, true)) => uv,
+    let near = warm.filter(|w| norm(sub(p, w.1)) <= 0.02 * w.2);
+    let (found, size) = match near.and_then(|w| newton(w.0).map(|r| (r, w.2))) {
+        Some(((uv, true), size)) => (uv, size),
         _ => {
             let n = 12;
             let mut best = (f64::INFINITY, lo);
+            let (mut bl, mut bh) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
             for i in 0..=n {
                 for j in 0..=n {
                     let uv =
@@ -286,13 +289,14 @@ pub(crate) fn project_uv(g: &Graph, s: u32, p: V3) -> Option<(V3, [f64; 2])> {
                         if d < best.0 {
                             best = (d, uv);
                         }
+                        (bl, bh) = geom::grow((bl, bh), q);
                     }
                 }
             }
-            newton(best.1)?.0
+            (newton(best.1)?.0, norm(sub(bh, bl)))
         }
     };
-    g.cache.borrow_mut().uv.insert(s, found);
+    g.cache.borrow_mut().uv.insert(s, (found, p, size));
     Some((surface_at(g, s, found[0], found[1], 0)?, found))
 }
 

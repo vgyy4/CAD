@@ -11,7 +11,7 @@
 //! derivatives, and rows are added where the surface strays from the ball's envelope.
 
 use crate::decode::Graph;
-use crate::geom::{Nurbs, V3, add, cross, dot, norm, scale, sub, unit};
+use crate::geom::{self, Nurbs, V3, add, cross, dot, norm, scale, sub, unit};
 use crate::reader::Val;
 
 /// How deeply supports may nest (a blend on a blend on an offset ...).
@@ -46,7 +46,7 @@ fn supports(g: &Graph, b: u32) -> Option<([u32; 2], [f64; 2])> {
 }
 
 /// The ball radius of a blend.
-fn radius(g: &Graph, b: u32) -> Option<f64> {
+pub(crate) fn radius(g: &Graph, b: u32) -> Option<f64> {
     supports(g, b).map(|(_, r)| 0.5 * (r[0] + r[1]))
 }
 
@@ -122,20 +122,22 @@ fn swept_foot(g: &Graph, s: u32, x: V3, depth: u32) -> Option<Foot> {
         }
         Some(0.5 * (a + b))
     };
-    let warm = g.cache.borrow().uv.get(&s).map(|w| w[0]);
+    let warm = g.cache.borrow().uv.get(&s).copied().filter(|w| norm(sub(x, w.1)) <= 0.02 * w.2);
+    let size = warm.map_or(0.0, |w| w.2);
     let narrow = 0.01 * (hi - lo);
-    let near = warm.and_then(|w| {
+    let near = warm.map(|w| w.0[0]).and_then(|w| {
         let (a, b) = ((w - narrow).max(lo), (w + narrow).min(hi));
         let u = golden(a, b)?;
         // At a bracket end that is not the curve's own end, the minimum may lie outside.
         let inside = (u - a > 1e-3 * narrow || a <= lo) && (b - u > 1e-3 * narrow || b >= hi);
         inside.then_some(u)
     });
-    let u = match near {
-        Some(u) => u,
+    let (u, size) = match near {
+        Some(u) => (u, size),
         None => {
             let n = 64;
             let mut best = (f64::INFINITY, lo);
+            let (mut bl, mut bh) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
             for i in 0..=n {
                 let u = lo + (hi - lo) * i as f64 / n as f64;
                 if let Some(e) = off(u)
@@ -143,9 +145,12 @@ fn swept_foot(g: &Graph, s: u32, x: V3, depth: u32) -> Option<Foot> {
                 {
                     best = (e, u);
                 }
+                if let Some(q) = at(u) {
+                    (bl, bh) = geom::grow((bl, bh), q);
+                }
             }
             let step = (hi - lo) / n as f64;
-            golden((best.1 - step).max(lo), (best.1 + step).min(hi))?
+            (golden((best.1 - step).max(lo), (best.1 + step).min(hi))?, norm(sub(bh, bl)))
         }
     };
     // Golden section finds a flat minimum only to the square root of the rounding: finish with
@@ -175,7 +180,7 @@ fn swept_foot(g: &Graph, s: u32, x: V3, depth: u32) -> Option<Foot> {
             }
         }
     }
-    g.cache.borrow_mut().uv.insert(s, [u, 0.0]);
+    g.cache.borrow_mut().uv.insert(s, ([u, 0.0], x, size));
     let base = at(u)?;
     let p = add(base, scale(d, dot(sub(x, base), d)));
     let h = 1e-6 * (1.0 + (hi - lo).abs());
@@ -187,6 +192,12 @@ fn swept_foot(g: &Graph, s: u32, x: V3, depth: u32) -> Option<Foot> {
 /// A point of the true spine of blend `b` near `x0`, and the spine's unit tangent there: Newton
 /// on the ball's distances to the two supports (each kept on the side `x0` is on).
 pub(crate) fn centre(g: &Graph, b: u32, x0: V3, depth: u32) -> Option<(V3, V3)> {
+    centre_within(g, b, x0, depth, f64::INFINITY)
+}
+
+/// [`centre`], refused when it lies farther than `max_move` from `x0` (the offset supports
+/// may meet in several branches; a far one is not the spine near `x0`).
+fn centre_within(g: &Graph, b: u32, x0: V3, depth: u32, max_move: f64) -> Option<(V3, V3)> {
     let ([s1, s2], [r1, r2]) = supports(g, b)?;
     let f1 = foot(g, s1, x0, depth)?;
     let f2 = foot(g, s2, x0, depth)?;
@@ -213,7 +224,7 @@ pub(crate) fn centre(g: &Graph, b: u32, x0: V3, depth: u32) -> Option<(V3, V3)> 
         let (p, q) = ((-e1 + c * e2) / det, (-e2 + c * e1) / det);
         let step = add(scale(a1.n, p), scale(a2.n, q));
         x = add(x, step);
-        if !x.iter().all(|v| v.is_finite()) {
+        if !x.iter().all(|v| v.is_finite()) || norm(sub(x, x0)) > max_move {
             return None;
         }
         if norm(step) < 1e-15 * scale_len {
@@ -286,7 +297,7 @@ fn closed_spine(g: &Graph, b: u32, c: u32) -> Option<Vec<V3>> {
 
 /// The spine point of blend `b` nearest `x`, for `b` as another blend's support: on a fitted
 /// curve of its true spine (each level of nesting would otherwise multiply the Newton steps).
-fn spine_point(g: &Graph, b: u32, x: V3, depth: u32) -> Option<V3> {
+pub(crate) fn spine_point(g: &Graph, b: u32, x: V3, depth: u32) -> Option<V3> {
     if g.type_name(g.ptr(b, "spine"))? == "LINE" {
         return spine_nearest(g, b, x, depth);
     }
@@ -336,7 +347,7 @@ fn spine_fit(g: &Graph, b: u32, depth: u32) -> Option<Nurbs> {
                 continue;
             }
             let Some(m) = crate::geom::eval_curve(&fit, 0.5 * (k0 + k1)) else { continue };
-            let Some((c, t)) = centre(g, b, m, depth) else { continue };
+            let Some((c, t)) = centre_within(g, b, m, depth, 0.25 * norm(sub(s1.0, s0.0))) else { continue };
             if norm(sub(c, m)) > tol && dot(sub(c, s0.0), s0.1) > 0.0 && dot(sub(s1.0, c), s1.1) > 0.0 {
                 next.push((c, if dot(t, s0.1) < 0.0 { scale(t, -1.0) } else { t }));
                 grew = true;
@@ -432,16 +443,20 @@ fn nearest_on_curve(c: &Nurbs, x: V3) -> Option<V3> {
         }
         Some(best)
     };
-    // The span whose end poles are nearest.
-    let mut i0 = 0;
-    let mut dmin = f64::INFINITY;
-    for i in 0..=spans {
-        let d = norm(sub(*c.poles.get(3 * i)?, x));
-        if d < dmin {
-            dmin = d;
-            i0 = i;
+    // The span whose end poles are nearest: every stride-th first, then round the best.
+    let stride = (spans / 64).max(1);
+    let near = |range: &mut dyn Iterator<Item = usize>| -> Option<usize> {
+        let mut best = (f64::INFINITY, 0);
+        for i in range {
+            let d = norm(sub(*c.poles.get(3 * i)?, x));
+            if d < best.0 {
+                best = (d, i);
+            }
         }
-    }
+        Some(best.1)
+    };
+    let coarse = near(&mut (0..=spans).step_by(stride))?;
+    let i0 = near(&mut (coarse.saturating_sub(stride)..=(coarse + stride).min(spans)))?;
     let mut best: Option<(f64, V3, f64)> = None;
     for i in [i0.wrapping_sub(1), i0, i0 + 1] {
         if i < spans
@@ -540,13 +555,13 @@ struct Station {
     drow: Row,
 }
 
-fn station(g: &Graph, b: u32, x: V3, dir: V3, flip: bool) -> Option<Station> {
-    let (c, t) = centre(g, b, x, 0)?;
+fn station(g: &Graph, b: u32, x: V3, dir: V3, flip: bool, max_move: f64) -> Option<Station> {
+    let (c, t) = centre_within(g, b, x, 0, max_move)?;
     let t = if dot(t, dir) < 0.0 { scale(t, -1.0) } else { t };
     let r = radius(g, b)?;
     let h = 1e-4 * r.max(1e-6);
-    let (cp, _) = centre(g, b, add(c, scale(t, h)), 0)?;
-    let (cm, _) = centre(g, b, sub(c, scale(t, h)), 0)?;
+    let (cp, _) = centre_within(g, b, add(c, scale(t, h)), 0, 10.0 * h)?;
+    let (cm, _) = centre_within(g, b, sub(c, scale(t, h)), 0, 10.0 * h)?;
     let (sp, sm) = (dot(sub(cp, c), t), dot(sub(cm, c), t));
     let (rp, rm, r0) = (row(g, b, cp, flip)?, row(g, b, cm, flip)?, row(g, b, c, flip)?);
     let mut drow = [[0.0; 4]; 5];
@@ -636,10 +651,11 @@ fn stray(g: &Graph, b: u32, n: &Nurbs, u0: f64, u1: f64, r: f64, near: V3) -> Op
 /// tangent, scaled by the secant of the remaining offset (a curved spine seen from a point far
 /// off it overshoots a plain projection).
 fn spine_nearest_from(g: &Graph, b: u32, x: V3, start: V3, depth: u32) -> Option<V3> {
+    let reach = 2.0 * radius(g, b)?.max(1e-6);
     let mut q = start;
     let mut last = None;
     let mut prev: Option<(f64, f64)> = None;
-    for _ in 0..40 {
+    for _ in 0..80 {
         let (c, t) = centre(g, b, q, depth)?;
         let s = dot(sub(x, c), t);
         last = Some(c);
@@ -653,6 +669,8 @@ fn spine_nearest_from(g: &Graph, b: u32, x: V3, start: V3, depth: u32) -> Option
             }
             _ => s,
         };
+        // Short steps keep the snap onto the spine local where the spine curves.
+        let step = step.clamp(-reach, reach);
         prev = Some((s, step));
         q = add(c, scale(t, step));
     }
@@ -671,37 +689,22 @@ pub(crate) fn blend_surface(g: &Graph, b: u32, hint: &[V3]) -> Option<Nurbs> {
     }
     let spine = g.ptr(b, "spine");
     let flip = g.ch(spine, "sense") == Some(b'-');
-    let mut pts = spine_points(g, b, hint)?;
+    let pts = spine_points(g, b, hint)?;
     if pts.len() < 2 {
         return None;
     }
-    // Keep the stretch of an open spine the faces use, one sample beyond each end.
     let closed = pts.len() > 2 && norm(sub(*pts.first()?, *pts.last()?)) < 1e-9;
-    if !closed && !hint.is_empty() && g.type_name(spine) != Some("LINE") {
-        let idx = |x: V3| {
-            let mut best = (f64::INFINITY, 0usize);
-            for (i, w) in pts.windows(2).enumerate() {
-                let &[a, bb] = w else { continue };
-                let ab = sub(bb, a);
-                let l2 = dot(ab, ab);
-                let t = if l2 > 0.0 { (dot(sub(x, a), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
-                let d = norm(sub(x, add(a, scale(ab, t))));
-                if d < best.0 {
-                    best = (d, i);
-                }
-            }
-            best.1
-        };
-        let lo = hint.iter().map(|x| idx(*x)).min()?.saturating_sub(1);
-        let hi = (hint.iter().map(|x| idx(*x)).max()? + 3).min(pts.len());
-        pts = pts.get(lo..hi)?.to_vec();
-    }
     // Stations at the samples; one more beyond each open end when the ball still fits there.
     let mut st: Vec<Station> = Vec::new();
     let n = pts.len();
     for (i, x) in pts.iter().enumerate() {
-        let dir = sub(*pts.get((i + 1).min(n - 1))?, *pts.get(i.saturating_sub(1))?);
-        if let Some(s) = station(g, b, *x, dir, flip)
+        let (before, after) = (*pts.get(i.saturating_sub(1))?, *pts.get((i + 1).min(n - 1))?);
+        let dir = sub(after, before);
+        // A sample of the spine curve lies near the spine: a quarter of the way to its
+        // neighbours at most.
+        let near = norm(sub(*x, before)).max(norm(sub(after, *x)));
+        let reach = if near > 0.0 { 0.25 * near } else { f64::INFINITY };
+        if let Some(s) = station(g, b, *x, dir, flip, reach.max(4.0 * r))
             && st.last().is_none_or(|l: &Station| norm(sub(s.c, l.c)) > 1e-9 * (1.0 + r))
         {
             st.push(s);
@@ -727,7 +730,8 @@ pub(crate) fn blend_surface(g: &Graph, b: u32, hint: &[V3]) -> Option<Nurbs> {
         // Stations beyond the ends, oriented along the spine like the rest.
         let total: f64 = st.windows(2).map(|w| if let [a, b] = w { gap(a, b) } else { 0.0 }).sum();
         let len = 0.02 * total;
-        let ext = |s: &Station, sign: f64| station(g, b, add(s.c, scale(s.t, sign * len)), s.t, flip);
+        let ext =
+            |s: &Station, sign: f64| station(g, b, add(s.c, scale(s.t, sign * len)), s.t, flip, 0.25 * len.max(r));
         if let Some(e) = st.first().and_then(|s| ext(s, -1.0)) {
             st.insert(0, e);
         }
@@ -750,8 +754,11 @@ pub(crate) fn blend_surface(g: &Graph, b: u32, hint: &[V3]) -> Option<Nurbs> {
             // A span that cannot be measured is left as it is.
             let e = stray(g, b, &fit, u0, u1, r, s.c).unwrap_or(0.0);
             if e > tol {
-                let mid = scale(add(s.c, t.c), 0.5);
-                if let Some(m) = station(g, b, mid, sub(t.c, s.c), flip)
+                // The Hermite midpoint predicts the spine there (a long chord of a curved spine
+                // has its midpoint far off it); the corrector may move a quarter chord.
+                let l = gap(s, t);
+                let mid = add(scale(add(s.c, t.c), 0.5), scale(sub(s.t, t.t), l / 8.0));
+                if let Some(m) = station(g, b, mid, sub(t.c, s.c), flip, 0.25 * norm(sub(t.c, s.c)))
                     && dot(sub(m.c, s.c), s.t) > 0.0
                     && dot(sub(t.c, m.c), t.t) > 0.0
                 {

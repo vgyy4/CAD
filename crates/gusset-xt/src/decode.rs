@@ -29,7 +29,9 @@ pub struct Graph {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Cache {
     pub(crate) nurbs: BTreeMap<u32, Option<std::rc::Rc<crate::geom::Nurbs>>>,
-    pub(crate) uv: BTreeMap<u32, [f64; 2]>,
+    /// Per surface: the parameters of the last closest point, the point it was asked for,
+    /// and the size of the surface (a warm start is tried only for a nearby point).
+    pub(crate) uv: BTreeMap<u32, ([f64; 2], [f64; 3], f64)>,
     /// Per blend: samples of its spine curve, and the last point of its true spine found.
     pub(crate) spine: BTreeMap<u32, std::rc::Rc<Vec<[f64; 3]>>>,
     pub(crate) spine_last: BTreeMap<u32, [f64; 3]>,
