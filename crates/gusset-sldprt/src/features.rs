@@ -4119,6 +4119,19 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 }
             } else {
                 js.insert("distance".into(), json!(distance));
+                // A blind boss with a second length `D2` runs that far to the other side of its
+                // sketch too (SolidWorks' "Direction 2": the pulleys' hubs, 2 mm one way and 7 mm
+                // the other). Cuts read `D2` as a start offset (above).
+                if op != "cut"
+                    && typ == Some(0)
+                    && !symmetric
+                    && let Some(d) = distance.filter(|d| d.abs() > 1e-9)
+                    && let named = named_params(rf, a, b, nt)?
+                    && named.first().is_some_and(|(k, _)| k == "D1")
+                    && let Some(d2) = named.iter().find(|(k, _)| k == "D2").map(|(_, v)| mm(*v)).filter(|v| *v > 1e-9)
+                {
+                    js.insert("distance2".into(), json!(round_to(-d.signum() * d2, 9) + 0.0));
+                }
             }
             if through_all {
                 js.insert("through_all".into(), json!(true));

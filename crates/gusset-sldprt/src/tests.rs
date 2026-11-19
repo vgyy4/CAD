@@ -1080,6 +1080,18 @@ fn a_shell_removes_the_first_face_of_its_last_record() {
     assert!(why.contains("Shell1") && why.contains("not resolved"), "{why}");
 }
 
+/// A blind boss with a second length `D2` runs that far to the other side of its sketch too
+/// (round sw12: "Direction 2").
+#[test]
+fn a_second_boss_length_is_the_other_side() {
+    let t = history(&feature_stream(&parameter("D2", 0.002))).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap().iter().find(|x| x["name"] == "Boss-Extrude1").unwrap().clone();
+    assert_eq!((f["distance"].as_f64(), f["distance2"].as_f64()), (Some(5.0), Some(-2.0)), "{f}");
+    let t = history(&feature_stream(&[])).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap().iter().find(|x| x["name"] == "Boss-Extrude1").unwrap().clone();
+    assert!(f.get("distance2").is_none(), "{f}");
+}
+
 /// A split line (`moPLine_c`) only divides faces: it is left out like a sketch, where an
 /// unknown feature stops the history (round sw12).
 #[test]
