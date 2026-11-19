@@ -2034,3 +2034,74 @@ fn an_extrude_direction_against_the_sketch_normal_turns_it() {
     let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
     assert_eq!(t["features"][1]["distance"], 5.0, "{t}");
 }
+
+/// A face kept as a plane (`151280f0`): its last 72 bytes are a point and two unit vectors
+/// (cm), as a work plane's.
+fn face_plane(z: f64) -> Vec<u8> {
+    let mut v = hdr(0, 0, 0);
+    v.extend([0u8; 25]);
+    doubles(&mut v, &[1.0, 2.0, z, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+    v
+}
+
+/// An extrude to a face (extent 7) whose faces the result does not show reaches the plane slot
+/// 18 keeps; one that starts from a face (extent 12) runs its distance from the plane slot 17
+/// keeps, on a copy of its sketch moved there (note AS).
+#[test]
+fn extrudes_to_and_from_a_face_plane() {
+    let mut classes = CLASSES.to_vec();
+    classes.push(0x1512_80f0); // 13
+    let mut r = base_records();
+    r[17].1 = tail(7);
+    r.push((13, face_plane(0.8))); // 19
+    let mut slots = vec![rf(14), rf(12), 0, rf(15), rf(16), 0, rf(17)];
+    slots.resize(18, 0);
+    slots.push(rf(19));
+    r[18].1 = feature(1, 0, 5, &slots);
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    let e = &t["features"][1];
+    assert_eq!(e["type"], "extrude", "{t}");
+    assert_eq!(e["distance"], 8.0);
+    assert!(e.get("end_condition").is_none());
+    // A plane across the sketch gives no reach: not read.
+    r[19].1 = {
+        let mut v = hdr(0, 0, 0);
+        v.extend([0u8; 25]);
+        doubles(&mut v, &[0.0, 0.0, 0.8, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        v
+    };
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(t["features"][0]["type"], "unsupported");
+    // From the face at z = 3 mm, 5 mm on.
+    r[19].1 = face_plane(0.3);
+    r[17].1 = tail(12);
+    let mut slots = vec![rf(14), rf(12), 0, rf(15), rf(16), 0, rf(17)];
+    slots.resize(17, 0);
+    slots.push(rf(19));
+    r[18].1 = feature(1, 0, 5, &slots);
+    let t = feature_tree(&inventor_dc_part(&classes, &r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+    assert_eq!(
+        types(&t)[..2],
+        [("sketch".into(), "Sketch1".into()), ("sketch".into(), "Sketch1_from_Extrusion1".into())]
+    );
+    assert_eq!(t["features"][1]["plane"]["origin"], json!([0.0, 0.0, 3.0]));
+    let e = &t["features"][2];
+    assert_eq!(e["sketch"], "Sketch1_from_Extrusion1");
+    assert_eq!(e["distance"], 5.0);
+}
+
+/// Extrude slot 5 is the taper (radians); a tapered blind extrude keeps its distance.
+#[test]
+fn an_extrude_reads_its_taper() {
+    let mut r = base_records();
+    r.push((PARAM, param("d1", 0.1))); // 19
+    r[18].1 = feature(1, 0, 5, &[rf(14), rf(12), 0, rf(15), rf(16), rf(19), rf(17)]);
+    let t = tree(&r).unwrap();
+    let e = &t["features"][1];
+    assert_eq!(e["distance"], 5.0);
+    assert!((e["taper_deg"].as_f64().unwrap() - 0.1f64.to_degrees()).abs() < 1e-6, "{e}");
+    // No taper: none written.
+    r[19].1 = param("d1", 0.0);
+    let t = tree(&r).unwrap();
+    assert!(t["features"][1].get("taper_deg").is_none());
+}

@@ -39,7 +39,7 @@ const PLANE_NAMES: [(u32, &str); 3] = [(2, "Front"), (3, "Top"), (4, "Right")];
 const EXTRUDE: [&str; 3] = ["moExtrusion_c", "moICE_c", "moCut_c"];
 const REVOLVE: [&str; 2] = ["moRevolution_c", "moRevCut_c"];
 /// Classes that carry nothing the tree needs (sketches are handled before this list).
-const SKIPPED: [&str; 42] = [
+const SKIPPED: [&str; 43] = [
     "moCommentsFolder_c",
     "moFavoriteFolder_c",
     "moHistoryFolder_c",
@@ -92,6 +92,10 @@ const SKIPPED: [&str; 42] = [
     // Round sw10: a 3D sketch, curves only (500 Hex Hub's, which no feature uses; a sweep along
     // one finds no path and is refused).
     "mo3DProfileFeature_c",
+    // Round sw12: a split line divides faces along projected curves and leaves the solid as it
+    // is (the V-Slot extrusions' fixture lines); a feature that picks a face or edge it made
+    // finds none and is refused.
+    "moPLine_c",
 ];
 
 /// The 46-byte block after a feature node's comment (older files, then newer ones).
@@ -1097,6 +1101,17 @@ fn payload(d: &[u8], h: usize) -> Option<(Option<usize>, bool)> {
         if d.get(p..p + 16) == Some(&ONE[..]) {
             return Some((Some(after(p + 16)), false));
         }
+        // A projected point without an object chain marks itself with a byte (1 or 3) where the
+        // 0.0 would be (round sw12: the 126p rods' groove circles and mid_elbow's hole are
+        // centred on one; the search below found the next entity's payload, so the centre took
+        // its start point's place).
+        let marked = d.get(p..p + 8).is_some_and(|w| {
+            w.first() == Some(&0) && w.get(1).is_some_and(|&b| b != 0) && w.iter().skip(2).all(|&b| b == 0)
+        });
+        let q = after(p + 16);
+        if marked && d.get(p + 8..p + 16) == ONE.get(8..) && matches!(u16_at(d, q), Some(0x1e | 0x1f)) {
+            return Some((Some(q), true));
+        }
     }
     // An object chain in the reference slot: the payload follows the next 0.0/1.0 pair.
     Some((find(d, &ONE, h + 35, h + 2000).map(|k| after(k + 16)), true))
@@ -1860,10 +1875,17 @@ fn edge_records_to(
 /// A record also continues the run when it starts right after the previous one ends (its class
 /// tag and eight zero bytes between them): records of four references with their extra words
 /// are longer than 0xa0 bytes (the bearings' Chamfer1 picks eight edges 150 to 200 bytes apart).
-fn selection(recs: Vec<(usize, usize, Vec<Rep>)>) -> Vec<(usize, Vec<Rep>)> {
+///
+/// Records that name a face of the feature itself (`own`, its node id) describe the faces it
+/// made (each blend face with its neighbours), not picked edges; newer files write them before
+/// the picks (Power Supply Unit's Fillet1: four such records, then its four corner edges). The
+/// run starts at the first record without one, where there is such a record, else as before.
+fn selection(recs: Vec<(usize, usize, Vec<Rep>)>, own: u32) -> Vec<(usize, Vec<Rep>)> {
+    let mentions_own = |reps: &[Rep]| reps.iter().any(|r| r.fid == own);
+    let from = recs.iter().position(|(_, _, reps)| !mentions_own(reps)).filter(|&k| k > 0).unwrap_or(0);
     let mut run: Vec<(usize, Vec<Rep>)> = Vec::new();
     let mut last_end = 0usize;
-    for (start, end, reps) in recs {
+    for (start, end, reps) in recs.into_iter().skip(from) {
         match run.last() {
             Some(last) if start - last.0 > 0xa0 && start.saturating_sub(last_end) > 16 => break,
             _ => {
@@ -2021,7 +2043,7 @@ fn square_chamfer(
 ) -> Option<Vec<Value>> {
     let mut out = Vec::new();
     for (_, reps) in sel {
-        let (m, path) = revolve_circle(reps, revolved, sketches)?;
+        let (m, path) = revolve_circle(reps, revolved, sketches, None)?;
         let [r0, r1, ..] = reps.as_slice() else { return None };
         let rv = revolved.get(&r0.fid)?;
         let g = sketches.get(rv.on.sketch)?;
@@ -2096,7 +2118,18 @@ fn square_chamfer(
 /// segment): a point on it, opposite the profile plane, and the whole circle as a closed
 /// path. `None` for anything else (a construction segment, segments that do not meet, the
 /// axis).
-fn revolve_circle(reps: &[Rep], revolved: &HashMap<u32, Revolved>, sketches: &[Geometry]) -> Option<(V3, Vec<V3>)> {
+///
+/// `ends`: the planes of the record's two vertex faces, when they are faces of other features
+/// that cut the circle into pieces (round sw12: the nut's flats cut its rims in two). The edge
+/// is then the piece that runs from the first plane to the second with the first face on its
+/// left (as for two meeting points of extrude sides: the cross of the outward normals points
+/// along the run), the shortest such run; its midpoint and its own path.
+fn revolve_circle(
+    reps: &[Rep],
+    revolved: &HashMap<u32, Revolved>,
+    sketches: &[Geometry],
+    ends: Option<[(V3, V3); 2]>,
+) -> Option<(V3, Vec<V3>)> {
     let [r0, r1, ..] = reps else { return None };
     if r0.fid != r1.fid {
         return None;
@@ -2144,8 +2177,40 @@ fn revolve_circle(reps: &[Rep], revolved: &HashMap<u32, Revolved>, sketches: &[G
             round_to(c + cs * a + sn * b, 6) + 0.0
         })
     };
-    let path = (0..=steps).map(|k| at(TAU * f64::from(k) / f64::from(steps))).collect();
-    Some((at(TAU / 2.0), path))
+    let Some([(o1, n1), (o2, n2)]) = ends else {
+        let path = (0..=steps).map(|k| at(TAU * f64::from(k) / f64::from(steps))).collect();
+        return Some((at(TAU / 2.0), path));
+    };
+    // The run's sense about the axis: the outward normals at the profile point.
+    let p = lift(&rv.on, v.x * 1000.0, v.y * 1000.0, 0.0);
+    let (na, nb) = (side_out(&rv.on, g, &sa, p)?, side_out(&rv.on, g, &sb, p)?);
+    let turn = dot(cross(na, nb), e2);
+    if turn.abs() < 1e-9 {
+        return None;
+    }
+    let sense = turn.signum();
+    // Where a plane cuts the circle: cos(t) a + sin(t) b = k.
+    let cuts = |o: V3, n: V3| -> Vec<f64> {
+        let (a, b, k) = (dot(r0v, n), dot(e2, n), dot(sub(o, c), n));
+        let r = libm::hypot(a, b);
+        if r < 1e-9 || k.abs() > r {
+            return Vec::new();
+        }
+        let (phi, d) = (libm::atan2(b, a), libm::acos(k / r));
+        vec![phi - d, phi + d]
+    };
+    let mut best: Option<(f64, f64)> = None;
+    for t1 in cuts(o1, n1) {
+        for t2 in cuts(o2, n2) {
+            let span = (sense * (t2 - t1)).rem_euclid(TAU);
+            if span > 1e-9 && best.is_none_or(|(_, s)| span < s) {
+                best = Some((t1, span));
+            }
+        }
+    }
+    let (t1, span) = best?;
+    let path = (0..=steps).map(|k| at(t1 + sense * span * f64::from(k) / f64::from(steps))).collect();
+    Some((at(t1 + sense * span / 2.0), path))
 }
 
 /// A solid feature an edge can name: its sketch, plane and signed depth (mm).
@@ -3319,7 +3384,13 @@ fn finish_hole(h: HoleState) -> Value {
     }
     if let Some(d) = dep {
         o.insert("depth".into(), json!(mm(d)));
-        o.insert("point_angle".into(), json!(118.0));
+        // The drill point: `Drill Angle` where the hole writes one (180 degrees is a flat
+        // bottom: GripperbaseNEW's 2 mm holes), else the usual 118 degrees.
+        let tip = get(&["Drill Angle"])
+            .map(f64::to_degrees)
+            .filter(|a| (30.0..=180.0 + 1e-9).contains(a))
+            .map_or(118.0, |a| round_to(a.min(180.0), 9));
+        o.insert("point_angle".into(), json!(tip));
     }
     if let Some(d) = cs_d {
         o.insert("variant".into(), json!("countersink"));
@@ -3987,15 +4058,18 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     }
                 }
             }
-            // A blind cut with a second length (`D2`, or `D<n+1>` after the `n` dimensions of its
-            // own sketch) starts that far from its sketch plane. With an end spec of X 1 the start
+            // A blind cut with a further length (`D<n+1>` after the `n` dimensions of its own
+            // sketch) starts that far from its sketch plane. With an end spec of X 1 the start
             // lies ahead along the cut direction (MicroGearMotor Cut-Extrude2: D1 4.25 mm, offset
             // 0.8 mm, the void spans z -5.05 .. -0.8 from the Front plane); with X 0 it lies
-            // behind (idler_single_v1: D1 10 mm, D2 1 mm, the truth's bore spans x -1 .. 2.9 from
-            // the Right plane, running along the normal).
+            // behind. `D2` is the second direction's length instead (below; round sw12:
+            // gt2_pulley 2's Cut-Extrude5, 10 mm each way; idler_single_v1's bore, 10 mm one way
+            // and 1 mm the other, which round sw2 read as a start 1 mm behind: the same solid).
             let start_offset = named_params(rf, a, b, nt)?
                 .iter()
-                .find(|(k, _)| k.strip_prefix('D').is_some_and(|n| n != "1" && n.bytes().all(|c| c.is_ascii_digit())))
+                .find(|(k, _)| {
+                    k.strip_prefix('D').is_some_and(|n| n != "1" && n != "2" && n.bytes().all(|c| c.is_ascii_digit()))
+                })
                 .map(|(_, v)| mm(*v))
                 .filter(|_| op == "cut" && typ == Some(0) && !symmetric);
             if let (Some(off), Some(sk), Some(d)) = (start_offset, last_sketch.as_ref(), distance)
@@ -4059,6 +4133,30 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 }
             } else {
                 js.insert("distance".into(), json!(distance));
+                // A boss of end type 2 stops at the next face it meets (round sw12: mid_elbow's
+                // pins, written through all, ran 360 mm out of a 35 mm part); the reach through
+                // all stays as the fallback where that does not build.
+                if op != "cut"
+                    && typ == Some(2)
+                    && let Some(d) = distance
+                {
+                    js.insert("end_condition".into(), json!("to_next"));
+                    if d < 0.0 {
+                        js.insert("reverse".into(), json!(true));
+                    }
+                }
+                // A blind extrude with a second length `D2` runs that far to the other side of its
+                // sketch too (SolidWorks' "Direction 2": the pulleys' hubs, 2 mm one way and 7 mm
+                // the other).
+                if typ == Some(0)
+                    && !symmetric
+                    && let Some(d) = distance.filter(|d| d.abs() > 1e-9)
+                    && let named = named_params(rf, a, b, nt)?
+                    && named.first().is_some_and(|(k, _)| k == "D1")
+                    && let Some(d2) = named.iter().find(|(k, _)| k == "D2").map(|(_, v)| mm(*v)).filter(|v| *v > 1e-9)
+                {
+                    js.insert("distance2".into(), json!(round_to(-d.signum() * d2, 9) + 0.0));
+                }
             }
             if through_all {
                 js.insert("through_all".into(), json!(true));
@@ -4328,7 +4426,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let ps = params(rf, a, b, nt)?;
             let mirror_ids: HashSet<u32> = mirror_planes.keys().copied().collect();
             let pattern_ids: HashSet<u32> = pattern_steps.keys().copied().collect();
-            let sel = selection(edge_records_to(rf, a, b, &mirror_ids, &pattern_ids)?);
+            let sel = selection(edge_records_to(rf, a, b, &mirror_ids, &pattern_ids)?, n.id);
             let mut edges = Vec::new();
             let mut mids: Vec<Option<V3>> = Vec::new();
             let mut stale = 0usize;
@@ -4362,7 +4460,17 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let mut by_faces = 0usize;
             for (k, (_, reps)) in sel.iter().enumerate() {
                 let number = k + 1;
-                if let Some((m, path)) = revolve_circle(reps, &revolved, &sketches) {
+                // The planes of vertex faces of other features that cut the circle.
+                let ends = match reps.as_slice() {
+                    [r0, _, r2, r3, ..] if r2.fid != r0.fid && r3.fid != r0.fid => {
+                        let plane = |r: &Rep| {
+                            face_of(r, &swept, &rounds, &sketches, &cap_tags).and_then(|f| face_plane(&f, &sketches))
+                        };
+                        plane(r2).zip(plane(r3)).map(|(a, b)| [a, b])
+                    }
+                    _ => None,
+                };
+                if let Some((m, path)) = revolve_circle(reps, &revolved, &sketches, ends) {
                     mids.push(Some(m));
                     made.push(None);
                     edges.push(json!({"midpoint": m, "path": path, "selection": number}));
@@ -5530,6 +5638,72 @@ mod end_face_tests {
     }
 
     #[test]
+    fn a_projected_point_without_a_chain_is_read_where_it_is() {
+        // 40 header bytes (the reference word at 35 is 0), then 0.0 and 1.0, then the point.
+        let mut d = vec![0u8; 40];
+        d.extend(ONE);
+        d.extend([0x1e, 0]);
+        assert_eq!(payload(&d, 0), Some((Some(56), false)));
+        // A projected point writes a 1 byte into the 0.0: still its own payload, marked external.
+        let mut e = vec![0u8; 40];
+        e.extend([0, 3, 0, 0, 0, 0, 0, 0]);
+        e.extend(ONE.get(8..).unwrap());
+        e.extend([0x1e, 0]);
+        // A later entity's 0.0/1.0 pair must not be taken instead.
+        e.extend([0u8; 40]);
+        e.extend(ONE);
+        assert_eq!(payload(&e, 0), Some((Some(56), true)));
+    }
+
+    #[test]
+    fn a_revolved_rim_cut_by_two_flats_is_the_piece_its_vertex_faces_bound() {
+        // A ring about the y axis of the Front plane: r 11 to 21 mm, y 0 to 6 mm; the rim
+        // between the outer wall (key 2) and the top (key 3) is the circle r 21 at y 6.
+        let seg = |a, s, e| Seg {
+            kind: SegKind::Line,
+            id: a,
+            a,
+            s,
+            e,
+            c: 0,
+            dir: 1,
+            construction: false,
+            centerline: false,
+            external: false,
+        };
+        let sketches = vec![Geometry {
+            pts: vec![pt(0.011, 0.0), pt(0.021, 0.0), pt(0.021, 0.006), pt(0.011, 0.006)],
+            segs: vec![seg(1, 0, 1), seg(2, 1, 2), seg(3, 2, 3), seg(4, 3, 0)],
+            ellipse_axes: Vec::new(),
+        }];
+        let on = Swept {
+            sketch: 0,
+            plane: JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] },
+            distance: 0.0,
+            symmetric: false,
+            through: false,
+            cut: false,
+        };
+        let axis =
+            [Pt { x: 0.0, y: 0.0, ext: false, id: 0, alone: 0 }, Pt { x: 0.0, y: 0.01, ext: false, id: 0, alone: 0 }];
+        let revolved = HashMap::from([(34, Revolved { on, axis })]);
+        let rep = |fid, idx| Rep { tag: 1, fid, idx, ext: false, ext2: false, via: None, copy: 0 };
+        let reps = [rep(34, 2), rep(34, 3), rep(55, 2), rep(55, 6)];
+        // Uncut: a point opposite the profile, and the whole circle.
+        let (m, path) = revolve_circle(&reps, &revolved, &sketches, None).unwrap();
+        assert_eq!(m, [-21.0, 6.0, 0.0]);
+        assert_eq!(path.len(), 201);
+        // Flats at x = -15 and x = 15 leave two arcs, |x| < 15; the vertex faces' order picks one.
+        let (left, right) = (([-15.0, 0.0, 0.0], [-1.0, 0.0, 0.0]), ([15.0, 0.0, 0.0], [1.0, 0.0, 0.0]));
+        let (m, path) = revolve_circle(&reps, &revolved, &sketches, Some([left, right])).unwrap();
+        assert_eq!(m, [0.0, 6.0, -21.0]);
+        let ends = (path.first().copied().unwrap(), path.last().copied().unwrap());
+        assert!((ends.0[0] + 15.0).abs() < 1e-6 && (ends.1[0] - 15.0).abs() < 1e-6, "{ends:?}");
+        let (m, _) = revolve_circle(&reps, &revolved, &sketches, Some([right, left])).unwrap();
+        assert_eq!(m, [0.0, 6.0, 21.0]);
+    }
+
+    #[test]
     fn a_closed_edge_is_a_circle_cut_by_the_plane_across_it() {
         let (mut swept, mut sketches) = plate();
         let seg = |kind, a, s, e, c| Seg {
@@ -6045,9 +6219,19 @@ mod pattern_tests {
     fn a_selection_runs_on_while_records_follow_each_other() {
         // Records 162 bytes apart, each 14 bytes after the previous one's end, then one far off.
         let recs = vec![(361, 509, vec![]), (523, 669, vec![]), (683, 830, vec![]), (1773, 1900, vec![])];
-        assert_eq!(selection(recs).len(), 3);
+        assert_eq!(selection(recs, 9).len(), 3);
         // Short records keep the 0xa0 rule.
-        assert_eq!(selection(vec![(0, 60, vec![]), (150, 210, vec![]), (400, 460, vec![])]).len(), 2);
+        assert_eq!(selection(vec![(0, 60, vec![]), (150, 210, vec![]), (400, 460, vec![])], 9).len(), 2);
+        // Records naming the feature's own faces (id 9) come before its picks and are passed
+        // over; with nothing else, they are what there is.
+        let rep = |fid| Rep { tag: 1, fid, idx: 1, ext: false, ext2: false, via: None, copy: 0 };
+        let own = || vec![rep(9), rep(5), rep(5), rep(5), rep(5)];
+        let pick = || vec![rep(5), rep(5), rep(5), rep(5)];
+        let recs =
+            vec![(0, 150, own()), (300, 450, own()), (600, 730, pick()), (736, 866, pick()), (2000, 2130, pick())];
+        let sel = selection(recs, 9);
+        assert_eq!(sel.iter().map(|(at, _)| *at).collect::<Vec<_>>(), [600, 736]);
+        assert_eq!(selection(vec![(0, 150, own()), (300, 450, own())], 9).len(), 1);
     }
 
     #[test]

@@ -864,3 +864,62 @@ a face that does not cover the profile (2; round op1 extends the face, ADR 0061,
 test rig's `Komponenten_~16` and `~17`, every extrude to a face now carries `extend`); counterbored
 holes that cross the face's edge (the fallback cut differs by 20 mm3); 7 parts within 1e-4 to 2e-4 of the
 volume (revolves and small cuts, cause not found); and single parts with a region pick or fillet set off.
+
+## AS. Face planes, tapers, extents from a face, half-way revolves, lofts, members on faces (round ipt9)
+Measured first by the first failure of every body part of the 1686, then feature by feature against the
+stored body (scratch, not committed: each prefix of the rebuilt history against the part's result, the
+volume and box of what lies outside it and what is missing). Every rule below is a candidate the
+whole-part rebuild check decides.
+
+- **Face planes `151280f0`.** An extrude with extent 7 (to a face) keeps the plane of that face in slot 18:
+  the last 72 bytes are a point and two unit vectors (cm), as a work plane's (`ce52df42`). 51 of the 52
+  extent-7 extrudes in the parts that failed on them have it (lengths 123/127; 207/211 hold a curved face,
+  not read). When no face of the extrude is left in the result (later features removed them), a plane
+  parallel to the sketch gives the reach.
+- **Extent 12 (from a face).** The distance (slot 4) runs from the face whose plane slot 17 keeps, in the
+  same layout (`ex_from_face`: a cut 5 mm down from the top face at z = 20 mm; LightSaber's battery: a join
+  from the top of the first extrude). The sketch is moved onto that plane.
+- **Extent 4 (to the next face)** with no face left in the result, or with faces on both sides of the sketch:
+  the tree's own "to next" (joins and cuts).
+- **Taper (extrude slot 5, radians).** Positive widens the solid away from its sketch (the tree's
+  `taper_deg` sign). No history part had a non-zero slot 5; the five ISO 7045 Content Center screws join
+  four quadrants "to next" with a 5 degree taper into the cone of the cross recess. A tapered extrude is
+  written blind (the tree tapers no extrude that ends on a face); the reach measured at its faces' corners
+  stops short where the tapered walls meet the cone between corners (0.0019 mm3 missing at the tip), so a
+  join runs 10% further, into the material behind the face. The ISO 7046 countersunk screws still differ
+  before their recess (a join of 6.6 mm3 where 4.7 mm3 is missing), with either sign.
+- **Revolve slot 5 (`c7a06ac2`).** 0 one way, 1 the other way (only seen on full turns), 2 half the angle
+  each way from the sketch (`rv_sym90`, Demo-Status 0.2): the revolve takes a copy of its sketch turned back
+  by half the angle about the axis.
+- **Sheet-metal face slot 2 (`5e50b969`).** The side the face grows to: 0 along the sketch normal, 1 against
+  it, 2 both ways (checked against the side measured in the result on every face where that measure equals
+  the thickness). The thickness with that side replaces the measure, which flanges and folds change. The 15
+  parts this round's reading reaches now stop at folds (`4c37ffe8`) and contour flanges.
+- **Degenerate sketch arcs.** A sketch fillet of radius 0 (centre and both ends at one point; the Q-band
+  flange's four corners) is left out like a line of no length; an arc whose ends meet runs the whole turn
+  (as the profile picks already sampled it) and is written as a circle (Arm_1, Arm_2).
+- **Lofts `2f54efe0`.** Slot 0 lists the sections (`4b3150e8`), each naming the history body of its loop
+  (`cc0f7521`) as a sheet-metal face does; the section is the sketch whose curves the loop runs along; slot
+  1 the operation. Two sections are ruled. None of the 15 corpus lofts rebuilds: `lf_basic` (square to
+  circle) is still 7.4e-5 off (Inventor pairs the points differently; neither a smooth nor an aligned loft
+  does better), 6 sections are loops of faces, 3 sketches have several regions or holes.
+- **iPart members: sketches and holes on faces.** A sketch on a face whose origin no earlier sketch point
+  explains moves across its plane as the earlier points that lie in that plane move (they must agree); its
+  place in the plane is kept. A hole takes the sketch of its centres as the row solves and places it, or,
+  when that sketch projects model edges (a centre projected from a circular edge), as its face moves; a hole
+  that ends at a work plane (extent 7, slot 13) moves the plane the same way. AN816's tube (Sketch9, a
+  circle of diameter `d66` on the hex's end face) and its bore (Hole2, to a plane on the end of the
+  first revolve, `d28`) follow the row: 19 of its 21 members rebuild. AN816-28D and -32D (and AN815-28D
+  of AN806) differ by 48 mm3: the solve flips a groove's fillet arc to the other side of its chord (225
+  degrees instead of 45); refusing such a flip finds no other solution of the constraints. AN818's members
+  still stop at its chamfer sketch (points projected from intersections of the model's faces) and the
+  offset work plane `d16` moves.
+
+Left, measured (first failures of the 925 bodies of the second corpus): no features 422 (imported or
+translated bodies), derived from a part not in the folder or in a cycle 64, imported base bodies 43, blends
+111 (no model edge at a pick 37, cylinder blends with one usable support, chamfer and fillet failures),
+volume differences 50 (LEGO studs with text 4, ISO 7046 4, `rev1 corners` mirrors whose base changed after
+the mirror was saved 3, the AN fittings' flipped fillet 3, revolves 1e-4 off, single parts), Design
+Accelerator gears and derived "Solid1::" parts whose base has the part's own name 32, sheet-metal folds
+and bends 16, AN818 and MS20819 members 13, shells whose open faces count differently 9, surfaces and
+direct edits (delete face, stitch, trim, face draft) 15, twisted coils 4, lofts 3.

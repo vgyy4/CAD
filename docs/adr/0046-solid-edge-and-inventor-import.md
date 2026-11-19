@@ -1038,7 +1038,45 @@ built that way generalises this round's end tangents and is the next step there;
 145); profiles 9 (012, 015, 018, 052, 069 and 070 - thirty lofted cutouts each, a feature group
 owner listed among a profile's members -, 144, 168, 176).
 
-## Amendment (2026-11-19, 25): Solid Edge round xt1 - stored bodies that convert
+## Amendment (2026-11-19, 25): Inventor round ipt9 - face planes, tapers, extents from a face, members on faces
+
+Measured first: the first failure of each of the 1008 parts not as history, then, for the ones whose
+features build, a per-feature comparison with the stored body (scratch, not committed). Most failures are
+not rebuildable from the file (422 parts have no features, 64 are derived from parts not in their folder,
+43 start from an imported body); the rest spread thinly. Decoded this round (notes AS of
+`docs/formats/inventor-feature-tree.md`):
+
+| rule | parts gained |
+|---|---|
+| iPart member sketches on faces move across their plane with the earlier points in it; hole centres and hole end planes follow the row | 19 (AN816 members) |
+| extrude taper (slot 5, radians, positive widens); a tapered join to the next face runs 10% past its corners into the material behind the end face | 5 (ISO 7045 screws) |
+| extent 4 with no face left in the result: the tree's "to next" | 4 |
+| extent 12: the distance from the face plane slot 17 keeps (the sketch moved onto it) | 3 |
+| extent 7 with no face left in the result: the face plane slot 18 keeps (`151280f0`), parallel to the sketch | 2 |
+| revolve slot 5 = 2: half the angle each way (the sketch turned back by half) | 2 |
+| sketch arcs of radius 0 left out; arcs whose ends meet written as circles | 1 |
+| sheet-metal face side from slot 2 (0, 1, 2 = both ways) instead of the result | 0 (the 15 parts now stop at folds) |
+| lofts through the sketches of their section loops (ruled for two) | 0 (`lf_basic` 7.4e-5 off) |
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4).
+
+| corpus | parts | history before | after | without a solid |
+|---|---|---|---|---|
+| first (Zenodo) | 47 | 28 | 28 | 0 |
+| second (57 sources) | 1639 | 650 | 686 | 46 |
+
+No part went from history to body (one body part timed out under load: the MoS2 rig's `SRM`, 607 s alone
+as before). Only Inventor reader code changed (`gusset-ole` Inventor modules): the Solid Edge and SolidWorks
+corpora were not rerun.
+
+What blocks the rest, measured: blends 111 (no model edge at a pick 37); volume differences 50 (ISO 7046
+recesses that differ before their taper, LEGO stud text, a solve that flips a groove fillet to the other
+side of its chord in AN815-28D, AN816-28D and -32D, revolves about 1e-4 off); Design Accelerator gears and
+"Solid1::" derives of a part with the part's own name 32; sheet-metal folds and bends 16; AN818 (points
+projected from face intersections, an offset work plane the row moves) and MS20819 members 13; surfaces and
+direct edits 15; shells whose open faces count differently 9; twisted coils 4; lofts 3.
+
+## Amendment (2026-11-19, 26): Solid Edge round xt1 - stored bodies that convert
 
 Of the 91 parts not rebuilt as history after se7, 40 had stored bodies that gusset-xt did not
 convert to a closed solid, so no rebuild of them could be checked. ADR 0035's amendment of the

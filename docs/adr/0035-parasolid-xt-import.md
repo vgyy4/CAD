@@ -210,7 +210,7 @@ Reference; no SDK or other reader.
   closest points start from the last answer when the point is near the last one asked for.
 
 Result: of the 40 Solid Edge stored bodies, 36 now convert to valid closed solids (none
-did); the 4 left are listed in ADR 0046 amendment 25. Every Solid Edge part converts
+did); the 4 left are listed in ADR 0046 amendment 26. Every Solid Edge part converts
 without a blend, SP-curve or torus warning. Feature-history counts are unchanged (Solid
 Edge 89 of 180, SolidWorks and Inventor in PROGRESS.md): the rebuilds of these parts stop
 earlier, mostly at rounds OCCT's fillet does not build. `gusset-xt` is optimised in dev
