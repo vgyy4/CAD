@@ -1407,3 +1407,25 @@ fn ends_through_all_are_ends_up_to_the_next_face() {
     );
     assert_eq!((&f[2]["name"], &f[2]["distance"]), (&json!("Protrusion_1_second"), &json!(-2.0)), "{t}");
 }
+
+#[test]
+fn an_open_protrusion_profile_is_closed_between_its_ends() {
+    // A second protrusion of three of the rectangle's lines (a bridge whose ends lie on the
+    // body): the line from its last end back to its first closes it.
+    let mut more = func("JProfileRecomputeEx", &[&[1], &[41]]);
+    more.extend(42u32.to_le_bytes());
+    more.push(9 * 8);
+    more.extend("Profile2d".encode_utf16().flat_map(u16::to_le_bytes));
+    let mut more = obj(26, 41, &more);
+    let mut p2 = 3u32.to_le_bytes().to_vec();
+    for m in [4u32, 5, 6] {
+        p2.extend(m.to_le_bytes());
+    }
+    more.extend(obj(65, 42, &p2));
+    more.extend(obj(38, 43, &func("JMProtrusionFunction", &[&[43], &[12], &[41], &[8], &[9], &[0], &[10]])));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let f = t["features"].as_array().unwrap();
+    assert_eq!(f[2]["name"], "Protrusion_2_Sketch", "{t}");
+    assert_eq!(f[2]["curves"].as_array().unwrap().len(), 4, "{t}");
+    assert_eq!(f[3]["operation"], "join", "{t}");
+}

@@ -2026,6 +2026,13 @@ fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Ki
         // Turned over, the chain's left is the seed's right.
         let side = code(5).map(|s| if one.turned { 3 - s } else { s });
         close_open(&mut one.curves, &one.backwards, side)?;
+    } else if k == Kind::Protrusion
+        && let [one] = profiles.as_mut_slice()
+        && let Some((a, b)) = free_ends(&one.curves, &one.backwards)?
+    {
+        // An open profile of a protrusion runs on to the body: its ends lie on it (055's
+        // bridge over a tube), closed by the line between them.
+        one.curves.push(Curve2::Line(b.0, a.0));
     }
     let sketch = format!("{name}_Sketch");
     let revolve = matches!(k, Kind::RevolvedProtrusion | Kind::RevolvedCutout);
