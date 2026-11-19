@@ -1426,7 +1426,19 @@ fn copied_profile(st: &Store, serial: u32, f: &Func) -> Result<Profile, String> 
         "JMMirrorCopyFunction" => {
             let (mo, mn, _) =
                 from.slot(2).and_then(|p| st.obj(p)).and_then(plane).ok_or("the mirror plane is not readable")?;
-            let (so, sn, sx) = seed_feature(3).ok_or("the mirrored profile's plane is not readable")?;
+            // Slot 3 lists the features mirrored: the seed is the one whose profile lists the
+            // copy's first member (152 mirrors a protrusion and a revolved cutout together).
+            let first = u32_at(b, 16);
+            let seed = from.list(3).iter().find_map(|&ft| {
+                let feat = st.func(ft)?;
+                let ps = *feat.list(2).first()?;
+                let prof = st.func(ps)?;
+                (prof.class == "JProfileRecomputeEx").then_some(())?;
+                let (pl, pb) = profile_2d(st, ps, &prof).ok()?;
+                let k = usize::try_from(u32_at(pb, 8)?).ok()?.min(MAX_MEMBERS as usize);
+                (0..k).any(|i| u32_at(pb, 12 + 4 * i) == first).then_some(pl)
+            });
+            let (so, sn, sx) = seed.or_else(|| seed_feature(3)).ok_or("the mirrored profile's plane is not readable")?;
             let (curves, backwards) = members(st, b, 16, n, Some((so, sn, sx)))?;
             let flip = |v: V3| {
                 let k = 2.0 * dot(v, mn);

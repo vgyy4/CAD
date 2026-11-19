@@ -510,9 +510,10 @@ fn a_pattern_copied_profile_lies_on_its_stored_plane() {
     more.extend(obj(38, 34, &func("JMCutoutFunction", &[&[34], &[12], &[30], &[32], &[33]])));
     more.extend(obj(40, 35, &copied(&[4], [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 34)));
     more.extend(obj(6, 38, &plane_payload([0.005, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])));
-    // The seed of the mirror: a cutout of the protrusion's own profile.
+    // The seed of the mirror: a cutout of the protrusion's own profile, listed after another
+    // feature mirrored with it (the seed is the one whose profile lists the copy's members).
     more.extend(obj(38, 39, &func("JMCutoutFunction", &[&[39], &[0], &[2], &[32], &[33]])));
-    more.extend(obj(38, 40, &func("JMMirrorCopyFunction", &[&[40], &[12], &[38], &[39]])));
+    more.extend(obj(38, 40, &func("JMMirrorCopyFunction", &[&[40], &[12], &[38], &[34, 39]])));
     more.extend(obj(38, 41, &func("JMCutoutFunction", &[&[41], &[34], &[42], &[32], &[33]])));
     more.extend(obj(40, 42, &copied(&[4, 5, 6, 7], [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 40)));
     // A copy by anything else is not read.
