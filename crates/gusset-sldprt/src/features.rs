@@ -1864,10 +1864,17 @@ fn edge_records_to(
 /// A record also continues the run when it starts right after the previous one ends (its class
 /// tag and eight zero bytes between them): records of four references with their extra words
 /// are longer than 0xa0 bytes (the bearings' Chamfer1 picks eight edges 150 to 200 bytes apart).
-fn selection(recs: Vec<(usize, usize, Vec<Rep>)>) -> Vec<(usize, Vec<Rep>)> {
+///
+/// Records that name a face of the feature itself (`own`, its node id) describe the faces it
+/// made (each blend face with its neighbours), not picked edges; newer files write them before
+/// the picks (Power Supply Unit's Fillet1: four such records, then its four corner edges). The
+/// run starts at the first record without one, where there is such a record, else as before.
+fn selection(recs: Vec<(usize, usize, Vec<Rep>)>, own: u32) -> Vec<(usize, Vec<Rep>)> {
+    let mentions_own = |reps: &[Rep]| reps.iter().any(|r| r.fid == own);
+    let from = recs.iter().position(|(_, _, reps)| !mentions_own(reps)).filter(|&k| k > 0).unwrap_or(0);
     let mut run: Vec<(usize, Vec<Rep>)> = Vec::new();
     let mut last_end = 0usize;
-    for (start, end, reps) in recs {
+    for (start, end, reps) in recs.into_iter().skip(from) {
         match run.last() {
             Some(last) if start - last.0 > 0xa0 && start.saturating_sub(last_end) > 16 => break,
             _ => {
@@ -4381,7 +4388,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let ps = params(rf, a, b, nt)?;
             let mirror_ids: HashSet<u32> = mirror_planes.keys().copied().collect();
             let pattern_ids: HashSet<u32> = pattern_steps.keys().copied().collect();
-            let sel = selection(edge_records_to(rf, a, b, &mirror_ids, &pattern_ids)?);
+            let sel = selection(edge_records_to(rf, a, b, &mirror_ids, &pattern_ids)?, n.id);
             let mut edges = Vec::new();
             let mut mids: Vec<Option<V3>> = Vec::new();
             let mut stale = 0usize;
@@ -6156,9 +6163,19 @@ mod pattern_tests {
     fn a_selection_runs_on_while_records_follow_each_other() {
         // Records 162 bytes apart, each 14 bytes after the previous one's end, then one far off.
         let recs = vec![(361, 509, vec![]), (523, 669, vec![]), (683, 830, vec![]), (1773, 1900, vec![])];
-        assert_eq!(selection(recs).len(), 3);
+        assert_eq!(selection(recs, 9).len(), 3);
         // Short records keep the 0xa0 rule.
-        assert_eq!(selection(vec![(0, 60, vec![]), (150, 210, vec![]), (400, 460, vec![])]).len(), 2);
+        assert_eq!(selection(vec![(0, 60, vec![]), (150, 210, vec![]), (400, 460, vec![])], 9).len(), 2);
+        // Records naming the feature's own faces (id 9) come before its picks and are passed
+        // over; with nothing else, they are what there is.
+        let rep = |fid| Rep { tag: 1, fid, idx: 1, ext: false, ext2: false, via: None, copy: 0 };
+        let own = || vec![rep(9), rep(5), rep(5), rep(5), rep(5)];
+        let pick = || vec![rep(5), rep(5), rep(5), rep(5)];
+        let recs =
+            vec![(0, 150, own()), (300, 450, own()), (600, 730, pick()), (736, 866, pick()), (2000, 2130, pick())];
+        let sel = selection(recs, 9);
+        assert_eq!(sel.iter().map(|(at, _)| *at).collect::<Vec<_>>(), [600, 736]);
+        assert_eq!(selection(vec![(0, 150, own()), (300, 450, own())], 9).len(), 1);
     }
 
     #[test]
