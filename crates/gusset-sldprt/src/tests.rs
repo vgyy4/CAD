@@ -817,6 +817,13 @@ fn a_hole_wizard_becomes_a_hole_at_its_placement_points() {
     assert_eq!(hole["positions"], serde_json::json!([[2.0, 3.0, 5.0], [7.0, 3.0, 5.0]]));
     assert_eq!(hole["face"]["normal"], serde_json::json!([0.0, 0.0, 1.0]));
     assert!(hole.get("head_clearance").is_none());
+    assert_eq!(hole["point_angle"].as_f64(), Some(118.0));
+    // A `Drill Angle` of 180 degrees is a flat bottom (round sw12).
+    let mut flat = hole_wizard(false);
+    flat.extend(parameter("Drill Angle", core::f64::consts::PI));
+    let t2 = history(&feature_stream(&flat)).unwrap().unwrap();
+    let h2 = t2["features"].as_array().unwrap().iter().find(|x| x["type"] == "hole").unwrap().clone();
+    assert_eq!(h2["point_angle"].as_f64(), Some(180.0), "{h2}");
     // Both sketches of the wizard are kept and none is the extrude's profile.
     assert_eq!(f.iter().filter(|x| x["type"] == "sketch").count(), 3);
     assert_eq!(f.iter().find(|x| x["name"] == "Boss-Extrude1").unwrap()["sketch"], "Sketch1");
@@ -1071,6 +1078,59 @@ fn a_shell_removes_the_first_face_of_its_last_record() {
     shell.extend(parameter("D1", 0.001));
     let why = history(&feature_stream(&shell)).unwrap_err();
     assert!(why.contains("Shell1") && why.contains("not resolved"), "{why}");
+}
+
+/// A boss of end type 2 runs up to the next face, with the reach through all to fall back on
+/// (round sw12).
+#[test]
+fn a_boss_of_end_type_two_runs_up_to_the_next_face() {
+    let mut extra = feature_node("moProfileFeature_c", "Sketch2", 8);
+    let base = feature_stream(&[]);
+    let sk = base.windows(4).position(|w| w == [0x01, 0x80, 2, 0]).unwrap();
+    let ex = base.windows(13).position(|w| w == b"moExtrusion_c").unwrap() - 6;
+    extra.extend(&base[sk..ex]);
+    extra.extend(feature_node("moExtrusion_c", "Boss-Extrude2", 9));
+    extra.extend(class_decl("moEndSpec_c"));
+    extra.extend([0, 0, 1, 0, 0, 0]);
+    extra.extend([0u8; 10]);
+    extra.extend(2u32.to_le_bytes());
+    extra.extend([0u8; 12]);
+    let t = history(&feature_stream(&extra)).unwrap().unwrap();
+    let boss = t["features"].as_array().unwrap().iter().find(|f| f["name"] == "Boss-Extrude2").unwrap().clone();
+    assert_eq!(boss["operation"], "join", "{boss}");
+    assert_eq!(boss["end_condition"], "to_next", "{boss}");
+    assert!(boss["distance"].as_f64().is_some_and(|d| d > 100.0), "{boss}");
+}
+
+/// A blind boss with a second length `D2` runs that far to the other side of its sketch too
+/// (round sw12: "Direction 2").
+#[test]
+fn a_second_boss_length_is_the_other_side() {
+    let t = history(&feature_stream(&parameter("D2", 0.002))).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap().iter().find(|x| x["name"] == "Boss-Extrude1").unwrap().clone();
+    assert_eq!((f["distance"].as_f64(), f["distance2"].as_f64()), (Some(5.0), Some(-2.0)), "{f}");
+    let t = history(&feature_stream(&[])).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap().iter().find(|x| x["name"] == "Boss-Extrude1").unwrap().clone();
+    assert!(f.get("distance2").is_none(), "{f}");
+    // A depth that is not the first named parameter (a thin feature's `Thickness`) is not one.
+    let mut v = feature_stream(&[]);
+    let at = v.windows(4).position(|w| w == [b'D', 0, b'1', 0]).unwrap();
+    v.splice(at - 6..at + 4, node_name("Thickness"));
+    v.extend(parameter("D2", 0.002));
+    let t = history(&v).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap().iter().find(|x| x["name"] == "Boss-Extrude1").unwrap().clone();
+    assert!(f.get("distance2").is_none(), "{f}");
+}
+
+/// A split line (`moPLine_c`) only divides faces: it is left out like a sketch, where an
+/// unknown feature stops the history (round sw12).
+#[test]
+fn a_split_line_adds_nothing_to_the_tree() {
+    let t = history(&feature_stream(&feature_node("moPLine_c", "Split Line1", 30))).unwrap().unwrap();
+    let names: Vec<&str> = t["features"].as_array().unwrap().iter().filter_map(|f| f["name"].as_str()).collect();
+    assert_eq!(names, ["Sketch1", "Boss-Extrude1"], "{t}");
+    let why = history(&feature_stream(&feature_node("moRib_c", "Rib1", 30))).unwrap_err();
+    assert!(why.contains("Rib1 (moRib_c) is not supported"), "{why}");
 }
 
 /// A variable fillet whose vertex radii are all one value is a constant fillet; one whose radii

@@ -778,3 +778,29 @@ and domes have no Gusset operation and stay refused.
 
 The rebuild check is unchanged. History 292 -> 293 of 1352, none lost: am-1305 500 Hex Spacer. The other draft
 parts stop at features this round does not read (a pattern of bodies, a 3D-sketch loft, an imported surface).
+
+## Amendment (2026-11-19): split lines, own face records, second directions, projected points (round sw12)
+
+Round sw12 (L23 in `docs/formats/solidworks-feature-tree.md`) compared the 96 parts that rebuilt to a different
+volume face by face with their stored bodies, and took the causes that recurred:
+
+- **Split lines** (`moPLine_c`) divide faces and leave the solid as it is: skipped like sketches. A feature that
+  picks one of their faces or edges is refused as before.
+- **A fillet's own face records.** Newer files write one record per face a fillet or chamfer made before the edges it
+  picks; the selection now starts at the first record that names none of the feature's own faces.
+- **Pieces of a revolved circle** cut by other features' faces: the piece from the first vertex face to the second
+  with the first face on its left (the round sw5 rule).
+- **Drill angle**: a hole wizard's `Drill Angle` is the point angle (180 degrees: a flat bottom).
+- **Second direction**: an extrude with `D1` and `D2` runs `D2` to the other side of its sketch (tree `distance2`);
+  a cut's start offset is a later `D<n>` (round sw2's reading of `D2` as one gives the same solid on its sample).
+- **End type 2 on a boss** is up to the next face (tree `to_next`, ADR 0061 amendment), through all as the fallback.
+- **Projected sketch points without an object chain** are read from their own payload (they took the next
+  entity's coordinates).
+
+Measured and not done: the variable-fillet radii's ends are decoded (each `moVertDim_c` lists the faces at its
+vertex) but no variable-fillet part can pass the check: the 14 r3 keycaps' stored bodies do not convert to STEP
+(gusset-xt: a torus with a negative major radius, variable-fillet `BLENDED_EDGE` surfaces), so their reference is a
+sheet of volume 0. The OpenBuilds bearings' chamfers list eight edges where the body has four (no distinguishing
+byte found); a D-cut shaft fails in OCCT (a cut whose arc lies on the cylinder leaves a sliver face).
+
+The rebuild check is unchanged. History 293 -> 314 of 1352, none lost.
