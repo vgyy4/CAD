@@ -1101,6 +1101,12 @@ fn payload(d: &[u8], h: usize) -> Option<(Option<usize>, bool)> {
         if d.get(p..p + 16) == Some(&ONE[..]) {
             return Some((Some(after(p + 16)), false));
         }
+        // A projected point without an object chain marks itself with a `1` byte where the 0.0
+        // would be (round sw12: the 126p rods' groove circles are centred on one; the search
+        // below found the next entity's payload, so the centre took its start point's place).
+        if d.get(p..p + 8) == Some(&[0, 1, 0, 0, 0, 0, 0, 0][..]) && d.get(p + 8..p + 16) == ONE.get(8..) {
+            return Some((Some(after(p + 16)), true));
+        }
     }
     // An object chain in the reference slot: the payload follows the next 0.0/1.0 pair.
     Some((find(d, &ONE, h + 35, h + 2000).map(|k| after(k + 16)), true))
@@ -5624,6 +5630,24 @@ mod end_face_tests {
         let (p, n, _) = face_pick(&r, &swept, &[g], &HashSet::from([9u16])).unwrap();
         assert_eq!(n, [0.0, 0.0, 1.0]);
         assert!((p[0] + 9.899).abs() < 1e-6 && p[1].abs() < 1e-6 && (p[2] - 5.0).abs() < 1e-9, "{p:?}");
+    }
+
+    #[test]
+    fn a_projected_point_without_a_chain_is_read_where_it_is() {
+        // 40 header bytes (the reference word at 35 is 0), then 0.0 and 1.0, then the point.
+        let mut d = vec![0u8; 40];
+        d.extend(ONE);
+        d.extend([0x1e, 0]);
+        assert_eq!(payload(&d, 0), Some((Some(56), false)));
+        // A projected point writes a 1 byte into the 0.0: still its own payload, marked external.
+        let mut e = vec![0u8; 40];
+        e.extend([0, 1, 0, 0, 0, 0, 0, 0]);
+        e.extend(ONE.get(8..).unwrap());
+        e.extend([0x1e, 0]);
+        // A later entity's 0.0/1.0 pair must not be taken instead.
+        e.extend([0u8; 40]);
+        e.extend(ONE);
+        assert_eq!(payload(&e, 0), Some((Some(56), true)));
     }
 
     #[test]
