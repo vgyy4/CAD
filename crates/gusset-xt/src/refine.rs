@@ -16,7 +16,7 @@ const MAX_POINTS: usize = 4000;
 const ROUNDS: usize = 12;
 
 /// The outward normal of an analytic surface at `p`, which lies on it.
-fn normal(g: &Graph, s: u32, p: V3) -> Option<V3> {
+pub(crate) fn normal(g: &Graph, s: u32, p: V3) -> Option<V3> {
     match g.type_name(s)? {
         "PLANE" => unit(g.vec3(s, "normal")?),
         "CYLINDER" => {

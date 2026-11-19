@@ -8,6 +8,7 @@
 //! Parasolid schema file, SDK or third-party reader was used. Files are untrusted: node
 //! counts, element counts and chains are bounded.
 
+mod blend;
 mod decode;
 mod eval;
 mod geom;

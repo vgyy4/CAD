@@ -109,6 +109,31 @@ fn valid(degree: usize, n: usize, mults: &[i64], knots: &[f64]) -> bool {
     total == n.checked_add(degree + 1) && knots.windows(2).all(|w| matches!(w, [a, b] if b > a))
 }
 
+/// A NURBS node decoded once (`decode` reads it on the first call).
+fn cached(g: &Graph, nurbs: u32, decode: fn(&Graph, u32) -> Option<Nurbs>) -> Option<std::rc::Rc<Nurbs>> {
+    if let Some(n) = g.cache.borrow().nurbs.get(&nurbs) {
+        return n.clone();
+    }
+    let n = decode(g, nurbs).map(std::rc::Rc::new);
+    g.cache.borrow_mut().nurbs.insert(nurbs, n.clone());
+    n
+}
+
+/// [`nurbs_curve`], decoded once.
+pub(crate) fn curve_rc(g: &Graph, nurbs: u32) -> Option<std::rc::Rc<Nurbs>> {
+    cached(g, nurbs, nurbs_curve)
+}
+
+/// [`nurbs_surface`], decoded once, or as the STEP writer settled its pole order.
+pub(crate) fn surface_rc(g: &Graph, nurbs: u32) -> Option<std::rc::Rc<Nurbs>> {
+    cached(g, nurbs, nurbs_surface)
+}
+
+/// Records the pole order the STEP writer chose for a B-surface's NURBS node.
+pub(crate) fn settle_surface(g: &Graph, nurbs: u32, n: &Nurbs) {
+    g.cache.borrow_mut().nurbs.insert(nurbs, Some(std::rc::Rc::new(n.clone())));
+}
+
 /// A B_CURVE's NURBS_CURVE.
 pub(crate) fn nurbs_curve(g: &Graph, nurbs: u32) -> Option<Nurbs> {
     let degree = usize::try_from(g.int(nurbs, "degree")?).ok()?;
@@ -281,6 +306,56 @@ pub(crate) fn eval_curve(c: &Nurbs, u: f64) -> Option<V3> {
     }
     let r = d.get(p)?;
     (r[3].abs() > 1e-300).then(|| [r[0] / r[3], r[1] / r[3], r[2] / r[3]])
+}
+
+/// The degree's non-zero B-spline basis functions at `u` (Cox-de Boor) and the index of the
+/// first pole they weigh; `u` is clamped to the domain.
+fn basis(degree: usize, n: usize, knots: &[f64], mults: &[i64], u: f64) -> Option<(usize, Vec<f64>)> {
+    let mut flat = Vec::with_capacity(n + degree + 1);
+    for (k, m) in knots.iter().zip(mults) {
+        for _ in 0..*m {
+            flat.push(*k);
+        }
+    }
+    let (lo, hi) = (*flat.get(degree)?, *flat.get(n)?);
+    let u = u.clamp(lo, hi);
+    let mut span = degree;
+    while span + 1 < n && *flat.get(span + 1)? <= u {
+        span += 1;
+    }
+    let mut v = vec![0.0; degree + 1];
+    let (mut left, mut right) = (vec![0.0; degree + 1], vec![0.0; degree + 1]);
+    *v.first_mut()? = 1.0;
+    for j in 1..=degree {
+        *left.get_mut(j)? = u - *flat.get((span + 1).checked_sub(j)?)?;
+        *right.get_mut(j)? = *flat.get(span + j)? - u;
+        let mut saved = 0.0;
+        for r in 0..j {
+            let den = *right.get(r + 1)? + *left.get(j - r)?;
+            let t = if den.abs() > 0.0 { *v.get(r)? / den } else { 0.0 };
+            *v.get_mut(r)? = saved + *right.get(r + 1)? * t;
+            saved = *left.get(j - r)? * t;
+        }
+        *v.get_mut(j)? = saved;
+    }
+    Some((span - degree, v))
+}
+
+/// The point at `(u, v)` of a NURBS surface (poles row by row in u).
+pub(crate) fn eval_surface(s: &Nurbs, u: f64, v: f64) -> Option<V3> {
+    let (nu, nv) = (s.n[0], s.n[1]);
+    let (iu, bu) = basis(s.degree[0], nu, &s.knots[0], &s.mults[0], u)?;
+    let (iv, bv) = basis(s.degree[1], nv, &s.knots[1], &s.mults[1], v)?;
+    let mut acc = [0.0; 4];
+    for (a, nu_a) in bu.iter().enumerate() {
+        for (b, nv_b) in bv.iter().enumerate() {
+            let k = (iu + a) * nv + iv + b;
+            let p = s.poles.get(k)?;
+            let w = s.weights.as_ref().map_or(Some(1.0), |w| w.get(k).copied())? * nu_a * nv_b;
+            acc = [acc[0] + p[0] * w, acc[1] + p[1] * w, acc[2] + p[2] * w, acc[3] + w];
+        }
+    }
+    (acc[3].abs() > 1e-300).then(|| [acc[0] / acc[3], acc[1] / acc[3], acc[2] / acc[3]])
 }
 
 #[cfg(test)]

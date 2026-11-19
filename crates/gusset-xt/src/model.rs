@@ -346,7 +346,7 @@ fn fin_sense(g: &Graph, fin: u32, edge: u32) -> bool {
 
 /// Records an edge: the positive fin's forward vertex is the end, the other fin's is the
 /// start.
-fn edge(g: &Graph, e: u32, m: &mut Model) {
+pub(crate) fn edge(g: &Graph, e: u32, m: &mut Model) {
     if m.edges.contains_key(&e) {
         return;
     }

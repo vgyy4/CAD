@@ -1,7 +1,8 @@
 //! STEP AP214 text from the model (ADR 0035), in millimetres (XT model space is metres).
-//! Exact for planes, cylinders, cones, spheres, doughnut tori, B-surfaces, swept, spun and
-//! offset surfaces, and for lines, circles, ellipses and B-curves; intersection curves are
-//! fitted through their chart points; blends, SP-curves and foreign geometry are skipped
+//! Exact for planes, cylinders, cones, spheres, tori (spindle tori and negative major radii
+//! included), B-surfaces, swept, spun and offset surfaces, and for lines, circles, ellipses
+//! and B-curves; intersection curves and SP-curves are fitted, rolling-ball and cliff-edge
+//! blends are the ball's arcs along the true spine (`blend.rs`); foreign geometry is skipped
 //! with a warning (the importer heals what it can).
 
 use crate::decode::Graph;
@@ -208,7 +209,16 @@ impl Writer<'_> {
                 let n = geom::nurbs_curve(g, g.ptr(c, "nurbs"))?;
                 Some(self.bspline(&n))
             }
-            "TRIMMED_CURVE" => self.curve(g.ptr(c, "basis_curve")),
+            "TRIMMED_CURVE" => {
+                let basis = g.ptr(c, "basis_curve");
+                if self.sp_on_blend(basis) {
+                    // The trim's two points calibrate the blend's parameters (`blend.rs`).
+                    let ends =
+                        [(g.real(c, "parm_1")?, g.vec3(c, "point_1")?), (g.real(c, "parm_2")?, g.vec3(c, "point_2")?)];
+                    return self.blend_sp(basis, Some(ends));
+                }
+                self.curve(basis)
+            }
             "INTERSECTION" => {
                 // The chart is a polyline accurate to its chordal error: refine it onto the (analytic)
                 // supports and fit a cubic, or fit the chart as it is.
@@ -224,11 +234,27 @@ impl Writer<'_> {
                 };
                 Some(self.bspline(&n))
             }
+            "SP_CURVE" if self.sp_on_blend(c) => self.blend_sp(c, None),
             "SP_CURVE" => {
                 let pts = crate::eval::curve_samples(g, c, 33, 0)?;
                 Some(self.bspline(&geom::through(&pts)?))
             }
             _ => None,
+        }
+    }
+
+    fn sp_on_blend(&self, c: u32) -> bool {
+        self.g.type_name(c) == Some("SP_CURVE") && self.g.type_name(self.g.ptr(c, "surface")) == Some("BLENDED_EDGE")
+    }
+
+    /// An SP-curve on a blend: an exact arc across it, or a cubic through points along it.
+    fn blend_sp(&mut self, c: u32, ends: Option<[(f64, V3); 2]>) -> Option<usize> {
+        match crate::blend::sp_curve(self.g, c, ends)? {
+            crate::blend::SpCurve::Arc(centre, axis, start, r) => {
+                let a = self.place(centre, axis, geom::sub(start, centre));
+                Some(self.add(&format!("CIRCLE('',#{a},{})", real(r * self.mm()))))
+            }
+            crate::blend::SpCurve::Points(pts) => Some(self.bspline(&geom::through(&pts)?)),
         }
     }
 
@@ -315,6 +341,8 @@ impl Writer<'_> {
                     hint.iter().take(16).filter_map(|p| crate::eval::nurbs_distance(c, *p)).fold(0.0f64, f64::max)
                 };
                 let n = if !hint.is_empty() && worst(&alt) < 0.5 * worst(&n) { alt } else { n };
+                // Blends on this surface evaluate it with the same pole order.
+                geom::settle_surface(g, g.ptr(s, "nurbs"), &n);
                 Some((self.bspline_surface(&n), false))
             }
             "SWEPT_SURF" => {
@@ -346,8 +374,20 @@ impl Writer<'_> {
             "BLENDED_EDGE" => {
                 // No STEP counterpart: the rolling ball's arcs along the spine, fitted.
                 let hint = self.hints.get(&s).cloned().unwrap_or_default();
-                let grid = crate::eval::blend_grid(g, s, &hint)?;
-                Some((self.bspline_surface(&crate::eval::surface_through(&grid)?), false))
+                // The supports first: a B-surface's pole order is settled when it is written.
+                for v in g.list(s, "surface") {
+                    if let crate::reader::Val::Ptr(p) = v {
+                        let mut q = *p;
+                        for _ in 0..4 {
+                            if g.type_name(q) == Some("B_SURFACE") {
+                                let _ = self.surface(q);
+                            }
+                            q = g.ptr(q, "surface");
+                        }
+                    }
+                }
+                let n = crate::blend::blend_surface(g, s, &hint)?;
+                Some((self.bspline_surface(&n), false))
             }
             _ => None,
         }
@@ -543,6 +583,28 @@ pub(crate) fn surface_text(g: &Graph, s: u32) -> (Option<(String, bool)>, Vec<St
         let line = w.out.lines().find(|l| l.starts_with(&format!("#{id}="))).unwrap_or_default().to_string();
         (line, flipped)
     });
+    (r, w.warnings)
+}
+
+/// The STEP entity text of curve `c`, for tests.
+#[cfg(test)]
+pub(crate) fn curve_text(g: &Graph, c: u32) -> (Option<String>, Vec<String>) {
+    let mut w = Writer {
+        g,
+        out: String::new(),
+        next: 1,
+        curves: BTreeMap::new(),
+        surfaces: BTreeMap::new(),
+        vertices: BTreeMap::new(),
+        edges: BTreeMap::new(),
+        warnings: Vec::new(),
+        hints: BTreeMap::new(),
+        xf: None,
+        scale: 1.0,
+        faces: Vec::new(),
+    };
+    let r =
+        w.curve(c).map(|id| w.out.lines().find(|l| l.starts_with(&format!("#{id}="))).unwrap_or_default().to_string());
     (r, w.warnings)
 }
 
