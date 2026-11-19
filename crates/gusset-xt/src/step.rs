@@ -313,21 +313,34 @@ impl Writer<'_> {
                     return None;
                 }
                 // A lemon (minor > major) is written as it is: the face's edges select the part
-                // and its natural normal is XT's (see ADR 0035). A negative major radius is the
-                // same point set: P(u, v) with major -R is P(u + pi, pi - v) with major R, so the
-                // torus is written with major R and its x axis reversed, and the reversal of v
-                // turns its natural normal round.
-                let (x, flip) = match g.vec3(s, "x_axis")? {
-                    x if ma < 0.0 => (geom::scale(x, -1.0), true),
-                    x => (x, false),
-                };
-                let a = self.place(g.vec3(s, "centre")?, g.vec3(s, "axis")?, x);
+                // and its natural normal is XT's (see ADR 0035).
+                let (centre, axis, x) = (g.vec3(s, "centre")?, g.vec3(s, "axis")?, g.vec3(s, "x_axis")?);
+                if ma < 0.0 && -ma < mi {
+                    // A negative major radius below the minor one (Solid Edge's revolved arcs
+                    // that cross their axis) is a lemon: P(u, v) = c + (R + r cos v) X(u) +
+                    // r sin v A for |v| < acos(-R / r), the arc of radius r centred at c + R x
+                    // in the plane of x and A between the two points where it meets the axis,
+                    // turned about the axis (XT's parameters and natural normal). OCCT reads a
+                    // torus's points back with the major radius taken positive, which puts the
+                    // face on the other lobe, and a whole circle would put the lemon's apexes
+                    // inside the parameter range: the arc alone, a rational B-spline, ends at
+                    // them.
+                    let (au, xu) = (geom::unit(axis)?, geom::unit(x)?);
+                    let m = geom::add(centre, geom::scale(xu, ma));
+                    let v0 = libm::acos((-ma / mi).clamp(-1.0, 1.0));
+                    let arc = crate::geom::arc(m, xu, au, mi, -v0, v0)?;
+                    let profile = self.bspline(&arc);
+                    let (p, d) = (self.point(centre), self.dir(au));
+                    let ax = self.add(&format!("AXIS1_PLACEMENT('',#{p},#{d})"));
+                    return Some((self.add(&format!("SURFACE_OF_REVOLUTION('',#{profile},#{ax})")), false));
+                }
+                // A negative major radius above the minor one is a doughnut: P(u, v) with major
+                // -R is P(u + pi, pi - v) with major R, so the x axis is reversed and the
+                // reversal of v turns the natural normal round.
+                let (ma, x, flip) = if ma < 0.0 { (-ma, geom::scale(x, -1.0), true) } else { (ma, x, false) };
+                let a = self.place(centre, axis, x);
                 Some((
-                    self.add(&format!(
-                        "TOROIDAL_SURFACE('',#{a},{},{})",
-                        real(ma.abs() * self.mm()),
-                        real(mi * self.mm())
-                    )),
+                    self.add(&format!("TOROIDAL_SURFACE('',#{a},{},{})", real(ma * self.mm()), real(mi * self.mm()))),
                     flip,
                 ))
             }

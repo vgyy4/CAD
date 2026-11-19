@@ -308,6 +308,35 @@ pub(crate) fn eval_curve(c: &Nurbs, u: f64) -> Option<V3> {
     (r[3].abs() > 1e-300).then(|| [r[0] / r[3], r[1] / r[3], r[2] / r[3]])
 }
 
+/// The circular arc `m + r (cos t x + sin t y)` for `t` from `t0` to `t1` (`x`, `y` unit and
+/// perpendicular) as a rational quadratic B-spline of four equal spans.
+pub(crate) fn arc(m: V3, x: V3, y: V3, r: f64, t0: f64, t1: f64) -> Option<Nurbs> {
+    let spans = 4;
+    let phi = (t1 - t0) / spans as f64;
+    if phi.is_nan() || phi.abs() >= 0.5 * core::f64::consts::PI || r.is_nan() || r <= 0.0 {
+        return None;
+    }
+    let at = |t: f64, k: f64| add(m, scale(add(scale(x, libm::cos(t)), scale(y, libm::sin(t))), r * k));
+    let w = libm::cos(0.5 * phi);
+    let (mut poles, mut weights) = (vec![at(t0, 1.0)], vec![1.0]);
+    for i in 0..spans {
+        let a = t0 + phi * i as f64;
+        poles.push(at(a + 0.5 * phi, 1.0 / w));
+        weights.push(w);
+        poles.push(at(a + phi, 1.0));
+        weights.push(1.0);
+    }
+    Some(Nurbs {
+        degree: [2, 0],
+        n: [poles.len(), 1],
+        poles,
+        weights: Some(weights),
+        mults: [vec![3, 2, 2, 2, 3], Vec::new()],
+        knots: [vec![0.0, 1.0, 2.0, 3.0, 4.0], Vec::new()],
+        closed: [false, false],
+    })
+}
+
 /// The degree's non-zero B-spline basis functions at `u` (Cox-de Boor) and the index of the
 /// first pole they weigh; `u` is clamped to the domain.
 fn basis(degree: usize, n: usize, knots: &[f64], mults: &[i64], u: f64) -> Option<(usize, Vec<f64>)> {
@@ -368,6 +397,19 @@ mod tests {
         assert_eq!(trimmed(vec![2, 2, 0, 0], Some(2)), vec![2, 2]);
         assert_eq!(trimmed(vec![1.0, 2.0], Some(5)), vec![1.0, 2.0]);
         assert_eq!(trimmed(vec![1, 2], None), vec![1, 2]);
+    }
+
+    #[test]
+    fn an_arc_is_exact() {
+        let (m, r) = ([1.0, 2.0, 3.0], 0.5);
+        let a = arc(m, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], r, -2.5, 2.5).unwrap_or_else(|| panic!("an arc"));
+        for i in 0..=100 {
+            let p = eval_curve(&a, 4.0 * f64::from(i) / 100.0).unwrap_or([9.0; 3]);
+            assert!((norm(sub(p, m)) - r).abs() < 1e-14 && (p[1] - 2.0).abs() < 1e-15, "{p:?}");
+        }
+        let end = eval_curve(&a, 4.0).unwrap_or([9.0; 3]);
+        assert!(norm(sub(end, [1.0 + r * libm::cos(2.5), 2.0, 3.0 + r * libm::sin(2.5)])) < 1e-14);
+        assert!(arc(m, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], r, 0.0, 7.0).is_none());
     }
 
     #[test]

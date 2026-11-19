@@ -705,11 +705,15 @@ fn apple_and_lemon_tori_are_both_written() {
     assert!(line.ends_with(",0.5,1.0);") && !flipped && w.is_empty(), "{line} {w:?}");
     // A horn torus (equal radii) is written too.
     assert!(!crate::step::surface_text(&torus_graph(0.001, 0.001), 2).0.unwrap().1);
-    // A negative major radius is the same spindle torus with its x axis and natural normal
-    // reversed (Solid Edge's revolved arcs that cross the axis).
+    // A negative major radius below the minor one is a lemon: the arc of the minor radius
+    // (centred 0.5 mm along -x here) between the axis points, turned about the axis.
     let (neg, w) = crate::step::surface_text(&torus_graph(-0.0005, 0.001), 2);
     let (line, flipped) = neg.unwrap();
-    assert!(line.ends_with(",0.5,1.0);") && flipped && w.is_empty(), "{line} {w:?}");
+    assert!(line.contains("SURFACE_OF_REVOLUTION('',#") && !flipped && w.is_empty(), "{line} {w:?}");
+    // Above the minor radius it is a doughnut with its x axis and natural normal reversed.
+    let (neg, w) = crate::step::surface_text(&torus_graph(-0.002, 0.001), 2);
+    let (line, flipped) = neg.unwrap();
+    assert!(line.ends_with(",2.0,1.0);") && flipped && w.is_empty(), "{line} {w:?}");
     // Zero and negative minor radii cannot be written.
     for (a, b) in [(0.0, 0.001), (0.002, 0.0), (0.002, -0.001)] {
         let (r, w) = crate::step::surface_text(&torus_graph(a, b), 2);
