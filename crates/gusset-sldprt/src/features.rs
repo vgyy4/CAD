@@ -1237,6 +1237,46 @@ fn revolve_box_centre(d: &[u8], a: usize, b: usize) -> Option<V3> {
     })
 }
 
+/// The axis pieces that close a revolve's open profile: SolidWorks closes a profile whose
+/// loose ends lie on the axis line along the axis (Tommy Bar: a bar and its ball end, drawn
+/// from the axis and back to it, with a line from the ball's rim to the axis between them).
+/// Pairs of point indices, consecutive along the axis; empty when fewer than two loose ends lie
+/// on the axis.
+fn axis_closure(g: &Geometry, k: usize) -> Vec<(usize, usize)> {
+    let Some(ax) = g.segs.get(k) else { return Vec::new() };
+    let (Some(a), Some(b)) = (point(&g.pts, ax.s), point(&g.pts, ax.e)) else { return Vec::new() };
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let len = libm::hypot(dx, dy);
+    if len < 1e-9 {
+        return Vec::new();
+    }
+    let ends: Vec<(usize, Pt)> = g
+        .segs
+        .iter()
+        .filter(|s| !s.construction && !s.centerline && s.s != s.e)
+        .flat_map(|s| [s.s, s.e])
+        .filter_map(|i| point(&g.pts, i).map(|p| (i, p)))
+        .collect();
+    let same = |p: &Pt, q: &Pt| libm::hypot(p.x - q.x, p.y - q.y) < 1e-9;
+    let mut loose: Vec<(f64, usize)> = Vec::new();
+    for (n, (i, p)) in ends.iter().enumerate() {
+        let first = ends.iter().position(|(_, q)| same(p, q)) == Some(n);
+        let count = ends.iter().filter(|(_, q)| same(p, q)).count();
+        let off = (dx * (p.y - a.y) - dy * (p.x - a.x)) / len;
+        if first && count % 2 == 1 && off.abs() < 1e-9 {
+            loose.push((((p.x - a.x) * dx + (p.y - a.y) * dy) / len, *i));
+        }
+    }
+    if loose.len() < 2 {
+        return Vec::new();
+    }
+    loose.sort_by(|x, y| x.0.total_cmp(&y.0));
+    loose.windows(2).filter_map(|w| match w {
+        [(_, p), (_, q)] => Some((*p, *q)),
+        _ => None,
+    }).collect()
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Plane {
     feature_id: Option<u32>,
@@ -4343,6 +4383,21 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     (None, None) => Value::Null,
                 };
                 js.insert("axis".into(), axis_json);
+                // An open profile whose loose ends lie on the axis is closed along it.
+                let closing = axis.map(|k| axis_closure(g, k)).unwrap_or_default();
+                if !closing.is_empty()
+                    && let Some(cs) = feats
+                        .iter_mut()
+                        .rev()
+                        .find(|f| f.get("type") == Some(&json!("sketch")) && f.get("name") == Some(&json!(last_sketch)))
+                        .and_then(|f| f.get_mut("curves"))
+                        .and_then(Value::as_array_mut)
+                {
+                    for (j, (p, q)) in closing.into_iter().enumerate() {
+                        cs.push(json!({"id": format!("c{}", g.segs.len() + j), "type": "line",
+                            "start": format!("p{p}"), "end": format!("p{q}")}));
+                    }
+                }
                 // A full revolve's circles can be named by edge records.
                 if let Some(&(_, plane)) = last_sketch.as_ref().and_then(|s| sketch_by_name.get(s))
                     && ang.is_none_or(|v| (v.abs() - TAU).abs() < 1e-9)
