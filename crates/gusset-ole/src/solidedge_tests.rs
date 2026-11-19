@@ -1429,3 +1429,25 @@ fn an_open_protrusion_profile_is_closed_between_its_ends() {
     assert_eq!(f[2]["curves"].as_array().unwrap().len(), 4, "{t}");
     assert_eq!(f[3]["operation"], "join", "{t}");
 }
+
+#[test]
+fn a_draft_tapers_its_faces_about_the_neutral_plane() {
+    // The protrusion part, then a draft of its top face, 10 degrees about the plane z = 0.
+    for (way, flip) in [(4.0, Some(true)), (5.0, Some(false)), (6.0, None)] {
+        let mut more = obj(40, 21, &face_set_bytes(&[top_face()]));
+        more.extend(obj(36, 22, &small(10f64.to_radians())));
+        more.extend(obj(36, 23, &small(way)));
+        more.extend(obj(6, 24, &plane_payload([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0])));
+        more.extend(obj(38, 25, &func("JMAddDraftAssocFuntionEx", &[&[25], &[12], &[22], &[21], &[23], &[24]])));
+        let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+        let f = &t["features"][2];
+        let Some(flip) = flip else {
+            assert_eq!(f["type"], "unsupported", "{t}");
+            continue;
+        };
+        assert_eq!((&f["type"], &f["name"], &f["flip"]), (&json!("draft"), &json!("AddDraft_1"), &json!(flip)), "{t}");
+        assert!((f["angle"].as_f64().unwrap() - 10.0).abs() < 1e-9, "{t}");
+        assert_eq!(f["plane"], json!({"origin": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0]}));
+        assert_eq!(f["faces"][0]["surface"]["origin"], json!([0.0, 0.0, 5.0]));
+    }
+}

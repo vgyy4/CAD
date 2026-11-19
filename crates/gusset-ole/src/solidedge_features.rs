@@ -1867,6 +1867,8 @@ enum Kind {
     Construction,
     /// The start of an older part's history, before its first feature.
     BaseBody,
+    /// A draft of faces about a neutral plane (`JMAddDraftAssocFuntionEx`, so spelt).
+    Draft,
     Other,
 }
 
@@ -1893,6 +1895,7 @@ fn kind(class: &str) -> Kind {
         "JMHelixProtrusionFunction" => Kind::HelixProtrusion,
         "JMHelixCutoutFunction" => Kind::HelixCutout,
         "JMBodyFeatureAssocFunc" => Kind::BaseBody,
+        "JMAddDraftAssocFuntionEx" => Kind::Draft,
         _ => Kind::Other,
     }
 }
@@ -1900,8 +1903,10 @@ fn kind(class: &str) -> Kind {
 /// Functions that are bookkeeping, not features of the history.
 fn bookkeeping(class: &str) -> bool {
     // Features are `JM*Function` and a few `JM*AssocFunc*` (thin wall, base body, feature
-    // group, wrap, extruded surface...).
-    let feature = class.ends_with("Function") || (class.contains("AssocFunc") && !class.contains("Property"));
+    // group, wrap, extruded surface...); the draft's class is spelt `...AssocFuntionEx`.
+    let feature = class.ends_with("Function")
+        || (class.contains("AssocFunc") && !class.contains("Property"))
+        || class == "JMAddDraftAssocFuntionEx";
     !class.starts_with("JM")
         || !feature
         || class.contains("Transmigrate")
@@ -1961,7 +1966,7 @@ fn unsupported(name: &str, what: &str, why: &str) -> Value {
 /// The label of a feature class (`JMRoundFunction` -> `Round`).
 fn label(class: &str) -> &str {
     let c = class.strip_prefix("JM").unwrap_or(class);
-    ["AssocFunctionNew", "AssocCFunction", "AssocFunction", "AssocFunc", "Function"]
+    ["AssocFunctionNew", "AssocFuntionEx", "AssocCFunction", "AssocFunction", "AssocFunc", "Function"]
         .iter()
         .find_map(|s| c.strip_suffix(s))
         .unwrap_or(c)
@@ -2507,6 +2512,28 @@ fn thin_wall(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), Stri
     Ok(())
 }
 
+/// A draft (`JMAddDraftAssocFuntionEx`): slot 2 the angle (radians), 3 the faces drafted (a
+/// face set), 4 the way (4 or 5), 5 the neutral plane (a plane object).
+fn draft(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), String> {
+    if s.first_body.is_none() {
+        return Err("a draft before any body".into());
+    }
+    let small = |i: usize| f.slot(i).and_then(|v| st.obj(v)).and_then(value);
+    let angle = small(2).map(f64::to_degrees).filter(|a| a.abs() > 1e-9 && a.abs() < 89.0);
+    let angle = angle.ok_or("the draft angle is not readable")?;
+    let flip = match small(4) {
+        Some(4.0) => true,
+        Some(5.0) => false,
+        other => return Err(format!("draft way {other:?} (not read)")),
+    };
+    let (o, n, _) = f.slot(5).and_then(|v| st.obj(v)).and_then(plane).ok_or("the neutral plane is not readable")?;
+    let set = f.slot(3).and_then(|v| st.obj(v)).ok_or("the drafted faces' set is missing")?;
+    let picks: Vec<Value> = face_set(set)?.iter().map(face_pick).collect::<Result<_, _>>()?;
+    s.out.push(json!({"type": "draft", "name": name, "faces": picks, "angle": rnd(angle), "flip": flip,
+                      "plane": {"origin": arr_mm(o), "normal": arr(n)}}));
+    Ok(())
+}
+
 /// A hole (`JMHoleFunction`) as a cut of its circles: slot 2 the profiles (each lists the hole's
 /// 2D member, see [`hole_circle`]), 7 the extent (13 finite, 14 through all), 8 the side (as
 /// an extrude's), 9 the depth. Only plain holes rebuild to the part: a counterbore or
@@ -2745,6 +2772,11 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
                 let before = s.out.len();
                 if let Err(why) = hole(&st, &mut s, func, &name) {
                     s.out.truncate(before);
+                    s.out.push(unsupported(&name, what, &why));
+                }
+            }
+            Kind::Draft => {
+                if let Err(why) = draft(&st, &mut s, func, &name) {
                     s.out.push(unsupported(&name, what, &why));
                 }
             }
