@@ -2083,10 +2083,9 @@ fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Ki
                 }
                 (d.abs(), false)
             }
-            // Through all; through the next face (16) is swept as far, the rebuild check
-            // tells whether the next face was the last one.
-            // A protrusion through all or to the next face ends where the part does: the box
-            // the feature stores (the part after it), along an axis-aligned sweep.
+            // Through all or to the next face: the reach to fall back on, where the end up to
+            // the next face (below) does not build. A protrusion's ends where the part does:
+            // the box the feature stores (the part after it), along an axis-aligned sweep.
             14 | 16 if k == Kind::Protrusion => {
                 let p = profiles.first().ok_or("the feature has no profile")?;
                 let sign = match side {
@@ -2094,14 +2093,17 @@ fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Ki
                     2 => 1.0,
                     other => return Err(format!("a protrusion through all to side {other} (not read)")),
                 };
-                let reach = st
-                    .obj(serial)
-                    .and_then(|b| stored_box(b, f.tail))
-                    .and_then(|bx| {
-                        reach_in_box(&bx, p.origin, [p.normal[0] * sign, p.normal[1] * sign, p.normal[2] * sign])
-                    })
-                    .ok_or("the reach of a protrusion through all is not readable")?;
-                (reach * MM, false)
+                let reach = st.obj(serial).and_then(|b| stored_box(b, f.tail)).and_then(|bx| {
+                    reach_in_box(&bx, p.origin, [p.normal[0] * sign, p.normal[1] * sign, p.normal[2] * sign])
+                });
+                // Along a slanted normal the box does not tell: the end up to the next face
+                // (below) does, with the reach through all to fall back on.
+                let reach = match reach {
+                    Some(r) => r * MM,
+                    None if matches!(code(12), None | Some(13)) => THROUGH,
+                    None => return Err("the reach of a protrusion through all is not readable".into()),
+                };
+                (reach, false)
             }
             14 | 16 => (THROUGH, false),
             // Up to a key point: the reach the part stores with it, signed along the normal.
@@ -2180,10 +2182,31 @@ fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Ki
         if extent == 14 {
             put(&mut j, "through_all", json!(true));
         }
-        // To the next face (a cut through the next stretch of material): Gusset's end up to
-        // the next face, the reach above kept to fall back on. To the next face both ways
-        // (side 6): one such end each way, the second a feature of its own.
-        if extent == 16 && code(12).is_none() && (!symmetric || side == 6) {
+        // To the next face (a cut through the next stretch of material) and through all (14:
+        // in the tanks of the corpus a protrusion through all stops at the first face it
+        // meets and a cut through all both ways takes only the wall it starts in; where the
+        // two ends agree nothing changes): Gusset's end up to the next face, the reach above
+        // kept to fall back on. Both ways (side 6): one such end each way, the second a
+        // feature of its own; a finite second extent is a blind feature of its own too.
+        let finite_second = code(12) == Some(13);
+        if matches!(extent, 14 | 16) && (code(12).is_none() || finite_second) && (!symmetric || side == 6) {
+            if finite_second && side != 6 {
+                if let Some(d2) = j.get("distance2").cloned() {
+                    let mut other = j.clone();
+                    if let Some(o) = j.as_object_mut() {
+                        o.remove("distance2");
+                    }
+                    if let Some(o) = other.as_object_mut() {
+                        o.remove("distance2");
+                        o.remove("through_all");
+                    }
+                    put(&mut other, "name", json!(format!("{name}_second")));
+                    put(&mut other, "distance", d2);
+                    put(&mut other, "operation", json!(if op == "new" { "join" } else { op }));
+                    put(&mut other, "target", json!(s.first_body.clone().unwrap_or_else(|| name.to_string())));
+                    second = Some(other);
+                }
+            }
             put(&mut j, "end_condition", json!("to_next"));
             if side == 6 {
                 put(&mut j, "distance", json!(THROUGH));

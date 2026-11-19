@@ -1353,3 +1353,41 @@ fn a_cut_to_the_next_face_ends_there_each_way() {
         "{t}"
     );
 }
+
+#[test]
+fn ends_through_all_are_ends_up_to_the_next_face() {
+    // A cut through all against the normal (side 1) and both ways (side 6): as to the next face.
+    let mut more = obj(36, 31, &small(14.0));
+    more.extend(obj(36, 32, &small(1.0)));
+    more.extend(obj(36, 33, &small(6.0)));
+    more.extend(obj(38, 34, &func("JMCutoutFunction", &[&[34], &[12], &[2], &[31], &[32], &[0], &[10]])));
+    more.extend(obj(38, 35, &func("JMCutoutFunction", &[&[35], &[34], &[2], &[31], &[33], &[0], &[10]])));
+    let t = feature_tree(&part_with(2.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
+    let ends: Vec<_> = t["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| x["type"] == "extrude" && x["operation"] == "cut")
+        .map(|x| (x["name"].clone(), x["end_condition"].clone(), x["reverse"].clone(), x["distance"].clone()))
+        .collect();
+    assert_eq!(
+        ends,
+        vec![
+            (json!("Cutout_1"), json!("to_next"), json!(true), json!(-10000.0)),
+            (json!("Cutout_2"), json!("to_next"), json!(false), json!(10000.0)),
+            (json!("Cutout_2_back"), json!("to_next"), json!(true), json!(-10000.0)),
+        ],
+        "{t}"
+    );
+    // A protrusion through all along +z with no stored box, its second extent 2 mm the other
+    // way: up to the next face, the reach through all to fall back on, and a blind feature
+    // for the second extent.
+    let t = feature_tree(&part2(2.0, 14.0, Some(1.0)), "p.par", &crate::Limits::default()).unwrap();
+    let f = t["features"].as_array().unwrap();
+    assert_eq!(
+        (&f[1]["end_condition"], &f[1]["distance"], &f[1]["reverse"], f[1].get("distance2")),
+        (&json!("to_next"), &json!(10000.0), &json!(false), None),
+        "{t}"
+    );
+    assert_eq!((&f[2]["name"], &f[2]["distance"]), (&json!("Protrusion_1_second"), &json!(-2.0)), "{t}");
+}
