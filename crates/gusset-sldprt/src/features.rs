@@ -39,7 +39,7 @@ const PLANE_NAMES: [(u32, &str); 3] = [(2, "Front"), (3, "Top"), (4, "Right")];
 const EXTRUDE: [&str; 3] = ["moExtrusion_c", "moICE_c", "moCut_c"];
 const REVOLVE: [&str; 2] = ["moRevolution_c", "moRevCut_c"];
 /// Classes that carry nothing the tree needs (sketches are handled before this list).
-const SKIPPED: [&str; 42] = [
+const SKIPPED: [&str; 43] = [
     "moCommentsFolder_c",
     "moFavoriteFolder_c",
     "moHistoryFolder_c",
@@ -92,6 +92,10 @@ const SKIPPED: [&str; 42] = [
     // Round sw10: a 3D sketch, curves only (500 Hex Hub's, which no feature uses; a sweep along
     // one finds no path and is refused).
     "mo3DProfileFeature_c",
+    // Round sw12: a split line divides faces along projected curves and leaves the solid as it
+    // is (the V-Slot extrusions' fixture lines); a feature that picks a face or edge it made
+    // finds none and is refused.
+    "moPLine_c",
 ];
 
 /// The 46-byte block after a feature node's comment (older files, then newer ones).

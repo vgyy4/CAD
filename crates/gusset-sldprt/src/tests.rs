@@ -1073,6 +1073,17 @@ fn a_shell_removes_the_first_face_of_its_last_record() {
     assert!(why.contains("Shell1") && why.contains("not resolved"), "{why}");
 }
 
+/// A split line (`moPLine_c`) only divides faces: it is left out like a sketch, where an
+/// unknown feature stops the history (round sw12).
+#[test]
+fn a_split_line_adds_nothing_to_the_tree() {
+    let t = history(&feature_stream(&feature_node("moPLine_c", "Split Line1", 30))).unwrap().unwrap();
+    let names: Vec<&str> = t["features"].as_array().unwrap().iter().filter_map(|f| f["name"].as_str()).collect();
+    assert_eq!(names, ["Sketch1", "Boss-Extrude1"], "{t}");
+    let why = history(&feature_stream(&feature_node("moRib_c", "Rib1", 30))).unwrap_err();
+    assert!(why.contains("Rib1 (moRib_c) is not supported"), "{why}");
+}
+
 /// A variable fillet whose vertex radii are all one value is a constant fillet; one whose radii
 /// differ stays unsupported (Gusset has no variable fillet). A later fillet names a face of the
 /// first by its selection number (round sw9).
