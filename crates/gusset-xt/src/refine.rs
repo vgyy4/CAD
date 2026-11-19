@@ -1,10 +1,11 @@
 //! Intersection curves (ADR 0035 amendment): the file's chart is a polyline accurate only to
 //! its chordal tolerance, so a cubic through its points can lie microns off the two surfaces
-//! and shift the trimmed faces after a STEP read. For analytic supports every chart point is
-//! snapped onto both surfaces (Newton on the two signed distances, the smallest step), and
-//! the fitted curve is refined by inserting snapped points where it strays from either
-//! surface until it is within a tight tolerance. Anything that does not converge keeps the
-//! chart points as they are.
+//! and shift the trimmed faces after a STEP read. Every chart point is snapped onto both
+//! surfaces (Newton on the two signed distances, the smallest step; numerical closest points
+//! on non-analytic surfaces), or for a blend's boundary onto the ball's contact, and the
+//! fitted curve is refined by inserting snapped points where it strays from either surface
+//! until it is within a tight tolerance. Anything that does not converge keeps the chart
+//! points as they are.
 
 use crate::decode::Graph;
 use crate::geom::{self, Nurbs, V3, add, cross, dot, norm, scale, sub, unit};
