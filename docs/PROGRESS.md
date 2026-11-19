@@ -20,8 +20,9 @@ Phase 3 has started (see Next).
   one-way pattern counts and fit spacing, new solid bodies, body mirrors that remove the original, holes to a
   plane or face, and says when a part starts from an imported body (43 parts: not rebuildable); op1 extends the
   face of an extrude to a face (ADR 0061); left: Design
-  Accelerator gear teeth, surface consumers, blends whose supports were used up, tapers, sketch text); Solid Edge 71
-  of 180 measured ordered parts (rounds se1-se4, ADR 0046 amendments 11-13 and 20; left: OCCT fillet
+  Accelerator gear teeth, surface consumers, blends whose supports were used up, tapers, sketch text); Solid Edge 76
+  of 180 measured ordered parts (rounds se1-se4 and op2, ADR 0046 amendments 11-13, 20 and 21; op2 builds
+  rounds OCCT's fillet does not from their corners, ADR 0004 amendment 2026-11-19; left: OCCT fillet
   failures, part copies, body patterns, cuts to the next face). Sample corpora are
   openly licensed downloads kept in scratch, never committed. Two in-process import crashes fixed (an
   unbounded face in mass properties, OCCT patch gusset-0005; the hole fit check meshes only the hole's

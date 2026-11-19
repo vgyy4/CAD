@@ -837,3 +837,29 @@ holes have drill points), 172 (sketch splines). 109 bodies.
 (`BRepBlend_SurfRstConstRad::Values` -> `Geom2dAdaptor_Curve::EvalD1`) on its r381 round. In the app the
 kernel runs in its worker and the crash is reported; the in-process corpus test dies, which is why it now
 runs one part per process. Not patched (an OCCT fillet bug; owner's call whether to chase it).
+
+## Amendment (2026-11-19, 21): round op2 - rounds the OCCT fillet does not build
+
+The rounds of amendment 20's "what blocks the rest" are kernel work, not decoding: the OCCT kernel
+now builds more of them from their corners (ADR 0004 amendment 2026-11-19: cliff edges where a face
+is narrower than the round, mitred corners of two rounds, corners that end on a slanting or curved
+face, a round whose contact runs along another edge, a straight edge between a plane and a cylinder
+along it). Every fallback is checked exactly against its corners' volume; the rebuild check is
+unchanged (volume 2e-5, box 1e-4).
+
+**Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before (9c4efcc): 71 as
+history. After: **76 as history**, none lost; new: 026 and 105 (a concave round at a step across a
+ring, trimmed by the ring's cylinders; the result matches the stored body to 1e-9 when measured
+by Gauss-Kronrod, 4.9e-6 by the default quadrature), 040 (the r381 round now made from its corners,
+no OCCT call: the crash is gone), 053 and 065 (cliff-edge and mitred rounds).
+
+**What blocks the rounds left (first reasons, measured).** fillet failed 21 (was 23), radius too large
+for the edge 7 (was 10), chamfers 3, round edge not found 6 (was 5: 094 now builds its r12.7 cliff
+round, whose centre equals the stored body's blend cylinder, and stops at Round_4, whose edge is
+6.35 mm from any edge of the rebuilt model). Measured causes of the others: a tab 0.13-0.22 mm high
+on a bent tube rounded by 0.381 (8 parts: 081-090; the ball would roll on the torus against the
+tab's top edge, a blend OCCT does not build, each edge alone fails); a lug on a dome whose round ends
+on the sphere next to the sphere's edge with the cylinder (133-135; one edge fails alone, its mirror image
+builds); B-spline and revolved supports (045, 063, 100, 107); rounds wider than a lobe of the
+outline (177, 178); a window under a round's contact line (008); a hole rim on a face 0.15 mm wider
+than the hole (016); hole rims rounded wider than the plate (110, its corners not all material).
