@@ -2446,7 +2446,7 @@ fn loft(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(), 
 /// centre) round the way the outline runs (068: a circle to a rectangle, its stored faces split
 /// the circle 80 and 100 degrees from the first corner). The circle becomes those arcs and the
 /// loft keeps the sections' starts (`aligned`). Whether the circle was split.
-fn split_loft_circle(sections: &mut [Profile]) -> bool {
+pub(crate) fn split_loft_circle(sections: &mut [Profile]) -> bool {
     let [a, b] = sections else { return false };
     let (circle, outline) = match (a.curves.as_slice(), b.curves.as_slice()) {
         ([Curve2::Circle(..)], [_, _, ..]) => (&*a, &*b),

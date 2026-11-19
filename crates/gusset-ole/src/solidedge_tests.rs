@@ -5,7 +5,7 @@ use crate::fixtures::ole;
 use crate::solidedge_features::{
     Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, close_on_axis, close_open, copy_frame, curve,
     edge_pick, edge_set, face_pick, face_set, feature_tree, history, hole_circle, key_point_angle, key_point_reach,
-    parse_func, plane, reach_in_box, stored_box, value, vertex_set,
+    parse_func, plane, reach_in_box, split_loft_circle, stored_box, value, vertex_set,
 };
 use serde_json::json;
 
@@ -1460,4 +1460,43 @@ fn a_draft_tapers_its_faces_about_the_neutral_plane() {
         assert_eq!(f["plane"], json!({"origin": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0]}));
         assert_eq!(f["faces"][0]["surface"]["origin"], json!([0.0, 0.0, 5.0]));
     }
+}
+
+/// A circle lofted to a rectangle is split in proportion to the rectangle's edges, from the
+/// point at the rectangle's start round the way it runs (068: 80 and 100 degrees from the
+/// first corner); a circle to a circle is left alone.
+#[test]
+fn a_lofted_circle_is_split_like_its_outline() {
+    let at = |z: f64, curves: Vec<Curve2>| Profile {
+        origin: [0.0, 0.0, z],
+        normal: [0.0, 0.0, 1.0],
+        x: [1.0, 0.0, 0.0],
+        backwards: vec![false; curves.len()],
+        curves,
+        turned: false,
+    };
+    let (w, h) = (0.0254, 0.03175);
+    let p = [[-w, -h], [w, -h], [w, h], [-w, h]];
+    let rect: Vec<Curve2> = (0..4).map(|i| Curve2::Line(p[i], p[(i + 1) % 4])).collect();
+    let mut sections = vec![at(0.889, vec![Curve2::Circle([0.0, 0.0], 0.0254)]), at(1.016, rect)];
+    assert!(split_loft_circle(&mut sections));
+    let spans: Vec<(f64, f64)> = sections[0]
+        .curves
+        .iter()
+        .map(|c| match *c {
+            Curve2::Arc(_, r, a0, a1) => {
+                assert!((r - 0.0254).abs() < 1e-12);
+                (a0.to_degrees(), (a1 - a0).to_degrees())
+            }
+            ref other => panic!("{other:?}"),
+        })
+        .collect();
+    let first = libm::atan2(-h, -w).to_degrees();
+    assert!((spans[0].0 - first).abs() < 1e-9, "{spans:?}");
+    for (s, want) in spans.iter().zip([80.0, 100.0, 80.0, 100.0]) {
+        assert!((s.1 - want).abs() < 1e-9, "{spans:?}");
+    }
+    let mut circles =
+        vec![at(0.0, vec![Curve2::Circle([0.0, 0.0], 0.01)]), at(0.1, vec![Curve2::Circle([0.0, 0.0], 0.02)])];
+    assert!(!split_loft_circle(&mut circles));
 }
