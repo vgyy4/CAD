@@ -1101,11 +1101,16 @@ fn payload(d: &[u8], h: usize) -> Option<(Option<usize>, bool)> {
         if d.get(p..p + 16) == Some(&ONE[..]) {
             return Some((Some(after(p + 16)), false));
         }
-        // A projected point without an object chain marks itself with a `1` byte where the 0.0
-        // would be (round sw12: the 126p rods' groove circles are centred on one; the search
-        // below found the next entity's payload, so the centre took its start point's place).
-        if d.get(p..p + 8) == Some(&[0, 1, 0, 0, 0, 0, 0, 0][..]) && d.get(p + 8..p + 16) == ONE.get(8..) {
-            return Some((Some(after(p + 16)), true));
+        // A projected point without an object chain marks itself with a byte (1 or 3) where the
+        // 0.0 would be (round sw12: the 126p rods' groove circles and mid_elbow's hole are
+        // centred on one; the search below found the next entity's payload, so the centre took
+        // its start point's place).
+        let marked = d.get(p..p + 8).is_some_and(|w| {
+            w.first() == Some(&0) && w.get(1).is_some_and(|&b| b != 0) && w.iter().skip(2).all(|&b| b == 0)
+        });
+        let q = after(p + 16);
+        if marked && d.get(p + 8..p + 16) == ONE.get(8..) && matches!(u16_at(d, q), Some(0x1e | 0x1f)) {
+            return Some((Some(q), true));
         }
     }
     // An object chain in the reference slot: the payload follows the next 0.0/1.0 pair.
@@ -5641,7 +5646,7 @@ mod end_face_tests {
         assert_eq!(payload(&d, 0), Some((Some(56), false)));
         // A projected point writes a 1 byte into the 0.0: still its own payload, marked external.
         let mut e = vec![0u8; 40];
-        e.extend([0, 1, 0, 0, 0, 0, 0, 0]);
+        e.extend([0, 3, 0, 0, 0, 0, 0, 0]);
         e.extend(ONE.get(8..).unwrap());
         e.extend([0x1e, 0]);
         // A later entity's 0.0/1.0 pair must not be taken instead.
