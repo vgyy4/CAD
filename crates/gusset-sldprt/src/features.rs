@@ -4228,6 +4228,39 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     pl.insert("origin".into(), json!(origin));
                 }
             }
+            // A blind extrude that starts from a face ("from surface") names it in a single face
+            // reference (`moSingleFaceRef_w`) after its dimensions, the node's last reference
+            // record; a face parallel to the sketch moves the start onto its plane (SlotBase-Back's
+            // Cut-Extrude3: sketched 15.45 mm up, the counterbores start 21.95 mm up, on the
+            // ceiling of the slot Cut-Extrude1 cut, and run their 13.35 mm down from there).
+            if typ == Some(0)
+                && !symmetric
+                && start_offset.is_none()
+                && let Some(sk) = last_sketch.as_ref()
+                && let Some(r) = end_face_ref(rf, a, b)
+                && let Some((pt, nf)) =
+                    cap_plane(&r, &swept, &sketches, &cap_tags).or_else(|| side_plane(&r, &swept, &sketches))
+                && let Some(entry) = sketch_by_name.get_mut(sk)
+                && swept.values().all(|w| w.sketch != entry.0)
+            {
+                let n = cross(entry.1.x, entry.1.y);
+                let den = dot(n, nf);
+                let s_face = dot(sub(pt, entry.1.origin), nf) / den;
+                if (den.abs() - 1.0).abs() < 1e-9 && s_face.abs() > 1e-9 {
+                    let mut o = entry.1.origin;
+                    for (v, c) in o.iter_mut().zip(n) {
+                        *v = round_to(*v + s_face * c, 6) + 0.0;
+                    }
+                    entry.1.origin = o;
+                    if let Some(Value::Object(f)) = feats.iter_mut().find(|f| {
+                        f.get("type").and_then(Value::as_str) == Some("sketch")
+                            && f.get("name").and_then(Value::as_str) == Some(sk.as_str())
+                    }) && let Some(Value::Object(pl)) = f.get_mut("plane")
+                    {
+                        pl.insert("origin".into(), json!(o));
+                    }
+                }
+            }
             let mut js = Map::new();
             js.insert("type".into(), json!("extrude"));
             js.insert("name".into(), json!(n.name));
