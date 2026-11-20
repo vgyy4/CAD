@@ -2188,7 +2188,23 @@ fn sweep(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     let lst = s.need(0)?;
     let sk = r.profile_sketch(lst).ok_or("no profile sketch found")?;
     let lp = s.need(1)?;
-    let pk = r.path_sketch(lp).ok_or("no path sketch found")?;
+    // A path of a `fc203f47` record names the history body of its wire (`cc0f7521`).
+    let tag = r.loop_tag(lp).or_else(|| {
+        let c =
+            r.dc.refs(lp).into_iter().map(|(_, y)| y).find(|&y| r.dc.class(y) == super::inventor_dc::G_LOOP_BODY)?;
+        loop_body_tag(r, c)
+    });
+    // The path's sketch, or the one sketch whose curves the path wire runs along.
+    let pk = match r.path_sketch(lp) {
+        Some(pk) => pk,
+        None => {
+            let tag = tag.ok_or("no path sketch found")?;
+            let ac = r.history().ok_or("the history blob is not readable")?;
+            let wire = ac.loops_of_body(tag).ok_or("the path body is not readable")?;
+            let all: Vec<usize> = (0..r.dc.n()).filter(|&i| r.dc.role(i) == Role::Sketch && i != sk).collect();
+            sketch_holding(r, &wire, &all, true).map_err(|w| format!("the path {w}"))?.ok_or("no path sketch found")?.0
+        }
+    };
     if pk == sk {
         return Err("the path lies in the profile's sketch".into());
     }
@@ -2198,7 +2214,7 @@ fn sweep(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     let profile = r.sketch(sk)?;
     let path = r.sketch(pk)?;
     let ac = r.history().ok_or("the history blob is not readable")?;
-    let tag = r.loop_tag(lp).ok_or("the path loop has no body")?;
+    let tag = tag.ok_or("the path loop has no body")?;
     let wire = ac.loops_of_body(tag).ok_or("the path body is not readable")?;
     let (o, x, y) =
         ([path.m[3], path.m[7], path.m[11]], [path.m[0], path.m[4], path.m[8]], [path.m[1], path.m[5], path.m[9]]);
@@ -2686,50 +2702,75 @@ fn split(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
 /// The sketch whose curves a loop of the history blob runs along, given the record that names
 /// the loop's history body (`cc0f7521`), and the regions the loop surrounds in it. Several
 /// sketches may share a plane: the loop's points must lie on one sketch's curves.
-fn loop_sketch(r: &Reader, c: usize) -> Result<(usize, Sketch, Value), String> {
-    let ac = r.history().ok_or("the history blob is not readable")?;
-    let hb = r.dc.refs(c).into_iter().find(|&(_, y)| r.dc.role(y) == Role::HistoryBlob).ok_or("no history body")?.0;
-    let tag = i64::from(u32_at(r.dc.r(c), hb + 4).ok_or("no history body")?);
-    let loops = ac.loops_of_body(tag).ok_or("the profile's loop is not readable")?;
-    if loops.iter().all(Vec::is_empty) {
-        return Err("the profile's loop has no points".into());
-    }
-    let mut found: Option<(usize, Sketch, Vec<Vec<P2>>)> = None;
-    let mut seen: Vec<usize> = Vec::new();
-    for j in 0..r.dc.n() {
-        if r.dc.class(j) != super::inventor_dc::G_PROFILE {
-            continue;
-        }
-        let Some((_, k)) = r.dc.refs(j).into_iter().find(|&(_, x)| r.dc.role(x) == Role::Sketch) else { continue };
-        if seen.contains(&k) {
-            continue;
-        }
-        seen.push(k);
-        let sk = r.sketch(k)?;
+/// A sketch record, the sketch, and loops in its coordinates (mm).
+type Held = (usize, Sketch, Vec<Vec<P2>>);
+
+/// The one sketch among `cands` whose plane holds the loops (file units) and whose curves they
+/// run along, with the loops in its coordinates (mm); with `first`, the first such sketch (any
+/// one gives the same curves). `None` when none does.
+fn sketch_holding(r: &Reader, loops: &[Vec<V3>], cands: &[usize], first: bool) -> Result<Option<Held>, String> {
+    let mut found: Option<Held> = None;
+    for &k in cands {
+        // A sketch that does not read holds no loop.
+        let Ok(sk) = r.sketch(k) else { continue };
         let (o, x, y) = frame(&sk.m);
         let n = unit3(cross(x, y));
         let polys = sk.polys();
         let mut l2 = Vec::new();
         let mut on = true;
-        for l in &loops {
+        for l in loops {
             let mut out = Vec::new();
             for p in l {
                 let q = sub3([p[0] * CM, p[1] * CM, p[2] * CM], o);
                 let uv = (dot(q, x), dot(q, y));
                 if dot(q, n).abs() > 1e-6 || curve_dist(uv, &polys) > 0.02 {
                     on = false;
+                    break;
                 }
                 out.push(uv);
+            }
+            if !on {
+                break;
             }
             l2.push(out);
         }
         if on {
             if found.is_some() {
-                return Err("the profile's loop runs along several sketches".into());
+                return Err("runs along several sketches".into());
             }
             found = Some((k, sk, l2));
+            if first {
+                break;
+            }
         }
     }
+    Ok(found)
+}
+
+/// The history-body tag a loop body record (`cc0f7521`) names.
+fn loop_body_tag(r: &Reader, c: usize) -> Option<i64> {
+    let hb = r.dc.refs(c).into_iter().find(|&(_, y)| r.dc.role(y) == Role::HistoryBlob)?.0;
+    u32_at(r.dc.r(c), hb + 4).map(i64::from)
+}
+
+fn loop_sketch(r: &Reader, c: usize) -> Result<(usize, Sketch, Value), String> {
+    let ac = r.history().ok_or("the history blob is not readable")?;
+    let tag = loop_body_tag(r, c).ok_or("no history body")?;
+    let loops = ac.loops_of_body(tag).ok_or("the profile's loop is not readable")?;
+    if loops.iter().all(Vec::is_empty) {
+        return Err("the profile's loop has no points".into());
+    }
+    let mut cands: Vec<usize> = Vec::new();
+    for j in 0..r.dc.n() {
+        if r.dc.class(j) != super::inventor_dc::G_PROFILE {
+            continue;
+        }
+        let Some((_, k)) = r.dc.refs(j).into_iter().find(|&(_, x)| r.dc.role(x) == Role::Sketch) else { continue };
+        if !cands.contains(&k) {
+            cands.push(k);
+        }
+    }
+    let found = sketch_holding(r, &loops, &cands, false).map_err(|w| format!("the profile's loop {w}"))?;
     let (k, sk, l2) = found.ok_or("no sketch holds the profile's loop")?;
     let profiles = match picks(&sk.polys(), &[l2]) {
         Some(pk) if !pk.is_empty() => Value::Array(pk.into_iter().map(|(a, b)| json!({"point": [a, b]})).collect()),
