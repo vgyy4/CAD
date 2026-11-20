@@ -2708,7 +2708,7 @@ fn loop_sketch(r: &Reader, c: usize) -> Result<(usize, Sketch, Value), String> {
         let sk = r.sketch(k)?;
         let (o, x, y) = frame(&sk.m);
         let n = unit3(cross(x, y));
-        let lines: Vec<Vec<P2>> = sk.polys().iter().map(sample).collect();
+        let polys = sk.polys();
         let mut l2 = Vec::new();
         let mut on = true;
         for l in &loops {
@@ -2716,7 +2716,7 @@ fn loop_sketch(r: &Reader, c: usize) -> Result<(usize, Sketch, Value), String> {
             for p in l {
                 let q = sub3([p[0] * CM, p[1] * CM, p[2] * CM], o);
                 let uv = (dot(q, x), dot(q, y));
-                if dot(q, n).abs() > 1e-6 || polyline_dist(uv, &lines) > 0.02 {
+                if dot(q, n).abs() > 1e-6 || curve_dist(uv, &polys) > 0.02 {
                     on = false;
                 }
                 out.push(uv);
@@ -2736,6 +2736,34 @@ fn loop_sketch(r: &Reader, c: usize) -> Result<(usize, Sketch, Value), String> {
         _ => return Err("the profile's regions are not found".into()),
     };
     Ok((k, sk, profiles))
+}
+
+/// The distance from `p` to the nearest sketch curve: exact for lines, circles and arcs (the
+/// profile picks' sampling leaves 0.09 mm between the chords and an arc of 160 mm radius),
+/// along the sampled curve otherwise. For matching loops to the curves they run along.
+pub(crate) fn curve_dist(p: P2, polys: &[Poly]) -> f64 {
+    let tau = 2.0 * std::f64::consts::PI;
+    let d = |a: P2, b: P2| libm::hypot(a.0 - b.0, a.1 - b.1);
+    polys
+        .iter()
+        .map(|c| match *c {
+            Poly::Circle(c, r) => (d(p, c) - r).abs(),
+            Poly::Arc { c, s, e } => {
+                let r = d(s, c);
+                let a0 = libm::atan2(s.1 - c.1, s.0 - c.0);
+                let mut a1 = libm::atan2(e.1 - c.1, e.0 - c.0);
+                while a1 <= a0 + 1e-12 {
+                    a1 += tau;
+                }
+                let mut a = libm::atan2(p.1 - c.1, p.0 - c.0);
+                while a < a0 {
+                    a += tau;
+                }
+                if a <= a1 { (d(p, c) - r).abs() } else { d(p, s).min(d(p, e)) }
+            }
+            ref other => polyline_dist(p, &[sample(other)]),
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// A sheet-metal face (`55585fc6`; notes AM): slot 0 names the profile's loop body, 1 a

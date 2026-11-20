@@ -2105,3 +2105,21 @@ fn an_extrude_reads_its_taper() {
     let t = tree(&r).unwrap();
     assert!(t["features"][1].get("taper_deg").is_none());
 }
+
+/// Loops are matched to the sketch curves they run along by the exact distance to lines,
+/// circles and arcs: a point on an arc of 160 mm radius is 0.09 mm off its sampled chords.
+#[test]
+fn loop_points_measure_exactly_against_arcs() {
+    use crate::inventor_features::curve_dist;
+    use crate::inventor_profile::Poly;
+    let r = 160.0;
+    let a = 0.5 * std::f64::consts::PI / 96.0;
+    let p = (r * libm::cos(a), r * libm::sin(a));
+    let arc = [Poly::Arc { c: (0.0, 0.0), s: (r, 0.0), e: (0.0, r) }];
+    assert!(curve_dist(p, &arc) < 1e-9);
+    // Outside the arc's span: the nearer end.
+    assert!((curve_dist((r, -3.0), &arc) - 3.0).abs() < 1e-9);
+    assert!((curve_dist((0.0, 5.0), &[Poly::Circle((0.0, 0.0), 2.0)]) - 3.0).abs() < 1e-12);
+    assert!((curve_dist((5.0, 1.0), &[Poly::Line((0.0, 0.0), (10.0, 0.0))]) - 1.0).abs() < 1e-12);
+    assert!(curve_dist((0.0, 0.0), &[]).is_infinite());
+}
