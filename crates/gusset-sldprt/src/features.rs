@@ -2007,6 +2007,8 @@ fn edge_records_to(
 /// A record also continues the run when it starts right after the previous one ends (its class
 /// tag and eight zero bytes between them): records of four references with their extra words
 /// are longer than 0xa0 bytes (the bearings' Chamfer1 picks eight edges 150 to 200 bytes apart).
+/// Newer files put an `f64` (1.2e-7) and six zero bytes more between records: 22 bytes
+/// (Linkage Arm's Fillet2, six corners of a slot and a pocket 168 bytes apart).
 ///
 /// Records that name a face of the feature itself (`own`, its node id) describe the faces it
 /// made (each blend face with its neighbours), not picked edges; newer files write them before
@@ -2019,7 +2021,7 @@ fn selection(recs: Vec<(usize, usize, Vec<Rep>)>, own: u32) -> Vec<(usize, Vec<R
     let mut last_end = 0usize;
     for (start, end, reps) in recs.into_iter().skip(from) {
         match run.last() {
-            Some(last) if start - last.0 > 0xa0 && start.saturating_sub(last_end) > 16 => break,
+            Some(last) if start - last.0 > 0xa0 && start.saturating_sub(last_end) > 24 => break,
             _ => {
                 run.push((start, reps));
                 last_end = end;
