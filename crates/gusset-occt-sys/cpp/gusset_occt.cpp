@@ -689,6 +689,8 @@ TopoDS_Shape valid_blend(const TopoDS_Shape& made, bool fillet, Handle(ShapeBuil
   return result;
 }
 
+bool same_surface(const TopoDS_Face& a, const TopoDS_Face& b);
+
 // The origins of a blend's faces from its history `h` (anything with Modified and Generated).
 template <typename H>
 void blend_origins(H& h, const TopoDS_Shape& in, const TopoDS_Shape& result, const Handle(ShapeBuild_ReShape)& ctx,
@@ -698,6 +700,30 @@ void blend_origins(H& h, const TopoDS_Shape& in, const TopoDS_Shape& result, con
   record_input_faces(h, in, 0, out_faces, o, ctx);
   record_generated(h, in, TopAbs_EDGE, GS_ORIGIN_FROM_EDGE, 0, out_faces, o, ctx);
   record_generated(h, in, TopAbs_VERTEX, GS_ORIGIN_FROM_VERTEX, 0, out_faces, o, ctx);
+  // A face the history does not name (a sliver OCCT's fillet split off a face it trimmed: 059,
+  // a round of a tab's foot whose blend ends a hair below the tab's top) is a piece of the
+  // input face it lies on: of those on its surface, the nearest.
+  std::vector<bool> has(size_t(out_faces.Extent()), false);
+  for (size_t k = 0; k + 3 < o.size(); k += 4)
+    if (o[k] >= 0 && o[k] < int64_t(has.size())) has[size_t(o[k])] = true;
+  ShapeMap in_faces;
+  TopExp::MapShapes(in, TopAbs_FACE, in_faces);
+  for (int k = 1; k <= out_faces.Extent(); ++k) {
+    if (has[size_t(k - 1)]) continue;
+    const TopoDS_Face f = TopoDS::Face(out_faces(k));
+    int best = 0;
+    double best_d = 1e-7;
+    for (int i = 1; i <= in_faces.Extent(); ++i) {
+      const TopoDS_Face g = TopoDS::Face(in_faces(i));
+      if (!same_surface(f, g)) continue;
+      BRepExtrema_DistShapeShape d(f, g);
+      if (d.IsDone() && d.Value() <= best_d) {
+        best_d = d.Value();
+        best = i;
+      }
+    }
+    if (best > 0) push_origin(o, k - 1, GS_ORIGIN_INPUT, 0, best - 1);
+  }
 }
 
 // One edge of a blend: its size(s) and, for a chamfer with a reference face, that face.
