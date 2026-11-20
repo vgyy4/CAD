@@ -1190,3 +1190,41 @@ way; one body-only part hit the 900 s limit at an unrelated coil while other rou
 three or more rounded edges and B-spline faces), cliff corners leaving faces without origins
 (2), a round whose contact leaves its face only near an end (067's pipe tee, 3.2e-5 off), both
 faces narrower than the ball (101, 016).
+
+## Amendment (2026-11-20, 29): Inventor round ipt11 - sheet-metal folds, face names, face drafts, sweep wire paths
+
+Measured first as in rounds ipt9 and ipt10 (each body part's first failure on this round's base,
+then each prefix of the rebuilt history against the stored body; scratch, not committed). Decoded or
+fixed this round (notes AU of `docs/formats/inventor-feature-tree.md`), all in `gusset-ole`'s
+Inventor reader:
+
+| rule | parts gained |
+|---|---|
+| sheet-metal folds (`4c37ffe8`) as the tree's `bend`: angle, radius, bend line, side and direction against the face's outward normal, zone place, K-factor 0.44; folds sketched on an earlier fold's flange | 10 (omicronrobot's frames, fronts, sides, brackets) |
+| a sweep path given as a wire body (`fc203f47` naming a `cc0f7521` history body): the sketch whose curves the wire runs along | 1 (FIRST1939 bumper cover) |
+| face names (`509fb5cc` -> `03aa812c` -> naming table `cce92042` -> `0645c2a5`: feature id, profile curve, cap or side); face drafts (`f4fa0900`) of planar faces and extruded circles, the neutral plane where each face's plane before the draft meets its plane in the result | 2 (`dr_fixed_plane`, TipHolder) |
+| loops matched to their sketch's lines, circles and arcs exactly (sampled chords lie 0.09 mm inside an arc of 160 mm radius) | 0 (two lofts reach later features) |
+| shells whose rims do not count their open faces place them from the faces' names | 0 (five parts reach later features) |
+| one-edge chamfer reference lines more than 1 cm off the edge read are not used | 0 (the bay adapters' Chamfer3 builds; they stop at Mirror2's copy of it) |
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4). Only
+`gusset-ole`'s Inventor modules changed: no code SolidWorks or Solid Edge share, so their corpora were
+not rerun.
+
+| corpus | parts | history before | after | without a solid |
+|---|---|---|---|---|
+| first (Zenodo) | 47 | 28 | 28 | 0 |
+| second (57 sources) | 1639 | 709 | 722 | 46 |
+
+No part went from history to body (full run of the 1686 at the face-draft commit, then the parts
+whose trees the last two commits change). Two parts time out under load (a body part either way).
+
+What blocks the rest, measured on the 890 bodies of the second corpus: no features 411; derived from a
+part not in the folder or in a cycle 40 or more; imported base bodies 43 (and 5 via their base part);
+volume differences 47; features the reader does not export about 80 (Design Accelerator gears,
+"Solid1::" self-derives, delete face 8, sheet-metal bends between plates `4cf758f2` with corners and
+hems, ribs, stitches); blends about 110 (cylinder blends with one usable support 9, no model edge at
+a pick, chamfer and fillet failures); folds whose bend zone holds a step of the outline (Inventor's
+bend relief) 3; sketch regions and loft sections about 20; face names whose curve number does not land
+on a line in larger sketches (the numbering counts entities the reader does not read: EY4180 A-00,
+A-07).

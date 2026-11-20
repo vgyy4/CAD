@@ -12,8 +12,8 @@ Phase 3 has started (see Next).
 - Importer status (2026-11-14), feature history that rebuilds under the unchanged strict check:
   Fusion 277 of 318 (paused after rounds 33-34 gained none; docs/formats/fusion-corpus-tally.md);
   SolidWorks 359 of 1352 (rounds sw1-sw14, xt1 and ipt10, ADR 0043; was 85; sw14 adds up-to-next cuts, extrudes started from a face, contour choosers by segments, linear pattern senses of cuts, blend edges the stored body kept and chain-by-chain blends; sw13 reads converted sketch segments, revolve axes by the body's box centre, open revolve profiles and drafted extrudes; xt1's
-  Parasolid blends gain Lock Collar, whose stored body measured 3.5e-5 off; ipt10's sketch region tolerances gain GT2_Bobbin_v2); Inventor 709 of 1639 on the new corpus
-  and 28 of 47 on the old (rounds ipt1-ipt10 and op1, ADR 0046 amendments 8-10, 15-19, 25, 27; was 263 and 25; ipt4 reads coils,
+  Parasolid blends gain Lock Collar, whose stored body measured 3.5e-5 off; ipt10's sketch region tolerances gain GT2_Bobbin_v2); Inventor 722 of 1639 on the new corpus
+  and 28 of 47 on the old (rounds ipt1-ipt11 and op1, ADR 0046 amendments 8-10, 15-19, 25, 27, 29; was 263 and 25; ipt4 reads coils,
   embosses, combines, splits and unfolded sheet-metal faces; ipt5 rebuilds derived parts and iPart members
   from their base part in the same folder; ipt6 solves an iPart factory's sketches again for a member's
   row; ipt7 names features through their owned name record, reads body moves and scales, leaves surfaces
@@ -24,7 +24,8 @@ Phase 3 has started (see Next).
   half-way revolves, lofts, and moves iPart member sketches and holes with their faces; ipt10 reads extrudes
   in two directions, picks one-edge chamfers where their reference lines start, steps an iPart row's solve
   so arcs keep their side, blends what a later cut broke up before the cut, and fixes three tolerance slips
-  of sketch regions (nearly collinear overlaps, nearly tangent circles, curves leaving a point tangent); left: Design
+  of sketch regions (nearly collinear overlaps, nearly tangent circles, curves leaving a point tangent); ipt11 reads
+  sheet-metal folds, face names, face drafts and sweep paths given as wire bodies; left: Design
   Accelerator gear teeth, surface consumers, blends whose supports were used up, ISO 7046 tapers, sketch text); Solid Edge 97
   of 180 measured ordered parts (rounds se1-se8, xt1, op2 and ipt10, ADR 0046 amendments 11-13, 20-24 and 26-28; op2 builds
   rounds OCCT's fillet does not from their corners, ADR 0004 amendment 2026-11-19; se5 reads fast and
