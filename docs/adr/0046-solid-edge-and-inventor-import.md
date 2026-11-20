@@ -1140,6 +1140,11 @@ on 0.381 mm edges of the tab's back, OCCT fails), 041 at a later round (an edge 
 limit at a sweep once while two other rounds' imports shared the machine; alone it measures
 as before, 3 minutes, its features' volume differing from the stored body's.)
 
+**Other formats (the kernel change reaches every importer).** SolidWorks 333 of 1352 as
+history, as before, none lost (two parts rebuild one more feature before their first failing
+fillet); Inventor 714 of 1686, as before, none lost (one part's first reason changed the same
+way; one body-only part hit the 900 s limit at an unrelated coil while other rounds ran).
+
 **What is left among round failures (measured).** Narrow faces whose far side is not one edge
 (5), plain rounds OCCT does not build where no face is narrow (20 rounds, mostly corners of
 three or more rounded edges and B-spline faces), cliff corners leaving faces without origins
