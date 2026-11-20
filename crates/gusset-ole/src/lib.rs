@@ -23,8 +23,6 @@ mod inventor_profile;
 mod inventor_sketch;
 pub mod solidedge;
 pub mod solidedge_features;
-#[cfg(test)]
-mod zz;
 
 pub use gusset_sldprt::Limits;
 use gusset_sldprt::SldprtError;

@@ -3628,82 +3628,10 @@ fn rebuild_check(
         want_box = union(want_box, kernel.bbox(&shape).map_err(|e| e.message)?);
     }
     tree.bodies = vec![crate::tree_import::TreeBody { name: "all".into(), volume_mm3: Some(want) }];
-    if std::env::var_os("ZZ_IPTDBG").is_some() {
-        let mut ws: Option<gusset_kernel::Shape> = None;
-        for b in bodies {
-            let sh = kernel.read_native(&b.blob).map_err(|e| e.message)?;
-            ws = Some(match ws {
-                None => sh,
-                Some(w) => kernel.boolean(gusset_kernel::BoolOp::Union, &w, &sh).map(|r| r.shape).unwrap_or(w),
-            });
-        }
-        eprintln!("DBG want {want:.4}");
-        if std::env::var_os("ZZ_TREE").is_some() {
-            for f in &tree.features {
-                let t = f.to_string();
-                eprintln!("TREE {}", &t[..t.len().min(400_000)]);
-            }
-        }
-        for k in 0..tree.features.len() {
-            let f = &tree.features[k];
-            let ty = f.get("type").and_then(Value::as_str).unwrap_or("?").to_string();
-            if ty == "sketch" || ty == "plane" || ty == "axis" || ty == "point" {
-                continue;
-            }
-            let nm = f.get("name").and_then(Value::as_str).unwrap_or("?").to_string();
-            let mut t2 = tree.clone();
-            t2.features.truncate(k + 1);
-            let empty = gusset_doc::Document::from_text("gusset 1\nunits mm\n").map_err(|e| e.to_string())?;
-            let ctx = crate::CmdCtx::user(0);
-            let mut sc = crate::Session::new(&empty, kernel.clone(), &ctx);
-            let r = crate::tree_import::apply(&mut sc, &ctx, &mut t2, file_name);
-            let Ok(r) = r else {
-                eprintln!("DBG {k} {nm} {ty} apply error");
-                continue;
-            };
-            let sk = r.get("skipped_user_text").and_then(Value::as_array).map_or(0, Vec::len);
-            let Ok(ev) = sc.evaluate(&ctx.actor) else {
-                eprintln!("DBG {k} {nm} {ty} eval error");
-                continue;
-            };
-            let mut g: Option<gusset_kernel::Shape> = None;
-            for b in &ev.bodies {
-                g = Some(match g {
-                    None => b.shape.clone(),
-                    Some(w) => kernel.boolean(gusset_kernel::BoolOp::Union, &w, &b.shape).map(|r| r.shape).unwrap_or(w),
-                });
-            }
-            let vol = |s: &gusset_kernel::Shape| kernel.mass_properties(s).map(|m| m.volume).unwrap_or(f64::NAN);
-            let vb = |s: &gusset_kernel::Shape| {
-                let v = vol(s);
-                let b = kernel.bbox(s).ok().map(|b| format!("{:.3?}..{:.3?}", b.min, b.max)).unwrap_or_default();
-                format!("{v:.4}@{b}")
-            };
-            let (gv, out, miss) = match (&g, &ws) {
-                (Some(g), Some(w)) => (
-                    vol(g),
-                    kernel.boolean(gusset_kernel::BoolOp::Cut, g, w).map(|r| vb(&r.shape)).unwrap_or("NaN".into()),
-                    kernel.boolean(gusset_kernel::BoolOp::Cut, w, g).map(|r| vb(&r.shape)).unwrap_or("NaN".into()),
-                ),
-                _ => (f64::NAN, String::new(), String::new()),
-            };
-            let bb = g
-                .as_ref()
-                .and_then(|g| kernel.bbox(g).ok())
-                .map(|b| format!("{:.3?}..{:.3?}", b.min, b.max))
-                .unwrap_or_default();
-            eprintln!("DBG {k} {nm} {ty} skipped={sk} vol={gv:.4} outside={out} missing={miss} box={bb}");
-        }
-    }
     let empty = gusset_doc::Document::from_text("gusset 1\nunits mm\n").map_err(|e| e.to_string())?;
     let ctx = crate::CmdCtx::user(0);
     let mut scratch = crate::Session::new(&empty, kernel.clone(), &ctx);
     let r = crate::tree_import::apply(&mut scratch, &ctx, tree, file_name).map_err(|e| e.message)?;
-    if std::env::var_os("ZZ_DOC").is_some() {
-        if let Ok(d) = scratch.document(&ctx.actor) {
-            eprintln!("DOC>>>\n{}\n<<<DOC", d.to_text());
-        }
-    }
     let skipped = r.get("skipped_user_text").and_then(Value::as_array).cloned().unwrap_or_default();
     if let Some(first) = skipped.first() {
         let first = first.as_str().map_or_else(|| first.to_string(), str::to_string);
