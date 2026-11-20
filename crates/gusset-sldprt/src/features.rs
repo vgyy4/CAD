@@ -4728,8 +4728,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 && let Some(seeds) = patterns::seed_list(rf, a, b)
             {
                 let index = node_index.get_or_insert_with(|| node_indices(rf, &nodes, &span));
-                for p in &seeds.ptrs {
-                    let Some(m) = index.get(p).and_then(|&k| nodes.get(k)) else { continue };
+                for &p in &seeds.ptrs {
+                    let is_feature = |k: usize| nodes.get(k).is_some_and(|m| emitted(&feats, &m.name));
+                    let Some(m) = seed_node(index, p, ni, is_feature).and_then(|k| nodes.get(k)) else { continue };
                     if emitted(&feats, &m.name) && !mirrored.contains(&m.name) {
                         mirrored.push(m.name.clone());
                     }
@@ -4973,7 +4974,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 patterns::seed_list(rf, a, b),
                 &patterns::pattern_lines(rf, a, b),
                 (int, real),
-                |p| index.get(&p).and_then(|&k| nodes.get(k)).map(|m| m.name.clone()),
+                |p| {
+                    let is_feature = |k: usize| nodes.get(k).is_some_and(|m| emitted(&feats, &m.name));
+                    seed_node(index, p, ni, is_feature).and_then(|k| nodes.get(k)).map(|m| m.name.clone())
+                },
                 &feats,
             );
             if let [one] = made.as_slice()
@@ -5710,6 +5714,21 @@ fn node_indices(d: &[u8], nodes: &[Node], span: &impl Fn(&Node) -> (usize, usize
         }
     }
     index
+}
+
+/// The node an archive index names (round sw15): the node [`node_indices`] found for it, or,
+/// where no back reference gave the index (a hole wizard feature has neither dimensions nor
+/// faces of its own in its span), the one feature read between the nodes whose indices
+/// enclose it, before the node `at` that names it. Indices grow along the stream.
+fn seed_node(index: &HashMap<u32, usize>, p: u32, at: usize, is_feature: impl Fn(usize) -> bool) -> Option<usize> {
+    if let Some(&k) = index.get(&p) {
+        return Some(k);
+    }
+    let lo = index.iter().filter(|&(&q, &k)| q < p && k < at).map(|(_, &k)| k).max()?;
+    let hi = index.iter().filter(|&(&q, &k)| q > p && k > lo).map(|(_, &k)| k).min().unwrap_or(at).min(at);
+    let mut found = (lo + 1..hi).filter(|&k| is_feature(k));
+    let one = found.next()?;
+    found.next().is_none().then_some(one)
 }
 
 /// A linear or circular feature pattern (`moLPattern_c`, `moCirPattern_c`) as tree features.
@@ -6795,6 +6814,21 @@ mod pattern_tests {
             p["x"] = json!(x + 4.6);
         }
         assert!(helix_sweep(&mut [mid], "P", &h).is_none());
+    }
+
+    #[test]
+    fn a_seed_without_back_references_is_the_one_feature_between_its_neighbours() {
+        // 500 Hex Hub: Cut-Extrude1 (node 20) is object 460; the pattern (node 26) names 527,
+        // and of the nodes after Cut-Extrude1 only Hole1 (node 21) is a feature.
+        let index: HashMap<u32, usize> = [(229, 10), (255, 15), (281, 16), (357, 18), (460, 20)].into_iter().collect();
+        assert_eq!(seed_node(&index, 460, 26, |_| true), Some(20));
+        assert_eq!(seed_node(&index, 527, 26, |k| k == 21), Some(21));
+        // Two features in between: not decided.
+        assert_eq!(seed_node(&index, 527, 26, |k| k == 21 || k == 24), None);
+        // A known later object bounds the stretch.
+        let mut later = index.clone();
+        later.insert(500, 22);
+        assert_eq!(seed_node(&later, 480, 26, |k| k == 21 || k == 24), Some(21));
     }
 
     #[test]
