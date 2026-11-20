@@ -2957,6 +2957,7 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     // The edges the picks lie on: the circles, and how many picks lie on lines.
     let mut circles: Vec<(V3, V3, f64)> = Vec::new();
     let mut lines = 0usize;
+    let mut infos: Vec<(V3, EdgeInfo)> = Vec::new();
     let mut bridged: Vec<BridgedRound> = Vec::new();
     let chamfer_d = (typ == FeatType::Chamfer).then(|| r.pval(&s, 2).ok()).flatten();
     let mm = |v: V3| [rnd_to(v[0] * CM, 1e6), rnd_to(v[1] * CM, 1e6), rnd_to(v[2] * CM, 1e6)];
@@ -3014,6 +3015,7 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                 };
                 radii.extend(rad);
                 mids.push((mm(m), local_path(m, &info, PATH_EPS).map(|[a, b]| [mm(a), mm(b)]), rad));
+                infos.push((m, info));
                 // Pieces of one circle (the result splits a whole circle in two) are one edge.
                 match info {
                     EdgeInfo::Circle { cen, ax, r: rc } => {
@@ -3084,7 +3086,17 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         Some([a, b]) => json!({"midpoint": m, "path": [a, b]}),
         None => json!({"midpoint": m}),
     };
-    let edges: Vec<Value> = uniq.iter().map(pick).collect();
+    let mut edges: Vec<Value> = uniq.iter().map(pick).collect();
+    // A chamfer on one edge: its reference lines start on that edge (note AS).
+    if typ == FeatType::Chamfer
+        && !r.dc.has_row()
+        && circles.len() + lines == 1
+        && let Some((m, info)) = infos.first()
+        && let Some((p0, at)) = chamfer_edge_at_lines(&ref_lines(r, &s), info, *m)
+    {
+        let path = local_path(p0, &at, PATH_EPS).map(|[a, b]| [mm(a), mm(b)]);
+        edges = vec![pick(&(mm(p0), path, None))];
+    }
     if typ == FeatType::Fillet {
         let mut rad = None;
         let (sets, _) = r.dc.first_list(s.need(0)?, None).ok_or("the fillet has no edge sets")?;
@@ -3207,7 +3219,12 @@ fn chamfer_kind(r: &Reader, s: &Slots, dist: f64, edges: usize) -> Result<Option
         2 => r.pval(s, 3)?,
         t => return Err(format!("chamfer type {t} is not decoded")),
     };
-    // The reference lines (`797737b1` records of slot 8): kind, start, end (cm).
+    chamfer_second(ty, dist, leg, edges, &ref_lines(r, s))
+}
+
+/// A chamfer's reference lines (`797737b1` records of slot 8, the first two): kind, start, end
+/// (cm). Both start at a point of the (first) chamfered edge and run along its two faces.
+fn ref_lines(r: &Reader, s: &Slots) -> Vec<(u32, V3, V3)> {
     let mut lines: Vec<(u32, V3, V3)> = Vec::new();
     if let Some(i) = s.get(8)
         && let Some((items, _)) = r.dc.first_list(i, None)
@@ -3223,7 +3240,33 @@ fn chamfer_kind(r: &Reader, s: &Slots, dist: f64, edges: usize) -> Result<Option
             lines.push((kind, [a, b, c], [d, e, g]));
         }
     }
-    chamfer_second(ty, dist, leg, edges, &lines)
+    lines
+}
+
+/// A chamfer on one edge whose reference lines start off the edge read from its blend face
+/// (the face's neighbours meet elsewhere): the pick at the lines' start, on that edge's line
+/// or on the circle about its axis through the start. `None` when the start lies on the edge
+/// read. An iPart member's lines are the factory's, so they are not used for it.
+fn chamfer_edge_at_lines(lines: &[(u32, V3, V3)], info: &EdgeInfo, m: V3) -> Option<(V3, EdgeInfo)> {
+    let &(2, p0, _) = lines.first()? else { return None };
+    let off = |q: V3, dir: V3| {
+        let d = crate::acis::sub(q, m);
+        let along = crate::acis::mul(dir, dot(d, dir));
+        crate::acis::dist(crate::acis::sub(d, along), [0.0; 3])
+    };
+    match *info {
+        EdgeInfo::Line { dir } => {
+            let dir = unit3(dir);
+            (off(p0, dir) > 1e-7).then_some((p0, EdgeInfo::Line { dir }))
+        }
+        EdgeInfo::Circle { cen, ax, r } => {
+            let ax = unit3(ax);
+            let c = crate::acis::add(cen, crate::acis::mul(ax, dot(crate::acis::sub(p0, cen), ax)));
+            let rr = crate::acis::dist(p0, c);
+            let on = (dot(crate::acis::sub(p0, cen), ax)).abs() <= 1e-7 && (rr - r).abs() <= 1e-7;
+            (!on && rr > 1e-9).then_some((p0, EdgeInfo::Circle { cen: c, ax, r: rr }))
+        }
+    }
 }
 
 /// The second leg of a chamfer of type `ty` (1 or 2) from its first distance `dist` (cm), the
