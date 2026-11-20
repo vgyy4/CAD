@@ -2973,6 +2973,11 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         if typ == FeatType::Chamfer && b.is_chamfer_corner_patch(face, &faces) {
             continue;
         }
+        // A tagged face without a vertex (no loop the reader follows) names no edge; the
+        // feature's other faces do.
+        if b.verts(face).is_empty() && faces.len() > 1 {
+            continue;
+        }
         if typ == FeatType::Fillet
             && let Some(fr) = b.full_round(face)
         {
