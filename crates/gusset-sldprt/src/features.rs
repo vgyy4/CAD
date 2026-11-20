@@ -4269,11 +4269,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 }
             } else {
                 js.insert("distance".into(), json!(distance));
-                // A boss of end type 2 stops at the next face it meets (round sw12: mid_elbow's
-                // pins, written through all, ran 360 mm out of a 35 mm part); the reach through
-                // all stays as the fallback where that does not build.
-                if op != "cut"
-                    && typ == Some(2)
+                // End type 2 stops at the next face the sweep meets (round sw12: mid_elbow's pins,
+                // written through all, ran 360 mm out of a 35 mm part; round sw14: a cut too, the
+                // GT3 pulleys' set screw holes go through one wall of the hub, not both); the
+                // reach through all stays as the fallback where that does not build.
+                if typ == Some(2)
+                    && !symmetric
                     && let Some(d) = distance
                 {
                     js.insert("end_condition".into(), json!("to_next"));
