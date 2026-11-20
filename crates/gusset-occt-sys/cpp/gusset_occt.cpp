@@ -124,6 +124,7 @@
 #include <Message_ProgressIndicator.hxx>
 #include <Message_ProgressScope.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <ElSLib.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeHalfSpace.hxx>
@@ -3465,6 +3466,59 @@ TopAbs_State state_in_face(const TopoDS_Face& f, const gp_Pnt& q) {
   return fc.State();
 }
 
+// The nearest points of a face's surface, its outward normal there: a projector set up once
+// (over the face's parameter box widened on each side) for the many points a swept corner
+// projects; analytic on a plane.
+struct FaceFoot {
+  TopoDS_Face f;
+  Handle(Geom_Surface) s;
+  bool plane = false;
+  gp_Pln pl;
+  GeomAPI_ProjectPointOnSurf proj;
+  BRepAdaptor_Surface ad;
+  explicit FaceFoot(const TopoDS_Face& face) : f(face), s(BRep_Tool::Surface(face)), ad(face, false) {
+    if (ad.GetType() == GeomAbs_Plane) {
+      plane = true;
+      pl = ad.Plane();
+      return;
+    }
+    double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+    BRepTools::UVBounds(face, u0, u1, v0, v1);
+    double su0 = 0, su1 = 0, sv0 = 0, sv1 = 0;
+    s->Bounds(su0, su1, sv0, sv1);
+    const double du = u1 - u0, dv = v1 - v0;
+    u0 = s->IsUPeriodic() ? u0 - du : std::max(su0, u0 - du);
+    u1 = s->IsUPeriodic() ? u1 + du : std::min(su1, u1 + du);
+    v0 = s->IsVPeriodic() ? v0 - dv : std::max(sv0, v0 - dv);
+    v1 = s->IsVPeriodic() ? v1 + dv : std::min(sv1, v1 + dv);
+    proj.Init(s, u0, u1, v0, v1);
+  }
+  // The foot of `q` and the outward normal there.
+  bool foot(const gp_Pnt& q, gp_Pnt& p, gp_Dir& n) {
+    double u = 0, v = 0;
+    if (plane) {
+      ElSLib::Parameters(pl, q, u, v);
+      p = ElSLib::Value(u, v, pl);
+    } else {
+      proj.Perform(q);
+      if (!proj.IsDone() || proj.NbPoints() < 1) {
+        GeomAPI_ProjectPointOnSurf full(q, s);
+        if (!full.IsDone() || full.NbPoints() < 1) return false;
+        full.LowerDistanceParameters(u, v);
+        p = full.NearestPoint();
+      } else {
+        proj.LowerDistanceParameters(u, v);
+        p = proj.NearestPoint();
+      }
+    }
+    BRepLProp_SLProps props(ad, u, v, 1, 1e-9);
+    if (!props.IsNormalDefined()) return false;
+    n = props.Normal();
+    if (f.Orientation() == TopAbs_REVERSED) n.Reverse();
+    return true;
+  }
+};
+
 // A cliff-edge corner of any section (ADR 0004 amendment, round se8): one of the edge's two
 // faces (`b`) is narrower than where the ball would touch it, so the ball rolls on the other
 // face (`a`) and on `b`'s far edge, the one edge of `b` that does not touch the rounded edge, as
@@ -3557,12 +3611,10 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
   const Handle(Geom_Curve) ge = BRep_Tool::Curve(x.e, l0, l1);
   if (sa.IsNull() || sb.IsNull() || ge.IsNull()) return false;
   // The signed distance of `q` from `a`'s surface (outward positive) and the foot.
+  FaceFoot foot_a(fa), foot_b(fb);
   auto side_of_a = [&](const gp_Pnt& q, gp_Pnt& foot) -> double {
-    GeomAPI_ProjectPointOnSurf pr(q, sa);
-    if (!pr.IsDone() || pr.NbPoints() < 1) throw Standard_Failure("no foot");
-    foot = pr.NearestPoint();
     gp_Dir n;
-    if (!outward_normal(fa, foot, n)) throw Standard_Failure("no normal");
+    if (!foot_a.foot(q, foot, n)) throw Standard_Failure("no foot");
     return gp_Vec(foot, q).Dot(gp_Vec(n));
   };
   const double want = concave ? r : -r;
@@ -3619,19 +3671,16 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
             // Alternate projections onto both surfaces and the plane.
             gp_Pnt q = hint;
             bool ok = true;
+            gp_Dir nn;
+            gp_Pnt qa, qb;
             for (int it = 0; it < 200 && ok; ++it) {
-              GeomAPI_ProjectPointOnSurf pa(q, sa);
-              if (!pa.IsDone() || pa.NbPoints() < 1) ok = false;
-              else q = pa.NearestPoint();
-              GeomAPI_ProjectPointOnSurf pb(q, sb);
-              if (!ok || !pb.IsDone() || pb.NbPoints() < 1) ok = false;
-              else q = pb.NearestPoint();
+              ok = foot_a.foot(q, qa, nn) && foot_b.foot(qa, qb, nn);
+              q = qb;
               const double dq = gp_Vec(pl.Location(), q).Dot(gp_Vec(pl.Axis().Direction()));
               q.Translate(-gp_Vec(pl.Axis().Direction()) * dq);
             }
-            GeomAPI_ProjectPointOnSurf pa(q, sa), pb(q, sb);
-            if (ok && pa.NbPoints() > 0 && pb.NbPoints() > 0 && pa.LowerDistance() < 1e-9 * std::max(1.0, r) &&
-                pb.LowerDistance() < 1e-9 * std::max(1.0, r))
+            if (ok && foot_a.foot(q, qa, nn) && foot_b.foot(q, qb, nn) && q.Distance(qa) < 1e-9 * std::max(1.0, r) &&
+                q.Distance(qb) < 1e-9 * std::max(1.0, r))
               pes.push_back(q);
           }
           for (const gp_Pnt& pe : pes) {
@@ -3649,44 +3698,16 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
     // One branch: the contacts lie near the edge.
     return found && out_row.e.Distance(out_row.t) <= 2 * r + tol && out_row.e.Distance(out_row.c) <= 4 * r + tol;
   };
-  const int nst = closed ? 48 : 24;
-  std::vector<Row> rows;
-  for (int i = 0; i <= nst; ++i) {
-    const double tc = c0 + (c1 - c0) * double(i) / nst;
+  // The rows at stations `k / n` of the far edge's parameter range.
+  auto row_of = [&](double k, int n, Row& w) -> bool {
+    const double tc = c0 + (c1 - c0) * k / n;
     gp_Pnt pc;
     gp_Vec dc;
     cc.D1(tc, pc, dc);
     if (dc.Magnitude() < 1e-12) return false;
-    Row w;
-    if (!row_at(pc, gp_Dir(dc), true, pc, w)) return false;
-    rows.push_back(w);
-  }
-  // The runs past the far edge's ends, along its tangents, as far as the ball reaches.
-  std::vector<Row> before, after;
-  if (!closed) {
-    const int next = 8;
-    const double reach = 2 * r;
-    for (int end = 0; end < 2; ++end) {
-      gp_Pnt p;
-      gp_Vec d;
-      cc.D1(end == 0 ? c0 : c1, p, d);
-      gp_Dir dz(d);
-      const gp_Vec step = gp_Vec(dz) * (end == 0 ? -reach / next : reach / next);
-      std::vector<Row>& run = end == 0 ? before : after;
-      gp_Pnt hint = end == 0 ? rows.front().e : rows.back().e;
-      for (int k = 1; k <= next; ++k) {
-        Row w;
-        bool ok = false;
-        try {
-          ok = row_at(p.Translated(step * k), dz, false, hint, w);
-        } catch (const Standard_Failure&) {
-        }
-        if (!ok) break;
-        hint = w.e;
-        run.push_back(w);
-      }
-    }
-  }
+    return row_at(pc, gp_Dir(dc), true, pc, w);
+  };
+  std::vector<Row> rows;
   // A face's trace from `p` to `q` across a row (plane `pl`): points of the chord moved onto the
   // surface within the plane.
   auto trace = [&](const Handle(Geom_Surface)& s, const gp_Pnt& p, const gp_Pnt& q, const gp_Pln& pl) -> TopoDS_Edge {
@@ -3715,7 +3736,7 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
     if (!ip.IsDone()) throw Standard_Failure("could not build the corner");
     return BRepBuilderAPI_MakeEdge(ip.Curve()).Edge();
   };
-  const double d = 0.25 * std::min(r, rows.front().e.Distance(rows.front().c));
+  double d = 0;
   // The corner and its tool lofted through rows; `face` the tool's blend face.
   auto loft = [&](const std::vector<const Row*>& ws, TopoDS_Shape& ex_solid, TopoDS_Shape& tool,
                   TopoDS_Shape& face, std::vector<TopoDS_Shape>* caps) -> bool {
@@ -3783,9 +3804,63 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
         if (!cap.IsNull()) caps->push_back(cap);
     return !face.IsNull();
   };
-  std::vector<const Row*> main_rows;
-  for (const Row& w : rows) main_rows.push_back(&w);
-  if (!loft(main_rows, out.exact, out.cutter, out.face, closed ? nullptr : &out.caps)) return false;
+  // As few rows as keep the loft within 1e-5 of the radius of the rows between them (each loft
+  // surface is cut by its neighbours' later, and fewer rows make that much faster).
+  int nst = 0;
+  for (int n = closed ? 8 : 4; n <= (closed ? 64 : 32); n *= 2) {
+    rows.clear();
+    for (int i = 0; i <= n; ++i) {
+      Row w;
+      if (!row_of(i, n, w)) return false;
+      rows.push_back(w);
+    }
+    if (n == 4 || n == 8) d = 0.25 * std::min(r, rows.front().e.Distance(rows.front().c));
+    std::vector<const Row*> main_rows;
+    for (const Row& w : rows) main_rows.push_back(&w);
+    out.caps.clear();
+    if (!loft(main_rows, out.exact, out.cutter, out.face, closed ? nullptr : &out.caps)) return false;
+    nst = n;
+    if (n == (closed ? 64 : 32)) break;
+    // The arcs' middles between rows, against the loft's blend face.
+    double dev = 0;
+    const Handle(Geom_Surface) fs_blend = BRep_Tool::Surface(TopoDS::Face(out.face));
+    for (int i = 0; i < n && dev <= 1e-5 * r; ++i) {
+      Row w;
+      if (!row_of(i + 0.5, n, w)) return false;
+      const gp_Pnt m =
+          w.x.Translated((gp_Vec(w.x, w.t).Normalized() + gp_Vec(w.x, w.c).Normalized()).Normalized() * r);
+      GeomAPI_ProjectPointOnSurf pr(m, fs_blend);
+      if (!pr.IsDone() || pr.NbPoints() < 1) dev = 1;
+      else dev = std::max(dev, pr.LowerDistance());
+    }
+    if (dev <= 1e-5 * r) break;
+  }
+  // The runs past the far edge's ends, along its tangents, as far as the ball reaches.
+  std::vector<Row> before, after;
+  if (!closed) {
+    const int next = std::max(2, nst / 4);
+    const double reach = 2 * r;
+    for (int end = 0; end < 2; ++end) {
+      gp_Pnt p;
+      gp_Vec d;
+      cc.D1(end == 0 ? c0 : c1, p, d);
+      gp_Dir dz(d);
+      const gp_Vec step = gp_Vec(dz) * (end == 0 ? -reach / next : reach / next);
+      std::vector<Row>& run = end == 0 ? before : after;
+      gp_Pnt hint = end == 0 ? rows.front().e : rows.back().e;
+      for (int k = 1; k <= next; ++k) {
+        Row w;
+        bool ok = false;
+        try {
+          ok = row_at(p.Translated(step * k), dz, false, hint, w);
+        } catch (const Standard_Failure&) {
+        }
+        if (!ok) break;
+        hint = w.e;
+        run.push_back(w);
+      }
+    }
+  }
   out.ideal = std::fabs(measured_volume(out.exact, true));
   out.concave = concave;
   out.line = false;
@@ -4348,7 +4423,7 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
   // blend is then one face up to that curve.
   if (cs.size() > 1) {
     bool any = false;
-    std::vector<TopoDS_Shape> new_tools(cs.size()), new_exact(cs.size());
+    std::vector<TopoDS_Shape> new_tools(cs.size());
     for (size_t i = 0; i < cs.size(); ++i) {
       const Corner& ci = cs[i];
       if (ci.ext_tool.IsNull() || ci.far.IsNull()) continue;
@@ -4365,7 +4440,7 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
       if (nb[0] == cs.size() && nb[1] == cs.size()) continue;
       any = true;
       BRepAdaptor_Curve fc(ci.far);
-      TopoDS_Shape tool = ci.ext_tool, ex = ci.ext_exact;
+      TopoDS_Shape tool = ci.ext_tool;
       for (int k = 0; k < 2; ++k) {
         gp_Pnt p;
         gp_Vec d;
@@ -4381,20 +4456,17 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
             p.Translated(-(gp_Vec(ax.XDirection()) + gp_Vec(ax.YDirection())) * big);
         const TopoDS_Shape beyond =
             BRepPrimAPI_MakeBox(gp_Ax2(corner, out_dir, ax.XDirection()), 2 * big, 2 * big, big).Solid();
-        TopoDS_Shape away_tool = beyond, away_exact = beyond;
+        TopoDS_Shape away = beyond;
         if (nb[k] < cs.size()) {
-          BRepAlgoAPI_Cut ct(beyond, cs[nb[k]].ext_tool), ce2(beyond, cs[nb[k]].ext_exact);
-          if (!ct.IsDone() || !ce2.IsDone()) return fail("no corner");
-          away_tool = ct.Shape();
-          away_exact = ce2.Shape();
+          BRepAlgoAPI_Cut ct(beyond, cs[nb[k]].ext_tool);
+          if (!ct.IsDone() || ct.Shape().IsNull()) return fail("no corner");
+          away = ct.Shape();
         }
-        BRepAlgoAPI_Cut t2(tool, away_tool), e2(ex, away_exact);
-        if (!t2.IsDone() || !e2.IsDone()) return fail("no corner");
+        BRepAlgoAPI_Cut t2(tool, away);
+        if (!t2.IsDone() || t2.Shape().IsNull()) return fail("no corner");
         tool = t2.Shape();
-        ex = e2.Shape();
       }
       new_tools[i] = tool;
-      new_exact[i] = ex;
     }
     if (any) {
       for (size_t i = 0; i < cs.size(); ++i) {
@@ -4420,19 +4492,25 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
         if (face.IsNull()) return fail("no corner");
         c.face = face;
         c.cutter = new_tools[i];
-        c.exact = new_exact[i];
       }
       ShapeList all_tools;
       for (const auto& c : cs) all_tools.Append(c.cutter);
       if (cs.front().concave) cave = all_tools;
       else tools = all_tools;
-      // The material changed is the union of the corners.
-      ShapeList first, rest;
-      first.Append(cs.front().exact);
-      for (size_t i = 1; i < cs.size(); ++i) rest.Append(cs[i].exact);
-      auto u = run_boolean_checked(GS_BOOL_UNION, first, rest);
-      if (u->Shape().IsNull()) return fail("no union of the corners");
-      const double all = std::fabs(signed_volume(u->Shape()));
+      // The material changed: the corners along their edges and, for each two whose far edges
+      // meet, what both runs past that vertex hold.
+      double all = 0;
+      for (size_t i = 0; i < cs.size(); ++i) {
+        all += cs[i].ideal;
+        for (size_t j = i + 1; j < cs.size(); ++j) {
+          if (new_tools[i].IsNull() || new_tools[j].IsNull()) continue;
+          TopoDS_Vertex v;
+          if (!TopExp::CommonVertex(cs[i].far, cs[j].far, v)) continue;
+          BRepAlgoAPI_Common cm(cs[i].ext_exact, cs[j].ext_exact);
+          if (!cm.IsDone() || cm.Shape().IsNull()) return fail("no union of the corners");
+          all += std::fabs(measured_volume(cm.Shape(), true));
+        }
+      }
       bool mixed = false;
       for (const auto& c : cs) mixed = mixed || c.concave != cs.front().concave;
       if (mixed) return fail("no corner");
