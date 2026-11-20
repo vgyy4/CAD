@@ -826,3 +826,25 @@ cut profiles that end on the body's outline.
 
 The rebuild check is unchanged. History 314 -> 332 of 1352, none lost (converted segments 4, revolve axes and open revolve profiles 9, drafted
 extrudes 5; Expansion Block by the same fixes).
+
+## Amendment (2026-11-20): blend edges, up-to-next cuts, start faces, contour choosers, pattern senses (round sw14)
+
+Round sw14 (L25 in `docs/formats/solidworks-feature-tree.md`) measured the refusals that are not STEP-style imports
+(volume mismatches 80, fillets and chamfers about 70) and took:
+
+- **Edge records 22 bytes apart** stay one selection (newer files write an `f64` and six zero bytes more between
+  them).
+- **Up to next on cuts**: end type 2 is up to next for cuts as for bosses; through all stays the fallback.
+- **Extrudes that start from a face**: a blind extrude whose node ends on a kind 2 single face reference starts on
+  that face's plane where it is parallel to the sketch.
+- **Contour choosers** naming every listed contour are used (the sketch's list need not hold every region); a
+  chooser older than its sketch's dimensions picks regions by a point inside what its segments enclose.
+- **Linear pattern senses**: the file writes the picked edge's own direction and no byte says which way the copies
+  run; a pattern of cuts is marked `either_way` and the tree import keeps the sense whose copies remove more.
+- **The stored body decides blend edges** (`Tree::kept_edges`, set by the SolidWorks importer only): a blend's
+  edge that is still an edge of the part's stored body was not blended there and is left out, unless all would be.
+- **Blends chain by chain**: a fillet or chamfer the kernel refuses whole is tried as one blend per chain of edges
+  that meet at a vertex (shared tree import; the Inventor and Solid Edge corpora lose nothing).
+
+The rebuild check is unchanged. History 333 -> 358 of 1352, none lost (bearings 4 by kept edges; up-to-next cuts,
+start faces, choosers, pattern senses and chain blends the rest).

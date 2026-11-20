@@ -1547,3 +1547,19 @@ about 20, edges named but not on the model about 20).
     profile. The GT3 pulleys are 8e-5 off after the up-to-next fix: their set screw holes' chamfer.
   - Spacers: a boss to the next face that does not build falls back to 500 mm, and their linear patterns mix
     bosses and cuts.
+
+**Coverage after the round** (rebuild check unchanged):
+
+| corpus | round sw13 | round sw14 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 293 / 1253 | **318** / 1253 |
+| all | 333 / 1352 | **358** / 1352 |
+
+Gained (sw-more, 25): the four OpenBuilds bearings (kept edges), Linkage Arm and Linkage Arm (Keyhole) (edge records,
+chain blends), Back-Plate-Mount, Bottom-Plate (two), Mount_split_end, Back_sup_RT_upp (blends), 5 Hole T Joining Plate,
+Universal L Bracket - Triple, Grip_tip_slider (pattern senses), SlotBase-Back (two; start faces), Anti-Backlash Nut
+Block, Leadscrew Motor Mount, MAIN ARM PART1 (up-to-next cuts), Connecting Plate_TOP, Servo_Microcontroller Enclosure
+Cover (choosers), Switch and LED Mount, ballscrew, body, part6 (by the same fixes). None lost.

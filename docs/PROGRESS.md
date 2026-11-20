@@ -11,7 +11,7 @@ Phase 3 has started (see Next).
 ## Done
 - Importer status (2026-11-14), feature history that rebuilds under the unchanged strict check:
   Fusion 277 of 318 (paused after rounds 33-34 gained none; docs/formats/fusion-corpus-tally.md);
-  SolidWorks 333 of 1352 (rounds sw1-sw13 and xt1, ADR 0043; was 85; sw13 reads converted sketch segments, revolve axes by the body's box centre, open revolve profiles and drafted extrudes; xt1's
+  SolidWorks 358 of 1352 (rounds sw1-sw14 and xt1, ADR 0043; was 85; sw14 adds up-to-next cuts, extrudes started from a face, contour choosers by segments, linear pattern senses of cuts, blend edges the stored body kept and chain-by-chain blends; sw13 reads converted sketch segments, revolve axes by the body's box centre, open revolve profiles and drafted extrudes; xt1's
   Parasolid blends gain Lock Collar, whose stored body measured 3.5e-5 off); Inventor 686 of 1639 on the new corpus
   and 28 of 47 on the old (rounds ipt1-ipt9 and op1, ADR 0046 amendments 8-10, 15-19, 25; was 263 and 25; ipt4 reads coils,
   embosses, combines, splits and unfolded sheet-metal faces; ipt5 rebuilds derived parts and iPart members
