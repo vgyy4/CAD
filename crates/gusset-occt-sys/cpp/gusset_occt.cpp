@@ -3687,8 +3687,9 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
       }
     }
   }
-  // A face's trace from `p` to `q` across a row: points of the chord projected onto the surface.
-  auto trace = [&](const Handle(Geom_Surface)& s, const gp_Pnt& p, const gp_Pnt& q) -> TopoDS_Edge {
+  // A face's trace from `p` to `q` across a row (plane `pl`): points of the chord moved onto the
+  // surface within the plane.
+  auto trace = [&](const Handle(Geom_Surface)& s, const gp_Pnt& p, const gp_Pnt& q, const gp_Pln& pl) -> TopoDS_Edge {
     if (p.Distance(q) < 1e-9) throw Standard_Failure("could not build the corner");
     const int np = 9;
     occ::handle<NCollection_HArray1<gp_Pnt>> pts = new NCollection_HArray1<gp_Pnt>(1, np);
@@ -3696,8 +3697,14 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
       const double w = double(k) / (np - 1);
       gp_Pnt z = gp_Pnt(p.XYZ() * (1 - w) + q.XYZ() * w);
       if (k > 0 && k < np - 1) {
-        GeomAPI_ProjectPointOnSurf pr(z, s);
-        if (pr.IsDone() && pr.NbPoints() > 0) z = pr.NearestPoint();
+        for (int it = 0; it < 50; ++it) {
+          GeomAPI_ProjectPointOnSurf pr(z, s);
+          if (!pr.IsDone() || pr.NbPoints() < 1) break;
+          z = pr.NearestPoint();
+          const double dz = gp_Vec(pl.Location(), z).Dot(gp_Vec(pl.Axis().Direction()));
+          z.Translate(-gp_Vec(pl.Axis().Direction()) * dz);
+          if (std::fabs(dz) < 1e-13 * std::max(1.0, r)) break;
+        }
       } else {
         z = k == 0 ? p : q;
       }
@@ -3724,10 +3731,11 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
       if (!arc.IsDone()) throw Standard_Failure("could not build the corner");
       const TopoDS_Edge ae = BRepBuilderAPI_MakeEdge(arc.Value()).Edge();
       if (first_arc.IsNull()) first_arc = ae;
+      const gp_Pln row_plane(w.x, gp_Dir(gp_Vec(w.x, w.t).Crossed(gp_Vec(w.x, w.c))));
       BRepBuilderAPI_MakeWire ew;
       ew.Add(ae);
-      ew.Add(trace(sb, w.c, w.e));
-      ew.Add(trace(sa, w.e, w.t));
+      ew.Add(trace(sb, w.c, w.e, row_plane));
+      ew.Add(trace(sa, w.e, w.t, row_plane));
       if (!ew.IsDone()) throw Standard_Failure("could not build the corner");
       exact_loft.AddWire(ew.Wire());
       gp_Dir na, nb, nae, nbe;
