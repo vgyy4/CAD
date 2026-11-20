@@ -2246,7 +2246,7 @@ fn axis_in_plane(o: V3, dir: V3, jp: &JsonPlane) -> Option<((f64, f64), (f64, f6
 /// about its origin added, and a point inside the frame and outside everything the sketch
 /// draws (sketch mm): the region a flipped-side cut removes. `None` when the sketch reaches
 /// the frame.
-fn framed_sketch(feats: &[Value], sk: &str, name: &str) -> Option<(Value, [f64; 2])> {
+fn framed_sketch(feats: &[Value], sk: &str, name: &str) -> Option<(Value, Vec<[f64; 2]>)> {
     let src = feats
         .iter()
         .rev()
@@ -2270,7 +2270,47 @@ fn framed_sketch(feats: &[Value], sk: &str, name: &str) -> Option<(Value, [f64; 
             "start": format!("frame_p{k}"), "end": format!("frame_p{}", (k + 1) % 4)}));
     }
     out.as_object_mut()?.insert("name".into(), json!(name));
-    Some((out, [half - 1.0, half - 1.0]))
+    Some((out, [[half - 1.0, half - 1.0]].into_iter().chain(holes(src)).collect()))
+}
+
+/// The centres of a sketch's circles that are holes in its outline (sketch mm): circles drawn
+/// (not construction) whose centre lies inside the box of the outline's line and arc ends, with
+/// no smaller circle about the same centre (7 Hole Cross Joining Plate's seven holes).
+fn holes(sk: &Value) -> Vec<[f64; 2]> {
+    let pts: HashMap<&str, (f64, f64)> = sketch_points(sk).unwrap_or_default();
+    let curves = sk.get("curves").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+    let drawn = |c: &&Value| c.get("construction").is_none() && c.get("centerline").is_none();
+    let kind = |c: &Value| c.get("type").and_then(Value::as_str).unwrap_or_default().to_string();
+    let end = |c: &Value, k: &str| c.get(k).and_then(Value::as_str).and_then(|id| pts.get(id).copied());
+    let ends: Vec<(f64, f64)> = curves
+        .iter()
+        .filter(drawn)
+        .filter(|c| matches!(kind(c).as_str(), "line" | "arc"))
+        .flat_map(|c| [end(c, "start"), end(c, "end")])
+        .flatten()
+        .collect();
+    if ends.is_empty() {
+        return Vec::new();
+    }
+    let lo = ends.iter().fold((f64::INFINITY, f64::INFINITY), |m, p| (m.0.min(p.0), m.1.min(p.1)));
+    let hi = ends.iter().fold((f64::NEG_INFINITY, f64::NEG_INFINITY), |m, p| (m.0.max(p.0), m.1.max(p.1)));
+    let circles: Vec<((f64, f64), f64)> = curves
+        .iter()
+        .filter(drawn)
+        .filter(|c| kind(c) == "circle")
+        .filter_map(|c| Some((end(c, "center")?, c.get("radius").and_then(Value::as_f64)?)))
+        .collect();
+    circles
+        .iter()
+        .filter(|((x, y), r)| {
+            *x > lo.0
+                && *x < hi.0
+                && *y > lo.1
+                && *y < hi.1
+                && !circles.iter().any(|((u, v), q)| (u - x).abs() < 1e-9 && (v - y).abs() < 1e-9 && q < r)
+        })
+        .map(|((x, y), _)| [*x, *y])
+        .collect()
 }
 
 /// The point a feature names by a point reference (`moEndPointRef_w`, an end of an edge, or
@@ -4491,9 +4531,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     }
                     _ => None,
                 };
-            if let Some((sketch, pick)) = framed {
+            if let Some((sketch, picks)) = framed {
                 js.insert("sketch".into(), sketch.get("name").cloned().unwrap_or(Value::Null));
-                js.insert("profiles".into(), json!([{"point": pick}]));
+                js.insert("profiles".into(), json!(picks.iter().map(|p| json!({"point": p})).collect::<Vec<_>>()));
                 js.insert("operation".into(), json!("cut"));
                 feats.push(sketch);
                 up_to = None;
@@ -7069,11 +7109,23 @@ mod pattern_tests {
         let sk = json!({"type": "sketch", "name": "Sketch5", "plane": {"origin": [0.0, 0.0, 0.0]},
             "points": [{"id": "p0", "x": 0.0, "y": 0.0}],
             "curves": [{"id": "c0", "type": "circle", "center": "p0", "radius": 10.0}]});
-        let (out, pick) = framed_sketch(std::slice::from_ref(&sk), "Sketch5", "Cut-Extrude2-flip").unwrap();
+        let (out, picks) = framed_sketch(std::slice::from_ref(&sk), "Sketch5", "Cut-Extrude2-flip").unwrap();
         assert_eq!(out["name"], json!("Cut-Extrude2-flip"));
         assert_eq!(out["curves"].as_array().unwrap().len(), 5);
         assert_eq!(out["points"].as_array().unwrap().len(), 5);
+        let [pick] = picks.as_slice() else { panic!("{picks:?}") };
         assert!(pick[0] > BIG && pick[1] > BIG && pick[0] < 2.0 * BIG);
+        // A plate with a hole: the hole is cut too.
+        let plate = json!({"type": "sketch", "name": "S", "points": [
+                {"id": "p0", "x": -5.0, "y": -5.0}, {"id": "p1", "x": 5.0, "y": -5.0},
+                {"id": "p2", "x": 5.0, "y": 5.0}, {"id": "p3", "x": -5.0, "y": 5.0}, {"id": "p4", "x": 1.0, "y": 0.0}],
+            "curves": [{"id": "c0", "type": "line", "start": "p0", "end": "p1"},
+                {"id": "c1", "type": "line", "start": "p1", "end": "p2"},
+                {"id": "c2", "type": "line", "start": "p2", "end": "p3"},
+                {"id": "c3", "type": "line", "start": "p3", "end": "p0"},
+                {"id": "c4", "type": "circle", "center": "p4", "radius": 1.0}]});
+        let (_, picks) = framed_sketch(&[plate], "S", "x").unwrap();
+        assert_eq!(picks.get(1), Some(&[1.0, 0.0]));
         // A sketch reaching out to the frame is not framed.
         let mut far = sk;
         far["points"][0]["x"] = json!(2.0 * BIG);
