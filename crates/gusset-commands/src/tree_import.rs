@@ -62,6 +62,12 @@ pub struct Tree {
     /// read from the JSON.
     #[serde(skip)]
     pub keep_failed: bool,
+    /// The edges of the source's own result (`edge_key`, length; mm): a blend's edge that is
+    /// still one of them was left as it was where the source rebuilt (round sw14: the ball
+    /// bearings' Chamfer1 lists eight edges, the part has four of the chamfers). Never read
+    /// from the JSON.
+    #[serde(skip)]
+    pub kept_edges: Vec<([f64; 3], f64)>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1006,6 +1012,8 @@ struct Gen {
     /// Per source fillet or chamfer: the number of each edge in its selection, the blend made
     /// on it and the edge's name then (later edges name its faces so: `named`).
     blends: HashMap<String, Vec<(u32, String, String)>>,
+    /// The source result's edges (`Tree::kept_edges`).
+    kept_edges: Vec<(V3, f64)>,
     /// One evaluator for the whole import: its cache keeps every feature built so far, so
     /// each trial build only builds what the new feature adds.
     evaluator: gusset_eval::Evaluator,
@@ -1124,6 +1132,7 @@ pub fn apply_with(
         started: std::time::Instant::now(),
         moved: Vec::new(),
         blends: HashMap::new(),
+        kept_edges: tree.kept_edges.clone(),
         evaluator: std::mem::replace(evaluator, gusset_eval::Evaluator::new(s.kernel().clone())),
     };
     // Parameters go after the header lines; each is evaluated with those before it, so one
@@ -2681,6 +2690,26 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
     if by_body.is_empty() {
         return Err("no edges".into());
     }
+    // Edges the source's own result still has were not blended there; unless that is all of them.
+    if !g.kept_edges.is_empty() {
+        let kept = |body: &str, n: &str| {
+            let Some(b) = ev.bodies.iter().find(|b| b.feature == body) else { return false };
+            let Some(e) = b.names.edges.iter().position(|x| x.to_string() == n).and_then(|i| b.topology.edges.get(i))
+            else {
+                return false;
+            };
+            let at = edge_key(e);
+            let tol = 1e-6 * (1.0 + norm(at));
+            g.kept_edges.iter().any(|(m, len)| norm(sub(*m, at)) <= tol && (len - e.length).abs() <= tol)
+        };
+        let left: usize = by_body.iter().map(|(b, ns)| ns.iter().filter(|n| !kept(b, n)).count()).sum();
+        if left > 0 {
+            for (b, ns) in &mut by_body {
+                ns.retain(|n| !kept(b, n));
+            }
+            by_body.retain(|_, ns| !ns.is_empty());
+        }
+    }
     // Edges on several bodies (Fusion blends them in one feature): one blend per body, each
     // with the same size.
     let (kw, key) = if fillet { ("fillet", "radius") } else { ("chamfer", "distance") };
@@ -2746,6 +2775,15 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
     }
     g.made.extend(made);
     Ok(())
+}
+
+/// Where an edge is, to find it again in another build of the same shape: its midpoint, or
+/// the centre of a closed circle (whose midpoint depends on where its seam was put).
+pub(crate) fn edge_key(e: &gusset_kernel::EdgeInfo) -> V3 {
+    match &e.circle {
+        Some(c) if e.vertices.len() == 1 => c.center,
+        _ => e.midpoint,
+    }
 }
 
 /// The edges `names` of `body` in `ev` as chains of edges that meet at a vertex, in the order

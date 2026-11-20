@@ -1376,6 +1376,7 @@ fn solidworks_history(
     let text = serde_json::to_vec(&tree).map_err(|e| e.to_string())?;
     let mut tree = crate::tree_import::parse(&text).map_err(|e| e.message)?;
     tree.stored_bodies = stored;
+    tree.kept_edges = stored_edges(bodies, kernel);
     let note = rebuild_check(&mut tree, bodies, kernel, file_name, "the part's").inspect_err(|_| {
         // The tree as read, for an import of the history all the same.
         *attempt = Some(tree.clone());
@@ -1385,6 +1386,19 @@ fn solidworks_history(
         (a, b) => a.or(b),
     };
     Ok((tree, note))
+}
+
+/// The edges of a part's stored bodies (where, length; mm), for its blends (`Tree::kept_edges`);
+/// none where a body does not read.
+fn stored_edges(bodies: &[PreparedBody], kernel: &Arc<dyn gusset_kernel::Kernel>) -> Vec<([f64; 3], f64)> {
+    let mut out = Vec::new();
+    for b in bodies {
+        let Ok(topo) = kernel.read_native(&b.blob).and_then(|shape| kernel.topology(&shape)) else {
+            return Vec::new();
+        };
+        out.extend(topo.edges.iter().map(|e| (crate::tree_import::edge_key(e), e.length)));
+    }
+    out
 }
 
 /// The native bodies of a part's `StockBodies` stream (the source body of a mirrored stock
