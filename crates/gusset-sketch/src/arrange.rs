@@ -134,7 +134,9 @@ fn circle_circle(c1: V2, r1: f64, c2: V2, r2: f64, tol: f64) -> Option<Vec<V2>> 
     let u = scale(sub(c2, c1), 1.0 / d);
     let m = add(c1, scale(u, a));
     let h2 = r1 * r1 - a * a;
-    if h2 <= tol * tol {
+    // Tangent: the circles part or overlap by no more than the tolerance where they touch
+    // (the two crossings of a near tangency lie far apart along it, sqrt(2 r gap)).
+    if h2 <= tol * tol || (d - (r1 + r2)).abs() <= tol || (d - (r1 - r2).abs()).abs() <= tol {
         return Some(vec![m]);
     }
     let h = h2.sqrt();

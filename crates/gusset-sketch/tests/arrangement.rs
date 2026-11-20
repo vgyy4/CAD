@@ -357,3 +357,18 @@ fn a_line_tilted_within_the_tolerance_still_overlaps() {
     assert_eq!(got.len(), 2, "{got:?}");
     assert!((got[0] - 48.3653).abs() < 1e-3 && (got[1] - 170.2477).abs() < 1e-3, "{got:?}");
 }
+
+/// An arc that blends into two circles, tangent inside each where it ends (an Inventor
+/// plate's outline): its ends must meet the circles, not two crossings 1e-4 either side.
+#[test]
+fn an_arc_tangent_to_circles_at_its_ends_meets_them() {
+    let mut s = Sketch::new();
+    s.add_circle([18.721726754, -4.35], 2.0).unwrap();
+    s.add_circle([-10.0, 2.7], 1.35).unwrap();
+    s.add_arc([-0.920765451, -25.0], [20.100147259, -2.900877193], [-10.42047913, 3.982847341]).unwrap();
+    s.add_line([-10.0, 1.35], [18.721726754, -6.35]).unwrap();
+    let arr = arrange(&s, TOL).unwrap();
+    assert!(arr.open_ends.is_empty(), "{:?}", arr.open_ends);
+    let big = areas(&arr).last().copied().unwrap_or_default();
+    assert!(big > 100.0, "{:?}", areas(&arr));
+}
