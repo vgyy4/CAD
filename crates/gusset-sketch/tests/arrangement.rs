@@ -372,3 +372,46 @@ fn an_arc_tangent_to_circles_at_its_ends_meets_them() {
     let big = areas(&arr).last().copied().unwrap_or_default();
     assert!(big > 100.0, "{:?}", areas(&arr));
 }
+
+/// Two slots, each a circle with two lines leaving it tangent (an Inventor gearbox port; the
+/// file's points leave the lines 1e-9 rad off the circles' directions, either way): both
+/// slots and both circles are regions, mirror images of each other.
+#[test]
+fn lines_that_leave_a_circle_tangent_split_it_the_same_way_either_side() {
+    let mut s = Sketch::new();
+    let mut p = |x: f64, y: f64| s.add_point([x, y]).unwrap();
+    let p2 = p(0.0, 0.0);
+    let p3 = p(0.0, 15.0);
+    let p4 = p(-4.0, 15.0);
+    let p5 = p(-4.0, 6.34428877);
+    let p6 = p(4.0, 15.0);
+    let p7 = p(4.0, 6.34428877);
+    let p8 = p(0.0, 0.0);
+    let p11 = p(-12.99038106, -7.5);
+    let p12 = p(-10.99038106, -10.96410162);
+    let p13 = p(-14.99038106, -4.03589839);
+    let p14 = p(-7.49431524, 0.29195723);
+    let p15 = p(-3.49431524, -6.636246);
+    let p16 = p(12.99038106, -7.5);
+    let p17 = p(14.99038106, -4.03589839);
+    let p18 = p(10.99038106, -10.96410162);
+    let p19 = p(3.49431524, -6.636246);
+    let p20 = p(7.49431524, 0.29195723);
+    s.add_circle_at(p2, 7.5).unwrap();
+    s.add_circle_at(p3, 4.0).unwrap();
+    s.add_line_between(p2, p3).unwrap();
+    s.add_line_between(p4, p5).unwrap();
+    s.add_line_between(p6, p7).unwrap();
+    s.add_circle_at(p8, 8.5).unwrap();
+    s.add_circle_at(p11, 4.0).unwrap();
+    s.add_line_between(p13, p14).unwrap();
+    s.add_line_between(p12, p15).unwrap();
+    s.add_circle_at(p16, 4.0).unwrap();
+    s.add_line_between(p18, p19).unwrap();
+    s.add_line_between(p17, p20).unwrap();
+    let a = arrange(&s, TOL).unwrap();
+    let got = areas(&a);
+    let n = |w: f64| got.iter().filter(|g| (**g - w).abs() < 1e-3).count();
+    // The slots between the circle of radius 8.5 and the small circles; the small circles.
+    assert_eq!((n(29.4678), n(50.2655)), (2, 3), "{got:?}");
+}

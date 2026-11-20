@@ -719,6 +719,37 @@ fn tangent(cv: &Cv, verts: &[V2], rev: bool) -> (f64, f64) {
     }
 }
 
+/// Half-edges leaving a vertex within [`SAME_WAY`] of one another (curves that meet tangent,
+/// whose directions a solve leaves 1e-9 apart either way) are ordered by curvature alone, as
+/// exactly equal directions are. `list` is sorted by angle and is a circular order: a run that
+/// wraps round from the largest angle to the smallest is moved to the front first.
+fn same_way_by_curvature(list: &mut Vec<(i64, f64, usize)>) {
+    let full = libm::round(2.0 * PI * 1e9) as i64;
+    let (Some(&(first, ..)), Some(&(last, ..))) = (list.first(), list.last()) else { return };
+    if list.len() > 1 && first + full - last <= SAME_WAY {
+        let k = list.iter().rposition(|e| e.0 < last - SAME_WAY).map_or(0, |i| i + 1);
+        if k > 0 {
+            let tail: Vec<_> = list.drain(k..).map(|(q, c, h)| (q - full, c, h)).collect();
+            list.splice(0..0, tail);
+        }
+    }
+    let mut i = 0;
+    while i < list.len() {
+        let q0 = list.get(i).map_or(0, |e| e.0);
+        let mut j = i + 1;
+        while list.get(j).is_some_and(|e| e.0 - q0 <= SAME_WAY) {
+            j += 1;
+        }
+        if let Some(run) = list.get_mut(i..j) {
+            run.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)));
+        }
+        i = j;
+    }
+}
+
+/// Directions this close (in 1e-9 rad) leave a vertex the same way.
+const SAME_WAY: i64 = 1000;
+
 fn build_graph(edges: &[Cv], active: &[usize], verts: &[V2]) -> Graph {
     let mut out: Vec<Vec<(i64, f64, usize)>> = vec![Vec::new(); verts.len()];
     for (k, &ci) in active.iter().enumerate() {
@@ -738,6 +769,7 @@ fn build_graph(edges: &[Cv], active: &[usize], verts: &[V2]) -> Graph {
     let mut sorted = Vec::with_capacity(out.len());
     for mut list in out {
         list.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
+        same_way_by_curvature(&mut list);
         for (i, &(_, _, h)) in list.iter().enumerate() {
             if let Some(p) = pos.get_mut(h) {
                 *p = i;
