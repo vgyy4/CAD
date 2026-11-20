@@ -125,6 +125,7 @@
 #include <Message_ProgressScope.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <ElSLib.hxx>
+#include <GeomLib_IsPlanarSurface.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeHalfSpace.hxx>
@@ -2811,6 +2812,7 @@ struct Corner {
   // face run on past the far edge's ends (null where it has none).
   TopoDS_Edge far;
   TopoDS_Shape ext_exact, ext_tool, ext_face;
+  bool swept = false;
   // A straight edge: its ends and direction (see `blend_by_corners`).
   bool line = false;
   gp_Pnt end0, end1;
@@ -3466,6 +3468,47 @@ TopAbs_State state_in_face(const TopoDS_Face& f, const gp_Pnt& q) {
   return fc.State();
 }
 
+// The shape with each face whose surface lies in a plane (to 1e-9 of its size) made a face of
+// that plane: a loft through planar traces gives B-spline faces in a plane, which booleans
+// against other faces of the plane intersect slowly and wrongly.
+TopoDS_Shape with_planar_faces(const TopoDS_Shape& s) {
+  Handle(ShapeBuild_ReShape) rs = new ShapeBuild_ReShape();
+  bool any = false;
+  for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
+    const TopoDS_Face f = TopoDS::Face(ex.Current());
+    const Handle(Geom_Surface) g = BRep_Tool::Surface(f);
+    if (g.IsNull() || !Handle(Geom_Plane)::DownCast(g).IsNull()) continue;
+    Bnd_Box bb;
+    BRepBndLib::Add(f, bb);
+    GeomLib_IsPlanarSurface ip(g, 1e-9 * std::max(1.0, std::sqrt(bb.SquareExtent())));
+    if (!ip.IsPlanar()) continue;
+    const gp_Pln pl = ip.Plan();
+    BRepBuilderAPI_MakeFace mf(pl, BRepTools::OuterWire(f), true);
+    if (!mf.IsDone()) continue;
+    TopoDS_Face nf = mf.Face();
+    // The same side out as the old face.
+    gp_Dir n0, n1;
+    BRepGProp_Face gf(f);
+    double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+    gf.Bounds(u0, u1, v0, v1);
+    gp_Pnt pt;
+    gp_Vec nv;
+    gf.Normal(0.5 * (u0 + u1), 0.5 * (v0 + v1), pt, nv);
+    if (nv.Magnitude() < 1e-12) continue;
+    BRepGProp_Face gn(nf);
+    gn.Bounds(u0, u1, v0, v1);
+    gp_Pnt pt2;
+    gp_Vec nv2;
+    gn.Normal(0.5 * (u0 + u1), 0.5 * (v0 + v1), pt2, nv2);
+    if (nv.Dot(nv2) < 0) nf.Reverse();
+    rs->Replace(f, nf);
+    any = true;
+  }
+  if (!any) return s;
+  TopoDS_Shape out = rs->Apply(s);
+  return BRepCheck_Analyzer(out).IsValid() ? out : s;
+}
+
 // The nearest points of a face's surface, its outward normal there: a projector set up once
 // (over the face's parameter box widened on each side) for the many points a swept corner
 // projects; analytic on a plane.
@@ -3793,7 +3836,7 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
     exact_loft.Build();
     tool_loft.Build();
     if (!exact_loft.IsDone() || !tool_loft.IsDone()) return false;
-    ex_solid = exact_loft.Shape();
+    ex_solid = with_planar_faces(exact_loft.Shape());
     tool = tool_loft.Shape();
     if (!BRepCheck_Analyzer(ex_solid).IsValid() || !BRepCheck_Analyzer(tool).IsValid()) return false;
     if (signed_volume(ex_solid) < 0) ex_solid.Reverse();
@@ -3864,6 +3907,7 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
   out.ideal = std::fabs(measured_volume(out.exact, true));
   out.concave = concave;
   out.line = false;
+  out.swept = true;
   if (!closed && (!before.empty() || !after.empty())) {
     std::vector<const Row*> all;
     for (auto it = before.rbegin(); it != before.rend(); ++it) all.push_back(&*it);
@@ -3895,7 +3939,8 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   if (!x.ref.IsNull() && fs[1].IsSame(x.ref)) std::swap(fs[0], fs[1]);
   if (!x.ref.IsNull() && !fs[0].IsSame(x.ref)) return false;
   if (fillet && section_corner(body, fs, x, true, out, e0, e1)) return true;
-  if (fillet && e0 == 0 && e1 == 0 && swept_cliff_corner(body, fs, x, out)) return true;
+  // A swept cliff corner makes its own ends (no run on past the edge, no mitre).
+  if (fillet && swept_cliff_corner(body, fs, x, out)) return true;
   double a = x.a, b = x.b;
   if (fillet || x.mode == 0) b = a;
   else if (x.mode != 1) return false;
@@ -4372,6 +4417,13 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
           e[k] = std::max(e[k], tr[k]->reach);
         }
     if (!corner_of(s->s, anc, es[i], fillet, c, e[0], e[1], turn0, turn1)) return fail("no corner");
+    if (c.swept) {
+      ideal_cave += c.concave ? c.ideal : 0;
+      ideal += c.concave ? 0 : c.ideal;
+      (c.concave ? cave : tools).Append(c.cutter);
+      cs.push_back(c);
+      continue;
+    }
     if (tr[0] || tr[1]) {
       if (c.exact_long.IsNull()) return fail("no corner");
       TopoDS_Shape ex = c.exact_long;
