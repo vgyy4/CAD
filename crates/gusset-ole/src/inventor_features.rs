@@ -1097,8 +1097,22 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                 put(&mut j, "symmetric", json!(true));
             }
             Some(1) => {
-                put(&mut j, "distance", json!(rnd(if rev { -dist } else { dist })));
+                let d1 = if rev { -dist } else { dist };
+                put(&mut j, "distance", json!(rnd(d1)));
                 put(&mut j, "symmetric", json!(false));
+                // Slots 27 to 29: a second direction (`ex_two_dir`): its distance, taper
+                // (radians) and extent (1: a distance), on the other side of the sketch.
+                let second = |k: usize| s.get(k).filter(|&i| r.dc.role(i) == Role::Param).and_then(|i| r.dc.param(i));
+                if ext(s.get(29)) == Some(1)
+                    && let Some((_, d2)) = second(27)
+                    && d2 > 0.0
+                {
+                    put(&mut j, "distance2", json!(rnd(-d1.signum() * d2 * CM)));
+                    let t2 = second(28).map_or(0.0, |p| p.1);
+                    if t2.abs() > 1e-12 {
+                        put(&mut j, "taper2_deg", json!(rnd(t2.to_degrees())));
+                    }
+                }
             }
             // Through all; with slot 7 set, through all both ways (notes AA).
             Some(5) if both => {
