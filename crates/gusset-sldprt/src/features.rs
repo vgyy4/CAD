@@ -296,31 +296,29 @@ fn decl_at(d: &[u8], i: usize) -> Option<(&[u8], usize)> {
     Some((d.get(i + 6..i + 6 + len)?, i + 6 + len))
 }
 
-/// The map index of the first `moUnitComponent_c` declared in `Config-0` (classes and
-/// objects share one counter; the scan follows the prototype's `scan.py`).
-fn unit_component_index(c0: &[u8]) -> Option<usize> {
-    let mut classes: HashSet<usize> = HashSet::new();
+/// The classes `Config-0` declares, by map index, and the index after the stream's last
+/// object (classes and objects share one counter; the scan follows the prototype's `scan.py`).
+/// The feature stream goes on counting from there (round sw15).
+fn config_classes(c0: &[u8]) -> (HashMap<usize, String>, usize) {
+    let mut classes: HashMap<usize, String> = HashMap::new();
     let mut next = 1usize;
     let mut i = 0usize;
     while i + 1 < c0.len() {
         if let Some((name, end)) = decl_at(c0, i) {
-            if name == b"moUnitComponent_c" {
-                return Some(next);
-            }
-            classes.insert(next);
+            classes.insert(next, String::from_utf8_lossy(name).into_owned());
             next += 2;
             i = end;
             continue;
         }
-        let t = usize::from(u16_at(c0, i)?);
-        if t & 0x8000 != 0 && t != 0xffff && classes.contains(&(t & 0x7fff)) {
+        let Some(t) = u16_at(c0, i).map(usize::from) else { break };
+        if t & 0x8000 != 0 && t != 0xffff && classes.contains_key(&(t & 0x7fff)) {
             next += 1;
             i += 2;
             continue;
         }
         i += 1;
     }
-    None
+    (classes, next)
 }
 
 /// The class tag of `moUnitComponent_c` learned from the bytes of a chunk-container stream
@@ -794,6 +792,51 @@ fn config_sketches(c: &[u8]) -> Vec<(usize, usize)> {
     bodies.into_iter().zip(ends).collect()
 }
 
+/// The sketch each of [`config_sketches`]' objects belongs to (round sw15). The objects are
+/// written inside the equations that use the sketches' dimensions, each at the first
+/// reference to one of its dimensions: the owner is the first name after an `@` in the
+/// equation texts before the object (the nearest text first, its names in order) that is one
+/// of `names` and not taken by an earlier object (Pan-Slot Screw M4: `"D1@Sketch2" =
+/// "Head_dia@BodySke"`, then Sketch2's object, then BodySke's).
+fn config_sketch_owners(c: &[u8], bodies: &[(usize, usize)], names: &[&str]) -> Vec<Option<String>> {
+    // The equation texts: `ff fe ff <u8 length> <UTF-16>`, with the names after `@`.
+    let mut texts: Vec<(usize, Vec<String>)> = Vec::new();
+    let mut from = 0usize;
+    while let Some(i) = find(c, &UTF16_MARK, from, c.len()) {
+        from = i + 3;
+        let Some(&len) = c.get(i + 3) else { break };
+        let raw = c.get(i + 4..(i + 4 + 2 * usize::from(len)).min(c.len())).unwrap_or_default();
+        let text = utf16(raw);
+        if !text.contains('@') {
+            continue;
+        }
+        let refs: Vec<String> = text
+            .split('@')
+            .skip(1)
+            .filter_map(|t| t.split('"').next())
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect();
+        texts.push((i, refs));
+    }
+    let mut taken: HashSet<String> = HashSet::new();
+    let mut out = Vec::with_capacity(bodies.len());
+    for &(body, _) in bodies {
+        let owner = texts
+            .iter()
+            .rev()
+            .filter(|(at, _)| *at < body)
+            .flat_map(|(_, refs)| refs.iter())
+            .find(|r| names.contains(&r.as_str()) && !taken.contains(*r))
+            .cloned();
+        if let Some(o) = &owner {
+            taken.insert(o.clone());
+        }
+        out.push(owner);
+    }
+    out
+}
+
 /// Drops node names written inside the header of the node before them (both find the same
 /// block): an attribute in a sketch's header (zsCAD's `Assoc1`), or the `Sketch3<3>` name a
 /// feature that reuses Sketch3 writes in its own header (Connecting Plate_BOTTOM_M3's
@@ -819,8 +862,10 @@ fn drop_nested(nodes: &mut Vec<Node>) {
 }
 
 /// Maps class-reference tags to declared classes by signature (`nodes2.classify`, a guess
-/// the prototype settles this way).
-fn classify(d: &[u8], nodes: &mut [Node]) {
+/// the prototype settles this way). A tag below `outer`'s end names a class `Config-0`
+/// declared (round sw15: Toolbox screws declare `moProfileFeature_c` there, and their sketch
+/// nodes only refer to it), taken as counted where the count has a class at that index.
+fn classify(d: &[u8], nodes: &mut [Node], outer: (&HashMap<usize, String>, usize)) {
     let sig = |n: &Node| d.get(n.post..(n.post + 16).min(d.len())).unwrap_or_default();
     let strip = |s: &str| s.chars().filter(|c| !c.is_ascii_digit()).collect::<String>().trim().to_string();
     let mut tags: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
@@ -832,6 +877,12 @@ fn classify(d: &[u8], nodes: &mut [Node]) {
     let decl: Vec<usize> = (0..nodes.len()).filter(|&i| nodes.get(i).is_some_and(|n| n.cls.is_some())).collect();
     let mut mapping: HashMap<u16, Option<String>> = HashMap::new();
     for (t, xs) in &tags {
+        if usize::from(*t) < outer.1
+            && let Some(c) = outer.0.get(&usize::from(*t))
+        {
+            mapping.insert(*t, Some(c.clone()));
+            continue;
+        }
         let xs: Vec<&Node> = xs.iter().filter_map(|&i| nodes.get(i)).collect();
         let Some(first) = xs.iter().map(|x| x.start).min() else { continue };
         let mut best: Option<((usize, usize), &str)> = None;
@@ -3800,11 +3851,18 @@ struct Corners<'a> {
 }
 
 pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Result<Value, String> {
-    let uc = if chunk { unit_component_tag(rf) } else { unit_component_index(c0) };
+    // Chunk-container files number their classes apart from `Config-0`, mostly: their count is
+    // used where it puts `moUnitComponent_c` where the feature stream's own tags do.
+    let (mut outer, mut outer_end) = config_classes(c0);
+    let counted = outer.iter().filter(|(_, n)| *n == "moUnitComponent_c").map(|(&k, _)| k).min();
+    let uc = if chunk { unit_component_tag(rf) } else { counted };
+    if chunk && (uc.is_none() || uc != counted) {
+        (outer, outer_end) = (HashMap::new(), 0);
+    }
     let nt = node_tag(rf).ok_or("the feature stream has no node names")?;
     let mut nodes = feature_nodes(rf, nt)?;
     mark_suppressed(rf, &mut nodes);
-    classify(rf, &mut nodes);
+    classify(rf, &mut nodes, (&outer, outer_end));
     drop_nested(&mut nodes);
     let mut starts: Vec<usize> = nodes.iter().map(|n| n.start).collect();
     starts.push(rf.len());
@@ -3881,7 +3939,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         let e = nodes.get(j).map_or(rf.len(), |m| m.start);
         if ENT_HDRS.iter().any(|p| find(rf, p, n.post.min(e), e).is_some()) { e } else { b }
     };
-    let empty_sketches = nodes
+    let empty: Vec<&str> = nodes
         .iter()
         .enumerate()
         .filter(|&(ni, n)| {
@@ -3891,9 +3949,19 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 && a < b
                 && ENT_HDRS.iter().all(|p| find(rf, p, n.post.min(b), b).is_none())
         })
-        .count();
+        .map(|(_, n)| n.name.as_str())
+        .collect();
     let in_config = config_sketches(c0);
-    let mut from_config = (empty_sketches > 0 && in_config.len() == empty_sketches).then(|| in_config.into_iter());
+    // By the equations naming them where every empty sketch has its object, else in order
+    // when there are as many objects as empty sketches.
+    let all_sketches: Vec<&str> =
+        nodes.iter().filter(|n| n.cls.as_deref() == Some("moProfileFeature_c")).map(|n| n.name.as_str()).collect();
+    let owners = config_sketch_owners(c0, &in_config, &all_sketches);
+    let by_owner: HashMap<String, (usize, usize)> =
+        owners.into_iter().zip(in_config.iter().copied()).filter_map(|(o, s)| Some((o?, s))).collect();
+    let config_by_name = (!empty.is_empty() && empty.iter().all(|n| by_owner.contains_key(*n))).then_some(by_owner);
+    let mut from_config = (config_by_name.is_none() && !empty.is_empty() && in_config.len() == empty.len())
+        .then(|| in_config.into_iter());
     // The archive index of each node (patterns name their seeds by it), read when needed.
     let mut node_index: Option<HashMap<u32, usize>> = None;
     // Mirror id -> its plane (origin mm, unit normal), for edges on the mirrored copy.
@@ -3967,9 +4035,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         if cls.as_deref() == Some("moProfileFeature_c") {
             let eb = sketch_end(ni, n);
             let h = ENT_HDRS.iter().filter_map(|p| find(rf, p, n.post, eb)).min().unwrap_or(eb);
-            let geo = match (h == eb, from_config.as_mut()) {
+            let geo = match (h == eb, from_config.as_mut(), config_by_name.as_ref()) {
                 // A sketch whose entities the configuration stream keeps.
-                (true, Some(it)) => it.next().and_then(|(body, end)| parse_sketch(c0, body, end)),
+                (true, _, Some(m)) => m.get(&n.name).and_then(|&(body, end)| parse_sketch(c0, body, end)),
+                (true, Some(it), None) => it.next().and_then(|(body, end)| parse_sketch(c0, body, end)),
                 _ => h.checked_sub(14).and_then(|body| parse_sketch(rf, body, eb)),
             };
             if n.suppressed {
