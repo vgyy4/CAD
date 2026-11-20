@@ -864,7 +864,8 @@ fn drop_nested(nodes: &mut Vec<Node>) {
 /// Maps class-reference tags to declared classes by signature (`nodes2.classify`, a guess
 /// the prototype settles this way). A tag below `outer`'s end names a class `Config-0`
 /// declared (round sw15: Toolbox screws declare `moProfileFeature_c` there, and their sketch
-/// nodes only refer to it), taken as counted where the count has a class at that index.
+/// nodes only refer to it), taken as counted where the count has the sketch class at that
+/// index.
 fn classify(d: &[u8], nodes: &mut [Node], outer: (&HashMap<usize, String>, usize)) {
     let sig = |n: &Node| d.get(n.post..(n.post + 16).min(d.len())).unwrap_or_default();
     let strip = |s: &str| s.chars().filter(|c| !c.is_ascii_digit()).collect::<String>().trim().to_string();
@@ -877,8 +878,10 @@ fn classify(d: &[u8], nodes: &mut [Node], outer: (&HashMap<usize, String>, usize
     let decl: Vec<usize> = (0..nodes.len()).filter(|&i| nodes.get(i).is_some_and(|n| n.cls.is_some())).collect();
     let mut mapping: HashMap<u16, Option<String>> = HashMap::new();
     for (t, xs) in &tags {
+        // Only for sketches: a count that drifts by an object named a folder note as a colour
+        // table (080-1277-000_4_GREY's Notes1).
         if usize::from(*t) < outer.1
-            && let Some(c) = outer.0.get(&usize::from(*t))
+            && let Some(c) = outer.0.get(&usize::from(*t)).filter(|c| *c == "moProfileFeature_c")
         {
             mapping.insert(*t, Some(c.clone()));
             continue;
