@@ -2151,17 +2151,101 @@ fn shell(r: &Reader, st: &mut State, f: &Feature, name: &str, later: &[i64]) -> 
         let b = r.result().ok_or("the result body is not readable")?;
         let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
         let open = b.shell_openings(fid, later);
+        let mut pts: Vec<V3> = open.iter().map(|(p, _)| [p[0] * CM, p[1] * CM, p[2] * CM]).collect();
+        // More or fewer rims than open faces: the faces the shell names give the points.
         if open.len() != n {
-            return Err(format!("{} of its {n} open faces found in the result body", open.len()));
+            let why = || format!("{} of its {n} open faces found in the result body", open.len());
+            pts = named_openings(r, st, s.need(1)?, &why)?;
+            if pts.len() != n {
+                return Err(why());
+            }
         }
-        let faces: Vec<Value> = open
-            .iter()
-            .map(|(p, _)| json!({"point": [rnd_to(p[0] * CM, 1e6), rnd_to(p[1] * CM, 1e6), rnd_to(p[2] * CM, 1e6)]}))
-            .collect();
+        let faces: Vec<Value> =
+            pts.iter().map(|p| json!({"point": [rnd_to(p[0], 1e6), rnd_to(p[1], 1e6), rnd_to(p[2], 1e6)]})).collect();
         put(&mut j, "faces", json!(faces));
     }
     st.out.push(j);
     Ok(())
+}
+
+/// A face an extrude made, from its name (see [`face_name`]): a point in its middle and the
+/// unit normal of its plane (mm). A start or end cap at the extrude's profile pick point moved
+/// to the cap, a side face at the middle of the sketch line it was swept from (the name's curve
+/// number counts the sketch's entities from 1), half way along the extrude.
+fn named_face(r: &Reader, st: &State, (fid, a, b): (i64, i64, i64)) -> Result<(V3, V3), String> {
+    let (&frec, fname) = st
+        .names
+        .iter()
+        .find(|(k, _)| r.dc.seq(**k).map(i64::from) == Some(fid))
+        .ok_or("the feature that made it is not found")?;
+    let ex = st
+        .out
+        .iter()
+        .find(|o| {
+            o.get("type").and_then(Value::as_str) == Some("extrude")
+                && o.get("name").and_then(Value::as_str) == Some(fname)
+        })
+        .ok_or_else(|| format!("{} is not an extrude", fname))?;
+    if ex.get("symmetric").and_then(Value::as_bool) == Some(true) || ex.get("distance2").is_some() {
+        return Err(format!("{} runs both ways", fname));
+    }
+    let d = ex.get("distance").and_then(Value::as_f64).ok_or_else(|| format!("{} has no distance", fname))?;
+    let ps = r
+        .slots(&Feature { rec: frec, name: None, typ: None })?
+        .get(1)
+        .and_then(|l| r.profile_sketch(l))
+        .ok_or("the extrude's sketch is not found")?;
+    let sk = r.sketch(ps)?;
+    let (o, x, y) = frame(&sk.m);
+    let nn = unit3(cross(x, y));
+    let w = |q: P2, h: f64| {
+        add3(
+            add3(o, add3([x[0] * q.0, x[1] * q.0, x[2] * q.0], [y[0] * q.1, y[1] * q.1, y[2] * q.1])),
+            [nn[0] * h, nn[1] * h, nn[2] * h],
+        )
+    };
+    match b {
+        4 | 12 => {
+            let q = ex
+                .pointer("/profiles/0/point")
+                .and_then(Value::as_array)
+                .and_then(|pk| Some((pk.first()?.as_f64()?, pk.get(1)?.as_f64()?)))
+                .ok_or("the extrude has no profile point")?;
+            Ok((w(q, if b == 12 { d } else { 0.0 }), nn))
+        }
+        20 => {
+            let entity = usize::try_from(a)
+                .ok()
+                .and_then(|a| r.owned(ps).get(a.checked_sub(1)?).copied())
+                .ok_or("its sketch entity is not found")?;
+            let pts: HashMap<usize, P2> = sk.points.iter().map(|&(i, u, v, _)| (i, (u, v))).collect();
+            let (pa, pb) = sk
+                .curves
+                .iter()
+                .find_map(|c| match *c {
+                    Curve::Line { id, a, b, .. } if id == entity => Some((*pts.get(&a)?, *pts.get(&b)?)),
+                    _ => None,
+                })
+                .ok_or_else(|| format!("its sketch entity is not a line ({:?})", r.dc.role(entity)))?;
+            let dir = sub3(w(pb, 0.0), w(pa, 0.0));
+            Ok((w(((pa.0 + pb.0) / 2.0, (pa.1 + pb.1) / 2.0), d / 2.0), unit3(cross(dir, nn))))
+        }
+        _ => Err(format!("face kind {b} is not read")),
+    }
+}
+
+/// Points (mm) on the faces a shell opens, from the faces' names (see [`named_face`]).
+fn named_openings(r: &Reader, st: &State, list: usize, why: &dyn Fn() -> String) -> Result<Vec<V3>, String> {
+    let (items, _) = r.dc.first_list(list, None).ok_or_else(why)?;
+    let mut out: Vec<V3> = Vec::new();
+    for it in items {
+        let nm = it.and_then(|x| face_name(r, x)).ok_or_else(why)?;
+        let p = named_face(r, st, nm).map_err(|_| why())?.0;
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    Ok(out)
 }
 
 /// The distance from `p` to the nearest segment of the polylines.
@@ -3033,6 +3117,29 @@ fn fold(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
                        "bend_radius": rnd(radius), "k_factor": K_FACTOR, "position": position,
                        "keep_point": arr(keep)}));
     Ok(())
+}
+
+/// The name of a face a feature picked (a `509fb5cc` record): the naming record (`03aa812c`) that
+/// refers to it names an entry of a naming table (`cce92042`, by index), whose `0645c2a5`
+/// record holds the id of the feature that made the face and the two numbers its result-body
+/// attributes carry (`NMx_*` ints 5 and 7: the profile curve, and 4 start cap, 12 end cap, 20
+/// side). `None` when the chain is not there.
+fn face_name(r: &Reader, x: usize) -> Option<(i64, i64, i64)> {
+    const G_NAMING: u32 = 0x03aa_812c;
+    const G_TABLE: u32 = 0xcce9_2042;
+    const G_FACE_NAME: u32 = 0x0645_c2a5;
+    let nm = r.back().get(x)?.iter().copied().find(|&b| r.dc.class(b) == G_NAMING)?;
+    let (off, table) = r.dc.refs(nm).into_iter().find(|&(_, y)| r.dc.class(y) == G_TABLE)?;
+    let idx = u32_at(r.dc.r(nm), off + 4)?;
+    let (_, y) = r.dc.refs(table).into_iter().find(|&(o, _)| o >= 4 && u32_at(r.dc.r(table), o - 4) == Some(idx))?;
+    if r.dc.class(y) != G_FACE_NAME {
+        return None;
+    }
+    let rec = r.dc.r(y);
+    let m = rec.windows(4).position(|w| w == [0xff, 0xff, 0xff, 0xff])?;
+    let fid = u32_at(rec, m.checked_sub(4)?)?;
+    let (a, b) = (u32_at(rec, m + 12)?, u32_at(rec, m + 16)?);
+    Some((i64::from(fid), i64::from(a), i64::from(b)))
 }
 
 fn unsupported(name: &str, what: &str, reason: Option<String>) -> Value {
