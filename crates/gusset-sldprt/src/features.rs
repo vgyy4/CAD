@@ -2230,6 +2230,37 @@ fn axis_in_plane(o: V3, dir: V3, jp: &JsonPlane) -> Option<((f64, f64), (f64, f6
     Some(((r(u), r(v)), (r(u + 10.0 * du), r(v + 10.0 * dv))))
 }
 
+/// A copy of the sketch `sk` (tree JSON) named `name`, with a square frame of side `4 * BIG`
+/// about its origin added, and a point inside the frame and outside everything the sketch
+/// draws (sketch mm): the region a flipped-side cut removes. `None` when the sketch reaches
+/// the frame.
+fn framed_sketch(feats: &[Value], sk: &str, name: &str) -> Option<(Value, [f64; 2])> {
+    let src = feats
+        .iter()
+        .rev()
+        .find(|f| f.get("type") == Some(&json!("sketch")) && f.get("name").and_then(Value::as_str) == Some(sk))?;
+    let mut out = src.clone();
+    let half = 2.0 * BIG;
+    let points = out.get_mut("points")?.as_array_mut()?;
+    if points.iter().any(|p| {
+        let c = |k: &str| p.get(k).and_then(Value::as_f64).unwrap_or(0.0).abs();
+        c("x") > BIG || c("y") > BIG
+    }) {
+        return None;
+    }
+    let corners = [(-half, -half), (half, -half), (half, half), (-half, half)];
+    for (k, (x, y)) in corners.iter().enumerate() {
+        points.push(json!({"id": format!("frame_p{k}"), "x": x, "y": y}));
+    }
+    let curves = out.get_mut("curves")?.as_array_mut()?;
+    for k in 0..4 {
+        curves.push(json!({"id": format!("frame_c{k}"), "type": "line",
+            "start": format!("frame_p{k}"), "end": format!("frame_p{}", (k + 1) % 4)}));
+    }
+    out.as_object_mut()?.insert("name".into(), json!(name));
+    Some((out, [half - 1.0, half - 1.0]))
+}
+
 /// The point a feature names by a point reference (`moEndPointRef_w`, an end of an edge, or
 /// `moPointRef_w`): `c7 cf ff ff c7 cf ff ff 00 00 00 00`, a `u32` version word, then the point
 /// in model coordinates (m). Words 9000 and 11000 (r3 iso, V-Slot Rail_PIVOT) put eight zero
@@ -4438,7 +4469,23 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             };
             js.insert("target".into(), target);
             js.insert("sw_end_kind".into(), json!(end));
-            if flip && !through_all {
+            // A blind cut of the flipped side (round sw15) removes the slab its depth spans
+            // except what the profile sweeps: a cut of the region between the profile and a
+            // frame far around it, drawn on a copy of the sketch (Dremel Tip's Cut-Extrude2).
+            let framed =
+                match (flip && !through_all && typ == Some(0), distance, js.get("profiles"), last_sketch.as_ref()) {
+                    (true, Some(d), Some(Value::String(all)), Some(sk)) if all == "all" && d.abs() > 1e-9 => {
+                        framed_sketch(&feats, sk, &format!("{}-flip", n.name))
+                    }
+                    _ => None,
+                };
+            if let Some((sketch, pick)) = framed {
+                js.insert("sketch".into(), sketch.get("name").cloned().unwrap_or(Value::Null));
+                js.insert("profiles".into(), json!([{"point": pick}]));
+                js.insert("operation".into(), json!("cut"));
+                feats.push(sketch);
+                up_to = None;
+            } else if flip && !through_all {
                 distance = None;
                 up_to = None;
             }
@@ -7003,6 +7050,22 @@ mod pattern_tests {
         // The sketch's own y axis stays as it is; a line off the plane is not taken.
         assert_eq!(axis_in_plane([0.0, 5.0, 0.0], [0.0, 1.0, 0.0], &jp), None);
         assert_eq!(axis_in_plane([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], &jp), None);
+    }
+
+    #[test]
+    fn a_flipped_side_cut_cuts_the_frame_around_its_profile() {
+        let sk = json!({"type": "sketch", "name": "Sketch5", "plane": {"origin": [0.0, 0.0, 0.0]},
+            "points": [{"id": "p0", "x": 0.0, "y": 0.0}],
+            "curves": [{"id": "c0", "type": "circle", "center": "p0", "radius": 10.0}]});
+        let (out, pick) = framed_sketch(std::slice::from_ref(&sk), "Sketch5", "Cut-Extrude2-flip").unwrap();
+        assert_eq!(out["name"], json!("Cut-Extrude2-flip"));
+        assert_eq!(out["curves"].as_array().unwrap().len(), 5);
+        assert_eq!(out["points"].as_array().unwrap().len(), 5);
+        assert!(pick[0] > BIG && pick[1] > BIG && pick[0] < 2.0 * BIG);
+        // A sketch reaching out to the frame is not framed.
+        let mut far = sk;
+        far["points"][0]["x"] = json!(2.0 * BIG);
+        assert!(framed_sketch(&[far], "Sketch5", "x").is_none());
     }
 
     #[test]
