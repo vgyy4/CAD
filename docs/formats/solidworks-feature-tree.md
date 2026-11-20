@@ -1502,3 +1502,48 @@ Gained (sw-more, 18): converted segments (Segment, Grip_tip, MG90 SERVO, 126p-th
 box centre (126p-door-stop-roller, 126p-rosette, 8020 228101 and 228104, DC Motor, Linear Bearing Inner, 5 Hole 90
 Degree Joining Plate, Link 5), open revolve profiles (Tommy Bar), drafted extrudes (V-Slot Wheel, V-Slot
 Wheel_21mm_F624ZZ, Retainer, Link 3), Expansion Block. None lost.
+
+## L25. Round 19 (sw14: blend edges, up-to-next cuts, start faces, contour choosers, pattern directions)
+Measured from round sw13's logs (333 of 1352): of the 1019 refusals, 550 are STEP-style imports; the largest of the
+rest were volume mismatches (80) and fillets and chamfers (about 70: the kernel's fillet about 30, edges not found
+about 20, edges named but not on the model about 20).
+
+* **Edge records 22 bytes apart.** Newer files put an `f64` (1.2e-7) and six zero bytes more between a blend's edge
+  records (168 bytes apart, 22 bytes from one record's end to the next); the selection stopped after the first.
+  Linkage Arm's Fillet2 names six corners (a slot's rounded ends and a pocket), not one.
+* **Up to next on cuts.** End type 2 is up to next for cuts as for bosses (L13's `swEndConditions_e` reading): the
+  GT3 pulleys' set screw holes go through one wall of the hub, Anti-Backlash Nut Block's and Leadscrew Motor Mount's
+  holes stop in the bore. The reach through all stays the fallback.
+* **Extrudes that start from a face.** A blind extrude started from a surface ("From: Surface/Face/Plane") writes
+  a `moSingleFaceRef_w` after its dimensions: the node's last reference record, of kind 2 (header
+  `0c 00 00 00 00 02`), naming the face with its neighbours. SlotBase-Back's Cut-Extrude3 is sketched 15.45 mm up,
+  starts on the ceiling of the slot Cut-Extrude1 cut (21.95 mm up; the dimension's display points say so too) and
+  runs its `D1` 13.35 mm down from there. A face parallel to the sketch moves the sketch onto its plane. Other nodes
+  end on the face their sketch lies on (kind 0) or on records of their own faces (kind 3; DC Motor, Link 5): those
+  are not start faces.
+* **Contour choosers.** A chooser that names as many contours as the sketch lists is still used: the list need not
+  hold every region (Connecting Plate_TOP: the eight pieces into which a square through four circles' centres cuts
+  the circles; read as the whole sketch, the square's middle was cut too). A chooser whose boxes are older than the
+  sketch's dimensions (Servo_Microcontroller Enclosure Cover: boxes of 12 and 11 mm circles, drawn 10.6 and 8.1 mm
+  since) still names the segments around each region; a point inside what they enclose picks the region. Choosers
+  copied from another part whose segments no longer bound the regions SolidWorks used (Connecting Plate_BOTTOM,
+  _M3, Bearing Shaft_RIGHT, Slotted Endcap) stay unread.
+* **Linear pattern directions.** No byte was found (round sw13); the stored body decides instead: a pattern whose
+  seeds are all cuts is written `either_way`, and the rebuild keeps the sense whose copies take away more (5 Hole T
+  Joining Plate, Universal L Bracket - Triple, Grip_tip_slider). Patterns of bosses and cuts (the spacers) are left
+  as read.
+* **Blend edges the part kept.** The OpenBuilds bearings' Chamfer1 lists eight edges and the stored body has four of
+  the chamfers (L23); the other four are still edges of the stored body. The importer reads the stored body's edges
+  (midpoint, or the centre of a closed circle, and length) and leaves out a blend's edges that the part still has,
+  unless that is all of them.
+* **Blends one chain after another.** Where the kernel cannot blend a feature's edges in one go, the importer blends
+  them chain by chain (edges that meet at a vertex), each a fillet of its own (Linkage Arm: slot ends whose two
+  corner fillets of half the slot's width each meet; Back-Plate-Mount).
+* **Measured, not done.**
+  - Fillets the kernel refuses where a face is consumed exactly (a radius equal to the face's width: BK12_block's
+    pocket corners, Bottom-Plate-like notches) or a blend rolls over a short face; OCCT, not the reader.
+  - gear box side1 (two copies): Sketch2's lines end 0.5 mm short of their arcs (stale point positions); the
+    profile does not close. PLATFORM/PLATFORM2: a chooser box at a mirrored position and a notch cut by an "all"
+    profile. The GT3 pulleys are 8e-5 off after the up-to-next fix: their set screw holes' chamfer.
+  - Spacers: a boss to the next face that does not build falls back to 500 mm, and their linear patterns mix
+    bosses and cuts.
