@@ -13,8 +13,6 @@
 #include <cstring>
 #include <exception>
 #include <sstream>
-#include <fstream>
-#include <unistd.h>
 #include <string>
 #include <vector>
 
@@ -1014,23 +1012,7 @@ int blend(const GsShape* s, const uint32_t* edges, size_t nedges, double size, b
     es.push_back(BlendEdge{edge_by_index(s->s, edges[i]), TopoDS_Face(), size, size, 0});
     idx.push_back(edges[i]);
   }
-  std::string base; // OP2DUMP
-  if (const char* d = std::getenv("GUSSET_OP2_DUMP")) {
-    static std::atomic<int> n{0};
-    base = std::string(d) + "/" + (fillet ? "f" : "c") + std::to_string(getpid()) + "_" + std::to_string(n.fetch_add(1));
-    BRepTools::Write(s->s, (base + ".brep").c_str());
-    std::ofstream m(base + ".txt");
-    m << (fillet ? "fillet" : "chamfer") << " " << size << " " << nedges;
-    for (size_t i = 0; i < nedges; ++i) m << " " << edges[i];
-    m << "\n";
-  }
-  int rc = blend_edges<Mk>(s, es, idx, fillet, out, origins);
-  if (std::getenv("GUSSET_OP2_DUMP")) fprintf(stderr, "OP2 blend n=%zu size=%g rc=%d base=%s\n", nedges, size, rc, base.c_str());
-  if (rc == GS_OK && !base.empty() && !std::getenv("GUSSET_OP2_KEEP")) {
-    std::remove((base + ".brep").c_str());
-    std::remove((base + ".txt").c_str());
-  }
-  return rc;
+  return blend_edges<Mk>(s, es, idx, fillet, out, origins);
 }
 
 // Does the shape have a face that is not a plane, cylinder, cone, sphere or torus?
@@ -3476,12 +3458,6 @@ bool prism_cylinder_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Fa
   return !out.face.IsNull() && out.ideal > 0;
 }
 
-#ifndef CLIFF_LOG // DBGSE8
-#define CLIFF_LOG(a, b) // DBGSE8
-#endif // DBGSE8
-#ifndef CLIFF_DUMP // DBGSE8
-#define CLIFF_DUMP(a, b) // DBGSE8
-#endif // DBGSE8
 // The state of the point of face `f`'s surface nearest to `q`, in the face.
 TopAbs_State state_in_face(const TopoDS_Face& f, const gp_Pnt& q) {
   GeomAPI_ProjectPointOnSurf pr(q, BRep_Tool::Surface(f));
@@ -3862,7 +3838,6 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
     if (!exact_loft.IsDone() || !tool_loft.IsDone()) return false;
     ex_solid = with_planar_faces(exact_loft.Shape());
     tool = tool_loft.Shape();
-    CLIFF_DUMP(ex_solid, tool); // DBGSE8
     if (!BRepCheck_Analyzer(ex_solid).IsValid() || !BRepCheck_Analyzer(tool).IsValid()) return false;
     if (signed_volume(ex_solid) < 0) ex_solid.Reverse();
     if (signed_volume(tool) < 0) tool.Reverse();
@@ -4628,7 +4603,6 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
   const double before = std::fabs(measured_volume(s->s, trim)), after = std::fabs(measured_volume(result, trim));
   const double change = concave ? after - before : before - after;
   const double tol = 1e-7 * std::max(1.0, before);
-  CLIFF_LOG(change, ideal); // DBGSE8
   if (longer ? change < ideal - tol : std::fabs(change - ideal) > tol)
     return fail("the corners were not all material");
   return corner_origins(*b, [&](const TopoDS_Shape& f) { return b->IsDeleted(f); }, s->s, result, idx, cut);
