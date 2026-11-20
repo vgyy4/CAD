@@ -49,7 +49,9 @@ impl TextFile {
         self.push(&n(ty));
         if layout.variable() {
             let var = layout.fields.iter().find(|f| f.count == Count::Var).unwrap();
-            self.push(&n(given.get(var.name.as_str()).map_or(0, |v| v.len())));
+            // A list of vectors counts vectors, three numbers each.
+            let per = if matches!(var.code, Code::V | Code::H) { 3 } else { 1 };
+            self.push(&n(given.get(var.name.as_str()).map_or(0, |v| v.len() / per)));
         }
         self.push(&n(idx));
         for f in &layout.fields {
@@ -370,8 +372,27 @@ fn mutated_files_never_panic() {
     }
 }
 
+/// The largest distance of the blend surface from the ball's envelope round `centre(y)` (a line
+/// of centres along y), over a grid, and the surface's parameter extent along the spine.
+fn blend_error(s: &crate::geom::Nurbs, r: f64, centre: impl Fn(f64) -> [f64; 3]) -> f64 {
+    let (k0, k1) = (s.knots[0][0], *s.knots[0].last().unwrap());
+    let mut worst: f64 = 0.0;
+    for i in 0..=40 {
+        for j in 0..=10 {
+            let p =
+                crate::eval::nurbs_surface_at(s, k0 + (k1 - k0) * f64::from(i) / 40.0, f64::from(j) / 10.0).unwrap();
+            let c = centre(p[1]);
+            let d = ((p[0] - c[0]).powi(2) + (p[2] - c[2]).powi(2)).sqrt();
+            worst = worst.max((d - r).abs());
+        }
+    }
+    worst
+}
+
 #[test]
-fn a_rolling_ball_blend_is_arcs_between_its_supports() {
+fn a_rolling_ball_blend_is_the_balls_arcs_between_its_supports() {
+    // Planes z = 0 and x = 0, a ball of 2 mm in the corner; the file's spine is a little off
+    // (as an intersection chart is) and the centres are put back on the true spine.
     let r = 0.002;
     let mut f = TextFile::new();
     f.node(50, 2, &[("pvec", v3([0.0; 3])), ("normal", v3([0.0, 0.0, 1.0])), ("x_axis", v3([1.0, 0.0, 0.0]))]);
@@ -383,27 +404,144 @@ fn a_rolling_ball_blend_is_arcs_between_its_supports() {
             ("blend_type", vec![W::C(b'R')]),
             ("surface", vec![n(2), n(3)]),
             ("spine", vec![n(5)]),
+            ("range", vec![n(r), n(-r)]),
+        ],
+    );
+    f.node(30, 5, &[("pvec", v3([r * 1.01, 0.0, r * 0.99])), ("direction", v3([0.0, 1.0, 0.0]))]);
+    let g = decode(&f.finish(), &Limits::default()).unwrap();
+    let hint = [[0.0, 0.0, 0.0], [0.0, 0.01, 0.0]];
+    let s = crate::blend::blend_surface(&g, 4, &hint).unwrap();
+    assert_eq!((s.degree, s.n[1]), ([3, 2], 5));
+    assert!(blend_error(&s, r, |_| [r, 0.0, r]) < 1e-12);
+    // Rows run from the first support (z = 0) to the second (x = 0) and face the corner.
+    let (a, b, m) = (
+        crate::eval::nurbs_surface_at(&s, 0.004, 0.0).unwrap(),
+        crate::eval::nurbs_surface_at(&s, 0.004, 1.0).unwrap(),
+        crate::eval::nurbs_surface_at(&s, 0.004, 0.5).unwrap(),
+    );
+    assert!(a[2].abs() < 1e-12 && (a[0] - r).abs() < 1e-12, "{a:?}");
+    assert!(b[0].abs() < 1e-12 && (b[2] - r).abs() < 1e-12, "{b:?}");
+    assert!(m[0] < r && m[2] < r, "{m:?}");
+    // The spine is covered past the faces' vertices (unbounded supports).
+    let (y0, y1) = (
+        crate::eval::nurbs_surface_at(&s, s.knots[0][0], 0.0).unwrap()[1],
+        crate::eval::nurbs_surface_at(&s, *s.knots[0].last().unwrap(), 0.0).unwrap()[1],
+    );
+    assert!(y0 < 0.0 && y1 > 0.01, "{y0} {y1}");
+}
+
+#[test]
+fn a_cliff_edge_blend_rolls_on_a_face_and_an_edge() {
+    // The ball (r = 2 mm) rolls on z = 0 and touches the edge x = 0, z = h, which is a
+    // zero-range blend of the planes x = 0 and z = h: its centres are at z = r, x = x0.
+    let (r, h): (f64, f64) = (0.002, 0.0005);
+    let x0 = (r * r - (r - h) * (r - h)).sqrt();
+    let mut f = TextFile::new();
+    let plane = |p: [f64; 3], nn: [f64; 3], x: [f64; 3]| [("pvec", v3(p)), ("normal", v3(nn)), ("x_axis", v3(x))];
+    f.node(50, 2, &plane([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]));
+    f.node(50, 3, &plane([0.0; 3], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]));
+    f.node(50, 4, &plane([0.0, 0.0, h], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]));
+    f.node(
+        56,
+        5,
+        &[
+            ("blend_type", vec![W::C(b'R')]),
+            ("surface", vec![n(3), n(4)]),
+            ("spine", vec![n(6)]),
+            ("range", vec![n(0.0), n(0.0)]),
+        ],
+    );
+    f.node(30, 6, &[("pvec", v3([0.0, 0.0, h])), ("direction", v3([0.0, 1.0, 0.0]))]);
+    f.node(
+        56,
+        7,
+        &[
+            ("blend_type", vec![W::C(b'E')]),
+            ("surface", vec![n(2), n(5)]),
+            ("spine", vec![n(8)]),
             ("range", vec![n(r), n(r)]),
         ],
     );
-    f.node(30, 5, &[("pvec", v3([r, 0.0, r])), ("direction", v3([0.0, 1.0, 0.0]))]);
+    f.node(30, 8, &[("pvec", v3([x0 * 1.02, 0.0, r])), ("direction", v3([0.0, 1.0, 0.0]))]);
     let g = decode(&f.finish(), &Limits::default()).unwrap();
-    let hint = [[0.0, 0.0, 0.0], [0.0, 0.01, 0.0]];
-    let grid = crate::eval::blend_grid(&g, 4, &hint).unwrap();
-    assert_eq!(grid.len(), 9);
-    for row in &grid {
-        for p in row {
-            let d = ((p[0] - r).powi(2) + (p[2] - r).powi(2)).sqrt();
-            assert!((d - r).abs() < 1e-12, "{p:?}");
+    let s = crate::blend::blend_surface(&g, 7, &[[0.0, 0.0, 0.0], [0.0, 0.01, 0.0]]).unwrap();
+    assert!(blend_error(&s, r, |_| [x0, 0.0, r]) < 1e-12);
+    // From the contact on z = 0 to the edge.
+    let (a, b) = (
+        crate::eval::nurbs_surface_at(&s, 0.004, 0.0).unwrap(),
+        crate::eval::nurbs_surface_at(&s, 0.004, 1.0).unwrap(),
+    );
+    assert!(a[2].abs() < 1e-12 && (a[0] - x0).abs() < 1e-12, "{a:?}");
+    assert!(b[0].abs() < 1e-12 && (b[2] - h).abs() < 1e-12, "{b:?}");
+    // A support the ball cannot reach gives no surface.
+    let mut f = TextFile::new();
+    f.node(50, 2, &plane([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]));
+    f.node(50, 3, &plane([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]));
+    f.node(
+        56,
+        4,
+        &[
+            ("blend_type", vec![W::C(b'R')]),
+            ("surface", vec![n(2), n(3)]),
+            ("spine", vec![n(5)]),
+            ("range", vec![n(r), n(r)]),
+        ],
+    );
+    f.node(30, 5, &[("pvec", v3([0.0, 0.0, r])), ("direction", v3([0.0, 1.0, 0.0]))]);
+    let g = decode(&f.finish(), &Limits::default()).unwrap();
+    assert!(crate::blend::blend_surface(&g, 4, &[[0.0; 3], [0.0, 0.01, 0.0]]).is_none());
+}
+
+#[test]
+fn a_blend_on_a_circle_spine_follows_the_torus_it_is() {
+    // A fillet of 1 mm between the plane z = 0 and a cylinder of 5 mm round z: its spine is a
+    // circle of 6 mm at z = 1 mm, and the surface is that torus within 1e-9 of the ball.
+    let r = 0.001;
+    let mut f = TextFile::new();
+    f.node(50, 2, &[("pvec", v3([0.0; 3])), ("normal", v3([0.0, 0.0, 1.0])), ("x_axis", v3([1.0, 0.0, 0.0]))]);
+    f.node(
+        51,
+        3,
+        &[
+            ("pvec", v3([0.0; 3])),
+            ("axis", v3([0.0, 0.0, 1.0])),
+            ("radius", vec![n(0.005)]),
+            ("x_axis", v3([1.0, 0.0, 0.0])),
+        ],
+    );
+    f.node(
+        56,
+        4,
+        &[
+            ("blend_type", vec![W::C(b'R')]),
+            ("surface", vec![n(2), n(3)]),
+            ("spine", vec![n(5)]),
+            ("range", vec![n(r), n(r)]),
+        ],
+    );
+    f.node(
+        31,
+        5,
+        &[
+            ("centre", v3([0.0, 0.0, r])),
+            ("normal", v3([0.0, 0.0, 1.0])),
+            ("x_axis", v3([1.0, 0.0, 0.0])),
+            ("radius", vec![n(0.006)]),
+        ],
+    );
+    let g = decode(&f.finish(), &Limits::default()).unwrap();
+    let s = crate::blend::blend_surface(&g, 4, &[]).unwrap();
+    let (k0, k1) = (s.knots[0][0], *s.knots[0].last().unwrap());
+    let mut worst: f64 = 0.0;
+    for i in 0..=200 {
+        for j in 0..=8 {
+            let p =
+                crate::eval::nurbs_surface_at(&s, k0 + (k1 - k0) * f64::from(i) / 200.0, f64::from(j) / 8.0).unwrap();
+            let rho = (p[0] * p[0] + p[1] * p[1]).sqrt();
+            worst = worst.max((((rho - 0.006).powi(2) + (p[2] - r).powi(2)).sqrt() - r).abs());
         }
-        let (a, b) = (row[0], row[row.len() - 1]);
-        assert!(a[2].abs() < 1e-12 && b[0].abs() < 1e-12, "{a:?} {b:?}");
-        // The arc faces the corner.
-        let mid = row[row.len() / 2];
-        assert!(mid[0] < r && mid[2] < r, "{mid:?}");
     }
-    let s = crate::eval::surface_through(&grid).unwrap();
-    assert_eq!((s.degree, s.n), ([3, 3], [25, 25]));
+    assert!(worst < 1e-9, "{worst}");
 }
 
 #[test]
@@ -569,8 +707,17 @@ fn apple_and_lemon_tori_are_both_written() {
     assert!(line.ends_with(",0.5,1.0);") && !flipped && w.is_empty(), "{line} {w:?}");
     // A horn torus (equal radii) is written too.
     assert!(!crate::step::surface_text(&torus_graph(0.001, 0.001), 2).0.unwrap().1);
-    // Non-positive radii cannot be written.
-    for (a, b) in [(0.0, 0.001), (-0.001, 0.002), (0.002, 0.0), (0.002, -0.001)] {
+    // A negative major radius below the minor one is a lemon: the arc of the minor radius
+    // (centred 0.5 mm along -x here) between the axis points, turned about the axis.
+    let (neg, w) = crate::step::surface_text(&torus_graph(-0.0005, 0.001), 2);
+    let (line, flipped) = neg.unwrap();
+    assert!(line.contains("SURFACE_OF_REVOLUTION('',#") && !flipped && w.is_empty(), "{line} {w:?}");
+    // Above the minor radius it is a doughnut with its x axis and natural normal reversed.
+    let (neg, w) = crate::step::surface_text(&torus_graph(-0.002, 0.001), 2);
+    let (line, flipped) = neg.unwrap();
+    assert!(line.ends_with(",2.0,1.0);") && flipped && w.is_empty(), "{line} {w:?}");
+    // Zero and negative minor radii cannot be written.
+    for (a, b) in [(0.0, 0.001), (0.002, 0.0), (0.002, -0.001)] {
         let (r, w) = crate::step::surface_text(&torus_graph(a, b), 2);
         assert!(r.is_none() && w.len() == 2, "{a} {b}: {w:?}");
     }
@@ -668,4 +815,120 @@ fn a_b_curve_gives_its_poles_and_flat_knots() {
     assert_eq!(poles[1], [1.0, 2.0, 0.0]);
     // Another node is not a B-spline.
     assert!(crate::b_curve(&g, 5).is_none());
+}
+
+/// Planes z = 0 and x = 0 with a 2 mm ball blend (node 4) along y, and an SP-curve (node 9)
+/// across it at u = `u` from v = 0 to 1, trimmed (node 13) between the two contacts.
+fn blend_sp_file(r: f64, y: f64) -> TextFile {
+    let mut f = TextFile::new();
+    f.node(50, 2, &[("pvec", v3([0.0; 3])), ("normal", v3([0.0, 0.0, 1.0])), ("x_axis", v3([1.0, 0.0, 0.0]))]);
+    f.node(50, 3, &[("pvec", v3([0.0; 3])), ("normal", v3([1.0, 0.0, 0.0])), ("x_axis", v3([0.0, 1.0, 0.0]))]);
+    f.node(
+        56,
+        4,
+        &[
+            ("blend_type", vec![W::C(b'R')]),
+            ("surface", vec![n(2), n(3)]),
+            ("spine", vec![n(5)]),
+            ("range", vec![n(r), n(r)]),
+        ],
+    );
+    f.node(30, 5, &[("pvec", v3([r, 0.0, r])), ("direction", v3([0.0, 1.0, 0.0]))]);
+    f.node(137, 9, &[("surface", vec![n(4)]), ("b_curve", vec![n(10)])]);
+    f.node(134, 10, &[("nurbs", vec![n(11)])]);
+    f.node(
+        136,
+        11,
+        &[
+            ("degree", vec![n(1)]),
+            ("n_vertices", vec![n(2)]),
+            ("vertex_dim", vec![n(2)]),
+            ("n_knots", vec![n(2)]),
+            ("knot_type", vec![n(1)]),
+            ("rational", vec![W::C(b'F')]),
+            ("curve_form", vec![n(1)]),
+            ("bspline_vertices", vec![n(6)]),
+            ("knot_mult", vec![n(7)]),
+            ("knots", vec![n(8)]),
+        ],
+    );
+    // The spine parameter of a line is the distance along it: u = 3 (any value) is mapped by
+    // the trim's points onto y.
+    f.node(45, 6, &[("vertices", vec![n(3), n(0), n(3), n(1)])]);
+    f.node(127, 7, &[("mult", vec![n(2), n(2)])]);
+    f.node(128, 8, &[("knots", vec![n(0), n(1)])]);
+    f.node(
+        133,
+        13,
+        &[
+            ("basis_curve", vec![n(9)]),
+            ("point_1", v3([r, y, 0.0])),
+            ("point_2", v3([0.0, y, r])),
+            ("parm_1", vec![n(0)]),
+            ("parm_2", vec![n(1)]),
+        ],
+    );
+    f
+}
+
+#[test]
+fn an_sp_curve_across_a_blend_is_the_balls_arc() {
+    let (r, y) = (0.002, 0.004);
+    let g = decode(&blend_sp_file(r, y).finish(), &Limits::default()).unwrap();
+    let ends = [(0.0, [r, y, 0.0]), (1.0, [0.0, y, r])];
+    let Some(crate::blend::SpCurve::Arc(c, axis, start, radius)) = crate::blend::sp_curve(&g, 9, Some(ends)) else {
+        panic!("an arc")
+    };
+    let near = |a: [f64; 3], b: [f64; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-12);
+    assert!(near(c, [r, y, r]) && (radius - r).abs() < 1e-12, "{c:?} {radius}");
+    // From the contact on z = 0 (v = 0) turning towards x = 0: about +y.
+    assert!(near(start, [r, y, 0.0]) && near(axis, [0.0, 1.0, 0.0]), "{start:?} {axis:?}");
+    // Written as a STEP circle of 2 mm.
+    let (step, w) = crate::step::curve_text(&g, 13);
+    assert!(step.unwrap().contains("CIRCLE('',#") && w.is_empty(), "{w:?}");
+}
+
+#[test]
+fn a_tolerant_edge_takes_the_fin_curve_off_the_blend() {
+    // Edge 20: its positive fin 21 carries the trimmed SP-curve on the blend (13), the other
+    // fin 22 a curve on a plane (25): the edge takes 25, against its direction.
+    let mut f = blend_sp_file(0.002, 0.004);
+    f.node(16, 20, &[("fin", vec![n(21)])]);
+    f.node(
+        17,
+        21,
+        &[("other", vec![n(22)]), ("edge", vec![n(20)]), ("curve", vec![n(13)]), ("sense", vec![W::C(b'+')])],
+    );
+    f.node(
+        17,
+        22,
+        &[("other", vec![n(21)]), ("edge", vec![n(20)]), ("curve", vec![n(25)]), ("sense", vec![W::C(b'-')])],
+    );
+    f.node(137, 25, &[("surface", vec![n(2)]), ("b_curve", vec![n(10)])]);
+    let g = decode(&f.finish(), &Limits::default()).unwrap();
+    let mut m = crate::model::Model::default();
+    crate::model::edge(&g, 20, &mut m);
+    let e = &m.edges[&20];
+    assert_eq!((e.curve, e.same_sense), (25, false));
+}
+
+#[test]
+fn a_blend_boundary_curve_is_refined_onto_the_balls_contacts() {
+    // The contact of the plane-plane blend with z = 0 is the line x = r, z = 0: an
+    // intersection of z = 0 and the blend's boundary, its chart a little off that line.
+    let r = 0.002;
+    let mut f = blend_sp_file(r, 0.004);
+    f.node(59, 30, &[("boundary", vec![n(0)]), ("blend", vec![n(4)])]);
+    f.node(38, 31, &[("surface", vec![n(2), n(30)]), ("chart", vec![n(32)])]);
+    let pts: Vec<[f64; 3]> =
+        (0..5).map(|i| [r + 1e-5 * f64::from(i % 2), 0.01 * f64::from(i) / 4.0, 1e-5 * f64::from(i % 2)]).collect();
+    let hvec: Vec<W> = pts.iter().flat_map(|p| v3(*p)).collect();
+    f.node(40, 32, &[("hvec", hvec)]);
+    let g = decode(&f.finish(), &Limits::default()).unwrap();
+    let c = crate::refine::intersection(&g, 31, &pts).unwrap();
+    let (k0, k1) = (c.knots[0][0], *c.knots[0].last().unwrap());
+    for i in 0..=50 {
+        let p = crate::geom::eval_curve(&c, k0 + (k1 - k0) * f64::from(i) / 50.0).unwrap();
+        assert!((p[0] - r).abs() < 1e-12 && p[2].abs() < 1e-12, "{p:?}");
+    }
 }

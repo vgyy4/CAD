@@ -46,6 +46,18 @@ fn sub3(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
+fn add3(a: V3, b: V3) -> V3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+/// `a` turned by `t` radians about the unit vector `k` (right-handed).
+fn rotate(a: V3, k: V3, t: f64) -> V3 {
+    let (c, s) = (libm::cos(t), libm::sin(t));
+    let kxa = cross(k, a);
+    let ka = dot(k, a) * (1.0 - c);
+    [a[0] * c + kxa[0] * s + k[0] * ka, a[1] * c + kxa[1] * s + k[1] * ka, a[2] * c + kxa[2] * s + k[2] * ka]
+}
+
 fn unit3(a: V3) -> V3 {
     let l = libm::sqrt(dot(a, a));
     [a[0] / l, a[1] / l, a[2] / l]
@@ -165,12 +177,13 @@ impl Sketch {
             }
         }
         // A line shorter than the profile tolerance (5e-8 mm between two points the file keeps
-        // apart, note AR) closes no gap: left out, its ends are one point to the regions.
+        // apart, note AR) closes no gap: left out, its ends are one point to the regions. So is
+        // an arc of no radius (a sketch fillet of radius 0: centre and ends at one place).
         let at: HashMap<usize, (f64, f64)> = self.points.iter().map(|&(i, u, v, _)| (i, (u, v))).collect();
+        let near = |a: usize, b: usize| matches!((at.get(&a), at.get(&b)), (Some(p), Some(q)) if libm::hypot(p.0 - q.0, p.1 - q.1) < 1e-6);
         let empty = |c: &Curve| match *c {
-            Curve::Line { a, b, .. } => {
-                matches!((at.get(&a), at.get(&b)), (Some(p), Some(q)) if libm::hypot(p.0 - q.0, p.1 - q.1) < 1e-6)
-            }
+            Curve::Line { a, b, .. } => near(a, b),
+            Curve::Arc { c, s, e, .. } => near(c, s) && near(c, e),
             _ => false,
         };
         let curves: Vec<Value> = self
@@ -181,6 +194,14 @@ impl Sketch {
                 let (mut j, con) = match *c {
                     Curve::Line { id, a, b, con } => {
                         (json!({"id": format!("l{id}"), "type": "line", "start": format!("p{a}"), "end": format!("p{b}")}), con)
+                    }
+                    // An arc whose ends meet runs the whole turn (as the profile picks read it).
+                    Curve::Arc { id, c, s, e, con } if near(s, e) => {
+                        let r = match (at.get(&c), at.get(&s)) {
+                            (Some(p), Some(q)) => rnd(libm::hypot(p.0 - q.0, p.1 - q.1)),
+                            _ => 0.0,
+                        };
+                        (json!({"id": format!("a{id}"), "type": "circle", "center": format!("p{c}"), "radius": r}), con)
                     }
                     Curve::Arc { id, c, s, e, con } => (
                         json!({"id": format!("a{id}"), "type": "arc", "center": format!("p{c}"), "start": format!("p{s}"), "end": format!("p{e}")}),
@@ -522,15 +543,37 @@ impl Reader<'_> {
         if !on_face {
             return Ok(None);
         }
-        let (o, ..) = frame(&sk.m);
-        let found: Vec<V3> = self
-            .sources(s)?
-            .into_iter()
+        let (o, x, y) = frame(&sk.m);
+        let sources = self.sources(s)?;
+        let found: Vec<V3> = sources
+            .iter()
             .filter(|src| libm::sqrt(dot(sub3(src.old, o), sub3(src.old, o))) < TOL)
             .map(|src| src.new)
             .collect();
         let Some(&first) = found.first() else {
-            return Err(format!("sketch '{}' lies on a face the member's row may move (not read yet)", sk.name));
+            // No earlier point at its origin: the face moves as the points of earlier sketches
+            // that lie in its plane move across it (they must all agree); the origin keeps its
+            // place in the plane.
+            let n = unit3(cross(x, y));
+            let d = match self.plane_shift(s, o, n) {
+                Ok(Some(d)) => d,
+                Ok(None) => {
+                    return Err(format!(
+                        "sketch '{}' lies on a face the member's row may move (not read yet)",
+                        sk.name
+                    ));
+                }
+                Err(_) => {
+                    return Err(format!("sketch '{}' lies on a face that several earlier sketches explain", sk.name));
+                }
+            };
+            let mut m = sk.m;
+            for (k, c) in [3usize, 7, 11].into_iter().zip([o[0] + d * n[0], o[1] + d * n[1], o[2] + d * n[2]]) {
+                if let Some(e) = m.get_mut(k) {
+                    *e = c / CM;
+                }
+            }
+            return Ok(Some(m));
         };
         if found.iter().any(|q| libm::sqrt(dot(sub3(*q, first), sub3(*q, first))) > TOL) {
             return Err(format!("sketch '{}' lies on a face that several earlier sketches explain", sk.name));
@@ -542,6 +585,24 @@ impl Reader<'_> {
             }
         }
         Ok(Some(m))
+    }
+
+    /// How far (mm, along unit `n`) the member's row moves a plane through `o`: as the points of
+    /// the sketches before sketch `s` that lie in it move across it, which must all agree.
+    /// `None` when no such point lies in the plane.
+    fn plane_shift(&self, s: usize, o: V3, n: V3) -> Result<Option<f64>, String> {
+        const TOL: f64 = 1e-5;
+        let shifts: Vec<f64> = self
+            .sources(s)?
+            .iter()
+            .filter(|src| dot(sub3(src.old, o), n).abs() < TOL)
+            .map(|src| dot(sub3(src.new, src.old), n))
+            .collect();
+        let Some(&d) = shifts.first() else { return Ok(None) };
+        if shifts.iter().any(|e| (e - d).abs() > TOL) {
+            return Err("a plane that several earlier sketches explain".into());
+        }
+        Ok(Some(d))
     }
 
     /// A sketch entity projected from the model's edges (not the origin's point or axes: those
@@ -1012,6 +1073,10 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     }
     let ext = |i: Option<usize>| i.and_then(|i| tail_u16(&r.dc, i));
     let mut axis_line = None;
+    // A copy of the sketch the extrude starts from instead (extent 12).
+    let mut start = None;
+    // A revolve whose sketch is turned about its axis (point, unit direction, radians) first.
+    let mut turned: Option<(V3, V3, f64)> = None;
     if typ == FeatType::Extrude {
         // Slot 2 is the sweep direction: the sketch normal, or (three extrudes of one part, note
         // AR) the other way; slot 3 turns it round.
@@ -1020,6 +1085,12 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         let rev = (s.get(3).and_then(|i| r.dc.r(i).last().copied()) == Some(1)) != away;
         let both = s.get(7).and_then(|i| r.dc.r(i).last().copied()) == Some(1);
         let dist = r.param(&s, 4)? * CM;
+        // Slot 5: the taper (radians; positive widens the solid away from its sketch, note AS).
+        let taper = s.get(5).filter(|&i| r.dc.role(i) == Role::Param).and_then(|i| r.dc.param(i)).map_or(0.0, |p| p.1);
+        let taper = if taper.abs() > 1e-12 { taper.to_degrees() } else { 0.0 };
+        if taper != 0.0 {
+            put(&mut j, "taper_deg", json!(rnd(taper)));
+        }
         match ext(s.get(6)) {
             Some(2) => {
                 put(&mut j, "distance", json!(rnd(dist)));
@@ -1042,12 +1113,30 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
             }
             Some(e @ (4 | 7)) => {
                 let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
-                let d = r.swept_distance(&sketch, fid).map_err(|w| format!("extrude extent {e}: {w}"))?;
+                let measured = match r.swept_distance(&sketch, fid) {
+                    Ok(d) => Some(d),
+                    // No face of it is left in the result: the face it ran to is kept as a
+                    // plane (slot 18, note AS); parallel to the sketch, the reach is its distance.
+                    // To the next face (extent 4): the next face as the model is built here.
+                    Err(_) if e == 4 && taper == 0.0 && matches!(op, "join" | "cut") => {
+                        put(&mut j, "end_condition", json!("to_next"));
+                        put(&mut j, "reverse", json!(rev));
+                        None
+                    }
+                    Err(w) => {
+                        let d = (e == 7)
+                            .then(|| end_plane_reach(r, &s, 18, &sketch))
+                            .flatten()
+                            .ok_or_else(|| format!("extrude extent {e}: {w}"))?;
+                        put(&mut j, "distance", json!(rnd(d)));
+                        None
+                    }
+                };
                 put(&mut j, "symmetric", json!(false));
                 // Up to the face it ran to, as the result shows it (notes AB); the measured
                 // reach is the blind form the caller falls back to.
-                match r.sweep_end_pick(&sketch, fid) {
-                    Some(face) => {
+                match measured.map(|d| (d, (taper == 0.0).then(|| r.sweep_end_pick(&sketch, fid)).flatten())) {
+                    Some((d, Some(face))) => {
                         put(&mut j, "end_condition", json!("to_face"));
                         put(&mut j, "face", face);
                         put(&mut j, "reverse", json!(d < 0.0));
@@ -1056,8 +1145,31 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                         put(&mut j, "extend", json!(true));
                         put(&mut j, "_blind", json!(rnd(d)));
                     }
-                    None => put(&mut j, "distance", json!(rnd(d))),
+                    // A tapered extrude is blind (Gusset tapers no extrude that ends on a face).
+                    // Its faces' corners may stop short of where its walls meet a curved end
+                    // face (a cross recess filled up to its cone): a join runs on into the
+                    // material behind that face.
+                    Some((d, None)) if taper != 0.0 && op == "join" => put(&mut j, "distance", json!(rnd(d * 1.1))),
+                    Some((d, None)) => put(&mut j, "distance", json!(rnd(d))),
+                    None => {}
                 }
+            }
+            // From a face (extent 12): the distance runs from the face slot 17 keeps, parallel to
+            // the sketch: the sketch moved onto that face (note AS).
+            Some(12) => {
+                let off = end_plane_reach(r, &s, 17, &sketch).ok_or("extrude extent 12: the start face is not read")?;
+                let (o, x, y) = frame(&sketch.m);
+                let n = unit3(cross(x, y));
+                let mut moved = sketch.json();
+                let name2 = format!("{}_from_{name}", sketch.name);
+                put(&mut moved, "name", json!(name2));
+                if let Some(pl) = moved.get_mut("plane") {
+                    put(pl, "origin", json!([rnd(o[0] + off * n[0]), rnd(o[1] + off * n[1]), rnd(o[2] + off * n[2])]));
+                }
+                start = Some(moved);
+                put(&mut j, "sketch", json!(name2));
+                put(&mut j, "distance", json!(rnd(if rev { -dist } else { dist })));
+                put(&mut j, "symmetric", json!(false));
             }
             e => return Err(format!("extrude extent {e:?}")),
         }
@@ -1071,18 +1183,24 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                            "direction": [rnd(v[0]), rnd(v[1]), rnd(v[2])]}),
         );
         axis_line = sketch_axis_line(&sketch, [p0[0] * CM, p0[1] * CM, p0[2] * CM], v, f.rec);
-        put(
-            &mut j,
-            "angle",
-            match ext(s.get(3)) {
-                Some(3) => json!(360.0),
-                _ => json!(rnd(r.param(&s, 4)?.to_degrees())),
-            },
-        );
+        let angle = match ext(s.get(3)) {
+            Some(3) => 360.0,
+            _ => r.param(&s, 4)?.to_degrees(),
+        };
+        put(&mut j, "angle", json!(rnd(angle)));
+        // Slot 5 (`c7a06ac2`) 2: the angle runs half each way from the sketch (note AS). The
+        // revolve turns a copy of its sketch turned back by half the angle about the axis.
+        let both = s.get(5).filter(|&i| r.dc.class(i) == 0xc7a0_6ac2).and_then(|i| tail_u16(&r.dc, i)) == Some(2);
+        if both && angle < 360.0 {
+            turned = Some(([p0[0] * CM, p0[1] * CM, p0[2] * CM], unit3(v), -angle.to_radians() / 2.0));
+        }
     }
     if !st.done.contains_key(&sk) {
         st.out.push(sketch.json());
         st.done.insert(sk, ());
+    }
+    if let Some(moved) = start {
+        st.out.push(moved);
     }
     // An axis in the sketch plane off its origin or axes: a construction line of the sketch
     // along it (from the axis point, in its direction) is the axis.
@@ -1101,6 +1219,25 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
             put(&mut j, "axis", json!({"line": id}));
         }
     }
+    if let Some((p0, v, t)) = turned {
+        let entry = st.out.iter().rev().find(|o| {
+            o.get("type").and_then(Value::as_str) == Some("sketch")
+                && o.get("name").and_then(Value::as_str) == Some(&sketch.name)
+        });
+        let mut copy = entry.cloned().ok_or("the revolve's sketch is not written")?;
+        let name2 = format!("{}_turned_{name}", sketch.name);
+        put(&mut copy, "name", json!(name2));
+        let (o, x, y) = frame(&sketch.m);
+        let o2 = add3(p0, rotate(sub3(o, p0), v, t));
+        if let Some(pl) = copy.get_mut("plane") {
+            put(pl, "origin", json!([rnd(o2[0]), rnd(o2[1]), rnd(o2[2])]));
+            let (x2, y2) = (rotate(x, v, t), rotate(y, v, t));
+            put(pl, "x_axis", json!([rnd(x2[0]), rnd(x2[1]), rnd(x2[2])]));
+            put(pl, "y_axis", json!([rnd(y2[0]), rnd(y2[1]), rnd(y2[2])]));
+        }
+        st.out.push(copy);
+        put(&mut j, "sketch", json!(name2));
+    }
     st.out.push(j);
     if st.first_body.is_none() {
         st.first_body = Some(name.to_string());
@@ -1116,7 +1253,30 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
         // the centres come from the hole's faces in the result body (notes AF).
         None => Vec::new(),
     };
-    let m = r.dc.placement(s.need(8)?).ok_or("the hole placement is not readable")?;
+    let mut m = r.dc.placement(s.need(8)?).ok_or("the hole placement is not readable")?;
+    // For an iPart member's row: the centres' sketch as the row solves and places it; when it
+    // is not solved again (its centres are projected from the model), as its face moves.
+    let mut solved: HashMap<usize, (f64, f64)> = HashMap::new();
+    let owner = items
+        .iter()
+        .flatten()
+        .find(|&&it| r.dc.role(it) == Role::SkPoint)
+        .and_then(|&it| r.back().get(it)?.iter().copied().find(|&j| r.dc.role(j) == Role::Sketch));
+    if r.dc.has_row()
+        && let Some(owner) = owner
+    {
+        match r.sketch(owner) {
+            Ok(sk) => {
+                m = sk.m;
+                solved = sk.points.iter().map(|&(i, u, v, _)| (i, (u / CM, v / CM))).collect();
+            }
+            Err(_) => {
+                if let Ok(Some(moved)) = r.saved_sketch(owner).and_then(|sk| r.moved_placement(owner, &sk)) {
+                    m = moved;
+                }
+            }
+        }
+    }
     let (o, x, y) = frame(&m);
     let mut pos: Vec<V3> = Vec::new();
     for it in items.into_iter().flatten() {
@@ -1125,7 +1285,9 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
         }
         let rec = r.dc.r(it);
         let b = r.dc.body(it);
-        let (Some(u), Some(v)) = (f64_at(rec, b + 8), f64_at(rec, b + 16)) else {
+        let (Some(u), Some(v)) =
+            solved.get(&it).map_or_else(|| (f64_at(rec, b + 8), f64_at(rec, b + 16)), |&(u, v)| (Some(u), Some(v)))
+        else {
             return Err("a hole centre is cut short".into());
         };
         // Some projected centres (flags 0x40) carry one more byte before their coordinates,
@@ -1188,7 +1350,7 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
     if through {
         put(&mut j, "through", json!(true));
     } else {
-        depth = if extent == Some(7) { to_depth(r, &s, f, &pos, nd)? } else { rnd(r.pval(&s, 2)? * CM) };
+        depth = if extent == Some(7) { to_depth(r, &s, f, &pos, nd, owner)? } else { rnd(r.pval(&s, 2)? * CM) };
         put(&mut j, "depth", json!(depth));
         if let Ok(pa) = r.pval(&s, 6)
             && pa != 0.0
@@ -1215,13 +1377,21 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
 /// The depth (mm) of a hole that ends at a plane or face (extent 7, note AR): slot 13 a work
 /// plane (the depth to it along the hole, the same from every centre), else the face named
 /// through the naming records, measured on the hole's faces in the result body.
-fn to_depth(r: &Reader, s: &Slots, f: &Feature, pos: &[V3], nd: V3) -> Result<f64, String> {
+fn to_depth(r: &Reader, s: &Slots, f: &Feature, pos: &[V3], nd: V3, owner: Option<usize>) -> Result<f64, String> {
     const G_PLANE: u32 = 0xce52_df42;
     let u = unit3(nd);
     let first = *pos.first().ok_or("the hole has no centre")?;
     if let Some(pl) = s.get(13).filter(|&pl| r.dc.class(pl) == G_PLANE) {
         let (o, n) = work_plane(&r.dc, pl).map_err(|w| format!("the hole's end {w}"))?;
-        let o = [o[0] * CM, o[1] * CM, o[2] * CM];
+        let mut o = [o[0] * CM, o[1] * CM, o[2] * CM];
+        // An iPart member's row moves the plane with the faces of earlier sketches in it.
+        if r.dc.has_row()
+            && let Some(owner) = owner
+            && let Some(d) = r.plane_shift(owner, o, unit3(n))?
+        {
+            let n = unit3(n);
+            o = [o[0] + d * n[0], o[1] + d * n[1], o[2] + d * n[2]];
+        }
         let along = dot(u, n);
         if along.abs() < 1e-9 {
             return Err("the hole's end plane lies along the hole".into());
@@ -2428,6 +2598,22 @@ fn combine(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
     Ok(())
 }
 
+/// The reach (mm along the sketch normal) of an extrude that ends on a face, from the plane
+/// of that face its slot 18 keeps (`151280f0`, the last 72 bytes as a work plane's; note AS);
+/// slot 17 keeps the face an extrude starts from in the same way.
+/// `None` when the slot holds no plane or the plane is not parallel to the sketch.
+fn end_plane_reach(r: &Reader, s: &Slots, slot: usize, sk: &Sketch) -> Option<f64> {
+    let i = s.get(slot).filter(|&i| r.dc.class(i) == 0x1512_80f0)?;
+    let (p, pn) = work_plane(&r.dc, i).ok()?;
+    let (o, x, y) = frame(&sk.m);
+    let n = unit3(cross(x, y));
+    if dot(pn, n).abs() < 1.0 - 1e-9 {
+        return None;
+    }
+    let d = dot(sub3([p[0] * CM, p[1] * CM, p[2] * CM], o), n);
+    (d.abs() > 1e-6).then_some(d)
+}
+
 /// A work plane record (`ce52df42`): a point (cm) and two unit vectors, the last 72 bytes;
 /// the point and the normal.
 fn work_plane(dc: &Dc, pl: usize) -> Result<(V3, V3), String> {
@@ -2549,10 +2735,21 @@ fn plate(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     let (k, sketch, profiles) = loop_sketch(r, c)?;
     let t = r.pval(&s, 3)? * CM;
     let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
-    let d = r.swept_distance(&sketch, fid)?;
-    if (d.abs() - t).abs() > 1e-6 * t.max(1.0) {
-        return Err(format!("the face reaches {} mm, its thickness is {} mm", rnd(d.abs()), rnd(t)));
-    }
+    // Slot 2 (`5e50b969`) is the side the face grows to: 0 along the sketch normal, 1 against
+    // it, 2 both ways (note AS). Older files without it: the side its faces lie on in the result.
+    let side = s.get(2).filter(|&i| r.dc.class(i) == 0x5e50_b969).and_then(|i| tail_u16(&r.dc, i));
+    let (d, symmetric) = match side {
+        Some(0) => (t, false),
+        Some(1) => (-t, false),
+        Some(2) => (t, true),
+        _ => {
+            let d = r.swept_distance(&sketch, fid)?;
+            if (d.abs() - t).abs() > 1e-6 * t.max(1.0) {
+                return Err(format!("the face reaches {} mm, its thickness is {} mm", rnd(d.abs()), rnd(t)));
+            }
+            (d, false)
+        }
+    };
     let mut op = match s.get(16).and_then(|i| tail_u16(&r.dc, i)) {
         Some(2) => "cut",
         Some(1) => "new",
@@ -2565,7 +2762,7 @@ fn plate(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
         op = "new";
     }
     let mut j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": profiles,
-                       "operation": op, "distance": rnd(d), "symmetric": false});
+                       "operation": op, "distance": rnd(d), "symmetric": symmetric});
     if op != "new" {
         let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
         put(&mut j, "target", json!(fb));
@@ -2574,6 +2771,62 @@ fn plate(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
         st.out.push(sketch.json());
         st.done.insert(k, ());
     }
+    st.out.push(j);
+    if st.first_body.is_none() {
+        st.first_body = Some(name.to_string());
+    }
+    Ok(())
+}
+
+/// A loft (`2f54efe0`; note AS): slot 0 lists its sections (`4b3150e8`), each naming the
+/// history body of its loop (`cc0f7521`) as a sheet-metal face does; slot 1 the operation. A
+/// section is the sketch whose curves its loop runs along; two sections are joined by
+/// straight lines.
+fn loft(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    const G_SECTION: u32 = 0x4b31_50e8;
+    let s = r.slots(f)?;
+    let (items, _) = r.dc.first_list(s.need(0)?, None).ok_or("the loft has no section list")?;
+    let mut names = Vec::new();
+    let mut used = Vec::new();
+    for it in items {
+        let sec = it.ok_or("a loft section is empty")?;
+        if r.dc.class(sec) != G_SECTION {
+            return Err("a loft section is not a profile".into());
+        }
+        let c =
+            r.dc.refs(sec)
+                .into_iter()
+                .map(|(_, y)| y)
+                .find(|&y| r.dc.class(y) == super::inventor_dc::G_LOOP_BODY)
+                .ok_or("a loft section has no loop")?;
+        let (k, sk, _) = loop_sketch(r, c).map_err(|w| format!("a loft section: {w}"))?;
+        names.push(sk.name.clone());
+        if let std::collections::hash_map::Entry::Vacant(e) = st.done.entry(k) {
+            used.push(sk.json());
+            e.insert(());
+        }
+    }
+    if names.len() < 2 {
+        return Err("a loft takes two sections or more".into());
+    }
+    let mut op = match s.get(1).and_then(|i| tail_u16(&r.dc, i)) {
+        Some(2) => "cut",
+        Some(1) => "new",
+        Some(4) => "intersect",
+        _ => "join",
+    };
+    if st.first_body.is_some() && op == "new" {
+        op = "join";
+    }
+    if st.first_body.is_none() && op == "join" {
+        op = "new";
+    }
+    let mut j = json!({"type": "loft", "name": name, "sketches": names, "ruled": names.len() == 2, "operation": op});
+    if op != "new" {
+        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        put(&mut j, "target", json!(fb));
+    }
+    st.out.extend(used);
     st.out.push(j);
     if st.first_body.is_none() {
         st.first_body = Some(name.to_string());
@@ -3101,6 +3354,7 @@ pub fn feature_tree_with(
             FeatType::Combine => combine(&r, &mut st, f, &name),
             FeatType::Split => split(&r, &mut st, f, &name),
             FeatType::Plate => plate(&r, &mut st, f, &name),
+            FeatType::Other(0x2f54_efe0) => loft(&r, &mut st, f, &name),
             // Move Bodies, and the direct edits Move and Scale of whole bodies (note AQ).
             FeatType::Other(0x2b83_9fe9 | 0x8fa6_a6de | 0x5bcb_6fff) => body_transform(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.

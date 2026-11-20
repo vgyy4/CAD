@@ -1,10 +1,11 @@
 //! Intersection curves (ADR 0035 amendment): the file's chart is a polyline accurate only to
 //! its chordal tolerance, so a cubic through its points can lie microns off the two surfaces
-//! and shift the trimmed faces after a STEP read. For analytic supports every chart point is
-//! snapped onto both surfaces (Newton on the two signed distances, the smallest step), and
-//! the fitted curve is refined by inserting snapped points where it strays from either
-//! surface until it is within a tight tolerance. Anything that does not converge keeps the
-//! chart points as they are.
+//! and shift the trimmed faces after a STEP read. Every chart point is snapped onto both
+//! surfaces (Newton on the two signed distances, the smallest step; numerical closest points
+//! on non-analytic surfaces), or for a blend's boundary onto the ball's contact, and the
+//! fitted curve is refined by inserting snapped points where it strays from either surface
+//! until it is within a tight tolerance. Anything that does not converge keeps the chart
+//! points as they are.
 
 use crate::decode::Graph;
 use crate::geom::{self, Nurbs, V3, add, cross, dot, norm, scale, sub, unit};
@@ -16,7 +17,7 @@ const MAX_POINTS: usize = 4000;
 const ROUNDS: usize = 12;
 
 /// The outward normal of an analytic surface at `p`, which lies on it.
-fn normal(g: &Graph, s: u32, p: V3) -> Option<V3> {
+pub(crate) fn normal(g: &Graph, s: u32, p: V3) -> Option<V3> {
     match g.type_name(s)? {
         "PLANE" => unit(g.vec3(s, "normal")?),
         "CYLINDER" => {
@@ -42,11 +43,100 @@ fn normal(g: &Graph, s: u32, p: V3) -> Option<V3> {
     }
 }
 
-/// The signed distance of `x` from an analytic surface and the normal it is measured along.
+/// The signed distance of `x` from a surface and the normal it is measured along.
 fn signed(g: &Graph, s: u32, x: V3) -> Option<(f64, V3)> {
-    let p = crate::eval::project(g, s, x)?;
-    let n = normal(g, s, p)?;
-    Some((dot(sub(x, p), n), n))
+    if is_analytic(g, s) {
+        let p = crate::eval::project(g, s, x)?;
+        let n = normal(g, s, p)?;
+        return Some((dot(sub(x, p), n), n));
+    }
+    let f = crate::blend::foot(g, s, x, 0)?;
+    Some((f.d, f.n))
+}
+
+/// What an intersection curve lies on: two surfaces, or a blend's boundary on one of its
+/// supports (a `BLEND_BOUND` and that support), where its points are the ball's contacts.
+#[derive(Clone, Copy)]
+enum Pair {
+    Surfaces([u32; 2]),
+    Contact { blend: u32, support: u32 },
+}
+
+fn pair(g: &Graph, s1: u32, s2: u32) -> Option<Pair> {
+    let bound = |b: u32, other: u32| -> Option<Pair> {
+        let blend = g.ptr(b, "blend");
+        let ours = g.list(blend, "surface").iter().any(|v| matches!(v, Val::Ptr(p) if *p == other));
+        (g.type_name(blend)? == "BLENDED_EDGE" && ours).then_some(Pair::Contact { blend, support: other })
+    };
+    // Swept and spun surfaces (and offsets of them) keep the chart's fit: their closest points
+    // are a search along the section or profile, and refining 174's extruded-spline edges took
+    // 53 s where the chart's fit takes a tenth of a second.
+    let cheap = |mut s: u32| {
+        for _ in 0..4 {
+            match g.type_name(s) {
+                Some("OFFSET_SURF") => s = g.ptr(s, "surface"),
+                Some("SWEPT_SURF" | "SPUN_SURF") | None => return false,
+                Some(_) => return true,
+            }
+        }
+        false
+    };
+    match (g.type_name(s1)?, g.type_name(s2)?) {
+        ("BLEND_BOUND", "BLEND_BOUND") => None,
+        ("BLEND_BOUND", _) => bound(s1, s2),
+        (_, "BLEND_BOUND") => bound(s2, s1),
+        _ => (cheap(s1) && cheap(s2)).then_some(Pair::Surfaces([s1, s2])),
+    }
+}
+
+/// The contact of the ball nearest `x` on `support`.
+fn contact(g: &Graph, blend: u32, support: u32, x: V3) -> Option<V3> {
+    // The nearest point of the fitted spine, put back on the true spine.
+    let q = crate::blend::spine_point(g, blend, x, 1)?;
+    let (c, _) = crate::blend::centre(g, blend, q, 0)?;
+    Some(crate::blend::foot(g, support, c, 0)?.p)
+}
+
+fn snap_pair(g: &Graph, p: Pair, x0: V3, max_move: f64) -> Option<V3> {
+    match p {
+        Pair::Surfaces(s) => snap(g, s, x0, max_move),
+        Pair::Contact { blend, support } => {
+            // The contact of the ball through the spine point nearest x0, then once more from
+            // there (x0 lies off the contact curve, so its nearest spine point is a little off).
+            let mut x = x0;
+            for _ in 0..2 {
+                x = contact(g, blend, support, x)?;
+            }
+            (norm(sub(x, x0)) <= max_move).then_some(x)
+        }
+    }
+}
+
+fn tangent_pair(g: &Graph, p: Pair, x: V3, along: V3) -> Option<V3> {
+    match p {
+        Pair::Surfaces(s) => tangent(g, s, x),
+        Pair::Contact { blend, support } => {
+            let r = crate::blend::spine_point(g, blend, x, 1).map(|c| norm(sub(x, c)))?;
+            let h = 1e-4 * r.max(1e-6);
+            let d = unit(along)?;
+            let (a, b) =
+                (contact(g, blend, support, add(x, scale(d, h)))?, contact(g, blend, support, sub(x, scale(d, h)))?);
+            unit(sub(a, b))
+        }
+    }
+}
+
+fn deviation_pair(g: &Graph, p: Pair, q: V3) -> Option<f64> {
+    match p {
+        Pair::Surfaces(s) => deviation(g, s, q),
+        Pair::Contact { blend, support } => {
+            // Off the support, or off the ball (whose centre is the fitted spine's nearest point).
+            let off = norm(sub(q, crate::blend::foot(g, support, q, 0)?.p));
+            let c = crate::blend::spine_point(g, blend, q, 1)?;
+            let r = crate::blend::radius(g, blend)?;
+            Some(off.max((norm(sub(q, c)) - r).abs()))
+        }
+    }
 }
 
 /// Newton from `x0` onto both surfaces: each step is the smallest move that cancels both
@@ -86,7 +176,7 @@ fn tangent(g: &Graph, s: [u32; 2], x: V3) -> Option<V3> {
 /// A C1 piecewise cubic through `p` whose tangents at the snapped points (`on`) are the
 /// curve's own, so a segment is as accurate as a Hermite cubic can be (fourth order);
 /// elsewhere the tangent follows the neighbouring points.
-fn hermite(g: &Graph, s: [u32; 2], p: &[V3], on: &[bool]) -> Option<Nurbs> {
+fn hermite(g: &Graph, s: Pair, p: &[V3], on: &[bool]) -> Option<Nurbs> {
     let n = p.len();
     if n < 2 || on.len() != n {
         return None;
@@ -97,7 +187,7 @@ fn hermite(g: &Graph, s: [u32; 2], p: &[V3], on: &[bool]) -> Option<Nurbs> {
         let b = *p.get((i + 1).min(n - 1))?;
         let chord = unit(sub(b, a))?;
         let t = match (on.get(i), p.get(i)) {
-            (Some(true), Some(&x)) => tangent(g, s, x),
+            (Some(true), Some(&x)) => tangent_pair(g, s, x, chord),
             _ => None,
         };
         tans.push(match t {
@@ -159,10 +249,17 @@ pub(crate) fn intersection(g: &Graph, c: u32, pts: &[V3]) -> Option<Nurbs> {
     let supports: Vec<u32> =
         g.list(c, "surface").iter().filter_map(|v| if let Val::Ptr(p) = v { Some(*p) } else { None }).collect();
     let &[s1, s2] = supports.as_slice() else { return None };
-    if !is_analytic(g, s1) || !is_analytic(g, s2) || pts.len() < 3 || pts.len() > MAX_POINTS {
+    if pts.len() < 3 || pts.len() > MAX_POINTS {
         return None;
     }
-    let s = [s1, s2];
+    let s = pair(g, s1, s2)?;
+    // A closed curve on a non-analytic support keeps the chart's fit: OCCT's healing of a
+    // seam on a closed offset B-surface failed on the refined ring of 050 (an exception that
+    // drops every face's parameter curves).
+    let closed = matches!((pts.first(), pts.last()), (Some(a), Some(b)) if norm(sub(*a, *b)) < 1e-12);
+    if closed && !(is_analytic(g, s1) && is_analytic(g, s2)) {
+        return None;
+    }
     let mut p: Vec<V3> = Vec::with_capacity(pts.len());
     for q in pts {
         if p.last().is_none_or(|l| norm(sub(*q, *l)) > 1e-12) {
@@ -179,7 +276,7 @@ pub(crate) fn intersection(g: &Graph, c: u32, pts: &[V3]) -> Option<Nurbs> {
         .map(|(i, &q)| {
             let gap = |j: Option<usize>| j.and_then(|j| p.get(j)).map_or(f64::INFINITY, |r| norm(sub(*r, q)));
             let near = gap(i.checked_sub(1)).min(gap(Some(i + 1)));
-            snap(g, s, q, 0.25 * near).map_or((q, false), |r| (r, true))
+            snap_pair(g, s, q, 0.25 * near).map_or((q, false), |r| (r, true))
         })
         .collect();
     // Where it did not (tangent supports, a crossing), the fit around it is left alone.
@@ -209,13 +306,13 @@ pub(crate) fn intersection(g: &Graph, c: u32, pts: &[V3]) -> Option<Nurbs> {
             let mut worst = (tol, None);
             for f in [0.25, 0.5, 0.75] {
                 let Some(q) = geom::eval_curve(&fit, t0 + (t1 - t0) * f) else { continue };
-                let Some(d) = deviation(g, s, q) else { continue };
+                let Some(d) = deviation_pair(g, s, q) else { continue };
                 if d > worst.0 {
                     worst = (d, Some(q));
                 }
             }
             if let Some(q) = worst.1
-                && let Some(r) = snap(g, s, q, 0.25 * norm(sub(pj, pi)))
+                && let Some(r) = snap_pair(g, s, q, 0.25 * norm(sub(pj, pi)))
             {
                 next.push(r);
                 next_on.push(true);
@@ -234,7 +331,7 @@ pub(crate) fn intersection(g: &Graph, c: u32, pts: &[V3]) -> Option<Nurbs> {
         let k = n.knots[0].clone();
         let mut w: f64 = 0.0;
         for (t0, t1) in k.iter().zip(k.iter().skip(1)) {
-            w = w.max(deviation(g, s, geom::eval_curve(n, 0.5 * (t0 + t1))?)?);
+            w = w.max(deviation_pair(g, s, geom::eval_curve(n, 0.5 * (t0 + t1))?)?);
         }
         Some(w)
     };

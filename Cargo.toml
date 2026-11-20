@@ -135,3 +135,8 @@ debug = false
 # The voxel solver's loops are hundreds of times slower unoptimised (ADR 0041).
 [profile.dev.package.gusset-fea]
 opt-level = 2
+
+# Parasolid blends are evaluated by nested Newton steps (ADR 0035): a Solid Edge part that
+# converts in 27 s optimised takes minutes unoptimised, past the import worker's timeout.
+[profile.dev.package.gusset-xt]
+opt-level = 2

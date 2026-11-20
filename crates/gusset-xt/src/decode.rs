@@ -20,6 +20,22 @@ pub struct Graph {
     pub(crate) layouts: Schema,
     pub schema_number: u32,
     pub modeller: String,
+    /// Decoded geometry, kept while the file is converted (NURBS by node, the last surface
+    /// parameters found for each surface, blend spines).
+    pub(crate) cache: std::cell::RefCell<Cache>,
+}
+
+/// Geometry decoded once per node while converting.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Cache {
+    pub(crate) nurbs: BTreeMap<u32, Option<std::rc::Rc<crate::geom::Nurbs>>>,
+    /// Per surface: the parameters of the last closest point, the point it was asked for,
+    /// and the size of the surface (a warm start is tried only for a nearby point).
+    pub(crate) uv: BTreeMap<u32, ([f64; 2], [f64; 3], f64)>,
+    /// Per blend: samples of its spine curve, and the last point of its true spine found.
+    pub(crate) spine: BTreeMap<u32, std::rc::Rc<Vec<[f64; 3]>>>,
+    pub(crate) spine_last: BTreeMap<u32, [f64; 3]>,
+    pub(crate) spine_fit: BTreeMap<u32, Option<std::rc::Rc<crate::geom::Nurbs>>>,
 }
 
 impl Graph {
@@ -218,7 +234,7 @@ fn run<S: Source>(src: &mut S, modeller: String, key: &str, limits: &Limits) -> 
         }
         nodes.insert(idx, Node { ty, values });
     }
-    Ok(Graph { nodes, layouts, schema_number: number, modeller })
+    Ok(Graph { nodes, layouts, schema_number: number, modeller, cache: Default::default() })
 }
 
 fn value<S: Source>(src: &mut S, code: Code) -> Result<Val, XtError> {
