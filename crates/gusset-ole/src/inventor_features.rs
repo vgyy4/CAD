@@ -1041,6 +1041,9 @@ struct State {
     emitted: HashMap<String, Vec<String>>,
     /// Solid body record -> the tree body made for it.
     bodies: HashMap<usize, String>,
+    /// The flat plates of the sheet-metal faces: a point and unit normal of the sketch plane
+    /// and the span of the material along the normal (mm), for the folds.
+    sheets: Vec<(V3, V3, f64, f64)>,
 }
 
 fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> Result<(), String> {
@@ -2775,6 +2778,9 @@ fn plate(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     if st.first_body.is_none() && op == "join" {
         op = "new";
     }
+    let (o, x, y) = frame(&sketch.m);
+    let span = if symmetric { (-d.abs() / 2.0, d.abs() / 2.0) } else { (d.min(0.0), d.max(0.0)) };
+    st.sheets.push((o, unit3(cross(x, y)), span.0, span.1));
     let mut j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": profiles,
                        "operation": op, "distance": rnd(d), "symmetric": symmetric});
     if op != "new" {
@@ -2845,6 +2851,118 @@ fn loft(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
     if st.first_body.is_none() {
         st.first_body = Some(name.to_string());
     }
+    Ok(())
+}
+
+/// The K-factor of the folds: Inventor's default unfold rule's (every fold of the corpus has its
+/// bend zone where 0.44 places it).
+const K_FACTOR: f64 = 0.44;
+
+/// A sheet-metal fold (`4c37ffe8`): slot 3 the angle (radians), 4 the bend radius (cm), 5 the
+/// bend line (a `833d1b91` record whose `8ef06c89` line a `93c7ee68` record ties to a sketch
+/// line), 1 and 2 the side that moves and the direction, slot 0's third body byte the place of
+/// the bend zone against the line.
+fn fold(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    let s = r.slots(f)?;
+    let angle = r.pval(&s, 3)?;
+    let radius = r.pval(&s, 4)? * CM;
+    let edge =
+        r.dc.refs(s.need(5)?)
+            .into_iter()
+            .map(|(_, y)| y)
+            .find(|&y| r.dc.class(y) == 0x8ef0_6c89)
+            .ok_or("the fold has no bend line")?;
+    let ln = r
+        .back()
+        .get(edge)
+        .into_iter()
+        .flatten()
+        .copied()
+        .filter(|&b| r.dc.class(b) == 0x93c7_ee68)
+        .find_map(|b| r.dc.refs(b).into_iter().map(|(_, y)| y).find(|&y| r.dc.role(y) == Role::SkLine))
+        .ok_or("the bend line is not a sketch line")?;
+    let k = r.owner(ln).ok_or("the bend line has no sketch")?;
+    let sk = r.sketch(k)?;
+    let pts: HashMap<usize, (f64, f64)> = sk.points.iter().map(|&(i, u, v, _)| (i, (u, v))).collect();
+    let (a, b) = sk
+        .curves
+        .iter()
+        .find_map(|c| match *c {
+            Curve::Line { id, a, b, .. } if id == ln => Some((pts.get(&a).copied()?, pts.get(&b).copied()?)),
+            _ => None,
+        })
+        .ok_or("the bend line is not in its sketch")?;
+    let (o, x, y) = frame(&sk.m);
+    let n = unit3(cross(x, y));
+    let w = |p: (f64, f64)| add3(o, add3([x[0] * p.0, x[1] * p.0, x[2] * p.0], [y[0] * p.1, y[1] * p.1, y[2] * p.1]));
+    let (pa, pb) = (w(a), w(b));
+    let u = unit3(sub3(pb, pa));
+    // The flat stretch of sheet the sketch lies on (a plate, or the far side of an earlier
+    // fold), and the side of the sketch plane its material lies on: `m` is 1 along the sketch
+    // normal.
+    let (slab, m) = st
+        .sheets
+        .iter()
+        .rev()
+        .find_map(|&(po, pn, lo, hi)| {
+            let c = dot(pn, n);
+            if (c.abs() - 1.0).abs() > 1e-9 {
+                return None;
+            }
+            let e = dot(sub3(o, po), pn);
+            if (e - lo).abs() < 1e-6 {
+                Some(((po, pn, lo, hi), c.signum()))
+            } else if (e - hi).abs() < 1e-6 {
+                Some(((po, pn, lo, hi), -c.signum()))
+            } else {
+                None
+            }
+        })
+        .ok_or("the fold's sketch is not on a face of a flat stretch of the sheet")?;
+    // Slot 1: 1 folds away from the material (along the face's outward normal), 0 into it.
+    // Slot 2: 0 moves the material left of the line seen from outside the face, 1 the right.
+    let flag = |j: usize| s.get(j).and_then(|i| r.dc.r(i).last().copied());
+    let (Some(away @ 0..=1), Some(right @ 0..=1)) = (flag(1), flag(2)) else {
+        return Err("the fold's side or direction is not read".into());
+    };
+    let out = [-m * n[0], -m * n[1], -m * n[2]];
+    let left_out = cross(out, u);
+    let moving = if right == 1 { [-left_out[0], -left_out[1], -left_out[2]] } else { left_out };
+    let mid = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0, (pa[2] + pb[2]) / 2.0];
+    let keep = sub3(mid, moving);
+    let d = if away == 1 { out } else { [-out[0], -out[1], -out[2]] };
+    let up = dot(d, n);
+    // Slot 0's third body byte: 0 the zone centred on the line, 1 starting at it, 2 ending at it.
+    let s0 = s.get(0).map(|i| r.dc.r(i)).unwrap_or(&[]);
+    let (po, pn, lo, hi) = slab;
+    let t = hi - lo;
+    let zone = angle * (radius + K_FACTOR * t);
+    let (position, fixed_end) = match s0.get(s0.len().saturating_sub(2)) {
+        Some(0) => ("center", -zone / 2.0),
+        Some(1) => ("start", 0.0),
+        Some(2) => ("end", -zone),
+        _ => return Err("the fold's position is not read".into()),
+    };
+    // The folded stretch is the slab turned about the bend's axis (`radius` beyond the inner
+    // face, over the end of the material that stays): later folds may be sketched on it.
+    let inner = if dot(d, pn) > 0.0 { hi + radius } else { lo - radius };
+    let along = inner - dot(sub3(mid, po), pn);
+    let axis_at = add3(
+        add3(mid, [pn[0] * along, pn[1] * along, pn[2] * along]),
+        [moving[0] * fixed_end, moving[1] * fixed_end, moving[2] * fixed_end],
+    );
+    let k_ax = unit3(cross(moving, d));
+    let po2 = add3(axis_at, rotate(sub3(po, axis_at), k_ax, angle));
+    st.sheets.push((po2, rotate(pn, k_ax, angle), lo, hi));
+    let target = st.first_body.clone().ok_or("a fold before any body")?;
+    if !st.done.contains_key(&k) {
+        st.out.push(sk.json());
+        st.done.insert(k, ());
+    }
+    st.out.push(json!({"type": "bend", "name": name, "target": target, "sketch": sk.name,
+                       "line": format!("l{ln}"), "angle": rnd(angle.to_degrees() * up.signum()),
+                       "bend_radius": rnd(radius), "k_factor": K_FACTOR, "position": position,
+                       "keep_point": arr(keep)}));
     Ok(())
 }
 
@@ -3401,6 +3519,7 @@ pub fn feature_tree_with(
         holes: HashMap::new(),
         emitted: HashMap::new(),
         bodies: HashMap::new(),
+        sheets: Vec::new(),
     };
     for (k, f) in feats.iter().enumerate() {
         let name = f.name.clone().unwrap_or_else(|| format!("Feature{}", f.rec));
@@ -3434,6 +3553,7 @@ pub fn feature_tree_with(
             FeatType::Split => split(&r, &mut st, f, &name),
             FeatType::Plate => plate(&r, &mut st, f, &name),
             FeatType::Other(0x2f54_efe0) => loft(&r, &mut st, f, &name),
+            FeatType::Other(0x4c37_ffe8) => fold(&r, &mut st, f, &name),
             // Move Bodies, and the direct edits Move and Scale of whole bodies (note AQ).
             FeatType::Other(0x2b83_9fe9 | 0x8fa6_a6de | 0x5bcb_6fff) => body_transform(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.
