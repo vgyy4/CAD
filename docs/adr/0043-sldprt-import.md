@@ -848,3 +848,27 @@ Round sw14 (L25 in `docs/formats/solidworks-feature-tree.md`) measured the refus
 
 The rebuild check is unchanged. History 333 -> 358 of 1352, none lost (bearings 4 by kept edges; up-to-next cuts,
 start faces, choosers, pattern senses and chain blends the rest).
+
+## Amendment (2026-11-20): pattern seeds, Config-0 sketches, re-blended edges, face lofts, flipped-side cuts (round sw15)
+
+Round sw15 (L26 in `docs/formats/solidworks-feature-tree.md`) measured its own baseline (359 of 1352) and took the
+reader-side causes that a byte rule explains:
+
+- **Pattern and mirror seeds** whose archive index no back reference gives (hole wizard features) are the one
+  feature read between the nodes whose indices enclose it: indices grow along the stream.
+- **Config-0's classes and sketch owners.** A class tag below the count `Config-0` ends on names the class counted
+  there, taken for the sketch class only (Toolbox parts declare it there); in chunk files only where that count also
+  places `moUnitComponent_c` as the stream's own tags do. The sketch objects `Config-0` keeps go to the sketches the
+  equation texts before them name, not by order.
+- **Blend edges a later blend names again** were not blended there and are left out of the earlier blend.
+- **Line references with version word 13000**, and a revolve axis that is a line of another sketch in the sketch
+  plane, added to the sketch as a centerline.
+- **Lofts from a cap** of an earlier extrusion (one sketch and one face reference).
+- **Blind flipped-side cuts** as a cut of the region between the profile (and its holes) and a far frame, on a copy
+  of the sketch.
+- **Face sketches drawn facing into the face**: the sketch frame with the face's normal reversed, where none keeps it.
+
+The reader changed only (gusset-sldprt); the tree import and the rebuild check are unchanged. History 359 -> 370 of
+1352 against the round's own baseline, none lost (pattern seeds 3, Config-0 sketches 3, flipped-side cuts 2,
+re-blended edges 1, face frames 1; Dual V-Wheel Steel, lost by the baseline run to a worker pipe that did not
+close, imports again).
