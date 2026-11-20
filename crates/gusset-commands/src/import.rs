@@ -3622,7 +3622,10 @@ fn rebuild_check(
             max: [a.max[0].max(b.max[0]), a.max[1].max(b.max[1]), a.max[2].max(b.max[2])],
         }))
     };
-    for b in bodies {
+    for (bi, b) in bodies.iter().enumerate() {
+        if let Some(d) = std::env::var_os("GUSSET_OP2_DUMP") {
+            let _ = std::fs::write(std::path::Path::new(&d).join(format!("stored_{bi}.bin")), &b.blob); // OP2DUMP
+        }
         let shape = kernel.read_native(&b.blob).map_err(|e| e.message)?;
         want += kernel.mass_properties(&shape).map_err(|e| e.message)?.volume;
         want_box = union(want_box, kernel.bbox(&shape).map_err(|e| e.message)?);
