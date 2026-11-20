@@ -1075,3 +1075,42 @@ side of its chord in AN815-28D, AN816-28D and -32D, revolves about 1e-4 off); De
 "Solid1::" derives of a part with the part's own name 32; sheet-metal folds and bends 16; AN818 (points
 projected from face intersections, an offset work plane the row moves) and MS20819 members 13; surfaces and
 direct edits 15; shells whose open faces count differently 9; twisted coils 4; lofts 3.
+
+## Amendment (2026-11-20, 27): Inventor round ipt10 - two-direction extrudes, chamfer picks, row steps, sketch region tolerances
+
+Measured first as in round ipt9 (each body part's first failure, then each prefix of the rebuilt history
+against the stored body; scratch, not committed). Decoded or fixed this round (notes AT of
+`docs/formats/inventor-feature-tree.md`):
+
+| rule | parts gained |
+|---|---|
+| extrudes in two directions (slots 27 to 29: second distance, taper, extent); a mirrored copy flips both sides | 4 (gun handle and magazine, two revisions each) |
+| an iPart row's sketch solved in 8 (then 32) steps from the saved values when the direct solve swings an arc to the other side of its chord | 3 (AN815-28D, AN816-28D, AN816-32D) |
+| a blend on edges an earlier cut broke up is retried on the whole edge before that cut | 4 (CNS 9671 M1.4 screws) |
+| chamfers on both halves of one circle are one edge; a chamfer on one edge is picked where its reference lines start | 5 (ISO 4766, ISO 7436, the Content Center screw, the M10x30 coupler screw) |
+| a blend face without a vertex is left to the feature's other faces | 1 (servo motor cover) |
+| sketch regions: segments that part by less than a tenth of the tolerance over their length overlap instead of crossing somewhere along the stretch; circles whose centres are their radii's sum or difference apart within the tolerance touch at one point; curves leaving a point within 1e-6 rad of one another are ordered by curvature | 6 (Tapadera, Locking Plate, the planetary gearbox port, Flange motor side, Winkel 90_CU, the arm's bracket cover) |
+
+The three sketch fixes are in `gusset-sketch` (the region arrangement every importer and the sketcher
+use): Inventor's stored points sit 1e-9 to 1e-12 off the exact tangency or line that a solve leaves, and
+each slip lost a region. The rebuild check is unchanged (every feature builds, volume within 2e-5, box
+within 1e-4).
+
+| corpus | parts | history before | after | without a solid |
+|---|---|---|---|---|
+| first (Zenodo) | 47 | 28 | 28 | 0 |
+| second (57 sources) | 1639 | 686 | 709 | 46 |
+
+No part went from history to body (the MoS2 rig's `SRM` times out under load, a body part either way).
+The changes reach `gusset-commands` and `gusset-sketch`, which SolidWorks and Solid Edge share: both
+corpora were rerun (see below).
+
+What blocks the rest, measured on the 902 bodies: no features 422; derived from a part not in the folder or
+in a cycle 66; imported base bodies 48; features the reader does not export (Design Accelerator gears,
+"Solid1::" self-derives, sheet-metal folds, delete face, face drafts, stitches) 95; blends about 99 (no
+model edge at a pick 39: a fillet rolling over an edge, earlier features that differ from the file's, a
+stale extrusion parameter in AN816-7D); volume differences 46 (`lf_basic` and its kin: Inventor's ruled
+loft is not OCCT's, 7e-5; ISO 7046 recesses; LEGO text); sketch regions 17 (curves 0.04 mm short of their
+neighbours, sketch text); AN818 (a work plane offset `d16` the row moves, circles projected from the
+revolve) and MS20819 members (the larger rows' constraints conflict, also when reached in steps) 13;
+shells whose open faces count differently 11 (most also hold a face draft); lofts 11; coils 6.

@@ -923,3 +923,23 @@ the mirror was saved 3, the AN fittings' flipped fillet 3, revolves 1e-4 off, si
 Accelerator gears and derived "Solid1::" parts whose base has the part's own name 32, sheet-metal folds
 and bends 16, AN818 and MS20819 members 13, shells whose open faces count differently 9, surfaces and
 direct edits (delete face, stitch, trim, face draft) 15, twisted coils 4, lofts 3.
+
+## AT. Two-direction extrudes, chamfer reference lines, row steps, sketch region tolerances (round ipt10)
+- **Extrude slots 27 to 29.** A second direction (`ex_two_dir`): its distance (cm), taper (radians) and
+  extent (1: a distance), on the other side of the sketch from the first. The tree writes it as
+  `distance2` (and `taper2_deg`); a mirror of the extrude flips both sides.
+- **Chamfer reference lines (slot 8).** Every chamfer keeps two lines that start on its first edge and run
+  along its two faces. When the edge read back from the blend face's neighbours misses that start, a
+  one-edge chamfer is picked at the start (on the line, or on the circle about the edge's axis through
+  it); not for iPart members (the lines are the factory's). The result body splits a whole circle in two:
+  both halves are one edge, and the first reference line gives an unequal chamfer's face.
+- **Blend faces without a vertex.** A face tagged with a fillet or chamfer whose loops are not followed
+  names no edge; the feature's other faces give its edges.
+- **iPart rows in steps.** When the member's values swing an arc of the solved sketch more than a quarter
+  turn (a groove's fillet arc from 45 to 225 degrees), the values are reached in 8, then 32, equal steps,
+  each solve starting where the last ended; the result stands when no arc flips and no line turns round.
+  MS20819's larger rows conflict either way (a constraint that holds only for the factory's sizes).
+- **Sketch points within 1e-9 of a tangency.** The stored points of tangent and collinear sketch curves
+  are rounded: a short line along an axis line is 1e-12 rad off it, an arc blending into a circle leaves a
+  4e-10 mm gap between them, lines leaving a circle tangent are 1e-9 rad off its direction either way. The
+  region arrangement takes them as overlapping, touching and leaving the same way (curvature orders them).

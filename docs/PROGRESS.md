@@ -11,8 +11,8 @@ Phase 3 has started (see Next).
 ## Done
 - Importer status (2026-11-14), feature history that rebuilds under the unchanged strict check:
   Fusion 277 of 318 (paused after rounds 33-34 gained none; docs/formats/fusion-corpus-tally.md);
-  SolidWorks 314 of 1352 (rounds sw1-sw12, ADR 0043; was 85; sw12 reads split lines, second directions, drill angles, projected points and skips fillets' own face records); Inventor 686 of 1639 on the new corpus
-  and 28 of 47 on the old (rounds ipt1-ipt9 and op1, ADR 0046 amendments 8-10, 15-19, 25; was 263 and 25; ipt4 reads coils,
+  SolidWorks 314 of 1352 (rounds sw1-sw12, ADR 0043; was 85; sw12 reads split lines, second directions, drill angles, projected points and skips fillets' own face records); Inventor 709 of 1639 on the new corpus
+  and 28 of 47 on the old (rounds ipt1-ipt10 and op1, ADR 0046 amendments 8-10, 15-19, 25, 27; was 263 and 25; ipt4 reads coils,
   embosses, combines, splits and unfolded sheet-metal faces; ipt5 rebuilds derived parts and iPart members
   from their base part in the same folder; ipt6 solves an iPart factory's sketches again for a member's
   row; ipt7 names features through their owned name record, reads body moves and scales, leaves surfaces
@@ -20,7 +20,10 @@ Phase 3 has started (see Next).
   one-way pattern counts and fit spacing, new solid bodies, body mirrors that remove the original, holes to a
   plane or face, and says when a part starts from an imported body (43 parts: not rebuildable); op1 extends the
   face of an extrude to a face (ADR 0061); ipt9 reads tapers, face planes of extrudes to and from a face,
-  half-way revolves, lofts, and moves iPart member sketches and holes with their faces; left: Design
+  half-way revolves, lofts, and moves iPart member sketches and holes with their faces; ipt10 reads extrudes
+  in two directions, picks one-edge chamfers where their reference lines start, steps an iPart row's solve
+  so arcs keep their side, blends what a later cut broke up before the cut, and fixes three tolerance slips
+  of sketch regions (nearly collinear overlaps, nearly tangent circles, curves leaving a point tangent); left: Design
   Accelerator gear teeth, surface consumers, blends whose supports were used up, ISO 7046 tapers, sketch text); Solid Edge 89
   of 180 measured ordered parts (rounds se1-se7 and op2, ADR 0046 amendments 11-13 and 20-24; op2 builds
   rounds OCCT's fillet does not from their corners, ADR 0004 amendment 2026-11-19; se5 reads fast and
