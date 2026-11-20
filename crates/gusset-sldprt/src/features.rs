@@ -2182,12 +2182,18 @@ fn direction_agrees(n: V3, dist: f64, v: V3) -> Option<bool> {
 /// `f64 length`, the start point and the unit direction in model coordinates (m). Returns the
 /// start in mm and the direction. Dual V-Wheel's Revolve1 turns about Axis1, the z axis.
 fn line_ref(d: &[u8], a: usize, b: usize) -> Option<(V3, V3)> {
-    const MARK: [u8; 16] = [0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0, 0x70, 0x17, 0, 0];
+    const MARK: [u8; 12] = [0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0];
     let mut from = a;
     while let Some(i) = find(d, &MARK, from, b) {
         from = i + 1;
-        // Eight zero bytes before the length, sixteen in newer parts (Solid V-Wheel Xtreme).
-        for at in [i + 24, i + 32] {
+        // Version word 6000: eight zero bytes before the length, sixteen in newer parts (Solid
+        // V-Wheel Xtreme); 13000: twenty (round sw15, Lego Hand's Wrist Ring).
+        let at: &[usize] = match u32_at(d, i + 12) {
+            Some(6000) => &[i + 24, i + 32],
+            Some(13000) => &[i + 36],
+            _ => &[],
+        };
+        for &at in at {
             let (Some(len), Some(o), Some(dir)) = (f64_at(d, at), f64s_at::<3>(d, at + 8), f64s_at::<3>(d, at + 32))
             else {
                 continue;
@@ -2202,6 +2208,26 @@ fn line_ref(d: &[u8], a: usize, b: usize) -> Option<(V3, V3)> {
         }
     }
     None
+}
+
+/// A line (model point and unit direction, mm) as two points of the sketch plane `jp`, 10 mm
+/// apart, when it lies in the plane and is not one of the sketch's own axes through its
+/// origin (those the tree takes as they are).
+fn axis_in_plane(o: V3, dir: V3, jp: &JsonPlane) -> Option<((f64, f64), (f64, f64))> {
+    let n = cross(jp.x, jp.y);
+    let w = sub(o, jp.origin);
+    if dot(w, n).abs() > 1e-6 || dot(dir, n).abs() > 1e-9 {
+        return None;
+    }
+    let own = cross(w, dir);
+    let along = |v: V3| (dot(dir, v).abs() - 1.0).abs() < 1e-9;
+    if dot(own, own) < 1e-12 && (along(jp.x) || along(jp.y)) {
+        return None;
+    }
+    let (u, v) = (dot(w, jp.x), dot(w, jp.y));
+    let (du, dv) = (dot(dir, jp.x), dot(dir, jp.y));
+    let r = |t: f64| round_to(t, 6) + 0.0;
+    Some(((r(u), r(v)), (r(u + 10.0 * du), r(v + 10.0 * dv))))
 }
 
 /// The point a feature names by a point reference (`moEndPointRef_w`, an end of an edge, or
@@ -4674,12 +4700,19 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         .or(axis),
                     _ => axis,
                 };
-                let axis_json = match (axis, named) {
+                let mut axis_json = match (axis, named) {
                     (Some(k), _) => json!({"line": format!("c{k}")}),
                     (None, Some((o, dir))) => json!({"origin": json_v3(round3(o)), "direction": json_v3(dir)}),
                     (None, None) => Value::Null,
                 };
-                js.insert("axis".into(), axis_json);
+                // A named axis in the sketch plane that is neither of the sketch's own axes
+                // (a line of another sketch: Lego Hand's Wrist Ring turns about Sketch4's
+                // centerline) goes in as a centerline added to the sketch.
+                let added = match (axis, named, sketch_by_name.get(last_sketch.as_deref().unwrap_or(""))) {
+                    (None, Some((o, dir)), Some(&(_, jp))) => axis_in_plane(o, dir, &jp),
+                    _ => None,
+                };
+                js.insert("axis".into(), axis_json.clone());
                 // An open profile whose loose ends lie on the axis is closed along it.
                 let closing = axis.map(|k| axis_closure(g, k)).unwrap_or_default();
                 if !closing.is_empty()
@@ -4690,9 +4723,28 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         .and_then(|f| f.get_mut("curves"))
                         .and_then(Value::as_array_mut)
                 {
-                    for (j, (p, q)) in closing.into_iter().enumerate() {
+                    for (j, (p, q)) in closing.iter().enumerate() {
                         cs.push(json!({"id": format!("c{}", g.segs.len() + j), "type": "line",
                             "start": format!("p{p}"), "end": format!("p{q}")}));
+                    }
+                }
+                if let Some((p, q)) = added
+                    && let Some(sk) = feats
+                        .iter_mut()
+                        .rev()
+                        .find(|f| f.get("type") == Some(&json!("sketch")) && f.get("name") == Some(&json!(last_sketch)))
+                {
+                    let (pa, pb) = (format!("p{}", g.pts.len()), format!("p{}", g.pts.len() + 1));
+                    let id = format!("c{}", g.segs.len() + closing.len());
+                    if let Some(Value::Array(ps)) = sk.get_mut("points") {
+                        ps.push(json!({"id": pa, "x": p.0, "y": p.1}));
+                        ps.push(json!({"id": pb, "x": q.0, "y": q.1}));
+                    }
+                    if let Some(Value::Array(cs)) = sk.get_mut("curves") {
+                        cs.push(json!({"id": id, "type": "line", "start": pa, "end": pb,
+                            "construction": true, "centerline": true}));
+                        axis_json = json!({"line": id});
+                        js.insert("axis".into(), axis_json);
                     }
                 }
                 // A full revolve's circles can be named by edge records.
@@ -6913,6 +6965,18 @@ mod pattern_tests {
             p["x"] = json!(x + 4.6);
         }
         assert!(helix_sweep(&mut [mid], "P", &h).is_none());
+    }
+
+    #[test]
+    fn a_named_axis_in_the_sketch_plane_becomes_a_sketch_line() {
+        // Lego Hand: Sketch7 on the Right plane turns about Sketch4's tilted centerline.
+        let jp = JsonPlane { origin: [0.0; 3], x: [0.0, 0.0, -1.0], y: [0.0, 1.0, 0.0] };
+        let (p, q) = axis_in_plane([0.0, 2.0528, -2.5], [0.0, -0.6, -0.8], &jp).unwrap();
+        assert_eq!(p, (2.5, 2.0528));
+        assert!((q.0 - 10.5).abs() < 1e-9 && (q.1 - (2.0528 - 6.0)).abs() < 1e-9, "{q:?}");
+        // The sketch's own y axis stays as it is; a line off the plane is not taken.
+        assert_eq!(axis_in_plane([0.0, 5.0, 0.0], [0.0, 1.0, 0.0], &jp), None);
+        assert_eq!(axis_in_plane([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], &jp), None);
     }
 
     #[test]
