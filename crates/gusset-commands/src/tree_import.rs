@@ -2684,8 +2684,11 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
     // Edges on several bodies (Fusion blends them in one feature): one blend per body, each
     // with the same size.
     let (kw, key) = if fillet { ("fillet", "radius") } else { ("chamfer", "distance") };
+    let text_len = g.text.len();
     let mut made = Vec::new();
-    let mut blend_of: HashMap<String, String> = HashMap::new();
+    // The blend that takes each edge, by body and edge name.
+    let mut blend_of: HashMap<(String, String), String> = HashMap::new();
+    let mut plain: Vec<(String, Vec<String>)> = Vec::new();
     for (body, mut names) in by_body {
         // Several source pieces of one edge of the model name it once.
         let mut seen = HashSet::new();
@@ -2694,24 +2697,100 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         let second = if fillet { vertex_radii(&ev, d, &body)? } else { chamfer_second(g, s, d, &body, &names)? };
         let line = format!("\n{kw} {name} (edges: [{}], {key}: {} mm{second})\n", names.join(", "), num(size));
         g.text.push_str(&line);
-        blend_of.insert(body, name.clone());
+        for n in &names {
+            blend_of.insert((body.clone(), n.clone()), name.clone());
+        }
         made.push(name);
+        if second.is_empty() {
+            plain.push((body, names));
+        }
     }
-    let ev = g.evaluate(s).map_err(|e| e.message)?;
-    if let Some(e) = ev.errors().iter().find(|e| made.contains(&e.feature)) {
-        return Err(format!("it does not build here: {}", e.message));
+    let built = g.evaluate(s).map_err(|e| e.message)?;
+    if let Some(e) = built.errors().iter().find(|e| made.contains(&e.feature)) {
+        let why = format!("it does not build here: {}", e.message);
+        // Edges the kernel cannot blend in one go may blend one chain after another, each chain
+        // the edges that meet at a vertex (round sw14: a slot whose rounded ends are two corner
+        // fillets of half its width each, Linkage Arm).
+        if plain.len() != made.len() || plain.iter().all(|(body, names)| chains(&ev, body, names).len() < 2) {
+            return Err(why);
+        }
+        g.text.truncate(text_len);
+        // The names already given go to the first chain of each body.
+        let mut given = std::mem::take(&mut made).into_iter();
+        blend_of.clear();
+        for (body, names) in plain {
+            for (i, chain) in chains(&ev, &body, &names).into_iter().enumerate() {
+                let first = if i == 0 { given.next() } else { None };
+                let name = first.unwrap_or_else(|| g.fresh(&d.name, if fillet { "Fillet" } else { "Chamfer" }));
+                let line = format!("\n{kw} {name} (edges: [{}], {key}: {} mm)\n", chain.join(", "), num(size));
+                g.text.push_str(&line);
+                for n in chain {
+                    blend_of.insert((body.clone(), n), name.clone());
+                }
+                made.push(name);
+            }
+        }
+        let built = g.evaluate(s).map_err(|e| e.message)?;
+        if built.errors().iter().any(|e| made.contains(&e.feature)) {
+            return Err(why);
+        }
     }
     // The tree's name stands for the first; the others are only made.
     if let Some(first) = made.first() {
         g.features.insert(d.name.clone(), first.clone());
     }
     let blends: Vec<(u32, String, String)> =
-        numbered.into_iter().filter_map(|(k, body, n)| Some((k, blend_of.get(&body)?.clone(), n))).collect();
+        numbered.into_iter().filter_map(|(k, body, n)| Some((k, blend_of.get(&(body, n.clone()))?.clone(), n))).collect();
     if !blends.is_empty() {
         g.blends.insert(d.name.clone(), blends);
     }
     g.made.extend(made);
     Ok(())
+}
+
+/// The edges `names` of `body` in `ev` as chains of edges that meet at a vertex, in the order
+/// of their first edge; an edge the body does not have is a chain of its own.
+fn chains(ev: &gusset_eval::Evaluation, body: &str, names: &[String]) -> Vec<Vec<String>> {
+    let b = ev.bodies.iter().find(|b| b.feature == body);
+    let verts = |n: &String| -> Vec<u32> {
+        b.and_then(|b| {
+            let i = b.names.edges.iter().position(|e| e.to_string() == *n)?;
+            b.topology.edges.get(i).map(|e| e.vertices.clone())
+        })
+        .unwrap_or_default()
+    };
+    let vs: Vec<Vec<u32>> = names.iter().map(verts).collect();
+    // Union-find over the edges by shared vertices.
+    let mut root: Vec<usize> = (0..names.len()).collect();
+    fn find(root: &mut [usize], mut i: usize) -> usize {
+        while let Some(&r) = root.get(i) {
+            if r == i {
+                break;
+            }
+            i = r;
+        }
+        i
+    }
+    for i in 0..names.len() {
+        for j in 0..i {
+            let meet = vs.get(i).zip(vs.get(j)).is_some_and(|(a, c)| a.iter().any(|v| c.contains(v)));
+            if meet {
+                let (ri, rj) = (find(&mut root, i), find(&mut root, j));
+                if let Some(r) = root.get_mut(ri) {
+                    *r = rj;
+                }
+            }
+        }
+    }
+    let mut out: Vec<(usize, Vec<String>)> = Vec::new();
+    for (i, n) in names.iter().enumerate() {
+        let r = find(&mut root, i);
+        match out.iter_mut().find(|(k, _)| *k == r) {
+            Some((_, c)) => c.push(n.clone()),
+            None => out.push((r, vec![n.clone()])),
+        }
+    }
+    out.into_iter().map(|(_, c)| c).collect()
 }
 
 /// The `, at: [...]` of a variable fillet on `body` (ADR 0061): each vertex pick named after
