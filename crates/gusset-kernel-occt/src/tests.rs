@@ -3673,3 +3673,39 @@ fn edge_with_midpoint_near(r: &OpResult, m: [f64; 3]) -> u32 {
     let t = k().topology(&r.shape).unwrap();
     t.edges.iter().position(|e| (0..3).all(|i| (e.midpoint[i] - m[i]).abs() < 1e-6)).unwrap() as u32
 }
+
+#[test]
+fn a_round_of_a_rods_foot_wider_than_its_plate_fills_round_with_no_slit() {
+    // A rod of radius 10 standing on a disc of radius 12, 2 thick: a 3 mm round of the rod's
+    // foot is wider than the 2 mm of disc round it. The ball rolls on the rod and on the disc's
+    // top rim all the way round; the fill is the section between the ball and the rod revolved
+    // about the axis, with no face left across it where the round closes on itself.
+    let (rr, rd, t, r) = (10.0f64, 12.0f64, 2.0f64, 3.0f64);
+    let b = k().boolean(BoolOp::Union, &disc(rd, t, 0.0).shape, &disc(rr, 20.0, t).shape).unwrap();
+    let topo = k().topology(&b.shape).unwrap();
+    let e = topo
+        .edges
+        .iter()
+        .position(|x| (x.midpoint[2] - t).abs() < 1e-9 && (x.length - 2.0 * std::f64::consts::PI * rr).abs() < 1e-6)
+        .unwrap() as u32;
+    let f = k().fillet(&b.shape, &[e], r).map_err(|e| e.message).unwrap();
+    // The ball's centre: r off the rod, r from the rim (rd, t).
+    let (cx, cz) = (rr + r, t + (r * r - (rr + r - rd) * (rr + r - rd)).sqrt());
+    let n = 20_000;
+    let g = |z: f64| {
+        let xb = cx - (r * r - (z - cz) * (z - cz)).max(0.0).sqrt();
+        xb * xb - rr * rr
+    };
+    let span = cz - t;
+    let mut sum = g(t) + g(cz);
+    for i in 1..n {
+        sum += g(t + span * f64::from(i) / f64::from(n)) * if i % 2 == 1 { 4.0 } else { 2.0 };
+    }
+    let fill = std::f64::consts::PI * sum * span / (3.0 * f64::from(n));
+    let pi = std::f64::consts::PI;
+    let want = pi * rd * rd * t + pi * rr * rr * 20.0 + fill;
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, want, 1e-6), "{} vs {want}", m.volume);
+    assert!(f.face_origins.iter().all(|o| !o.is_empty()));
+    assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+}

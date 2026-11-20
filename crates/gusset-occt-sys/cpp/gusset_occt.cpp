@@ -706,6 +706,8 @@ struct BlendEdge {
   TopoDS_Face ref;  // null: no reference face
   double a, b;      // fillet radius / chamfer distances (`a` on `ref`)
   int mode;         // 0: one size, 1: two distances, 2: distance `a` and angle `b`
+  // A closed swept cliff corner that is filled: one loft, not two halves (`blend_by_corners`).
+  bool one_loft = false;
 };
 
 void add_blend(BRepFilletAPI_MakeFillet& mk, const BlendEdge& x) { mk.Add(x.a, x.e); }
@@ -3893,9 +3895,11 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
   // As few rows as keep the loft within 1e-5 of the radius of the rows between them (each loft
   // surface is cut by its neighbours' later, and fewer rows make that much faster).
   int nst = 0;
-  // A closed corner cut away in halves takes all 64 rows (with 16 or 32, the halves of a hole's
-  // rim in a thin plate lie within the deviation, but the body cut by their union is invalid).
-  for (int n = closed ? (concave ? 8 : 64) : 4; n <= (closed ? 64 : 32); n *= 2) {
+  // A closed corner is lofted in halves (below), at all 64 rows (with 16 or 32, the halves of a
+  // hole's rim in a thin plate lie within the deviation, but the body cut by their union is
+  // invalid).
+  const bool halves = closed && !(concave && x.one_loft);
+  for (int n = closed ? (halves ? 64 : 8) : 4; n <= (closed ? 64 : 32); n *= 2) {
     rows.clear();
     for (int i = 0; i <= n; ++i) {
       Row w;
@@ -3904,12 +3908,11 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
     }
     if (n == 4 || n == 8 || d == 0) d = 0.25 * std::min(r, rows.front().e.Distance(rows.front().c));
     out.caps.clear();
-    if (closed && !concave) {
-      // A closed corner that is cut away is lofted in two halves: one loft whose end sections
-      // lie on one another leaves both in the body as a slit (110: three rings of a plate
-      // rounded where their sides are lower than the radius). The second half's blend face is
-      // a face of the blend too. (A filled ring keeps its one loft: 041's,
-      // whose fill measures as its corner that way.)
+    if (halves) {
+      // A closed corner is lofted in two halves: one loft whose end sections lie on one another
+      // leaves both in the body as a slit (110: three rings of a plate rounded where their
+      // sides are lower than the radius; 055: a rod's foot filled where the plate round it is
+      // narrower than the radius). The second half's blend face is a face of the blend too.
       std::vector<const Row*> half[2];
       for (int i = 0; i <= n; ++i) half[2 * i <= n ? 0 : 1].push_back(&rows[size_t(i)]);
       half[1].insert(half[1].begin(), half[0].back());
@@ -3946,7 +3949,7 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
     // The arcs' middles between rows, against the loft's blend face (faces).
     double dev = 0;
     std::vector<Handle(Geom_Surface)> blends{BRep_Tool::Surface(TopoDS::Face(out.face))};
-    if (closed && !concave) blends.push_back(BRep_Tool::Surface(TopoDS::Face(out.caps.front())));
+    if (halves) blends.push_back(BRep_Tool::Surface(TopoDS::Face(out.caps.front())));
     for (int i = 0; i < n && dev <= 1e-5 * r; ++i) {
       Row w;
       if (!row_of(i + 0.5, n, w)) return false;
@@ -4846,6 +4849,22 @@ int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const s
     st = cut_corners(s, anc, es, idx, fillet, ext, cut);
     if (st != GS_OK) first = gs_last_error();
   } catch (const Standard_Failure&) {
+  }
+  bool any_closed = false;
+  for (const auto& x : es) any_closed = any_closed || BRep_Tool::IsClosed(x.e);
+  if (st != GS_OK && any_closed) {
+    // Closed filled corners as one loft each (041: a ring filled round a boss's foot measures
+    // as its corner that way, and as more in halves).
+    std::vector<BlendEdge> one = es;
+    for (auto& x : one) x.one_loft = true;
+    try {
+      CornerCut c1;
+      if (cut_corners(s, anc, one, idx, fillet, ext, c1) == GS_OK) {
+        cut = std::move(c1);
+        st = GS_OK;
+      }
+    } catch (const Standard_Failure&) {
+    }
   }
   if (st != GS_OK) {
     trim = true;
