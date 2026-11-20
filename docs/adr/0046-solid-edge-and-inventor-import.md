@@ -1103,7 +1103,8 @@ within 1e-4).
 
 No part went from history to body (the MoS2 rig's `SRM` times out under load, a body part either way).
 The changes reach `gusset-commands` and `gusset-sketch`, which SolidWorks and Solid Edge share: both
-corpora were rerun (see below).
+corpora were rerun and lost nothing. SolidWorks 315 of 1352 (314 on this round's base; `GT2_Bobbin_v2` gained
+by the sketch fixes); Solid Edge 90 of 180 measured ordered parts (89 before; `008.par` gained).
 
 What blocks the rest, measured on the 902 bodies: no features 422; derived from a part not in the folder or
 in a cycle 66; imported base bodies 48; features the reader does not export (Design Accelerator gears,
