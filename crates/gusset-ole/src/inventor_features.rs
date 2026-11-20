@@ -2975,6 +2975,13 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let mut bridged: Vec<BridgedRound> = Vec::new();
     let chamfer_d = (typ == FeatType::Chamfer).then(|| r.pval(&s, 2).ok()).flatten();
     let mm = |v: V3| [rnd_to(v[0] * CM, 1e6), rnd_to(v[1] * CM, 1e6), rnd_to(v[2] * CM, 1e6)];
+    if std::env::var_os("ZZ_BL").is_some() {
+        for &face in &faces {
+            eprintln!("ZZBL {name} face {face} {:?} verts={:?}", b.kind(face), b.verts(face));
+            for (g, _) in b.neighbours(face) { eprintln!("ZZBL    nb {g} {:?}", b.kind(g)); }
+            eprintln!("ZZBL    mid {:?}", b.edge_mid(face));
+        }
+    }
     for &face in &faces {
         let k = b.kind(face);
         // A corner patch; and a planar face with a fillet's tag is a leftover of an edge split
@@ -3231,6 +3238,16 @@ fn chamfer_kind(r: &Reader, s: &Slots, dist: f64, edges: usize) -> Result<Option
     };
     if two != 2 || zero != 0 {
         return Err("the chamfer type record has an unknown layout".into());
+    }
+    if std::env::var_os("ZZ_BL").is_some() {
+        if let Some(i) = s.get(8) && let Some((items, _)) = r.dc.first_list(i, None) {
+            eprintln!("ZZCH ty={ty} dist={dist} edges={edges} items={}", items.len());
+            for k in items.iter().flatten() {
+                let rf = r.dc.r(*k);
+                let f = |j: usize| f64_at(rf, 22 + 8 * j);
+                eprintln!("ZZCH   kind={:?} {:?} {:?} {:?} {:?} {:?} {:?} len={}", u32_at(rf, 10), f(0), f(1), f(2), f(3), f(4), f(5), rf.len());
+            }
+        }
     }
     let leg = match ty {
         0 => return Ok(None),

@@ -76,7 +76,7 @@ fn role_of(g: u32) -> Role {
         0xce52_df3a => Role::SkLine,
         0xce52_df3b => Role::SkCircle,
         0x4507_d460 => Role::SkEllipse,
-        0x317b_7346 => Role::SkSpline,
+        0x317b_7346 | 0xf937_2fd4 => Role::SkSpline,
         0x9087_4d26 => Role::Param,
         0x9087_4d18 => Role::SkPlacement,
         0xce52_df40 => Role::SkDir,

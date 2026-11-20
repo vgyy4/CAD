@@ -2658,6 +2658,22 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
                     if on_path.is_empty() {
                         let near =
                             best.as_ref().map_or(String::new(), |b| format!(" (the nearest is {:.3} mm away)", b.0));
+                        if std::env::var_os("ZZ_IPTDBG").is_some() {
+                            let mut all: Vec<(f64, String)> = Vec::new();
+                            for b in &ev.bodies {
+                                for e in &b.topology.edges {
+                                    all.push((
+                                        norm(sub(e.midpoint, mid)),
+                                        format!("{} {:?} {:?}", b.feature, e.midpoint, e),
+                                    ));
+                                }
+                            }
+                            all.sort_by(|a, b| a.0.total_cmp(&b.0));
+                            eprintln!("ZZPICK {} {mid:?} path={:?}", d.name, pick.path);
+                            for (dd, t) in all.iter().take(6) {
+                                eprintln!("ZZNEAR {dd:.4} {}", &t[..t.len().min(300)]);
+                            }
+                        }
                         return Err(format!("no edge of the model has its midpoint at {mid:?}{near}"));
                     }
                     for (body, n) in on_path {
