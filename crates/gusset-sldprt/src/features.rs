@@ -583,8 +583,10 @@ fn contours(d: &[u8], ids: &HashSet<u32>) -> Vec<Contour> {
 /// the chooser's contours of sketch `fid` in `[lo, hi)` (the feature's span and the stretch since
 /// the previous one: a chooser is written in the sketch's span before the feature, or in the
 /// feature's own span after a nested sketch), whose box centres lie on the sketch's plane. Each
-/// becomes a profile pick by its box (centre and diagonal, mm); a chooser that names as many
-/// contours as the sketch lists is all of them (`None`).
+/// becomes a profile pick by its box (centre and diagonal, mm); a chooser that names more
+/// contours than the sketch lists is not used (`None`). One that names as many still is: the
+/// sketch's list need not hold every region (Connecting Plate_TOP lists the eight pieces of its
+/// four circles that a square through their centres cuts, not the square's middle).
 fn chosen_profiles(
     cs: &[Contour],
     used: &mut HashSet<usize>,
@@ -620,13 +622,60 @@ fn chosen_profiles(
         let span = libm::hypot(hi[0] - lo[0], hi[1] - lo[1]);
         span.is_finite() && c.bbox[3] <= span * (1.0 + 1e-6) + 1e-9
     };
-    if (listed > 0 && chosen.len() >= listed) || !chosen.iter().all(|c| on_plane(c) && fits(c)) {
+    // A chooser whose boxes are older than the sketch's dimensions (Servo_Microcontroller
+    // Enclosure Cover: boxes of circles of 12 and 11 mm drawn 10.6 and 8.1 mm since) still names
+    // the segments around each region: a point inside what they enclose picks the region.
+    let inner = |c: &Contour| {
+        let segs: Vec<&Seg> =
+            c.segs.iter().map(|&k| g.segs.iter().find(|s| s.a == k && !s.construction)).collect::<Option<_>>()?;
+        interior_point(&segs.iter().map(|s| seg_uv(g, s)).collect::<Option<Vec<_>>>()?)
+    };
+    if (listed > 0 && chosen.len() > listed) || !chosen.iter().all(|c| on_plane(c) && (fits(c) || inner(c).is_some())) {
         return None;
     }
     let mm = |v: f64| round_to(v * 1000.0, 9);
     Some(Value::Array(
-        chosen.iter().map(|c| json!({"bbox": [mm(c.bbox[0]), mm(c.bbox[1]), mm(c.bbox[2]), mm(c.bbox[3])]})).collect(),
+        chosen
+            .iter()
+            .map(|c| match inner(c).filter(|_| !fits(c)) {
+                Some((u, v)) => json!({"point": [mm(u), mm(v)]}),
+                None => json!({"bbox": [mm(c.bbox[0]), mm(c.bbox[1]), mm(c.bbox[2]), mm(c.bbox[3])]}),
+            })
+            .collect(),
     ))
+}
+
+/// A point inside what the polylines `segs` enclose (even-odd): the middle of the widest inside
+/// stretch along a few lines across their box; `None` when they enclose nothing.
+fn interior_point(segs: &[Vec<(f64, f64)>]) -> Option<(f64, f64)> {
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &(_, v) in segs.iter().flatten() {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    if !(hi - lo).is_finite() || hi - lo <= 0.0 {
+        return None;
+    }
+    let mut best: Option<(f64, (f64, f64))> = None;
+    for k in 1..12 {
+        // Off the box's simple fractions, so the line misses vertices.
+        let v = lo + (hi - lo) * (f64::from(k) - 0.4371) / 11.0;
+        let mut xs: Vec<f64> = Vec::new();
+        for w in segs.iter().flat_map(|p| p.windows(2)) {
+            let [(x0, y0), (x1, y1)] = w else { continue };
+            if (*y0 > v) != (*y1 > v) {
+                xs.push(x0 + (v - y0) / (y1 - y0) * (x1 - x0));
+            }
+        }
+        xs.sort_by(f64::total_cmp);
+        for pair in xs.chunks_exact(2) {
+            let [a, b] = pair else { continue };
+            if best.is_none_or(|(wd, _)| b - a > wd) {
+                best = Some((b - a, ((a + b) / 2.0, v)));
+            }
+        }
+    }
+    best.filter(|(wd, _)| *wd > 0.0).map(|(_, p)| p)
 }
 
 /// The first child of a node, by archive index (round sw7): after the name, the flags, the id
@@ -2007,6 +2056,8 @@ fn edge_records_to(
 /// A record also continues the run when it starts right after the previous one ends (its class
 /// tag and eight zero bytes between them): records of four references with their extra words
 /// are longer than 0xa0 bytes (the bearings' Chamfer1 picks eight edges 150 to 200 bytes apart).
+/// Newer files put an `f64` (1.2e-7) and six zero bytes more between records: 22 bytes
+/// (Linkage Arm's Fillet2, six corners of a slot and a pocket 168 bytes apart).
 ///
 /// Records that name a face of the feature itself (`own`, its node id) describe the faces it
 /// made (each blend face with its neighbours), not picked edges; newer files write them before
@@ -2019,7 +2070,7 @@ fn selection(recs: Vec<(usize, usize, Vec<Rep>)>, own: u32) -> Vec<(usize, Vec<R
     let mut last_end = 0usize;
     for (start, end, reps) in recs.into_iter().skip(from) {
         match run.last() {
-            Some(last) if start - last.0 > 0xa0 && start.saturating_sub(last_end) > 16 => break,
+            Some(last) if start - last.0 > 0xa0 && start.saturating_sub(last_end) > 24 => break,
             _ => {
                 run.push((start, reps));
                 last_end = end;
@@ -2418,6 +2469,20 @@ fn end_face_ref(d: &[u8], a: usize, b: usize) -> Option<Rep> {
         via: None,
         copy: 0,
     })
+}
+
+/// The kind byte of the last reference record in `[a, b)` (the header's `u8` before `00 00`,
+/// seven bytes before the sentinel pair): 2 a single face reference, 3 a feature's own faces.
+fn last_record_kind(d: &[u8], a: usize, b: usize) -> Option<u8> {
+    let mut from = a;
+    let mut last = None;
+    while let Some(p) = find(d, &SENTINEL, from, b) {
+        from = p + 1;
+        if d.get(p + 8..p + 16) == Some(&SENTINEL[..]) {
+            last = Some(p);
+        }
+    }
+    d.get(last?.checked_sub(7)?).copied()
 }
 
 /// Whether `(u, v)` lies inside the profile (even-odd over its drawn segments; m).
@@ -4226,6 +4291,41 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     pl.insert("origin".into(), json!(origin));
                 }
             }
+            // A blind extrude that starts from a face ("from surface") names it in a single face
+            // reference (`moSingleFaceRef_w`) after its dimensions, the node's last reference
+            // record, of kind 2 (where other nodes end on the face their sketch lies on, kind 0,
+            // or on records of their own faces, kind 3: DC Motor, Link 5); a face parallel to the sketch moves the start onto its plane (SlotBase-Back's
+            // Cut-Extrude3: sketched 15.45 mm up, the counterbores start 21.95 mm up, on the
+            // ceiling of the slot Cut-Extrude1 cut, and run their 13.35 mm down from there).
+            if typ == Some(0)
+                && !symmetric
+                && start_offset.is_none()
+                && let Some(sk) = last_sketch.as_ref()
+                && last_record_kind(rf, a, b) == Some(2)
+                && let Some(r) = end_face_ref(rf, a, b)
+                && let Some((pt, nf)) =
+                    cap_plane(&r, &swept, &sketches, &cap_tags).or_else(|| side_plane(&r, &swept, &sketches))
+                && let Some(entry) = sketch_by_name.get_mut(sk)
+                && swept.values().all(|w| w.sketch != entry.0)
+            {
+                let n = cross(entry.1.x, entry.1.y);
+                let den = dot(n, nf);
+                let s_face = dot(sub(pt, entry.1.origin), nf) / den;
+                if (den.abs() - 1.0).abs() < 1e-9 && s_face.abs() > 1e-9 {
+                    let mut o = entry.1.origin;
+                    for (v, c) in o.iter_mut().zip(n) {
+                        *v = round_to(*v + s_face * c, 6) + 0.0;
+                    }
+                    entry.1.origin = o;
+                    if let Some(Value::Object(f)) = feats.iter_mut().find(|f| {
+                        f.get("type").and_then(Value::as_str) == Some("sketch")
+                            && f.get("name").and_then(Value::as_str) == Some(sk.as_str())
+                    }) && let Some(Value::Object(pl)) = f.get_mut("plane")
+                    {
+                        pl.insert("origin".into(), json!(o));
+                    }
+                }
+            }
             let mut js = Map::new();
             js.insert("type".into(), json!("extrude"));
             js.insert("name".into(), json!(n.name));
@@ -4267,11 +4367,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 }
             } else {
                 js.insert("distance".into(), json!(distance));
-                // A boss of end type 2 stops at the next face it meets (round sw12: mid_elbow's
-                // pins, written through all, ran 360 mm out of a 35 mm part); the reach through
-                // all stays as the fallback where that does not build.
-                if op != "cut"
-                    && typ == Some(2)
+                // End type 2 stops at the next face the sweep meets (round sw12: mid_elbow's pins,
+                // written through all, ran 360 mm out of a 35 mm part; round sw14: a cut too, the
+                // GT3 pulleys' set screw holes go through one wall of the hub, not both); the
+                // reach through all stays as the fallback where that does not build.
+                if typ == Some(2)
+                    && !symmetric
                     && let Some(d) = distance
                 {
                     js.insert("end_condition".into(), json!("to_next"));
@@ -5642,6 +5743,13 @@ fn feature_pattern(
             names.push(s);
         }
     }
+    let all_cuts = names.iter().all(|n| {
+        feats.iter().any(|f| {
+            f.get("name").and_then(Value::as_str) == Some(n.as_str())
+                && (f.get("operation").and_then(Value::as_str) == Some("cut")
+                    || f.get("type").and_then(Value::as_str) == Some("hole"))
+        })
+    });
     let mut out = Vec::new();
     if circular {
         let (Some(count), Some((origin, dir))) = (int("D1"), lines.first()) else {
@@ -5678,8 +5786,15 @@ fn feature_pattern(
                 }
                 None => name.to_string(),
             };
-            out.push(json!({"type": kind, "name": nm, "features": fs, "count": count,
-                "direction": json_v3(*dir), "spacing": mm(spacing)}));
+            let mut js = json!({"type": kind, "name": nm, "features": fs, "count": count,
+                "direction": json_v3(*dir), "spacing": mm(spacing)});
+            // The written line is the picked edge's own; which way the copies run is not
+            // written (round sw13: eight of ten run against it, two with it). A pattern of cuts
+            // is left to the rebuild, which takes the way its copies cut more.
+            if all_cuts && let Some(o) = js.as_object_mut() {
+                o.insert("either_way".into(), json!(true));
+            }
+            out.push(js);
             first = Some(nm);
         }
     }
