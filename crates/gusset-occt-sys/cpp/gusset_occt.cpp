@@ -3612,10 +3612,32 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
   for (int k = 0; k < 2; ++k) narrow[k] = state_in_face(fs[size_t(k)], pm.Translated(u[k] * t)) == TopAbs_OUT;
   if (narrow[0] == narrow[1]) return false;
   const TopoDS_Face fa = fs[narrow[0] ? 1 : 0], fb = fs[narrow[0] ? 0 : 1];
-  // The far edge of `b`.
+  // The far edge of `b`: of its edges that touch no end of the edge, the one whose end planes
+  // pass through the edge's ends (a closed edge: the closed one). Where `b`'s far side is a
+  // chain (100: a strip whose short ends meet other faces part way), the chain's end pieces
+  // do not line up with the edge's ends.
   TopoDS_Vertex v0, v1;
   TopExp::Vertices(x.e, v0, v1);
   if (v0.IsNull() || v1.IsNull()) return false;
+  const bool closed = v0.IsSame(v1);
+  auto lined_up = [&](const TopoDS_Edge& g) {
+    TopoDS_Vertex g0, g1;
+    TopExp::Vertices(g, g0, g1);
+    if (closed != g0.IsSame(g1)) return false;
+    if (closed) return true;
+    BRepAdaptor_Curve cg(g);
+    const gp_Pnt e0 = BRep_Tool::Pnt(v0), e1 = BRep_Tool::Pnt(v1);
+    for (double tc : {cg.FirstParameter(), cg.LastParameter()}) {
+      gp_Pnt p;
+      gp_Vec d;
+      cg.D1(tc, p, d);
+      if (d.Magnitude() < 1e-12) return false;
+      const gp_Dir dd(d);
+      if (std::min(std::fabs(gp_Vec(p, e0).Dot(gp_Vec(dd))), std::fabs(gp_Vec(p, e1).Dot(gp_Vec(dd)))) > tol)
+        return false;
+    }
+    return true;
+  };
   TopoDS_Edge far;
   int nfar = 0;
   for (TopExp_Explorer ex(fb, TopAbs_EDGE); ex.More(); ex.Next()) {
@@ -3625,29 +3647,13 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
     TopExp::Vertices(g, g0, g1);
     if (g0.IsNull() || g1.IsNull()) return false;
     if (g0.IsSame(v0) || g0.IsSame(v1) || g1.IsSame(v0) || g1.IsSame(v1)) continue;
+    if (!lined_up(g)) continue;
     far = g;
     ++nfar;
   }
   if (nfar != 1) return false;
   BRepAdaptor_Curve cc(far);
   const double c0 = cc.FirstParameter(), c1 = cc.LastParameter();
-  TopoDS_Vertex f0, f1;
-  TopExp::Vertices(far, f0, f1);
-  const bool closed = v0.IsSame(v1);
-  if (closed != f0.IsSame(f1)) return false;
-  if (!closed) {
-    // Each end plane of the far edge holds an end of the edge.
-    const gp_Pnt e0 = BRep_Tool::Pnt(v0), e1 = BRep_Tool::Pnt(v1);
-    for (double tc : {c0, c1}) {
-      gp_Pnt p;
-      gp_Vec d;
-      cc.D1(tc, p, d);
-      if (d.Magnitude() < 1e-12) return false;
-      const gp_Dir dd(d);
-      if (std::min(std::fabs(gp_Vec(p, e0).Dot(gp_Vec(dd))), std::fabs(gp_Vec(p, e1).Dot(gp_Vec(dd)))) > tol)
-        return false;
-    }
-  }
   const Handle(Geom_Surface) sa = BRep_Tool::Surface(fa);
   const Handle(Geom_Surface) sb = BRep_Tool::Surface(fb);
   double l0 = 0, l1 = 0;
@@ -3850,31 +3856,71 @@ bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>
   // As few rows as keep the loft within 1e-5 of the radius of the rows between them (each loft
   // surface is cut by its neighbours' later, and fewer rows make that much faster).
   int nst = 0;
-  for (int n = closed ? 8 : 4; n <= (closed ? 64 : 32); n *= 2) {
+  // A closed corner cut away in halves takes all 64 rows (with 16 or 32, the halves of a hole's
+  // rim in a thin plate lie within the deviation, but the body cut by their union is invalid).
+  for (int n = closed ? (concave ? 8 : 64) : 4; n <= (closed ? 64 : 32); n *= 2) {
     rows.clear();
     for (int i = 0; i <= n; ++i) {
       Row w;
       if (!row_of(i, n, w)) return false;
       rows.push_back(w);
     }
-    if (n == 4 || n == 8) d = 0.25 * std::min(r, rows.front().e.Distance(rows.front().c));
-    std::vector<const Row*> main_rows;
-    for (const Row& w : rows) main_rows.push_back(&w);
+    if (n == 4 || n == 8 || d == 0) d = 0.25 * std::min(r, rows.front().e.Distance(rows.front().c));
     out.caps.clear();
-    if (!loft(main_rows, out.exact, out.cutter, out.face, closed ? nullptr : &out.caps)) return false;
+    if (closed && !concave) {
+      // A closed corner that is cut away is lofted in two halves: one loft whose end sections
+      // lie on one another leaves both in the body as a slit (110: three rings of a plate
+      // rounded where their sides are lower than the radius). The second half's blend face is
+      // a face of the blend too. (A filled ring keeps its one loft: 041's,
+      // whose fill measures as its corner that way.)
+      std::vector<const Row*> half[2];
+      for (int i = 0; i <= n; ++i) half[2 * i <= n ? 0 : 1].push_back(&rows[size_t(i)]);
+      half[1].insert(half[1].begin(), half[0].back());
+      TopoDS_Shape ex[2], tl[2], fc[2];
+      for (int h = 0; h < 2; ++h)
+        if (!loft(half[h], ex[h], tl[h], fc[h], nullptr)) return false;
+      TopoDS_Compound both;
+      BRep_Builder bb;
+      bb.MakeCompound(both);
+      bb.Add(both, ex[0]);
+      bb.Add(both, ex[1]);
+      out.exact = both;
+      // The tool: both halves as one solid, with no face between them.
+      BRepAlgoAPI_Fuse fu(tl[0], tl[1]);
+      if (!fu.IsDone() || fu.Shape().IsNull()) return false;
+      TopExp_Explorer one(fu.Shape(), TopAbs_SOLID);
+      if (!one.More()) return false;
+      out.cutter = one.Current();
+      one.Next();
+      if (one.More() || !BRepCheck_Analyzer(out.cutter).IsValid()) return false;
+      auto image = [&](const TopoDS_Shape& f) {
+        const ShapeList& m = fu.Modified(f);
+        return m.IsEmpty() ? f : m.First();
+      };
+      out.face = image(fc[0]);
+      out.caps.push_back(image(fc[1]));
+    } else {
+      std::vector<const Row*> main_rows;
+      for (const Row& w : rows) main_rows.push_back(&w);
+      if (!loft(main_rows, out.exact, out.cutter, out.face, closed ? nullptr : &out.caps)) return false;
+    }
     nst = n;
     if (n == (closed ? 64 : 32)) break;
-    // The arcs' middles between rows, against the loft's blend face.
+    // The arcs' middles between rows, against the loft's blend face (faces).
     double dev = 0;
-    const Handle(Geom_Surface) fs_blend = BRep_Tool::Surface(TopoDS::Face(out.face));
+    std::vector<Handle(Geom_Surface)> blends{BRep_Tool::Surface(TopoDS::Face(out.face))};
+    if (closed && !concave) blends.push_back(BRep_Tool::Surface(TopoDS::Face(out.caps.front())));
     for (int i = 0; i < n && dev <= 1e-5 * r; ++i) {
       Row w;
       if (!row_of(i + 0.5, n, w)) return false;
       const gp_Pnt m =
           w.x.Translated((gp_Vec(w.x, w.t).Normalized() + gp_Vec(w.x, w.c).Normalized()).Normalized() * r);
-      GeomAPI_ProjectPointOnSurf pr(m, fs_blend);
-      if (!pr.IsDone() || pr.NbPoints() < 1) dev = 1;
-      else dev = std::max(dev, pr.LowerDistance());
+      double near = 1;
+      for (const auto& fs_blend : blends) {
+        GeomAPI_ProjectPointOnSurf pr(m, fs_blend);
+        if (pr.IsDone() && pr.NbPoints() > 0) near = std::min(near, pr.LowerDistance());
+      }
+      dev = std::max(dev, near);
     }
     if (dev <= 1e-5 * r) break;
   }
@@ -4767,13 +4813,12 @@ int blend_by_corners(const GsShape* s, const std::vector<BlendEdge>& es, const s
       }
       placed_all = placed_all && placed;
     }
-    if (placed_all) {
-      CornerCut longer;
-      st = cut_corners(s, anc, es, idx, fillet, ext, longer, trim);
-      if (st != GS_OK) return st;
-      if (!longer.orphans.empty()) return fail("a corner left a face with no origin");
-      cut = std::move(longer);
-    }
+    if (!placed_all) return fail("a corner left a face with no origin");
+    CornerCut longer;
+    st = cut_corners(s, anc, es, idx, fillet, ext, longer, trim);
+    if (st != GS_OK) return st;
+    if (!longer.orphans.empty()) return fail("a corner left a face with no origin");
+    cut = std::move(longer);
   }
   to_buf(cut.o, origins);
   *out = new GsShape{cut.result};

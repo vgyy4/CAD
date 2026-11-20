@@ -3572,3 +3572,42 @@ fn rounds_at_the_foot_of_a_low_tab_meet_where_their_runs_cross() {
         assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
     }
 }
+
+#[test]
+fn a_round_wider_than_a_thin_plates_hole_takes_its_wall_whole_with_no_slit() {
+    // A 40 x 40 x 1 plate with a hole of radius 10: a 3 mm round of the hole's top rim is wider
+    // than the plate is thick. The ball rolls on the top face and on the hole's bottom rim all
+    // the way round; the corner removed is the section between the ball and the wall revolved
+    // about the hole's axis, with no face left across it where the round closes on itself.
+    let (rh, r, h) = (10.0f64, 3.0f64, 1.0f64);
+    let mut region = Region2 { outer: rect(40.0, 40.0, 1), holes: vec![] };
+    region
+        .holes
+        .push(Loop2 { edges: vec![ProfileEdge { seg: Seg2::Circle { center: [20.0, 20.0], radius: rh }, tag: 99 }] });
+    let p = Profile { frame: Frame::XY, regions: vec![region] };
+    let b = k().extrude(&p, &ExtrudeSpec { distance: h, symmetric: false }).unwrap();
+    let t = k().topology(&b.shape).unwrap();
+    let e = t
+        .edges
+        .iter()
+        .position(|x| (x.midpoint[2] - h).abs() < 1e-9 && (x.length - 2.0 * std::f64::consts::PI * rh).abs() < 1e-6)
+        .unwrap() as u32;
+    let f = k().fillet(&b.shape, &[e], r).map_err(|e| e.message).unwrap();
+    let (cz, cx) = (h - r, rh + (r * r - (h - r) * (h - r)).sqrt());
+    // pi * the integral over the wall's height of x_ball(z)^2 - rh^2 (Simpson).
+    let n = 20_000;
+    let g = |z: f64| {
+        let xb = cx - (r * r - (z - cz) * (z - cz)).max(0.0).sqrt();
+        xb * xb - rh * rh
+    };
+    let mut sum = g(0.0) + g(h);
+    for i in 1..n {
+        sum += g(h * f64::from(i) / f64::from(n)) * if i % 2 == 1 { 4.0 } else { 2.0 };
+    }
+    let removed = std::f64::consts::PI * sum * h / (3.0 * f64::from(n));
+    let want = (40.0 * 40.0 - std::f64::consts::PI * rh * rh) * h - removed;
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, want, 1e-6), "{} vs {want}", m.volume);
+    assert!(f.face_origins.iter().all(|o| !o.is_empty()));
+    assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+}
