@@ -3704,8 +3704,12 @@ fn ref_lines(r: &Reader, s: &Slots) -> Vec<(u32, V3, V3)> {
 /// A chamfer on one edge whose reference lines start off the edge read from its blend face
 /// (the face's neighbours meet elsewhere): the pick at the lines' start, on that edge's line
 /// or on the circle about its axis through the start. `None` when the start lies on the edge
-/// read. An iPart member's lines are the factory's, so they are not used for it.
+/// read, or more than 1 cm off it (the lines then belong to another edge: 3 to 25 cm off on six
+/// corpus parts where the edge read is the right one). An iPart member's lines are the
+/// factory's, so they are not used for it.
 fn chamfer_edge_at_lines(lines: &[(u32, V3, V3)], info: &EdgeInfo, m: V3) -> Option<(V3, EdgeInfo)> {
+    // How far (cm) the start may lie from the edge read from the blend faces.
+    const REF_REACH: f64 = 1.0;
     let &(2, p0, _) = lines.first()? else { return None };
     let off = |q: V3, dir: V3| {
         let d = crate::acis::sub(q, m);
@@ -3715,14 +3719,17 @@ fn chamfer_edge_at_lines(lines: &[(u32, V3, V3)], info: &EdgeInfo, m: V3) -> Opt
     match *info {
         EdgeInfo::Line { dir } => {
             let dir = unit3(dir);
-            (off(p0, dir) > 1e-7).then_some((p0, EdgeInfo::Line { dir }))
+            let o = off(p0, dir);
+            (o > 1e-7 && o <= REF_REACH).then_some((p0, EdgeInfo::Line { dir }))
         }
         EdgeInfo::Circle { cen, ax, r } => {
             let ax = unit3(ax);
-            let c = crate::acis::add(cen, crate::acis::mul(ax, dot(crate::acis::sub(p0, cen), ax)));
+            let h = dot(crate::acis::sub(p0, cen), ax);
+            let c = crate::acis::add(cen, crate::acis::mul(ax, h));
             let rr = crate::acis::dist(p0, c);
-            let on = (dot(crate::acis::sub(p0, cen), ax)).abs() <= 1e-7 && (rr - r).abs() <= 1e-7;
-            (!on && rr > 1e-9).then_some((p0, EdgeInfo::Circle { cen: c, ax, r: rr }))
+            let on = h.abs() <= 1e-7 && (rr - r).abs() <= 1e-7;
+            let near = h.abs() <= REF_REACH && (rr - r).abs() <= REF_REACH;
+            (!on && near && rr > 1e-9).then_some((p0, EdgeInfo::Circle { cen: c, ax, r: rr }))
         }
     }
 }
