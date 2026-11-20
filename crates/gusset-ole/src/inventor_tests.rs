@@ -2123,3 +2123,19 @@ fn loop_points_measure_exactly_against_arcs() {
     assert!((curve_dist((5.0, 1.0), &[Poly::Line((0.0, 0.0), (10.0, 0.0))]) - 1.0).abs() < 1e-12);
     assert!(curve_dist((0.0, 0.0), &[]).is_infinite());
 }
+
+/// A face draft's neutral plane is where a face's plane before the draft meets its plane after:
+/// the top of a box (z = 20) turned by 5 degrees about its back edge (y = 50) for a pull along
+/// +y meets the turned plane at y = 50.
+#[test]
+fn a_draft_turns_a_face_about_its_line_on_the_neutral_plane() {
+    use crate::inventor_features::hinge_height;
+    let a = 5f64.to_radians();
+    let before = ([30.0, 35.0, 20.0], [0.0, 0.0, 1.0]);
+    let after = ([30.0, 50.0, 20.0], [0.0, libm::sin(a), libm::cos(a)]);
+    let h = hinge_height(before, after, [0.0, 1.0, 0.0], a).unwrap();
+    assert!((h - 50.0).abs() < 1e-9, "{h}");
+    // Another angle, or a line along the pull, is refused.
+    assert!(hinge_height(before, after, [0.0, 1.0, 0.0], 2.0 * a).is_err());
+    assert!(hinge_height(before, after, [1.0, 0.0, 0.0], a).is_err());
+}

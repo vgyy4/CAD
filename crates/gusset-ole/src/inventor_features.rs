@@ -2234,6 +2234,81 @@ fn named_face(r: &Reader, st: &State, (fid, a, b): (i64, i64, i64)) -> Result<(V
     }
 }
 
+/// A face draft (`f4fa0900`): slot 0 the pull direction, 1 the faces (named, see
+/// [`face_name`]), 3 the angle (radians). Each face turns about the line where its plane before
+/// the draft (from its name) meets its plane in the result body (found by its name's
+/// attributes); those lines must lie in one plane across the pull direction, which is the
+/// draft's neutral plane, and the planes must be the angle apart. The part narrows along the
+/// pull as the result's faces lean.
+fn face_draft(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    let s = r.slots(f)?;
+    let pull = r.dc.skdir(s.need(0)?).map(|a| unit3([a[2], a[3], a[4]])).ok_or("the pull direction is not readable")?;
+    let angle = r.pval(&s, 3)?;
+    let (items, _) = r.dc.first_list(s.need(1)?, None).ok_or("the draft's face list is not readable")?;
+    let res = r.result().ok_or("the result body is not readable")?;
+    let mut picks: Vec<Value> = Vec::new();
+    let mut plane: Option<(f64, bool)> = None;
+    for it in items {
+        let nm = it.and_then(|x| face_name(r, x)).ok_or("a drafted face's name is not read")?;
+        let (p0, n0) = named_face(r, st, nm).map_err(|w| format!("a drafted face: {w}"))?;
+        let (q1, n1) = named_result_plane(res, nm).ok_or("a drafted face is not a plane in the result body")?;
+        let h = hinge_height((p0, n0), (q1, n1), pull, angle)?;
+        // The part narrows along the pull where the result's outward normals lean along it.
+        let lean = dot(n1, pull) > 0.0;
+        match plane {
+            None => plane = Some((h, lean)),
+            Some((h0, l0)) if (h0 - h).abs() < 1e-6 && l0 == lean => {}
+            Some(_) => return Err("the drafted faces turn about lines in several planes".into()),
+        }
+        picks.push(json!({"point": arr(p0)}));
+    }
+    let (h, lean) = plane.ok_or("the draft has no faces")?;
+    let normal = if lean { pull } else { [-pull[0], -pull[1], -pull[2]] };
+    st.out.push(json!({"type": "draft", "name": name, "faces": picks,
+                       "plane": {"origin": arr([pull[0] * h, pull[1] * h, pull[2] * h]), "normal": arr(normal)},
+                       "angle": rnd(angle.to_degrees())}));
+    Ok(())
+}
+
+/// How far along the pull (unit) the line lies where a face's plane before a draft (a point and
+/// unit normal) meets its plane after: the height of the draft's neutral plane. The line must run
+/// across the pull and the planes be `angle` (radians) apart.
+pub(crate) fn hinge_height((p0, n0): (V3, V3), (q1, n1): (V3, V3), pull: V3, angle: f64) -> Result<f64, String> {
+    let u = cross(n0, n1);
+    let uu = dot(u, u);
+    if uu < 1e-18 || dot(unit3(u), pull).abs() > 1e-6 {
+        return Err("a drafted face does not turn about a line across the pull".into());
+    }
+    if (libm::acos(dot(n0, n1).abs().min(1.0)) - angle).abs() > 1e-6 {
+        return Err("a drafted face is not turned by the draft angle".into());
+    }
+    // The point of the line nearest the origin.
+    let (d0, d1) = (dot(n0, p0), dot(n1, q1));
+    let (c1, c0) = (cross(n1, u), cross(u, n0));
+    let x = add3([c1[0] * d0, c1[1] * d0, c1[2] * d0], [c0[0] * d1, c0[1] * d1, c0[2] * d1]);
+    Ok(dot(x, pull) / uu)
+}
+
+/// The plane (a point and the outward unit normal, mm) of a result-body face that carries the
+/// name's attributes (feature id and its two numbers, `NMx_*` ints 3, 5 and 7).
+fn named_result_plane(res: &Acis, (fid, a, b): (i64, i64, i64)) -> Option<(V3, V3)> {
+    res.recs.iter().find_map(|r| {
+        if !r.ty.starts_with("NMx")
+            || r.ints.get(3) != Some(&fid)
+            || r.ints.get(5) != Some(&a)
+            || r.ints.get(7) != Some(&b)
+        {
+            return None;
+        }
+        let f = r.refs.iter().copied().find(|&y| res.is(y, "face"))?;
+        let Surf::Plane { p, n } = res.kind(f) else { return None };
+        // A reversed face (first flag) faces against its surface.
+        let sense = if res.recs.get(usize::try_from(f).ok()?)?.flags.first() == Some(&0x0a) { -1.0 } else { 1.0 };
+        let n = unit3(n);
+        Some(([p[0] * CM, p[1] * CM, p[2] * CM], [n[0] * sense, n[1] * sense, n[2] * sense]))
+    })
+}
+
 /// Points (mm) on the faces a shell opens, from the faces' names (see [`named_face`]).
 fn named_openings(r: &Reader, st: &State, list: usize, why: &dyn Fn() -> String) -> Result<Vec<V3>, String> {
     let (items, _) = r.dc.first_list(list, None).ok_or_else(why)?;
@@ -3730,6 +3805,7 @@ pub fn feature_tree_with(
             FeatType::Plate => plate(&r, &mut st, f, &name),
             FeatType::Other(0x2f54_efe0) => loft(&r, &mut st, f, &name),
             FeatType::Other(0x4c37_ffe8) => fold(&r, &mut st, f, &name),
+            FeatType::Other(0xf4fa_0900) => face_draft(&r, &mut st, f, &name),
             // Move Bodies, and the direct edits Move and Scale of whole bodies (note AQ).
             FeatType::Other(0x2b83_9fe9 | 0x8fa6_a6de | 0x5bcb_6fff) => body_transform(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.
