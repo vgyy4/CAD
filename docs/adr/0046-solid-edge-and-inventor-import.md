@@ -1136,9 +1136,9 @@ rounds now build, volume within 1.0e-6 of the stored bodies) and 094 (its concav
 low wall, which `cut_corners` had mitred into a plain corner, is the cliff corner now).
 Changed first reasons, still not history: 083 and 088 now stop at their second round (r 0.381
 on 0.381 mm edges of the tab's back, OCCT fails), 041 at a later round (an edge not found),
-055 and 110 at rounds whose cliff corners leave faces with no origin, 174 at a sweep that took
-too long while two other rounds' imports ran beside it (it measured before; no history either
-way).
+055 and 110 at rounds whose cliff corners leave faces with no origin. (174 hit the import time
+limit at a sweep once while two other rounds' imports shared the machine; alone it measures
+as before, 3 minutes, its features' volume differing from the stored body's.)
 
 **What is left among round failures (measured).** Narrow faces whose far side is not one edge
 (5), plain rounds OCCT does not build where no face is narrow (20 rounds, mostly corners of
