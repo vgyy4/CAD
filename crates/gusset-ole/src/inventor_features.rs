@@ -2168,11 +2168,19 @@ fn shell(r: &Reader, st: &mut State, f: &Feature, name: &str, later: &[i64]) -> 
     Ok(())
 }
 
-/// A face an extrude made, from its name (see [`face_name`]): a point in its middle and the
-/// unit normal of its plane (mm). A start or end cap at the extrude's profile pick point moved
-/// to the cap, a side face at the middle of the sketch line it was swept from (the name's curve
-/// number counts the sketch's entities from 1), half way along the extrude.
-fn named_face(r: &Reader, st: &State, (fid, a, b): (i64, i64, i64)) -> Result<(V3, V3), String> {
+/// The surface of a face placed from its name (mm): a plane's unit normal, or a cylinder's
+/// axis point and unit direction, radius, and whether the extrude that made it cut (a hole's
+/// wall) or added material (a boss).
+enum NamedSurf {
+    Plane(V3),
+    Cyl { c: V3, ax: V3, r: f64, cut: bool },
+}
+
+/// A face an extrude made, from its name (see [`face_name`]): a point in its middle and its
+/// surface (mm). A start or end cap at the extrude's profile pick point moved to the cap, a side
+/// face at the middle of the sketch line it was swept from, or on the circle it was swept from
+/// (the name's curve number counts the sketch's entities from 1), half way along the extrude.
+fn named_face(r: &Reader, st: &State, (fid, a, b): (i64, i64, i64)) -> Result<(V3, NamedSurf), String> {
     let (&frec, fname) = st
         .names
         .iter()
@@ -2211,7 +2219,7 @@ fn named_face(r: &Reader, st: &State, (fid, a, b): (i64, i64, i64)) -> Result<(V
                 .and_then(Value::as_array)
                 .and_then(|pk| Some((pk.first()?.as_f64()?, pk.get(1)?.as_f64()?)))
                 .ok_or("the extrude has no profile point")?;
-            Ok((w(q, if b == 12 { d } else { 0.0 }), nn))
+            Ok((w(q, if b == 12 { d } else { 0.0 }), NamedSurf::Plane(nn)))
         }
         20 => {
             let entity = usize::try_from(a)
@@ -2219,16 +2227,27 @@ fn named_face(r: &Reader, st: &State, (fid, a, b): (i64, i64, i64)) -> Result<(V
                 .and_then(|a| r.owned(ps).get(a.checked_sub(1)?).copied())
                 .ok_or("its sketch entity is not found")?;
             let pts: HashMap<usize, P2> = sk.points.iter().map(|&(i, u, v, _)| (i, (u, v))).collect();
-            let (pa, pb) = sk
+            let curve = sk
                 .curves
                 .iter()
-                .find_map(|c| match *c {
-                    Curve::Line { id, a, b, .. } if id == entity => Some((*pts.get(&a)?, *pts.get(&b)?)),
-                    _ => None,
-                })
-                .ok_or_else(|| format!("its sketch entity is not a line ({:?})", r.dc.role(entity)))?;
-            let dir = sub3(w(pb, 0.0), w(pa, 0.0));
-            Ok((w(((pa.0 + pb.0) / 2.0, (pa.1 + pb.1) / 2.0), d / 2.0), unit3(cross(dir, nn))))
+                .find(|c| matches!(**c, Curve::Line { id, .. } | Curve::Circle { id, .. } if id == entity))
+                .ok_or_else(|| format!("its sketch entity is not a line or circle ({:?})", r.dc.role(entity)))?;
+            match *curve {
+                Curve::Line { a, b, .. } => {
+                    let (pa, pb) = (*pts.get(&a).ok_or("a line end")?, *pts.get(&b).ok_or("a line end")?);
+                    let dir = sub3(w(pb, 0.0), w(pa, 0.0));
+                    Ok((
+                        w(((pa.0 + pb.0) / 2.0, (pa.1 + pb.1) / 2.0), d / 2.0),
+                        NamedSurf::Plane(unit3(cross(dir, nn))),
+                    ))
+                }
+                Curve::Circle { c, r: rad, .. } => {
+                    let c = *pts.get(&c).ok_or("a circle centre")?;
+                    let cut = ex.get("operation").and_then(Value::as_str) == Some("cut");
+                    Ok((w((c.0 + rad, c.1), d / 2.0), NamedSurf::Cyl { c: w(c, 0.0), ax: nn, r: rad, cut }))
+                }
+                _ => Err("its sketch entity is not a line or circle".into()),
+            }
         }
         _ => Err(format!("face kind {b} is not read")),
     }
@@ -2250,11 +2269,27 @@ fn face_draft(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(),
     let mut plane: Option<(f64, bool)> = None;
     for it in items {
         let nm = it.and_then(|x| face_name(r, x)).ok_or("a drafted face's name is not read")?;
-        let (p0, n0) = named_face(r, st, nm).map_err(|w| format!("a drafted face: {w}"))?;
-        let (q1, n1) = named_result_plane(res, nm).ok_or("a drafted face is not a plane in the result body")?;
-        let h = hinge_height((p0, n0), (q1, n1), pull, angle)?;
-        // The part narrows along the pull where the result's outward normals lean along it.
-        let lean = dot(n1, pull) > 0.0;
+        let (p0, surf) = named_face(r, st, nm).map_err(|w| format!("a drafted face: {w}"))?;
+        let (h, lean) = match surf {
+            NamedSurf::Plane(n0) => {
+                let (q1, n1) = named_result_plane(res, nm).ok_or("a drafted face is not a plane in the result body")?;
+                // The part narrows along the pull where the result's outward normals lean along it.
+                (hinge_height((p0, n0), (q1, n1), pull, angle)?, dot(n1, pull) > 0.0)
+            }
+            NamedSurf::Cyl { c, ax, r: rad, cut } => {
+                if (dot(ax, pull).abs() - 1.0).abs() > 1e-9 {
+                    return Err("a drafted cylinder does not run along the pull".into());
+                }
+                let rims = named_result_rims(res, nm, c, pull).ok_or("a drafted cylinder's rims are not found")?;
+                let ((h0, r0), (h1, r1)) = rims;
+                let slope = (r1 - r0) / (h1 - h0);
+                if (libm::atan(slope.abs()) - angle).abs() > 1e-6 {
+                    return Err("a drafted cylinder is not turned by the draft angle".into());
+                }
+                // A boss narrows where its radius falls along the pull, a hole where it grows.
+                (h0 + (rad - r0) / slope, (slope < 0.0) != cut)
+            }
+        };
         match plane {
             None => plane = Some((h, lean)),
             Some((h0, l0)) if (h0 - h).abs() < 1e-6 && l0 == lean => {}
@@ -2287,6 +2322,41 @@ pub(crate) fn hinge_height((p0, n0): (V3, V3), (q1, n1): (V3, V3), pull: V3, ang
     let (c1, c0) = (cross(n1, u), cross(u, n0));
     let x = add3([c1[0] * d0, c1[1] * d0, c1[2] * d0], [c0[0] * d1, c0[1] * d1, c0[2] * d1]);
     Ok(dot(x, pull) / uu)
+}
+
+/// The two rims of a result-body face that carries the name's attributes, as (height along
+/// `pull`, distance from the axis through `c` along `pull`) at its lowest and highest vertices
+/// (mm). `None` unless the face has vertices at two heights, each at one distance.
+fn named_result_rims(res: &Acis, (fid, a, b): (i64, i64, i64), c: V3, pull: V3) -> Option<((f64, f64), (f64, f64))> {
+    let f = res.recs.iter().find_map(|r| {
+        (r.ty.starts_with("NMx")
+            && r.ints.get(3) == Some(&fid)
+            && r.ints.get(5) == Some(&a)
+            && r.ints.get(7) == Some(&b))
+        .then(|| r.refs.iter().copied().find(|&y| res.is(y, "face")))
+        .flatten()
+    })?;
+    let hr: Vec<(f64, f64)> = res
+        .verts(f)
+        .into_iter()
+        .map(|v| {
+            let v = [v[0] * CM, v[1] * CM, v[2] * CM];
+            let q = sub3(v, c);
+            let along = dot(q, pull);
+            (dot(v, pull), libm::sqrt((dot(q, q) - along * along).max(0.0)))
+        })
+        .collect();
+    let lo = hr.iter().map(|x| x.0).fold(f64::INFINITY, f64::min);
+    let hi = hr.iter().map(|x| x.0).fold(f64::NEG_INFINITY, f64::max);
+    if hi - lo <= 1e-6 || !hi.is_finite() || !lo.is_finite() {
+        return None;
+    }
+    let rim = |h: f64| {
+        let rs: Vec<f64> = hr.iter().filter(|x| (x.0 - h).abs() < 1e-6).map(|x| x.1).collect();
+        let r0 = *rs.first()?;
+        rs.iter().all(|r| (r - r0).abs() < 1e-6).then_some(r0)
+    };
+    Some(((lo, rim(lo)?), (hi, rim(hi)?)))
 }
 
 /// The plane (a point and the outward unit normal, mm) of a result-body face that carries the
