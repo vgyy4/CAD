@@ -804,3 +804,25 @@ sheet of volume 0. The OpenBuilds bearings' chamfers list eight edges where the 
 byte found); a D-cut shaft fails in OCCT (a cut whose arc lies on the cylinder leaves a sliver face).
 
 The rebuild check is unchanged. History 293 -> 314 of 1352, none lost.
+
+## Amendment (2026-11-19): converted segments, revolve axes, drafted extrudes (round sw13)
+
+Round sw13 (L24 in `docs/formats/solidworks-feature-tree.md`) took the causes that recurred among the refusals that
+are not STEP-style imports:
+
+- **Converted sketch segments** without an object chain are read from their own payload, as round sw12's projected
+  points (they took the next segment's place, leaving the profile open).
+- **Revolve axes.** A full revolve's box centre lies on its axis; where the line the reader chose misses it, the
+  line through it with the profile on one side is taken (a profile edge or a lone line off the sketch's axes).
+  Centerlines go before construction lines.
+- **Open revolve profiles** whose loose ends lie on the axis are closed along the axis, as SolidWorks does.
+- **Drafted extrudes** become the extrude and a `draft` of its side faces about the sketch plane, pulled the way the
+  feature runs into the part; the extrude keeps its own faces (`refine` off) where its sides would continue an
+  earlier extrude's. The draft angle is the extrude's placed `D3`.
+
+Measured and not done: linear pattern directions run against the picked edge in eight of the ten the rebuild could
+decide, with no byte found that tells the two cases apart; contour choosers whose boxes exceed their curves; open
+cut profiles that end on the body's outline.
+
+The rebuild check is unchanged. History 314 -> 332 of 1352, none lost (converted segments 3, revolve axes and open revolve profiles 10, drafted
+extrudes 5; Expansion Block by the same fixes).
