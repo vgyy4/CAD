@@ -943,3 +943,46 @@ direct edits (delete face, stitch, trim, face draft) 15, twisted coils 4, lofts 
   are rounded: a short line along an axis line is 1e-12 rad off it, an arc blending into a circle leaves a
   4e-10 mm gap between them, lines leaving a circle tangent are 1e-9 rad off its direction either way. The
   region arrangement takes them as overlapping, touching and leaving the same way (curvature orders them).
+
+## AU. Sheet-metal folds, face names, face drafts, sweep paths as wire bodies (round ipt11)
+Measured first by each body part's first failure, then per feature against the stored body (scratch,
+not committed). Every rule below is a candidate the whole-part rebuild check decides.
+
+- **Folds `4c37ffe8`.** Slot 3 the angle (radians), slot 4 the bend radius (cm), slot 5 the bend line: a
+  `833d1b91` record names an `8ef06c89` line, and a `93c7ee68` record ties that line to the sketch line
+  (`ce52df3a`). Slot 1: 1 folds away from the material (along the outward normal of the face the sketch
+  lies on), 0 into it. Slot 2: 0 moves the material on the left of the line seen from outside that face
+  (outward normal x line direction), 1 the right. Slot 0's third body byte: 0 the bend zone centred on the
+  line, 1 starting at it (on the moving side), 2 ending at it. Slot 10 repeats the sheet's thickness. The
+  K-factor is not in the feature segment (the unfold rule's 0.44, Inventor's default, places the bend
+  zone of every corpus fold: the cylinders of the bend sit at `angle (r + 0.44 t) / 2` from the line for a
+  centred fold). Confirmed on the bend cylinders in the result bodies of the 12 parts with folds (the
+  cylinder's axis is the turn's axis, the foot of the axis on the side that stays).
+  Written as the tree's `bend`. A fold sketched on an earlier fold's flange finds the side its material
+  lies on from the earlier fold's turned slab. Not rebuilt: folds whose zone holds a step of the outline
+  (Inventor cuts a bend relief there; the document's bend refuses).
+- **Face names.** A face a feature picks is a `509fb5cc` record; the `03aa812c` record that refers to it
+  holds an index into a naming table (`cce92042`: pairs of index and record), whose `0645c2a5` entry
+  holds, before and after its `ffffffff` marker, the id of the feature that made the face and the two
+  numbers the result body's `NMx_*` attributes of that face carry as ints 5 and 7 (the profile curve, and
+  4 start cap, 12 end cap, 20 side). The other indices of the naming record point at `9bb4281c` entries
+  (the face's edges, not read). The profile curve counts the sketch's points and curves from 1 in record
+  order on the small sketches; on larger sketches it is offset by entities that are not read (A-07: by 4),
+  so a side face whose number does not land on a line is refused.
+- **Shells.** When the rims found in the result body do not count the open faces, the open faces are
+  placed from their names: an extrude's cap at its profile's pick point moved to the cap, a side face at
+  the middle of its line, half way along the extrude.
+- **Face drafts `f4fa0900`.** Slot 0 the pull direction (`ce52df40`), slot 1 the faces (names), slot 3 the
+  angle (radians); slot 2 (a fixed edge, `90874d51`) or slot 10 (a fixed plane, a face name) is not needed:
+  each face turns about the line where its plane before the draft (from its name) meets its plane in the
+  result body (the face that carries the name's attributes), which lies in the neutral plane across the
+  pull. The part narrows along the pull where the result's outward normals lean along it. A drafted
+  cylinder (an extruded circle along the pull, a cone in the result) turns about the circle where the
+  cone's radius, interpolated between its rims, is the circle's; a boss narrows where that radius falls
+  along the pull, a hole where it grows.
+- **Sweep paths as wire bodies.** A sweep whose path slot is an `fc203f47` record names the history body of
+  its wire (`cc0f7521`) instead of a path record with its sketch; the path's sketch is the one whose plane
+  holds the wire and whose curves it runs along (the first, when copies of the curves lie in several).
+- **Loops on arcs.** Loft sections and sheet-metal faces find their sketch by the distance of the loop's
+  points to the sketch curves; lines, circles and arcs are measured exactly (the profile picks' sampled
+  chords lie 0.09 mm inside an arc of 160 mm radius, past the 0.02 mm the match allows).
