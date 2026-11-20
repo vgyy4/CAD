@@ -891,8 +891,11 @@ fn reflect_feature(f: &Value, o: V3, n: V3, rename: &dyn Fn(&str) -> String) -> 
                 set(&mut out, "sketch", json!(rename(sk)));
             }
             if kind == "extrude" {
-                if let Some(d) = f.get("distance").and_then(Value::as_f64) {
-                    set(&mut out, "distance", json!(-d));
+                // The second side's reach (`distance2`) flips with it.
+                for key in ["distance", "distance2"] {
+                    if let Some(d) = f.get(key).and_then(Value::as_f64) {
+                        set(&mut out, key, json!(-d));
+                    }
                 }
                 // The parameter's sign convention does not carry over: the mirrored copy
                 // uses the number.
