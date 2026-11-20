@@ -5128,6 +5128,28 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         } else if matches!(cls.as_deref(), Some("moBlend_c" | "moBlendCut_c")) {
             // A loft: its sections are profile components naming their sketches by node id.
             let sections = named_sketches(rf, a, b, &sketch_ids);
+            // One sketch and a face reference: a loft from (or to) a planar cap of an earlier
+            // extrusion (round sw15, Dremel Tip's Loft1 from Boss-Extrude1's top). The face goes
+            // first when its reference comes before the sketch's.
+            let mut face_section: Option<(usize, Value)> = None;
+            if let [only] = sections.as_slice()
+                && let [(at, reps)] = edge_records(rf, a, b)?.as_slice()
+                && let Some(r0) = reps.first()
+                && cap_tags.contains(&r0.tag)
+                && let Some(f) = swept.get(&r0.fid)
+            {
+                let sketch_at = sketch_ids
+                    .iter()
+                    .find(|(_, v)| *v == only)
+                    .and_then(|(id, _)| find(rf, &id.to_le_bytes(), a, b))
+                    .unwrap_or(b);
+                let p = lift(f, 0.0, 0.0, cap_height(f, r0.idx)).map(|v| round_to(v, 6) + 0.0);
+                // Outward: the end cap along the extrusion, the start cap against it.
+                let along = if f.symmetric || f.distance >= 0.0 { 1.0 } else { -1.0 };
+                let out = if r0.idx == 1 { along } else { -along };
+                let nrm = normal(f).map(|v| round_to(v * out, 12) + 0.0);
+                face_section = Some((usize::from(*at > sketch_at), json!({"face": {"point": p, "normal": nrm}})));
+            }
             let op = if !solid {
                 "new"
             } else if cls.as_deref() == Some("moBlendCut_c") {
@@ -5138,12 +5160,16 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let mut js = Map::new();
             js.insert("type".into(), json!("loft"));
             js.insert("name".into(), json!(n.name));
-            js.insert("sketches".into(), json!(sections));
+            let mut listed: Vec<Value> = sections.iter().map(|x| json!(x)).collect();
+            if let Some((k, face)) = face_section.take() {
+                listed.insert(k.min(listed.len()), face);
+            }
+            js.insert("sketches".into(), Value::Array(listed.clone()));
             js.insert("operation".into(), json!(op));
             if op != "new" {
                 js.insert("target".into(), json!(first_solid));
             }
-            if sections.len() < 2 {
+            if listed.len() < 2 {
                 js.insert("unresolved".into(), json!(true));
             }
             // A circle section starts where the loft's connector meets it: the sections twist
