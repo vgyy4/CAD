@@ -5255,8 +5255,38 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         "format": "gusset-feature-tree",
         "version": 2,
         "source": {"app": "solidworks", "file": file},
-        "features": expand_holes(feats),
+        "features": expand_holes(drop_reblended(feats)),
     }))
+}
+
+/// Round sw15: an edge record of a fillet or chamfer that a later blend names again (the same
+/// midpoint between the same faces) was not blended there: a blended edge is gone, so the
+/// later one could not have picked it (8mm Shim's Fillet1 lists all four rims, Fillet2 and
+/// Fillet3 then round two of them by other radii, as the part has them). The earlier blend
+/// keeps its other edges; one that would keep none is left as read.
+fn drop_reblended(mut feats: Vec<Value>) -> Vec<Value> {
+    let is_blend = |f: &Value| matches!(f.get("type").and_then(Value::as_str), Some("fillet" | "chamfer"));
+    let key = |e: &Value| -> Option<(Value, Value)> { Some((e.get("midpoint")?.clone(), e.get("faces")?.clone())) };
+    for i in 0..feats.len() {
+        let Some(f) = feats.get(i).filter(|f| is_blend(f)) else { continue };
+        let later: Vec<(Value, Value)> = feats
+            .iter()
+            .skip(i + 1)
+            .filter(|g| is_blend(g))
+            .filter_map(|g| g.get("edges").and_then(Value::as_array))
+            .flatten()
+            .filter_map(key)
+            .collect();
+        let Some(edges) = f.get("edges").and_then(Value::as_array) else { continue };
+        let kept: Vec<Value> = edges.iter().filter(|e| key(e).is_none_or(|k| !later.contains(&k))).cloned().collect();
+        if kept.is_empty() || kept.len() == edges.len() {
+            continue;
+        }
+        if let Some(Value::Object(m)) = feats.get_mut(i) {
+            m.insert("edges".into(), Value::Array(kept));
+        }
+    }
+    feats
 }
 
 /// The sketches a loft or a sweep names, in order of first mention. Each is a profile
@@ -6883,6 +6913,24 @@ mod pattern_tests {
             p["x"] = json!(x + 4.6);
         }
         assert!(helix_sweep(&mut [mid], "P", &h).is_none());
+    }
+
+    #[test]
+    fn an_edge_a_later_blend_names_again_is_left_out() {
+        let e =
+            |m: f64, cap: f64| json!({"midpoint": [cap, m, 0.0], "faces": [{"kind": "cap", "point": [cap, 0.0, 0.0]}]});
+        let feats = vec![
+            json!({"type": "fillet", "name": "Fillet1", "edges": [e(4.0, 0.0), e(6.0, 0.0), e(4.0, 1.5), e(6.0, 1.5)]}),
+            json!({"type": "fillet", "name": "Fillet2", "edges": [e(4.0, 0.0)]}),
+            json!({"type": "chamfer", "name": "Chamfer1", "edges": [e(6.0, 0.0)]}),
+            json!({"type": "fillet", "name": "Fillet3", "edges": [e(6.0, 1.5)]}),
+            json!({"type": "fillet", "name": "Fillet4", "edges": [e(6.0, 1.5)]}),
+        ];
+        let out = drop_reblended(feats);
+        assert_eq!(out[0]["edges"], json!([e(4.0, 1.5)]));
+        assert_eq!(out[1]["edges"], json!([e(4.0, 0.0)]));
+        // A blend left with no edge keeps what it read.
+        assert_eq!(out[3]["edges"], json!([e(6.0, 1.5)]));
     }
 
     #[test]
