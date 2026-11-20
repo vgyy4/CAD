@@ -1599,23 +1599,32 @@ fn find_plane(d: &[u8], a: usize, b: usize, uc: Option<usize>) -> Result<Option<
     mark.extend([0u8; 12]);
     mark.push(1);
     let mut from = at + 49;
+    // Round sw15: a sketch drawn facing into the face (Cablechain-End's Sketch2 on the bottom
+    // of Boss-Extrude1, extruded up through it) writes its frame with the normal reversed; it
+    // is taken where no frame keeps the face's normal.
+    let mut reversed: Option<Plane> = None;
     while let Some(j) = find(d, &mark, from, b) {
         let q = j + mark.len();
         let r2 = need(f64s_at::<9>(d, q), "a sketch frame")?;
-        if orthonormal(&r2)
-            && (0..3).all(|row| {
-                (r2.get(3 * row + 2).copied().unwrap_or(0.0) - r.get(3 * row + 2).copied().unwrap_or(0.0)).abs() < 1e-9
+        let column = |sign: f64| {
+            (0..3).all(|row| {
+                (r2.get(3 * row + 2).copied().unwrap_or(0.0) - sign * r.get(3 * row + 2).copied().unwrap_or(0.0)).abs()
+                    < 1e-9
             })
-        {
+        };
+        if orthonormal(&r2) && (column(1.0) || (reversed.is_none() && column(-1.0))) {
             let t2 = need(f64s_at::<3>(d, q + 72), "a sketch frame")?;
             let sc = need(f64_at(d, q + 96), "a sketch frame")?;
             if is(sc, 1.0) {
-                return Ok(Some(frame(&r2, &t2, None)));
+                if column(1.0) {
+                    return Ok(Some(frame(&r2, &t2, None)));
+                }
+                reversed = Some(frame(&r2, &t2, None));
             }
         }
         from = j + 1;
     }
-    Ok(Some(plane))
+    Ok(Some(reversed.unwrap_or(plane)))
 }
 
 /// The plane as written: origin in mm, axes to 12 decimals.
