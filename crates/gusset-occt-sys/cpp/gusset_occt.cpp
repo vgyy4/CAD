@@ -13,6 +13,8 @@
 #include <cstring>
 #include <exception>
 #include <sstream>
+#include <fstream>
+#include <unistd.h>
 #include <string>
 #include <vector>
 
@@ -37,6 +39,7 @@
 #include <BRepTools.hxx>
 #include <BRepTools_History.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
+#include <GeomAPI_IntCS.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <BRepOffsetAPI_MakeOffset.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
@@ -1008,7 +1011,23 @@ int blend(const GsShape* s, const uint32_t* edges, size_t nedges, double size, b
     es.push_back(BlendEdge{edge_by_index(s->s, edges[i]), TopoDS_Face(), size, size, 0});
     idx.push_back(edges[i]);
   }
-  return blend_edges<Mk>(s, es, idx, fillet, out, origins);
+  std::string base; // OP2DUMP
+  if (const char* d = std::getenv("GUSSET_OP2_DUMP")) {
+    static std::atomic<int> n{0};
+    base = std::string(d) + "/" + (fillet ? "f" : "c") + std::to_string(getpid()) + "_" + std::to_string(n.fetch_add(1));
+    BRepTools::Write(s->s, (base + ".brep").c_str());
+    std::ofstream m(base + ".txt");
+    m << (fillet ? "fillet" : "chamfer") << " " << size << " " << nedges;
+    for (size_t i = 0; i < nedges; ++i) m << " " << edges[i];
+    m << "\n";
+  }
+  int rc = blend_edges<Mk>(s, es, idx, fillet, out, origins);
+  if (std::getenv("GUSSET_OP2_DUMP")) fprintf(stderr, "OP2 blend n=%zu size=%g rc=%d base=%s\n", nedges, size, rc, base.c_str());
+  if (rc == GS_OK && !base.empty()) {
+    std::remove((base + ".brep").c_str());
+    std::remove((base + ".txt").c_str());
+  }
+  return rc;
 }
 
 // Does the shape have a face that is not a plane, cylinder, cone, sphere or torus?
@@ -2801,6 +2820,9 @@ struct Corner {
   TopoDS_Shape face;
   // A concave edge: the blend fills the corner (the tool is added, not cut).
   bool concave = false;
+  // Faces of the tool that may stay on the result as faces of the blend where nothing else
+  // covers them (a swept cliff corner's end sections, where it meets the next corner).
+  std::vector<TopoDS_Shape> caps;
   // A straight edge: its ends and direction (see `blend_by_corners`).
   bool line = false;
   gp_Pnt end0, end1;
@@ -3446,6 +3468,282 @@ bool prism_cylinder_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Fa
   return !out.face.IsNull() && out.ideal > 0;
 }
 
+#ifndef CLIFF_DBG // DBGSE8
+#define CLIFF_DBG(n) // DBGSE8
+#define CLIFF_DUMP(a, b) // DBGSE8
+#endif // DBGSE8
+// The state of the point of face `f`'s surface nearest to `q`, in the face.
+TopAbs_State state_in_face(const TopoDS_Face& f, const gp_Pnt& q) {
+  GeomAPI_ProjectPointOnSurf pr(q, BRep_Tool::Surface(f));
+  if (!pr.IsDone() || pr.NbPoints() < 1) return TopAbs_UNKNOWN;
+  double u = 0, v = 0;
+  pr.LowerDistanceParameters(u, v);
+  BRepClass_FaceClassifier fc(f, gp_Pnt2d(u, v), 1e-9);
+  return fc.State();
+}
+
+// A cliff-edge corner of any section (ADR 0004 amendment, round se8): the edge's two faces meet
+// at it; one of them (`b`) is narrower than where the ball would touch it, so the ball rolls on
+// the other face (`a`) and on `b`'s far edge, the one edge of `b` that does not touch the
+// rounded edge, as Solid Edge's cliff-edge blends do. The ball's centres are found at stations
+// along the far edge: in the plane square to it, at the ball's radius from it, the point at the
+// radius from `a`'s surface (on the material's side of `a` for a convex edge, outside it for a
+// concave one). Each row is the ball's arc from its contact on `a` to the far edge, in the plane
+// square to the path of its centres; the corner is the loft of the rows' sections (the arc and
+// the traces of both faces back to the edge), the tool the loft of the arc and a polygon that
+// reaches out of the body (convex) or into it (concave). The far edge's end planes must pass
+// through the edge's ends (an edge closed like its far edge, or parallel ends).
+bool swept_cliff_corner(const TopoDS_Shape& body, const std::vector<TopoDS_Face>& fs, const BlendEdge& x,
+                        Corner& out) {
+  const double r = x.a;
+  if (fs.size() != 2 || !(r > 0) || BRep_Tool::Degenerated(x.e)) { CLIFF_DBG(3); return false; }
+  BRepAdaptor_Curve ce(x.e);
+  const double te0 = ce.FirstParameter(), te1 = ce.LastParameter();
+  gp_Pnt pm;
+  gp_Vec tm;
+  ce.D1(0.5 * (te0 + te1), pm, tm);
+  if (tm.Magnitude() < 1e-12) { CLIFF_DBG(9); return false; }
+  tm.Normalize();
+  const double tol = 1e-7 * std::max(1.0, r);
+  // Into each face, square to the edge, and the faces' outward normals at the middle.
+  gp_Vec u[2];
+  for (int k = 0; k < 2; ++k) {
+    gp_Dir n;
+    if (!outward_normal(fs[size_t(k)], pm, n)) { CLIFF_DBG(16); return false; }
+    u[k] = gp_Vec(n).Crossed(tm);
+    if (u[k].Magnitude() < 1e-9) { CLIFF_DBG(18); return false; }
+    u[k].Normalize();
+    const double h = 1e-4 * r;
+    if (state_in_face(fs[size_t(k)], pm.Translated(u[k] * h)) != TopAbs_IN) u[k].Reverse();
+    if (state_in_face(fs[size_t(k)], pm.Translated(u[k] * h)) != TopAbs_IN) { CLIFF_DBG(22); return false; }
+  }
+  const double cosa = u[0].Dot(u[1]);
+  if (cosa <= -1 + 1e-9 || cosa >= 1 - 1e-9) { CLIFF_DBG(25); return false; }
+  bool concave = false;
+  {
+    BRepClass3d_SolidClassifier in(body, pm.Translated((u[0] + u[1]) * (1e-4 * r)), 1e-9);
+    if (in.State() == TopAbs_OUT) concave = true;
+    else if (in.State() != TopAbs_IN) { CLIFF_DBG(30); return false; }
+  }
+  const double t = r / std::tan(0.5 * std::acos(cosa));
+  bool narrow[2];
+  for (int k = 0; k < 2; ++k) narrow[k] = state_in_face(fs[size_t(k)], pm.Translated(u[k] * t)) == TopAbs_OUT;
+  if (narrow[0] == narrow[1]) { CLIFF_DBG(35); return false; }
+  const TopoDS_Face fa = fs[narrow[0] ? 1 : 0], fb = fs[narrow[0] ? 0 : 1];
+  // The far edge of `b`.
+  TopoDS_Vertex v0, v1;
+  TopExp::Vertices(x.e, v0, v1);
+  if (v0.IsNull() || v1.IsNull()) { CLIFF_DBG(40); return false; }
+  TopoDS_Edge far;
+  int nfar = 0;
+  for (TopExp_Explorer ex(fb, TopAbs_EDGE); ex.More(); ex.Next()) {
+    const TopoDS_Edge g = TopoDS::Edge(ex.Current());
+    if (g.IsSame(x.e) || BRep_Tool::Degenerated(g) || (!far.IsNull() && g.IsSame(far))) continue;
+    TopoDS_Vertex g0, g1;
+    TopExp::Vertices(g, g0, g1);
+    if (g0.IsNull() || g1.IsNull()) { CLIFF_DBG(48); return false; }
+    if (g0.IsSame(v0) || g0.IsSame(v1) || g1.IsSame(v0) || g1.IsSame(v1)) continue;
+    far = g;
+    ++nfar;
+  }
+  if (nfar != 1) { CLIFF_DBG(53); return false; }
+  BRepAdaptor_Curve cc(far);
+  const double c0 = cc.FirstParameter(), c1 = cc.LastParameter();
+  TopoDS_Vertex f0, f1;
+  TopExp::Vertices(far, f0, f1);
+  const bool closed = v0.IsSame(v1);
+  if (closed != f0.IsSame(f1)) { CLIFF_DBG(59); return false; }
+  if (!closed) {
+    // Each end plane of the far edge holds an end of the edge.
+    const gp_Pnt e0 = BRep_Tool::Pnt(v0), e1 = BRep_Tool::Pnt(v1);
+    for (double tc : {c0, c1}) {
+      gp_Pnt p;
+      gp_Vec d;
+      cc.D1(tc, p, d);
+      if (d.Magnitude() < 1e-12) { CLIFF_DBG(67); return false; }
+      const gp_Dir dd(d);
+      if (std::min(std::fabs(gp_Vec(p, e0).Dot(gp_Vec(dd))), std::fabs(gp_Vec(p, e1).Dot(gp_Vec(dd)))) > tol)
+        { CLIFF_DBG(70); return false; }
+    }
+  }
+  const Handle(Geom_Surface) sa = BRep_Tool::Surface(fa);
+  const Handle(Geom_Surface) sb = BRep_Tool::Surface(fb);
+  double l0 = 0, l1 = 0;
+  const Handle(Geom_Curve) ge = BRep_Tool::Curve(x.e, l0, l1);
+  if (sa.IsNull() || sb.IsNull() || ge.IsNull()) { CLIFF_DBG(77); return false; }
+  // The signed distance of `q` from `a`'s surface (outward positive) and the foot.
+  auto side_of_a = [&](const gp_Pnt& q, gp_Pnt& foot) -> double {
+    GeomAPI_ProjectPointOnSurf pr(q, sa);
+    if (!pr.IsDone() || pr.NbPoints() < 1) throw Standard_Failure("no foot");
+    foot = pr.NearestPoint();
+    gp_Dir n;
+    if (!outward_normal(fa, foot, n)) throw Standard_Failure("no normal");
+    return gp_Vec(foot, q).Dot(gp_Vec(n));
+  };
+  const double want = concave ? r : -r;
+  const int nst = closed ? 48 : 24;
+  struct Row {
+    gp_Pnt t, c, e, x;
+  };
+  std::vector<Row> rows;
+  for (int i = 0; i <= nst; ++i) {
+    const double tc = c0 + (c1 - c0) * double(i) / nst;
+    gp_Pnt pc;
+    gp_Vec dc;
+    cc.D1(tc, pc, dc);
+    if (dc.Magnitude() < 1e-12) { CLIFF_DBG(98); return false; }
+    const gp_Dir dz(dc);
+    const gp_Dir bx = gp_Ax2(pc, dz).XDirection(), by = dz.Crossed(bx);
+    gp_Dir nb;
+    if (!outward_normal(fb, pc, nb)) { CLIFF_DBG(102); return false; }
+    auto centre = [&](double th) { return pc.Translated((gp_Vec(bx) * std::cos(th) + gp_Vec(by) * std::sin(th)) * r); };
+    auto g = [&](double th) {
+      gp_Pnt foot;
+      return side_of_a(centre(th), foot) - want;
+    };
+    // Every root of g about the far edge, on the ball's side of `b`; the one whose contact on
+    // `a` lies in the face and is nearest the edge.
+    const int ns = 144;
+    bool found = false;
+    Row best;
+    double best_d = 0;
+    double ga = g(0);
+    for (int k = 1; k <= ns; ++k) {
+      double a0 = 2 * M_PI * (k - 1) / ns, a1 = 2 * M_PI * k / ns;
+      const double gb = g(a1);
+      if ((ga < 0) != (gb < 0)) {
+        double lo = a0, hi = a1, glo = ga;
+        for (int it = 0; it < 80 && hi - lo > 1e-15; ++it) {
+          const double mid = 0.5 * (lo + hi), gm = g(mid);
+          if ((gm < 0) == (glo < 0)) {
+            lo = mid;
+            glo = gm;
+          } else {
+            hi = mid;
+          }
+        }
+        const gp_Pnt xc = centre(0.5 * (lo + hi));
+        const double sb_side = gp_Vec(pc, xc).Dot(gp_Vec(nb));
+        if (concave ? sb_side > 0 : sb_side < 0) {
+          gp_Pnt foot;
+          side_of_a(xc, foot);
+          if (state_in_face(fa, foot) == TopAbs_IN || state_in_face(fa, foot) == TopAbs_ON) {
+            // The edge's point in the row's plane (through the centre, contact and far edge).
+            gp_Vec nrm = gp_Vec(xc, foot).Crossed(gp_Vec(xc, pc));
+            if (nrm.Magnitude() > 1e-12 * r * r) {
+              GeomAPI_IntCS ic(ge, new Geom_Plane(xc, gp_Dir(nrm)));
+              if (ic.IsDone()) {
+                for (int m = 1; m <= ic.NbPoints(); ++m) {
+                  const gp_Pnt pe = ic.Point(m);
+                  const double d = pe.Distance(foot) + pe.Distance(pc);
+                  if (!found || d < best_d) {
+                    found = true;
+                    best_d = d;
+                    best = Row{foot, pc, pe, xc};
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      ga = gb;
+    }
+    if (!found) { CLIFF_DBG(156); return false; }
+    rows.push_back(best);
+  }
+  // Each row's contact must be nearer the edge than the ball's diameter: one branch all along.
+  for (const Row& w : rows)
+    if (w.e.Distance(w.t) > 2 * r + tol || w.e.Distance(w.c) > 4 * r + tol) { CLIFF_DBG(161); return false; }
+  // A face's trace from `p` to `q` across a row: points of the chord projected onto the surface.
+  auto trace = [&](const Handle(Geom_Surface)& s, const gp_Pnt& p, const gp_Pnt& q) -> TopoDS_Edge {
+    const int np = 9;
+    occ::handle<NCollection_HArray1<gp_Pnt>> pts = new NCollection_HArray1<gp_Pnt>(1, np);
+    for (int k = 0; k < np; ++k) {
+      const double w = double(k) / (np - 1);
+      gp_Pnt z = gp_Pnt(p.XYZ() * (1 - w) + q.XYZ() * w);
+      if (k > 0 && k < np - 1) {
+        GeomAPI_ProjectPointOnSurf pr(z, s);
+        if (pr.IsDone() && pr.NbPoints() > 0) z = pr.NearestPoint();
+      } else {
+        z = k == 0 ? p : q;
+      }
+      pts->SetValue(k + 1, z);
+    }
+    if (p.Distance(q) < 1e-9) throw Standard_Failure("could not build the corner");
+    GeomAPI_Interpolate ip(pts, false, 1e-12);
+    ip.Perform();
+    if (!ip.IsDone()) throw Standard_Failure("could not build the corner");
+    return BRepBuilderAPI_MakeEdge(ip.Curve()).Edge();
+  };
+  const double d = 0.25 * std::min(r, rows.front().e.Distance(rows.front().c));
+  BRepOffsetAPI_ThruSections exact_loft(true, false, 1e-9), tool_loft(true, false, 1e-9);
+  exact_loft.CheckCompatibility(false);
+  tool_loft.CheckCompatibility(false);
+  TopoDS_Edge first_arc;
+  for (const Row& w : rows) {
+    const gp_Pnt m = w.x.Translated((gp_Vec(w.x, w.t).Normalized() + gp_Vec(w.x, w.c).Normalized()).Normalized() * r);
+    GC_MakeArcOfCircle arc(w.t, m, w.c);
+    if (!arc.IsDone()) throw Standard_Failure("could not build the corner");
+    const TopoDS_Edge ae = BRepBuilderAPI_MakeEdge(arc.Value()).Edge();
+    if (first_arc.IsNull()) first_arc = ae;
+    BRepBuilderAPI_MakeWire ex;
+    ex.Add(ae);
+    ex.Add(trace(sb, w.c, w.e));
+    ex.Add(trace(sa, w.e, w.t));
+    if (!ex.IsDone()) throw Standard_Failure("could not build the corner");
+    exact_loft.AddWire(ex.Wire());
+    gp_Dir na, nb, nae, nbe;
+    if (!outward_normal(fa, w.t, na) || !outward_normal(fb, w.c, nb) || !outward_normal(fa, w.e, nae) ||
+        !outward_normal(fb, w.e, nbe))
+      throw Standard_Failure("could not build the corner");
+    // The polygon lies in the row's plane: each normal flattened onto it.
+    const gp_Dir pn(gp_Vec(w.x, w.t).Crossed(gp_Vec(w.x, w.c)));
+    auto flat = [&](const gp_Vec& v) {
+      const gp_Vec f = v - gp_Vec(pn) * v.Dot(gp_Vec(pn));
+      if (f.Magnitude() < 1e-9) throw Standard_Failure("could not build the corner");
+      return f.Normalized();
+    };
+    const gp_Vec oa = flat(gp_Vec(na)), ob = flat(gp_Vec(nb)), ok = flat(gp_Vec(nae) + gp_Vec(nbe));
+    gp_Pnt c2, k2, t2;
+    if (concave) {
+      const gp_Vec into_b = flat(gp_Vec(w.c, w.e));
+      c2 = w.c.Translated((into_b - ob) * d);
+      k2 = w.e.Translated(-ok * d);
+      t2 = w.t.Translated(-oa * d);
+    } else {
+      c2 = w.c.Translated(ob * d);
+      k2 = w.e.Translated(ok * d);
+      t2 = w.t.Translated(oa * d);
+    }
+    BRepBuilderAPI_MakeWire tw;
+    tw.Add(ae);
+    tw.Add(BRepBuilderAPI_MakeEdge(w.c, c2).Edge());
+    tw.Add(BRepBuilderAPI_MakeEdge(c2, k2).Edge());
+    tw.Add(BRepBuilderAPI_MakeEdge(k2, t2).Edge());
+    tw.Add(BRepBuilderAPI_MakeEdge(t2, w.t).Edge());
+    if (!tw.IsDone()) throw Standard_Failure("could not build the corner");
+    tool_loft.AddWire(tw.Wire());
+  }
+  exact_loft.Build();
+  tool_loft.Build();
+  if (!exact_loft.IsDone() || !tool_loft.IsDone()) { CLIFF_DBG(226); return false; }
+  TopoDS_Shape exact = exact_loft.Shape(), tool = tool_loft.Shape();
+  CLIFF_DUMP(exact, tool); // DBGSE8
+  if (!BRepCheck_Analyzer(exact).IsValid() || !BRepCheck_Analyzer(tool).IsValid()) { CLIFF_DBG(228); return false; }
+  if (signed_volume(exact) < 0) exact.Reverse();
+  if (signed_volume(tool) < 0) tool.Reverse();
+  out.exact = exact;
+  out.ideal = std::fabs(measured_volume(exact, true));
+  out.cutter = tool;
+  out.face = tool_loft.GeneratedFace(first_arc);
+  for (const TopoDS_Shape& cap : {tool_loft.FirstShape(), tool_loft.LastShape()})
+    if (!cap.IsNull() && !closed) out.caps.push_back(cap);
+  out.concave = concave;
+  out.line = false;
+  return !out.face.IsNull() && out.ideal > 0;
+}
+
 // The corner of a convex edge between two perpendicular faces whose section is the same all
 // along it: a straight edge between two planes (the corner is a prism) or a circle between a
 // plane across its axis and a cylinder about it (the corner is revolved; an arc's corner ends
@@ -3466,6 +3764,7 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   if (!x.ref.IsNull() && fs[1].IsSame(x.ref)) std::swap(fs[0], fs[1]);
   if (!x.ref.IsNull() && !fs[0].IsSame(x.ref)) return false;
   if (fillet && section_corner(body, fs, x, true, out, e0, e1)) return true;
+  if (fillet && e0 == 0 && e1 == 0 && swept_cliff_corner(body, fs, x, out)) return true;
   double a = x.a, b = x.b;
   if (fillet || x.mode == 0) b = a;
   else if (x.mode != 1) return false;
@@ -4087,6 +4386,19 @@ int corner_origins(Op& op, Gone gone, const TopoDS_Shape& in, const TopoDS_Shape
     const int64_t f = o[k];
     if (f >= 0 && f < int64_t(has.size())) has[size_t(f)] = true;
   }
+  for (size_t i = 0; i < cs.size(); ++i)
+    for (const auto& f : cs[i].caps) {
+      std::vector<TopoDS_Shape> res;
+      const ShapeList& mods = op.Modified(f);
+      for (ShapeList::Iterator it(mods); it.More(); it.Next()) res.push_back(it.Value());
+      if (mods.IsEmpty() && !gone(f)) res.push_back(f);
+      for (const auto& g : res) {
+        const int k = out_faces.FindIndex(g);
+        if (k <= 0 || has[size_t(k - 1)]) continue;
+        has[size_t(k - 1)] = true;
+        push_origin(o, k - 1, GS_ORIGIN_FROM_EDGE, 0, idx[i]);
+      }
+    }
   for (int k = 1; k <= out_faces.Extent(); ++k)
     if (!has[size_t(k - 1)]) cut.orphans.push_back(TopoDS::Face(out_faces(k)));
   cut.result = result;
