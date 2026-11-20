@@ -3508,3 +3508,67 @@ fn a_periodic_bspline_face_off_its_knots_measures_fast_and_exactly() {
     // Unpatched: more than 5 minutes (release OCCT); patched: 0.1 s.
     assert!(took < std::time::Duration::from_secs(30), "measuring took {took:?}");
 }
+
+/// The section of a concave cliff-edge round of radius `r` at the foot of a wall `h` high
+/// (`h < r`) on a floor: the ball rolls on the floor and touches the wall's top edge. Returns the
+/// ball's distance from the wall along the floor `x0`, and the section's area.
+fn cliff_foot_section(r: f64, h: f64) -> (f64, f64) {
+    let x0 = (r * r - (r - h) * (r - h)).sqrt();
+    // The quadrilateral foot, contact, centre, edge top less the ball's sector between them.
+    let phi = ((r - h) / r).acos();
+    (x0, x0 * (r + h) / 2.0 - r * r * phi / 2.0)
+}
+
+#[test]
+fn a_round_at_the_foot_of_a_low_wall_fills_up_to_its_top_edge() {
+    // A 20 x 10 x 2 base with a 20 x 1 x 0.5 rib along it: a 2 mm round of the rib's foot is
+    // wider than the rib is high (a concave cliff edge), so the ball rolls on the base and on the
+    // rib's top edge. The fill is a prism of the section `cliff_foot_section`.
+    let base = block_at(0.0, 0.0, 20.0, 10.0, 0.0, 2.0);
+    let rib = block_at(0.0, 4.0, 20.0, 1.0, 2.0, 0.5);
+    let b = k().boolean(BoolOp::Union, &base.shape, &rib.shape).unwrap();
+    let e = edge_with_midpoint(&b, [10.0, 5.0, 2.0]);
+    let f = k().fillet(&b.shape, &[e], 2.0).map_err(|e| e.message).unwrap();
+    let (_, area) = cliff_foot_section(2.0, 0.5);
+    let m = k().mass_properties(&f.shape).unwrap();
+    let want = 410.0 + 20.0 * area;
+    assert!(close(m.volume, want, 1e-7), "{} vs {want}", m.volume);
+    // Nothing is left of the rib's side.
+    let t = k().topology(&f.shape).unwrap();
+    assert!(
+        !t.faces
+            .iter()
+            .any(|x| x.kind == SurfaceKind::Plane && (x.normal[1] - 1.0).abs() < 1e-9 && x.centroid[2] > 2.0)
+    );
+    assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+}
+
+#[test]
+fn rounds_at_the_foot_of_a_low_tab_meet_where_their_runs_cross() {
+    // A 6 x 4 x 0.5 tab on a 20 x 20 x 2 base, its foot rounded by 2 all round: each side's fill
+    // is a prism of `cliff_foot_section`; at each corner both balls run on past the tab's top
+    // corner, and the fill there is what both runs hold: at height z, a square whose side is the
+    // section's width w(z) = x0 - sqrt(r^2 - (r - z)^2).
+    let base = block_at(-10.0, -10.0, 20.0, 20.0, -2.0, 2.0);
+    let tab = block_at(-3.0, -2.0, 6.0, 4.0, 0.0, 0.5);
+    let b = k().boolean(BoolOp::Union, &base.shape, &tab.shape).unwrap();
+    let es = [
+        edge_with_midpoint(&b, [0.0, -2.0, 0.0]),
+        edge_with_midpoint(&b, [3.0, 0.0, 0.0]),
+        edge_with_midpoint(&b, [0.0, 2.0, 0.0]),
+        edge_with_midpoint(&b, [-3.0, 0.0, 0.0]),
+    ];
+    let (r, h) = (2.0f64, 0.5f64);
+    let f = k().fillet(&b.shape, &es, r).map_err(|e| e.message).unwrap();
+    let (x0, area) = cliff_foot_section(r, h);
+    // The integral of w(z)^2 over the wall's height, with s = r - z.
+    let prim =
+        |s: f64| x0 * x0 * s - x0 * (s * (r * r - s * s).sqrt() + r * r * (s / r).asin()) + r * r * s - s * s * s / 3.0;
+    let corner = prim(r) - prim(r - h);
+    let want = 800.0 + 12.0 + 20.0 * area + 4.0 * corner;
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, want, 1e-7), "{} vs {want}", m.volume);
+    for e in es {
+        assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+    }
+}

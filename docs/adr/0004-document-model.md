@@ -357,3 +357,35 @@ corners, as the importers' stored bodies show them (Solid Edge 040, 053, 065, 02
   default quadrature is some 5e-6 off on cylinders bounded by B-spline intersections.
 - *Contact along an edge.* A fillet whose touching line runs exactly along another edge of its face
   is not given to OCCT (it crashes there, `BRepBlend_SurfRstConstRad`); only the corners are tried.
+
+## Amendment (2026-11-20): cliff-edge rounds of any section
+Round se8 (ADR 0046 amendment 28) builds the cliff edge above for any faces and edges, as Solid
+Edge's cliff-edge blends (Parasolid `blend_type` `E`) make it, among the corners `blend_by_corners`
+tries where OCCT's fillet fails:
+
+- *When.* At the edge's middle, the plain ball's contact (`r / tan(alpha / 2)` along each face,
+  square to the edge) lies outside exactly one face (`b`), and `b` has one edge that touches no
+  end of the rounded edge (its far edge), whose end planes pass through the rounded edge's ends
+  (or both are closed). Convex and concave edges alike.
+- *Construction.* At stations along the far edge, the ball's centre lies in the plane square to
+  it at the radius from it and at the radius from the other face's surface (inside it for a
+  convex edge, outside for a concave one), on the ball's side of `b`: a root of one function of
+  the angle about the far edge, found by scanning and bisection; of several, the one whose
+  contact lies in the face, nearest the edge. Each row is the ball's circular arc from its
+  contact to the far edge; the corner is the loft (`BRepOffsetAPI_ThruSections`) of the rows'
+  sections, the arc and both faces' traces back to the edge (points moved onto each surface
+  within the row's plane), and the tool the loft of the arc and a polygon reaching out of the
+  body (convex, cut) or into it (concave, added). Rows are doubled from 4 until the loft lies
+  within 1e-5 of the radius at the arcs between rows; loft faces that lie in a plane are made
+  plane faces (booleans against B-spline faces in a plane went wrong and slow).
+- *Corners that meet.* Where two such corners' far edges share a vertex, both balls run on past
+  it along the far edges' tangents (2 r) until their blends cross; each corner keeps its run
+  past that end only where it lies in the other's, so the blends meet along their intersection
+  curve with no face between them (Solid Edge 081: the three rounds about a tab's foot; its
+  stored blends meet that way). Boxes, not OCCT half-spaces, trim the runs: half-space booleans
+  gave wrong solids. The material changed must be the corners along their edges plus what both
+  runs hold, to 1e-7 of the body, as for the other corners; the runs' end faces that stay on the
+  result take the edge's origin.
+- Not covered yet: a narrow face whose far side is several edges or ends at the rounded edge's
+  own vertices (044's D-shaped face), a round whose contact leaves its face only near an end
+  (067's pipe tee), both faces narrower than the ball (101, 016).
