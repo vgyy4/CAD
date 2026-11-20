@@ -123,6 +123,11 @@ pub(super) struct PatternF {
     /// body `<name>[i]` for later features (ADR 0042 amendment).
     #[serde(default = "refine_default")]
     merge: bool,
+    /// A linear pattern of cuts whose sense along its direction the source does not say (round
+    /// sw14: SolidWorks writes the picked edge's own direction, which most patterns run
+    /// against): the sense whose copies take away more of the body is kept.
+    #[serde(default)]
+    either_way: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -584,6 +589,16 @@ fn warn_fallback(g: &mut Gen, f: &FaceHit, point: V3) {
 }
 
 /// The feature must build here, else the error is reported (the caller takes the text out).
+/// The volume of every body of the model as built so far (mm3).
+fn volume(g: &mut Gen, s: &Session) -> Result<f64, String> {
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    let mut v = 0.0;
+    for b in &ev.bodies {
+        v += s.kernel().mass_properties(&b.shape).map_err(|e| e.message)?.volume;
+    }
+    Ok(v)
+}
+
 fn builds(g: &mut Gen, s: &Session, name: &str) -> Result<(), String> {
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     match ev.errors().iter().find(|e| e.feature == name) {
@@ -773,8 +788,26 @@ pub(super) fn pattern(g: &mut Gen, s: &Session, d: &PatternF, circular: bool) ->
         args.push("merge: false".into());
     }
     let kw = if circular { "pattern_circular" } else { "pattern_linear" };
+    let at = g.text.len();
     let _ = writeln!(g.text, "\n{kw} {name} ({})", args.join(", "));
     builds(g, s, &name)?;
+    if d.either_way && !circular && let Some(dir) = d.direction.and_then(unit) {
+        let ahead = volume(g, s)?;
+        let kept = g.text.split_off(at);
+        let back = format!("direction: [{}, {}, {}]", fine(-dir[0]), fine(-dir[1]), fine(-dir[2]));
+        let line = format!("\n{kw} {name} ({})\n", args.iter().map(|a| if a.starts_with("direction:") { back.clone() } else { a.clone() }).collect::<Vec<_>>().join(", "));
+        g.text.push_str(&line);
+        let behind = match builds(g, s, &name) {
+            Ok(()) => volume(g, s)?,
+            Err(_) => f64::INFINITY,
+        };
+        // Clearly more taken away the other way; else as written.
+        if !(behind < ahead - 1e-6 * ahead.abs().max(1.0)) {
+            g.text.truncate(at);
+            g.text.push_str(&kept);
+            g.evaluate(s).map_err(|e| e.message)?;
+        }
+    }
     g.made.push(name.clone());
     if !d.merge {
         // The copies' bodies, by the tree's names `<name>[i]`; their Gusset names are taken.

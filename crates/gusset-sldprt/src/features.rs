@@ -5727,6 +5727,13 @@ fn feature_pattern(
             names.push(s);
         }
     }
+    let all_cuts = names.iter().all(|n| {
+        feats.iter().any(|f| {
+            f.get("name").and_then(Value::as_str) == Some(n.as_str())
+                && (f.get("operation").and_then(Value::as_str) == Some("cut")
+                    || f.get("type").and_then(Value::as_str) == Some("hole"))
+        })
+    });
     let mut out = Vec::new();
     if circular {
         let (Some(count), Some((origin, dir))) = (int("D1"), lines.first()) else {
@@ -5763,8 +5770,15 @@ fn feature_pattern(
                 }
                 None => name.to_string(),
             };
-            out.push(json!({"type": kind, "name": nm, "features": fs, "count": count,
-                "direction": json_v3(*dir), "spacing": mm(spacing)}));
+            let mut js = json!({"type": kind, "name": nm, "features": fs, "count": count,
+                "direction": json_v3(*dir), "spacing": mm(spacing)});
+            // The written line is the picked edge's own; which way the copies run is not
+            // written (round sw13: eight of ten run against it, two with it). A pattern of cuts
+            // is left to the rebuild, which takes the way its copies cut more.
+            if all_cuts && let Some(o) = js.as_object_mut() {
+                o.insert("either_way".into(), json!(true));
+            }
+            out.push(js);
             first = Some(nm);
         }
     }
