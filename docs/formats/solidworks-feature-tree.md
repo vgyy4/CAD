@@ -1498,7 +1498,7 @@ imported bodies only"); the largest of the rest were volume mismatches (85), fil
 | sw-more | 274 / 1253 | **292** / 1253 |
 | all | 314 / 1352 | **332** / 1352 |
 
-Gained (sw-more, 18): converted segments (Segment, Grip_tip, MG90 SERVO), revolve axes by the box centre
-(126p-door-stop-roller, 126p-rosette, 126p-throttle, 8020 228101 and 228104, DC Motor, Linear Bearing Inner, 5 Hole 90
+Gained (sw-more, 18): converted segments (Segment, Grip_tip, MG90 SERVO, 126p-throttle: its sweep path sketch), revolve axes by the
+box centre (126p-door-stop-roller, 126p-rosette, 8020 228101 and 228104, DC Motor, Linear Bearing Inner, 5 Hole 90
 Degree Joining Plate, Link 5), open revolve profiles (Tommy Bar), drafted extrudes (V-Slot Wheel, V-Slot
 Wheel_21mm_F624ZZ, Retainer, Link 3), Expansion Block. None lost.

@@ -824,5 +824,5 @@ Measured and not done: linear pattern directions run against the picked edge in 
 decide, with no byte found that tells the two cases apart; contour choosers whose boxes exceed their curves; open
 cut profiles that end on the body's outline.
 
-The rebuild check is unchanged. History 314 -> 332 of 1352, none lost (converted segments 3, revolve axes and open revolve profiles 10, drafted
+The rebuild check is unchanged. History 314 -> 332 of 1352, none lost (converted segments 4, revolve axes and open revolve profiles 9, drafted
 extrudes 5; Expansion Block by the same fixes).
