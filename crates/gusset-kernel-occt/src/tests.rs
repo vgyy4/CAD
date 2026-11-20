@@ -3611,3 +3611,65 @@ fn a_round_wider_than_a_thin_plates_hole_takes_its_wall_whole_with_no_slit() {
     assert!(f.face_origins.iter().all(|o| !o.is_empty()));
     assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
 }
+
+/// A rounded rectangle centred at the origin: half sides `a`, corner radius `r`; tags from `tag0`.
+fn rounded_square(a: f64, r: f64, tag0: u64) -> Loop2 {
+    let s = a - r;
+    let mut edges = Vec::new();
+    // Each side, then the corner after it (anticlockwise from the bottom side).
+    let corners = [[s, -s], [s, s], [-s, s], [-s, -s]];
+    for (i, c) in corners.iter().enumerate() {
+        let (dx, dy) = [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)][i];
+        // The side ends where the corner's arc starts: at the corner centre, out along -y, +x, +y, -x.
+        let (ox, oy) = (dy, -dx);
+        let start_side = [c[0] - dx * 2.0 * s + ox * r, c[1] - dy * 2.0 * s + oy * r];
+        let end_side = [c[0] + ox * r, c[1] + oy * r];
+        edges.push(ProfileEdge { seg: Seg2::Line { a: start_side, b: end_side }, tag: tag0 + 2 * i as u64 });
+        let next = [c[0] + dx * r, c[1] + dy * r];
+        edges.push(ProfileEdge {
+            seg: Seg2::Arc { center: *c, start: end_side, end: next, ccw: true },
+            tag: tag0 + 2 * i as u64 + 1,
+        });
+    }
+    Loop2 { edges }
+}
+
+#[test]
+fn a_round_at_the_foot_of_a_thin_walled_boss_fills_its_corners_and_arcs() {
+    // A 60 x 60 x 5 plate under a hollow boss 3 high: outside a 28 x 28 square with corners of
+    // radius 4, walls 0.5 thick. Its foot rounded by 3, its whole height: the fill along each
+    // side is a prism of the section square less quarter disc (area A, first moment M about the
+    // wall), round each corner the same section revolved about the corner's axis.
+    let plate = block_at(-30.0, -30.0, 60.0, 60.0, 0.0, 5.0);
+    let (a, rc, wall, h, r) = (14.0f64, 4.0f64, 0.5f64, 3.0f64, 3.0f64);
+    let p = Profile {
+        frame: Frame { origin: [0.0, 0.0, 5.0], ..Frame::XY },
+        regions: vec![Region2 {
+            outer: rounded_square(a, rc, 10),
+            holes: vec![rounded_square(a - wall, rc - wall, 20)],
+        }],
+    };
+    let boss = k().extrude(&p, &ExtrudeSpec { distance: h, symmetric: false }).unwrap();
+    let b = k().boolean(BoolOp::Union, &plate.shape, &boss.shape).unwrap();
+    let s = a - rc;
+    let q = s + rc / std::f64::consts::SQRT_2;
+    let mut es = Vec::new();
+    for m in [[0.0, -a], [a, 0.0], [0.0, a], [-a, 0.0], [q, q], [-q, q], [-q, -q], [q, -q]] {
+        es.push(edge_with_midpoint_near(&b, [m[0], m[1], 5.0]));
+    }
+    let f = k().fillet(&b.shape, &es, r).map_err(|e| e.message).unwrap();
+    let pi = std::f64::consts::PI;
+    let area = |a: f64, rr: f64| 4.0 * a * a - (4.0 - pi) * rr * rr;
+    let sec = r * r * (1.0 - pi / 4.0);
+    let moment = r * r * r * (5.0 / 6.0 - pi / 4.0);
+    let fill = 4.0 * (2.0 * s) * sec + 2.0 * pi * (rc * sec + moment);
+    let want = 60.0 * 60.0 * 5.0 + (area(a, rc) - area(a - wall, rc - wall)) * h + fill;
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, want, 1e-7), "{} vs {want}", m.volume);
+    assert!(f.face_origins.iter().all(|o| !o.is_empty()));
+}
+
+fn edge_with_midpoint_near(r: &OpResult, m: [f64; 3]) -> u32 {
+    let t = k().topology(&r.shape).unwrap();
+    t.edges.iter().position(|e| (0..3).all(|i| (e.midpoint[i] - m[i]).abs() < 1e-6)).unwrap() as u32
+}

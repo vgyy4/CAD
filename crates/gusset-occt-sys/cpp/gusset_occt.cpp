@@ -2865,6 +2865,43 @@ bool arc_ends(const TopoDS_Shape& body, const TopoDS_Edge& e, const std::vector<
   return ends.size() == 2;
 }
 
+// Does each end of arc `e` (on cylinder `cyl`, between it and a plane across its axis) meet one
+// more face, a plane that carries on from the cylinder there (tangent to it along the line
+// through the end)? A concave blend of the arc then goes on along that plane's edge.
+bool arc_tangent_ends(const TopoDS_Shape& body, const TopoDS_Edge& e, const std::vector<TopoDS_Face>& fs,
+                      const gp_Cylinder& cyl) {
+  AncMap vmap;
+  TopExp::MapShapesAndAncestors(body, TopAbs_VERTEX, TopAbs_FACE, vmap);
+  TopoDS_Vertex v0, v1;
+  TopExp::Vertices(e, v0, v1);
+  if (v0.IsNull() || v1.IsNull() || v0.IsSame(v1)) return false;
+  const gp_Ax1 axis = cyl.Axis();
+  for (const TopoDS_Vertex& v : {v0, v1}) {
+    const gp_Pnt p = BRep_Tool::Pnt(v);
+    const int k = vmap.FindIndex(v);
+    if (k <= 0) return false;
+    std::vector<TopoDS_Face> others;
+    for (ShapeList::Iterator it(vmap(k)); it.More(); it.Next()) {
+      bool known = false;
+      for (const auto& g : fs) known = known || g.IsSame(it.Value());
+      for (const auto& g : others) known = known || g.IsSame(it.Value());
+      if (!known) others.push_back(TopoDS::Face(it.Value()));
+    }
+    if (others.size() != 1) return false;
+    BRepAdaptor_Surface so(others[0], false);
+    if (so.GetType() != GeomAbs_Plane) return false;
+    const gp_Pln pl = so.Plane();
+    // The plane holds the cylinder's line through the end and is square to the radius there.
+    const gp_Vec w(axis.Location(), p), az(cyl.Axis().Direction());
+    const gp_Vec radial = w - az * w.Dot(az);
+    if (radial.Magnitude() < 1e-9) return false;
+    if (!pl.Axis().Direction().IsParallel(gp_Dir(radial), 1e-9) || pl.Distance(p) > 1e-7 ||
+        std::fabs(radial.Magnitude() - cyl.Radius()) > 1e-7)
+      return false;
+  }
+  return true;
+}
+
 // For arc `i` of a fillet among other arcs of its circle rounded alike (3777 Fillet4: the two
 // arcs of a disc's rim between two flats; Fusion's round is the whole rim's, one torus cut off by
 // the flats): how far past its start and its end its corner is revolved, to the middle of the
@@ -4010,13 +4047,13 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   // then off by some 1e-6 of a blend size, below the volume check's 1e-7 of the body.
   if (std::fabs(n1.Dot(n2)) > 1e-6) return fillet && section_corner(body, fs, x, false, out, e0, e1);
   // Concave: the material is on the outer side of both faces' corner (512: the top corners of
-  // a window cut through a wall, rounded to a half circle). Only straight edges.
+  // a window cut through a wall, rounded to a half circle). Straight edges, and circles round
+  // the outside of a cylinder (the foot of a boss, below).
   {
     const double eps = 1e-3 * std::min(a, b);
     // Beside the corner, along a face: out of a convex edge's body, in a concave edge's.
     BRepClass3d_SolidClassifier in(body, c.Value(0.5 * (t0 + t1)).Translated((gp_Vec(n1) - gp_Vec(n2)) * eps), 1e-9);
     if (in.State() == TopAbs_IN) {
-      if (!line) return false;
       out.concave = true;
       n1.Reverse();
       n2.Reverse();
@@ -4028,10 +4065,19 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
     // A whole circle or an arc between two end planes; one face a plane across its axis, the
     // other a cylinder about it.
     whole = std::fabs(t1 - t0 - 2 * M_PI) <= 1e-9;
-    if (!whole && !arc_ends(body, x.e, fs, ends, tan_max)) return false;
     gp_Ax1 ax = c.Circle().Axis();
     const BRepAdaptor_Surface& pl = s0.GetType() == GeomAbs_Plane ? s0 : s1;
     const BRepAdaptor_Surface& cy = s0.GetType() == GeomAbs_Cylinder ? s0 : s1;
+    if (out.concave) {
+      // A concave arc: its blend runs on into the blends of the faces that carry on from the
+      // cylinder's sides (071: a boss of rounded corners, r 12.7 mm, filled round its foot
+      // by 19.05 mm), so its corner is the arc's alone, up to the planes through the axis
+      // at its ends; a whole circle's is the whole ring.
+      if (pl.GetType() != GeomAbs_Plane || cy.GetType() != GeomAbs_Cylinder) return false;
+      if (!whole && !arc_tangent_ends(body, x.e, fs, cy.Cylinder())) return false;
+    } else if (!whole && !arc_ends(body, x.e, fs, ends, tan_max)) {
+      return false;
+    }
     if (pl.GetType() != GeomAbs_Plane || cy.GetType() != GeomAbs_Cylinder)
       return fillet && whole && section_corner(body, fs, x, false, out, e0, e1);
     if (!pl.Plane().Axis().IsParallel(ax, 1e-9)) return false;
@@ -4041,12 +4087,15 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
   }
   // The section, in the plane of n1 and n2 at p0: inward along the first face is -n2.
   const gp_Vec v1(n1), v2(n2);
-  const double d = 0.25 * std::min(a, b);
+  double d = 0.25 * std::min(a, b);
   // How far past an arc's ends its corner is revolved: past where the end planes leave the
   // section (measured at its point nearest the axis).
   // An arc of a ring (`ring_turns`) is revolved on to the middles of the gaps beside it instead.
   double reach0 = 0, reach1 = 0;
-  if (!whole) {
+  if (!whole && out.concave) {
+    // The corner reaches into the cylinder by `d` (the filling tool): it must stay off the axis.
+    if (!(c.Circle().Radius() - 2 * d > 1e-6)) return false;
+  } else if (!whole) {
     const double r_in = c.Circle().Radius() - std::max(a, b) - d;
     if (!(r_in > 1e-6) || !(tan_max < 2.0)) return false;
     reach0 = reach1 = 1.5 * (std::max(a, b) + d) * std::sqrt(2.0) * tan_max / r_in + 1e-3;
@@ -4057,6 +4106,27 @@ bool corner_of(const TopoDS_Shape& body, const AncMap& anc, const BlendEdge& x, 
     if (t1 - t0 + reach0 + reach1 >= 2 * M_PI) return false;
   }
   gp_Pnt A = p0.Translated(-v2 * a), B = p0.Translated(-v1 * b);
+  if (out.concave) {
+    // The filling tool reaches `d` into the material beside the corner; where that is thinner
+    // (071: a boss whose walls are 3.25 mm thick, filled round its foot by 19.05 mm), less.
+    const gp_Vec to_mid = line ? gp_Vec(p0, c.Value(0.5 * (t0 + t1))) : gp_Vec(0, 0, 0);
+    auto inside = [&](double dd) {
+      const gp_Pnt B2 = B.Translated(v2 * dd), K = p0.Translated((v1 + v2) * dd), A2 = A.Translated(v1 * dd);
+      const gp_Pnt ps[] = {B2, K, A2};
+      std::vector<gp_Pnt> qs(std::begin(ps), std::end(ps));
+      const gp_Pnt ring[] = {B, B2, K, A2, A};
+      for (size_t k = 0; k + 1 < 5; ++k) qs.push_back(gp_Pnt(0.5 * (ring[k].XYZ() + ring[k + 1].XYZ())));
+      for (const gp_Pnt& q : qs) {
+        BRepClass3d_SolidClassifier in(body, q.Translated(to_mid), 1e-9);
+        if (in.State() == TopAbs_OUT) return false;
+      }
+      return true;
+    };
+    while (!inside(d)) {
+      d *= 0.5;
+      if (d < 1e-3 * std::min(a, b)) return false;
+    }
+  }
   auto section = [&](bool reach) -> std::pair<TopoDS_Face, TopoDS_Edge> {
     BRepBuilderAPI_MakeWire mw;
     TopoDS_Edge blend;
