@@ -328,3 +328,32 @@ fn random_mixed_curves_never_panic_and_give_closed_loops() {
     }
     assert!(ok > 200, "{ok} arrangements succeeded");
 }
+
+/// A shell between two arcs closed by a short line that overlaps a longer one and an axis
+/// line (an Inventor revolve's profile): after a solve the short line is tilted by 1e-12,
+/// which must still count as running along the others, not as crossing them somewhere.
+#[test]
+fn a_line_tilted_within_the_tolerance_still_overlaps() {
+    let mut s = Sketch::new();
+    let p = |s: &mut Sketch, x: f64, y: f64| s.add_point([x, y]).unwrap();
+    let o = p(&mut s, 0.0, 0.0);
+    let foot = p(&mut s, 8.999999999782618, 4.728343421110173e-12);
+    let low = p(&mut s, 2.0, -45.0);
+    let top = p(&mut s, 2.0000000002056737, 45.000000000070536);
+    let c_out = p(&mut s, -120.96925807998831, 2.827004299924735);
+    let inner = p(&mut s, 7.500000000038008, -1.71056987454097e-12);
+    let lip = p(&mut s, 1.9999999999636795, 42.49999999998867);
+    let c_in = p(&mut s, -116.3746092300017, 5.57505057001304);
+    let (a0, a1) = (p(&mut s, -147.360286, 0.0), p(&mut s, 37.376911, 0.0));
+    s.add_line_between(o, foot).unwrap();
+    s.add_line_between(low, top).unwrap();
+    s.add_arc_between(c_out, foot, top).unwrap();
+    s.add_line_between(foot, inner).unwrap();
+    s.add_arc_between(c_in, inner, lip).unwrap();
+    s.add_line_between(a0, a1).unwrap();
+    let a = arrange(&s, TOL).unwrap();
+    // The shell and the region inside it.
+    let got = areas(&a);
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!((got[0] - 48.3653).abs() < 1e-3 && (got[1] - 170.2477).abs() < 1e-3, "{got:?}");
+}

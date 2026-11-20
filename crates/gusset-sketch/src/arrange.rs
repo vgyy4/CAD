@@ -76,7 +76,9 @@ fn seg_seg(a0: V2, a1: V2, b0: V2, b1: V2, tol: f64) -> Vec<V2> {
     let (l1, l2) = (norm(d1), norm(d2));
     let den = cross(d1, d2);
     let w = sub(b0, a0);
-    if den.abs() <= 1e-12 * l1 * l2 {
+    // Parallel, or so nearly that across the longer segment the two part by less than a
+    // tenth of the tolerance (a crossing found there would be anywhere along the stretch).
+    if den.abs() <= 1e-12 * l1 * l2 || den.abs() * l1.max(l2) <= 0.1 * tol * l1 * l2 {
         if (cross(d1, w) / l1).abs() > tol {
             return h;
         }
