@@ -25,8 +25,8 @@ Phase 3 has started (see Next).
   in two directions, picks one-edge chamfers where their reference lines start, steps an iPart row's solve
   so arcs keep their side, blends what a later cut broke up before the cut, and fixes three tolerance slips
   of sketch regions (nearly collinear overlaps, nearly tangent circles, curves leaving a point tangent); left: Design
-  Accelerator gear teeth, surface consumers, blends whose supports were used up, ISO 7046 tapers, sketch text); Solid Edge 90
-  of 180 measured ordered parts (rounds se1-se7, xt1, op2 and ipt10, ADR 0046 amendments 11-13, 20-24, 26 and 27; op2 builds
+  Accelerator gear teeth, surface consumers, blends whose supports were used up, ISO 7046 tapers, sketch text); Solid Edge 97
+  of 180 measured ordered parts (rounds se1-se8, xt1, op2 and ipt10, ADR 0046 amendments 11-13, 20-24 and 26-28; op2 builds
   rounds OCCT's fillet does not from their corners, ADR 0004 amendment 2026-11-19; se5 reads fast and
   body patterns, leaves curves out and adds the end up to the next face, ADR 0061 amendment; se6 reads
   ends through all as ends to the next face, mirror copies' own seeds and drafts; se7 reads loft end
@@ -36,7 +36,9 @@ Phase 3 has started (see Next).
   blend contact curves, ADR 0035 amendment 2026-11-19 - which gains no history part: 27 of the 40
   stop at rounds OCCT's fillet does not build, 19 of them in parts with cliff-edge rounds; left:
   a cliff-edge round in the kernel, other OCCT fillet failures, rebuilds that differ, an OCCT fuse
-  defect on revolves sharing a cone apex, part copies). Sample corpora are
+  defect on revolves sharing a cone apex, part copies; se8 builds cliff-edge rounds of any section
+  in the kernel, ADR 0004 amendment 2026-11-20, gaining 081-090's tab rounds and 094; left: narrow
+  faces whose far side is several edges, plain rounds OCCT does not build, 067's partial cliff). Sample corpora are
   openly licensed downloads kept in scratch, never committed. Two in-process import crashes fixed (an
   unbounded face in mass properties, OCCT patch gusset-0005; the hole fit check meshes only the hole's
   face). Some Inventor rules take a value from the part's stored result where the file's record is not

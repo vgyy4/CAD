@@ -1150,3 +1150,43 @@ loft is not OCCT's, 7e-5; ISO 7046 recesses; LEGO text); sketch regions 17 (curv
 neighbours, sketch text); AN818 (a work plane offset `d16` the row moves, circles projected from the
 revolve) and MS20819 members (the larger rows' constraints conflict, also when reached in steps) 13;
 shells whose open faces count differently 11 (most also hold a face draft); lofts 11; coils 6.
+
+## Amendment (2026-11-20, 28): Solid Edge round se8 - cliff-edge rounds in the kernel
+
+Of the 37 parts whose first unbuilt feature was a round after xt1, the commonest geometry was
+a family of eight (081-090): a tab 2.54 x 0.22 mm standing on a swept tube (a torus face),
+its foot rounded by 0.381 mm, wider than the tab is thick. Solid Edge's stored bodies hold
+three cliff-edge blends there (`blend_type` `E`, the ball rolling on the torus and on the
+tab's top or side edge) that meet one another along their intersection curves, and a second
+round (R blends between those blends and the tab's back) on top. OCCT's fillet has no mode
+for a ball that touches an edge; the kernel now builds these corners itself (ADR 0004
+amendment 2026-11-20: rows of the ball's arc at stations along the far edge, lofted; corners
+whose far edges meet run on past that vertex until their blends cross).
+
+Measured per round failure (the OCCT shim's corner on each first failing round's input, kept
+as dumps in scratch): cliff corners built for 041, 055, 081-090, 110; refused where the
+narrow face's far side is several edges or ends at the round's own vertices (008, 044, 100,
+177, 178), where no face is narrower than the ball (OCCT failures of plain rounds: 016, 043,
+045, 057, 063, 064, 071, 080, 101, 107, 133-136, 166, 167), and where the far edge's ends do
+not line up with the round's (170).
+
+**Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before (xt1):
+89 as history. After: **96 as history**, none lost: 081, 082, 085, 086, 087 and 090 (their
+rounds now build, volume within 1.0e-6 of the stored bodies) and 094 (its concave round of a
+low wall, which `cut_corners` had mitred into a plain corner, is the cliff corner now).
+Changed first reasons, still not history: 083 and 088 now stop at their second round (r 0.381
+on 0.381 mm edges of the tab's back, OCCT fails), 041 at a later round (an edge not found),
+055 and 110 at rounds whose cliff corners leave faces with no origin. (174 hit the import time
+limit at a sweep once while two other rounds' imports shared the machine; alone it measures
+as before, 3 minutes, its features' volume differing from the stored body's.)
+
+**Other formats (the kernel change reaches every importer).** SolidWorks 333 of 1352 as
+history, as before, none lost (two parts rebuild one more feature before their first failing
+fillet); Inventor 714 of 1686, as before, none lost (one part's first reason changed the same
+way; one body-only part hit the 900 s limit at an unrelated coil while other rounds ran).
+
+**What is left among round failures (measured).** Narrow faces whose far side is not one edge
+(5), plain rounds OCCT does not build where no face is narrow (20 rounds, mostly corners of
+three or more rounded edges and B-spline faces), cliff corners leaving faces without origins
+(2), a round whose contact leaves its face only near an end (067's pipe tee, 3.2e-5 off), both
+faces narrower than the ball (101, 016).
