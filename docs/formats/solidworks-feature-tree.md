@@ -1563,3 +1563,69 @@ chain blends), Back-Plate-Mount, Bottom-Plate (two), Mount_split_end, Back_sup_R
 Universal L Bracket - Triple, Grip_tip_slider (pattern senses), SlotBase-Back (two; start faces), Anti-Backlash Nut
 Block, Leadscrew Motor Mount, MAIN ARM PART1 (up-to-next cuts), Connecting Plate_TOP, Servo_Microcontroller Enclosure
 Cover (choosers), Switch and LED Mount, ballscrew, body, part6 (by the same fixes). None lost.
+
+## L26. Round 20 (sw15: pattern seeds, Config-0 sketches, re-blended edges, face lofts, flipped-side cuts, face frames)
+Measured from this round's own baseline (359 of 1352; GT2_Bobbin_v2 by round ipt10's sketch fix): of the 993
+refusals, 550 are STEP-style imports; volume mismatches about 60, fillets the kernel refuses about 25, fillet edges
+not found or not resolved about 35, unsupported features (split bodies 16, variable fillets 15, imported surfaces 14,
+weldments 9, splits 8, ribs 6) and stock-only or history-less files (43) most of the rest.
+
+* **Pattern seeds without back references.** A hole wizard feature writes neither dimensions nor faces of its own in
+  its span, so no back reference gives its archive index and a pattern naming it stayed unresolved. Archive indices
+  grow along the stream: the one feature read between the nodes whose indices enclose the seed's is the seed (500 Hex
+  Hub's CirPattern1 of Hole1; Center_board_top and _bottom's tapped holes). Mirrors use the same rule.
+* **Config-0 classes and sketch owners.** Toolbox-made parts declare `moProfileFeature_c` in `Config-0` only; their
+  sketch nodes refer to it by a tag below the count `Config-0` ends on (classes and objects share one counter, and the
+  feature stream goes on from there), and the guess by signature took them for other classes. Such tags take the
+  sketch class where the count has it at that index (in chunk files only where the count also places
+  `moUnitComponent_c` where the stream's own tags do; 383 of 1067 chunk files number apart). The sketch objects
+  `Config-0` keeps (`sgSketch`, L18) are written inside the equations that use their dimensions, each at its first
+  reference: the owner is the first name after an `@` in the equation texts before the object, nearest text first
+  (Pan-Slot Screw M4: `"D1@Sketch2" = "Head_dia@BodySke"`, then Sketch2's object, then BodySke's). They are matched
+  by name, not by order (ballscrew_face_plate, angle, rectangular_tubing). The Toolbox screws still miss their base
+  revolve: neither stream holds a node for it, only the history log names it.
+* **Edges a later blend names again.** A blended edge is gone; a later fillet or chamfer naming the same edge
+  (midpoint and faces) shows the earlier record was not blended there (8mm Shim: Fillet1 lists all four rims,
+  Fillet2 and Fillet3 round two of them by other radii). The earlier blend keeps its other edges.
+* **Line references, version 13000.** Newer files write a line reference as three `c7 cf ff ff`, `00 00 00 00`,
+  the word 13000 and twenty zero bytes before the length, start and direction. A revolve about a line of another
+  sketch that lies in its own sketch plane gets the line as a centerline of its sketch (Lego Hand's Wrist Ring).
+* **Lofts from a face.** A loft that names one sketch and one face reference, a cap of an earlier extrusion, takes
+  the cap as a section (its point and outward normal), before or after the sketch as the references come (Dremel
+  Tip's Loft1 from the top of Boss-Extrude1; wheel axV2's Loft2 starts on a cap with holes, which a loft cannot
+  follow).
+* **Blind cuts of the flipped side.** "Flip side to cut" with a blind depth removes the slab the depth spans except
+  what the profile sweeps: it goes in as a cut of the region between the profile and a frame far around it, plus the
+  holes of the profile (circles inside the outline), drawn on a copy of the sketch (Spindle-Head, 7 Hole Cross
+  Joining Plate). Only whole-sketch profiles; the depth runs as a blind cut's (Dremel Tip's runs out of the part,
+  b12 = 1 on a sketch whose normal points away: unexplained).
+* **Face sketches facing into the face.** A sketch on a model face writes the face's plane data and its own frame
+  with the same normal; one drawn facing into the face writes its frame with the normal reversed (Cablechain-End's
+  Sketch2 on the bottom of Boss-Extrude1, extruded up through it). That frame is taken where none keeps the normal.
+* **Measured, not done.**
+  - Fillets OCCT refuses where a blend consumes a face or wall (BK12_block: a 1.35 mm2 blend on a sliver face;
+    recycling_rotate_tube: a 6.35 mm fillet on a 3.175 mm wall). Kernel side.
+  - Lofts between circles with connectors a few degrees apart: output_shaft_stage_4's (2.7 degrees) comes out a
+    cone in the part, Part3's (19 degrees) twisted; no byte found that tells them apart.
+  - The GT3 pulleys' set screw hole chamfers remove 0.13 mm3 more than the part's (a 0.2 mm chamfer on a saddle
+    edge; SolidWorks measures its distances otherwise).
+  - Variable fillets: the r3 keycap's stored body now converts, but to a solid 190 mm across, not the keycap.
+  - Patterns of faces (GT2 pulleys: an empty seed list, then two face references), patterns of bodies, split
+    bodies copied from other parts (no stock body is stored), weldments, ribs.
+
+**Coverage after the round** (rebuild check unchanged; the round's own baseline on its base, rounds ipt10 and sw14
+merged):
+
+| corpus | baseline | round sw15 |
+|---|---|---|
+| slip-pad | 25 / 35 | 25 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 318 / 1253 | **329** / 1253 |
+| all | 359 / 1352 | **370** / 1352 |
+
+Gained (sw-more, 11): 500 Hex Hub, Center_board_top, Center_board_bottom (pattern seeds), ballscrew_face_plate,
+angle, rectangular_tubing (Config-0 sketches by name), 8mm Shim (re-blended edges), Spindle-Head, 7 Hole Cross
+Joining Plate (flipped-side cuts), Cablechain-End (reversed face frame), and Dual V-Wheel Steel, which the baseline
+run lost to "the import worker's output did not close" and every other run imports (it passed in round sw14). None
+lost.

@@ -296,31 +296,29 @@ fn decl_at(d: &[u8], i: usize) -> Option<(&[u8], usize)> {
     Some((d.get(i + 6..i + 6 + len)?, i + 6 + len))
 }
 
-/// The map index of the first `moUnitComponent_c` declared in `Config-0` (classes and
-/// objects share one counter; the scan follows the prototype's `scan.py`).
-fn unit_component_index(c0: &[u8]) -> Option<usize> {
-    let mut classes: HashSet<usize> = HashSet::new();
+/// The classes `Config-0` declares, by map index, and the index after the stream's last
+/// object (classes and objects share one counter; the scan follows the prototype's `scan.py`).
+/// The feature stream goes on counting from there (round sw15).
+fn config_classes(c0: &[u8]) -> (HashMap<usize, String>, usize) {
+    let mut classes: HashMap<usize, String> = HashMap::new();
     let mut next = 1usize;
     let mut i = 0usize;
     while i + 1 < c0.len() {
         if let Some((name, end)) = decl_at(c0, i) {
-            if name == b"moUnitComponent_c" {
-                return Some(next);
-            }
-            classes.insert(next);
+            classes.insert(next, String::from_utf8_lossy(name).into_owned());
             next += 2;
             i = end;
             continue;
         }
-        let t = usize::from(u16_at(c0, i)?);
-        if t & 0x8000 != 0 && t != 0xffff && classes.contains(&(t & 0x7fff)) {
+        let Some(t) = u16_at(c0, i).map(usize::from) else { break };
+        if t & 0x8000 != 0 && t != 0xffff && classes.contains_key(&(t & 0x7fff)) {
             next += 1;
             i += 2;
             continue;
         }
         i += 1;
     }
-    None
+    (classes, next)
 }
 
 /// The class tag of `moUnitComponent_c` learned from the bytes of a chunk-container stream
@@ -794,6 +792,51 @@ fn config_sketches(c: &[u8]) -> Vec<(usize, usize)> {
     bodies.into_iter().zip(ends).collect()
 }
 
+/// The sketch each of [`config_sketches`]' objects belongs to (round sw15). The objects are
+/// written inside the equations that use the sketches' dimensions, each at the first
+/// reference to one of its dimensions: the owner is the first name after an `@` in the
+/// equation texts before the object (the nearest text first, its names in order) that is one
+/// of `names` and not taken by an earlier object (Pan-Slot Screw M4: `"D1@Sketch2" =
+/// "Head_dia@BodySke"`, then Sketch2's object, then BodySke's).
+fn config_sketch_owners(c: &[u8], bodies: &[(usize, usize)], names: &[&str]) -> Vec<Option<String>> {
+    // The equation texts: `ff fe ff <u8 length> <UTF-16>`, with the names after `@`.
+    let mut texts: Vec<(usize, Vec<String>)> = Vec::new();
+    let mut from = 0usize;
+    while let Some(i) = find(c, &UTF16_MARK, from, c.len()) {
+        from = i + 3;
+        let Some(&len) = c.get(i + 3) else { break };
+        let raw = c.get(i + 4..(i + 4 + 2 * usize::from(len)).min(c.len())).unwrap_or_default();
+        let text = utf16(raw);
+        if !text.contains('@') {
+            continue;
+        }
+        let refs: Vec<String> = text
+            .split('@')
+            .skip(1)
+            .filter_map(|t| t.split('"').next())
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect();
+        texts.push((i, refs));
+    }
+    let mut taken: HashSet<String> = HashSet::new();
+    let mut out = Vec::with_capacity(bodies.len());
+    for &(body, _) in bodies {
+        let owner = texts
+            .iter()
+            .rev()
+            .filter(|(at, _)| *at < body)
+            .flat_map(|(_, refs)| refs.iter())
+            .find(|r| names.contains(&r.as_str()) && !taken.contains(*r))
+            .cloned();
+        if let Some(o) = &owner {
+            taken.insert(o.clone());
+        }
+        out.push(owner);
+    }
+    out
+}
+
 /// Drops node names written inside the header of the node before them (both find the same
 /// block): an attribute in a sketch's header (zsCAD's `Assoc1`), or the `Sketch3<3>` name a
 /// feature that reuses Sketch3 writes in its own header (Connecting Plate_BOTTOM_M3's
@@ -819,8 +862,11 @@ fn drop_nested(nodes: &mut Vec<Node>) {
 }
 
 /// Maps class-reference tags to declared classes by signature (`nodes2.classify`, a guess
-/// the prototype settles this way).
-fn classify(d: &[u8], nodes: &mut [Node]) {
+/// the prototype settles this way). A tag below `outer`'s end names a class `Config-0`
+/// declared (round sw15: Toolbox screws declare `moProfileFeature_c` there, and their sketch
+/// nodes only refer to it), taken as counted where the count has the sketch class at that
+/// index.
+fn classify(d: &[u8], nodes: &mut [Node], outer: (&HashMap<usize, String>, usize)) {
     let sig = |n: &Node| d.get(n.post..(n.post + 16).min(d.len())).unwrap_or_default();
     let strip = |s: &str| s.chars().filter(|c| !c.is_ascii_digit()).collect::<String>().trim().to_string();
     let mut tags: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
@@ -832,6 +878,14 @@ fn classify(d: &[u8], nodes: &mut [Node]) {
     let decl: Vec<usize> = (0..nodes.len()).filter(|&i| nodes.get(i).is_some_and(|n| n.cls.is_some())).collect();
     let mut mapping: HashMap<u16, Option<String>> = HashMap::new();
     for (t, xs) in &tags {
+        // Only for sketches: a count that drifts by an object named a folder note as a colour
+        // table (080-1277-000_4_GREY's Notes1).
+        if usize::from(*t) < outer.1
+            && let Some(c) = outer.0.get(&usize::from(*t)).filter(|c| *c == "moProfileFeature_c")
+        {
+            mapping.insert(*t, Some(c.clone()));
+            continue;
+        }
         let xs: Vec<&Node> = xs.iter().filter_map(|&i| nodes.get(i)).collect();
         let Some(first) = xs.iter().map(|x| x.start).min() else { continue };
         let mut best: Option<((usize, usize), &str)> = None;
@@ -1548,23 +1602,32 @@ fn find_plane(d: &[u8], a: usize, b: usize, uc: Option<usize>) -> Result<Option<
     mark.extend([0u8; 12]);
     mark.push(1);
     let mut from = at + 49;
+    // Round sw15: a sketch drawn facing into the face (Cablechain-End's Sketch2 on the bottom
+    // of Boss-Extrude1, extruded up through it) writes its frame with the normal reversed; it
+    // is taken where no frame keeps the face's normal.
+    let mut reversed: Option<Plane> = None;
     while let Some(j) = find(d, &mark, from, b) {
         let q = j + mark.len();
         let r2 = need(f64s_at::<9>(d, q), "a sketch frame")?;
-        if orthonormal(&r2)
-            && (0..3).all(|row| {
-                (r2.get(3 * row + 2).copied().unwrap_or(0.0) - r.get(3 * row + 2).copied().unwrap_or(0.0)).abs() < 1e-9
+        let column = |sign: f64| {
+            (0..3).all(|row| {
+                (r2.get(3 * row + 2).copied().unwrap_or(0.0) - sign * r.get(3 * row + 2).copied().unwrap_or(0.0)).abs()
+                    < 1e-9
             })
-        {
+        };
+        if orthonormal(&r2) && (column(1.0) || (reversed.is_none() && column(-1.0))) {
             let t2 = need(f64s_at::<3>(d, q + 72), "a sketch frame")?;
             let sc = need(f64_at(d, q + 96), "a sketch frame")?;
             if is(sc, 1.0) {
-                return Ok(Some(frame(&r2, &t2, None)));
+                if column(1.0) {
+                    return Ok(Some(frame(&r2, &t2, None)));
+                }
+                reversed = Some(frame(&r2, &t2, None));
             }
         }
         from = j + 1;
     }
-    Ok(Some(plane))
+    Ok(Some(reversed.unwrap_or(plane)))
 }
 
 /// The plane as written: origin in mm, axes to 12 decimals.
@@ -2131,12 +2194,18 @@ fn direction_agrees(n: V3, dist: f64, v: V3) -> Option<bool> {
 /// `f64 length`, the start point and the unit direction in model coordinates (m). Returns the
 /// start in mm and the direction. Dual V-Wheel's Revolve1 turns about Axis1, the z axis.
 fn line_ref(d: &[u8], a: usize, b: usize) -> Option<(V3, V3)> {
-    const MARK: [u8; 16] = [0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0, 0x70, 0x17, 0, 0];
+    const MARK: [u8; 12] = [0xc7, 0xcf, 0xff, 0xff, 0xc7, 0xcf, 0xff, 0xff, 0, 0, 0, 0];
     let mut from = a;
     while let Some(i) = find(d, &MARK, from, b) {
         from = i + 1;
-        // Eight zero bytes before the length, sixteen in newer parts (Solid V-Wheel Xtreme).
-        for at in [i + 24, i + 32] {
+        // Version word 6000: eight zero bytes before the length, sixteen in newer parts (Solid
+        // V-Wheel Xtreme); 13000: twenty (round sw15, Lego Hand's Wrist Ring).
+        let at: &[usize] = match u32_at(d, i + 12) {
+            Some(6000) => &[i + 24, i + 32],
+            Some(13000) => &[i + 36],
+            _ => &[],
+        };
+        for &at in at {
             let (Some(len), Some(o), Some(dir)) = (f64_at(d, at), f64s_at::<3>(d, at + 8), f64s_at::<3>(d, at + 32))
             else {
                 continue;
@@ -2151,6 +2220,97 @@ fn line_ref(d: &[u8], a: usize, b: usize) -> Option<(V3, V3)> {
         }
     }
     None
+}
+
+/// A line (model point and unit direction, mm) as two points of the sketch plane `jp`, 10 mm
+/// apart, when it lies in the plane and is not one of the sketch's own axes through its
+/// origin (those the tree takes as they are).
+fn axis_in_plane(o: V3, dir: V3, jp: &JsonPlane) -> Option<((f64, f64), (f64, f64))> {
+    let n = cross(jp.x, jp.y);
+    let w = sub(o, jp.origin);
+    if dot(w, n).abs() > 1e-6 || dot(dir, n).abs() > 1e-9 {
+        return None;
+    }
+    let own = cross(w, dir);
+    let along = |v: V3| (dot(dir, v).abs() - 1.0).abs() < 1e-9;
+    if dot(own, own) < 1e-12 && (along(jp.x) || along(jp.y)) {
+        return None;
+    }
+    let (u, v) = (dot(w, jp.x), dot(w, jp.y));
+    let (du, dv) = (dot(dir, jp.x), dot(dir, jp.y));
+    let r = |t: f64| round_to(t, 6) + 0.0;
+    Some(((r(u), r(v)), (r(u + 10.0 * du), r(v + 10.0 * dv))))
+}
+
+/// A copy of the sketch `sk` (tree JSON) named `name`, with a square frame of side `4 * BIG`
+/// about its origin added, and a point inside the frame and outside everything the sketch
+/// draws (sketch mm): the region a flipped-side cut removes. `None` when the sketch reaches
+/// the frame.
+fn framed_sketch(feats: &[Value], sk: &str, name: &str) -> Option<(Value, Vec<[f64; 2]>)> {
+    let src = feats
+        .iter()
+        .rev()
+        .find(|f| f.get("type") == Some(&json!("sketch")) && f.get("name").and_then(Value::as_str) == Some(sk))?;
+    let mut out = src.clone();
+    let half = 2.0 * BIG;
+    let points = out.get_mut("points")?.as_array_mut()?;
+    if points.iter().any(|p| {
+        let c = |k: &str| p.get(k).and_then(Value::as_f64).unwrap_or(0.0).abs();
+        c("x") > BIG || c("y") > BIG
+    }) {
+        return None;
+    }
+    let corners = [(-half, -half), (half, -half), (half, half), (-half, half)];
+    for (k, (x, y)) in corners.iter().enumerate() {
+        points.push(json!({"id": format!("frame_p{k}"), "x": x, "y": y}));
+    }
+    let curves = out.get_mut("curves")?.as_array_mut()?;
+    for k in 0..4 {
+        curves.push(json!({"id": format!("frame_c{k}"), "type": "line",
+            "start": format!("frame_p{k}"), "end": format!("frame_p{}", (k + 1) % 4)}));
+    }
+    out.as_object_mut()?.insert("name".into(), json!(name));
+    Some((out, [[half - 1.0, half - 1.0]].into_iter().chain(holes(src)).collect()))
+}
+
+/// The centres of a sketch's circles that are holes in its outline (sketch mm): circles drawn
+/// (not construction) whose centre lies inside the box of the outline's line and arc ends, with
+/// no smaller circle about the same centre (7 Hole Cross Joining Plate's seven holes).
+fn holes(sk: &Value) -> Vec<[f64; 2]> {
+    let pts: HashMap<&str, (f64, f64)> = sketch_points(sk).unwrap_or_default();
+    let curves = sk.get("curves").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+    let drawn = |c: &&Value| c.get("construction").is_none() && c.get("centerline").is_none();
+    let kind = |c: &Value| c.get("type").and_then(Value::as_str).unwrap_or_default().to_string();
+    let end = |c: &Value, k: &str| c.get(k).and_then(Value::as_str).and_then(|id| pts.get(id).copied());
+    let ends: Vec<(f64, f64)> = curves
+        .iter()
+        .filter(drawn)
+        .filter(|c| matches!(kind(c).as_str(), "line" | "arc"))
+        .flat_map(|c| [end(c, "start"), end(c, "end")])
+        .flatten()
+        .collect();
+    if ends.is_empty() {
+        return Vec::new();
+    }
+    let lo = ends.iter().fold((f64::INFINITY, f64::INFINITY), |m, p| (m.0.min(p.0), m.1.min(p.1)));
+    let hi = ends.iter().fold((f64::NEG_INFINITY, f64::NEG_INFINITY), |m, p| (m.0.max(p.0), m.1.max(p.1)));
+    let circles: Vec<((f64, f64), f64)> = curves
+        .iter()
+        .filter(drawn)
+        .filter(|c| kind(c) == "circle")
+        .filter_map(|c| Some((end(c, "center")?, c.get("radius").and_then(Value::as_f64)?)))
+        .collect();
+    circles
+        .iter()
+        .filter(|((x, y), r)| {
+            *x > lo.0
+                && *x < hi.0
+                && *y > lo.1
+                && *y < hi.1
+                && !circles.iter().any(|((u, v), q)| (u - x).abs() < 1e-9 && (v - y).abs() < 1e-9 && q < r)
+        })
+        .map(|((x, y), _)| [*x, *y])
+        .collect()
 }
 
 /// The point a feature names by a point reference (`moEndPointRef_w`, an end of an edge, or
@@ -3800,11 +3960,18 @@ struct Corners<'a> {
 }
 
 pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Result<Value, String> {
-    let uc = if chunk { unit_component_tag(rf) } else { unit_component_index(c0) };
+    // Chunk-container files number their classes apart from `Config-0`, mostly: their count is
+    // used where it puts `moUnitComponent_c` where the feature stream's own tags do.
+    let (mut outer, mut outer_end) = config_classes(c0);
+    let counted = outer.iter().filter(|(_, n)| *n == "moUnitComponent_c").map(|(&k, _)| k).min();
+    let uc = if chunk { unit_component_tag(rf) } else { counted };
+    if chunk && (uc.is_none() || uc != counted) {
+        (outer, outer_end) = (HashMap::new(), 0);
+    }
     let nt = node_tag(rf).ok_or("the feature stream has no node names")?;
     let mut nodes = feature_nodes(rf, nt)?;
     mark_suppressed(rf, &mut nodes);
-    classify(rf, &mut nodes);
+    classify(rf, &mut nodes, (&outer, outer_end));
     drop_nested(&mut nodes);
     let mut starts: Vec<usize> = nodes.iter().map(|n| n.start).collect();
     starts.push(rf.len());
@@ -3881,7 +4048,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         let e = nodes.get(j).map_or(rf.len(), |m| m.start);
         if ENT_HDRS.iter().any(|p| find(rf, p, n.post.min(e), e).is_some()) { e } else { b }
     };
-    let empty_sketches = nodes
+    let empty: Vec<&str> = nodes
         .iter()
         .enumerate()
         .filter(|&(ni, n)| {
@@ -3891,9 +4058,19 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 && a < b
                 && ENT_HDRS.iter().all(|p| find(rf, p, n.post.min(b), b).is_none())
         })
-        .count();
+        .map(|(_, n)| n.name.as_str())
+        .collect();
     let in_config = config_sketches(c0);
-    let mut from_config = (empty_sketches > 0 && in_config.len() == empty_sketches).then(|| in_config.into_iter());
+    // By the equations naming them where every empty sketch has its object, else in order
+    // when there are as many objects as empty sketches.
+    let all_sketches: Vec<&str> =
+        nodes.iter().filter(|n| n.cls.as_deref() == Some("moProfileFeature_c")).map(|n| n.name.as_str()).collect();
+    let owners = config_sketch_owners(c0, &in_config, &all_sketches);
+    let by_owner: HashMap<String, (usize, usize)> =
+        owners.into_iter().zip(in_config.iter().copied()).filter_map(|(o, s)| Some((o?, s))).collect();
+    let config_by_name = (!empty.is_empty() && empty.iter().all(|n| by_owner.contains_key(*n))).then_some(by_owner);
+    let mut from_config = (config_by_name.is_none() && !empty.is_empty() && in_config.len() == empty.len())
+        .then(|| in_config.into_iter());
     // The archive index of each node (patterns name their seeds by it), read when needed.
     let mut node_index: Option<HashMap<u32, usize>> = None;
     // Mirror id -> its plane (origin mm, unit normal), for edges on the mirrored copy.
@@ -3967,9 +4144,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         if cls.as_deref() == Some("moProfileFeature_c") {
             let eb = sketch_end(ni, n);
             let h = ENT_HDRS.iter().filter_map(|p| find(rf, p, n.post, eb)).min().unwrap_or(eb);
-            let geo = match (h == eb, from_config.as_mut()) {
+            let geo = match (h == eb, from_config.as_mut(), config_by_name.as_ref()) {
                 // A sketch whose entities the configuration stream keeps.
-                (true, Some(it)) => it.next().and_then(|(body, end)| parse_sketch(c0, body, end)),
+                (true, _, Some(m)) => m.get(&n.name).and_then(|&(body, end)| parse_sketch(c0, body, end)),
+                (true, Some(it), None) => it.next().and_then(|(body, end)| parse_sketch(c0, body, end)),
                 _ => h.checked_sub(14).and_then(|body| parse_sketch(rf, body, eb)),
             };
             if n.suppressed {
@@ -4343,7 +4521,23 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             };
             js.insert("target".into(), target);
             js.insert("sw_end_kind".into(), json!(end));
-            if flip && !through_all {
+            // A blind cut of the flipped side (round sw15) removes the slab its depth spans
+            // except what the profile sweeps: a cut of the region between the profile and a
+            // frame far around it, drawn on a copy of the sketch (Dremel Tip's Cut-Extrude2).
+            let framed =
+                match (flip && !through_all && typ == Some(0), distance, js.get("profiles"), last_sketch.as_ref()) {
+                    (true, Some(d), Some(Value::String(all)), Some(sk)) if all == "all" && d.abs() > 1e-9 => {
+                        framed_sketch(&feats, sk, &format!("{}-flip", n.name))
+                    }
+                    _ => None,
+                };
+            if let Some((sketch, picks)) = framed {
+                js.insert("sketch".into(), sketch.get("name").cloned().unwrap_or(Value::Null));
+                js.insert("profiles".into(), json!(picks.iter().map(|p| json!({"point": p})).collect::<Vec<_>>()));
+                js.insert("operation".into(), json!("cut"));
+                feats.push(sketch);
+                up_to = None;
+            } else if flip && !through_all {
                 distance = None;
                 up_to = None;
             }
@@ -4605,12 +4799,19 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         .or(axis),
                     _ => axis,
                 };
-                let axis_json = match (axis, named) {
+                let mut axis_json = match (axis, named) {
                     (Some(k), _) => json!({"line": format!("c{k}")}),
                     (None, Some((o, dir))) => json!({"origin": json_v3(round3(o)), "direction": json_v3(dir)}),
                     (None, None) => Value::Null,
                 };
-                js.insert("axis".into(), axis_json);
+                // A named axis in the sketch plane that is neither of the sketch's own axes
+                // (a line of another sketch: Lego Hand's Wrist Ring turns about Sketch4's
+                // centerline) goes in as a centerline added to the sketch.
+                let added = match (axis, named, sketch_by_name.get(last_sketch.as_deref().unwrap_or(""))) {
+                    (None, Some((o, dir)), Some(&(_, jp))) => axis_in_plane(o, dir, &jp),
+                    _ => None,
+                };
+                js.insert("axis".into(), axis_json.clone());
                 // An open profile whose loose ends lie on the axis is closed along it.
                 let closing = axis.map(|k| axis_closure(g, k)).unwrap_or_default();
                 if !closing.is_empty()
@@ -4621,9 +4822,28 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         .and_then(|f| f.get_mut("curves"))
                         .and_then(Value::as_array_mut)
                 {
-                    for (j, (p, q)) in closing.into_iter().enumerate() {
+                    for (j, (p, q)) in closing.iter().enumerate() {
                         cs.push(json!({"id": format!("c{}", g.segs.len() + j), "type": "line",
                             "start": format!("p{p}"), "end": format!("p{q}")}));
+                    }
+                }
+                if let Some((p, q)) = added
+                    && let Some(sk) = feats
+                        .iter_mut()
+                        .rev()
+                        .find(|f| f.get("type") == Some(&json!("sketch")) && f.get("name") == Some(&json!(last_sketch)))
+                {
+                    let (pa, pb) = (format!("p{}", g.pts.len()), format!("p{}", g.pts.len() + 1));
+                    let id = format!("c{}", g.segs.len() + closing.len());
+                    if let Some(Value::Array(ps)) = sk.get_mut("points") {
+                        ps.push(json!({"id": pa, "x": p.0, "y": p.1}));
+                        ps.push(json!({"id": pb, "x": q.0, "y": q.1}));
+                    }
+                    if let Some(Value::Array(cs)) = sk.get_mut("curves") {
+                        cs.push(json!({"id": id, "type": "line", "start": pa, "end": pb,
+                            "construction": true, "centerline": true}));
+                        axis_json = json!({"line": id});
+                        js.insert("axis".into(), axis_json);
                     }
                 }
                 // A full revolve's circles can be named by edge records.
@@ -4728,8 +4948,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 && let Some(seeds) = patterns::seed_list(rf, a, b)
             {
                 let index = node_index.get_or_insert_with(|| node_indices(rf, &nodes, &span));
-                for p in &seeds.ptrs {
-                    let Some(m) = index.get(p).and_then(|&k| nodes.get(k)) else { continue };
+                for &p in &seeds.ptrs {
+                    let is_feature = |k: usize| nodes.get(k).is_some_and(|m| emitted(&feats, &m.name));
+                    let Some(m) = seed_node(index, p, ni, is_feature).and_then(|k| nodes.get(k)) else { continue };
                     if emitted(&feats, &m.name) && !mirrored.contains(&m.name) {
                         mirrored.push(m.name.clone());
                     }
@@ -4973,7 +5194,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 patterns::seed_list(rf, a, b),
                 &patterns::pattern_lines(rf, a, b),
                 (int, real),
-                |p| index.get(&p).and_then(|&k| nodes.get(k)).map(|m| m.name.clone()),
+                |p| {
+                    let is_feature = |k: usize| nodes.get(k).is_some_and(|m| emitted(&feats, &m.name));
+                    seed_node(index, p, ni, is_feature).and_then(|k| nodes.get(k)).map(|m| m.name.clone())
+                },
                 &feats,
             );
             if let [one] = made.as_slice()
@@ -5003,6 +5227,28 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         } else if matches!(cls.as_deref(), Some("moBlend_c" | "moBlendCut_c")) {
             // A loft: its sections are profile components naming their sketches by node id.
             let sections = named_sketches(rf, a, b, &sketch_ids);
+            // One sketch and a face reference: a loft from (or to) a planar cap of an earlier
+            // extrusion (round sw15, Dremel Tip's Loft1 from Boss-Extrude1's top). The face goes
+            // first when its reference comes before the sketch's.
+            let mut face_section: Option<(usize, Value)> = None;
+            if let [only] = sections.as_slice()
+                && let [(at, reps)] = edge_records(rf, a, b)?.as_slice()
+                && let Some(r0) = reps.first()
+                && cap_tags.contains(&r0.tag)
+                && let Some(f) = swept.get(&r0.fid)
+            {
+                let sketch_at = sketch_ids
+                    .iter()
+                    .find(|(_, v)| *v == only)
+                    .and_then(|(id, _)| find(rf, &id.to_le_bytes(), a, b))
+                    .unwrap_or(b);
+                let p = lift(f, 0.0, 0.0, cap_height(f, r0.idx)).map(|v| round_to(v, 6) + 0.0);
+                // Outward: the end cap along the extrusion, the start cap against it.
+                let along = if f.symmetric || f.distance >= 0.0 { 1.0 } else { -1.0 };
+                let out = if r0.idx == 1 { along } else { -along };
+                let nrm = normal(f).map(|v| round_to(v * out, 12) + 0.0);
+                face_section = Some((usize::from(*at > sketch_at), json!({"face": {"point": p, "normal": nrm}})));
+            }
             let op = if !solid {
                 "new"
             } else if cls.as_deref() == Some("moBlendCut_c") {
@@ -5013,12 +5259,16 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let mut js = Map::new();
             js.insert("type".into(), json!("loft"));
             js.insert("name".into(), json!(n.name));
-            js.insert("sketches".into(), json!(sections));
+            let mut listed: Vec<Value> = sections.iter().map(|x| json!(x)).collect();
+            if let Some((k, face)) = face_section.take() {
+                listed.insert(k.min(listed.len()), face);
+            }
+            js.insert("sketches".into(), Value::Array(listed.clone()));
             js.insert("operation".into(), json!(op));
             if op != "new" {
                 js.insert("target".into(), json!(first_solid));
             }
-            if sections.len() < 2 {
+            if listed.len() < 2 {
                 js.insert("unresolved".into(), json!(true));
             }
             // A circle section starts where the loft's connector meets it: the sections twist
@@ -5182,8 +5432,38 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         "format": "gusset-feature-tree",
         "version": 2,
         "source": {"app": "solidworks", "file": file},
-        "features": expand_holes(feats),
+        "features": expand_holes(drop_reblended(feats)),
     }))
+}
+
+/// Round sw15: an edge record of a fillet or chamfer that a later blend names again (the same
+/// midpoint between the same faces) was not blended there: a blended edge is gone, so the
+/// later one could not have picked it (8mm Shim's Fillet1 lists all four rims, Fillet2 and
+/// Fillet3 then round two of them by other radii, as the part has them). The earlier blend
+/// keeps its other edges; one that would keep none is left as read.
+fn drop_reblended(mut feats: Vec<Value>) -> Vec<Value> {
+    let is_blend = |f: &Value| matches!(f.get("type").and_then(Value::as_str), Some("fillet" | "chamfer"));
+    let key = |e: &Value| -> Option<(Value, Value)> { Some((e.get("midpoint")?.clone(), e.get("faces")?.clone())) };
+    for i in 0..feats.len() {
+        let Some(f) = feats.get(i).filter(|f| is_blend(f)) else { continue };
+        let later: Vec<(Value, Value)> = feats
+            .iter()
+            .skip(i + 1)
+            .filter(|g| is_blend(g))
+            .filter_map(|g| g.get("edges").and_then(Value::as_array))
+            .flatten()
+            .filter_map(key)
+            .collect();
+        let Some(edges) = f.get("edges").and_then(Value::as_array) else { continue };
+        let kept: Vec<Value> = edges.iter().filter(|e| key(e).is_none_or(|k| !later.contains(&k))).cloned().collect();
+        if kept.is_empty() || kept.len() == edges.len() {
+            continue;
+        }
+        if let Some(Value::Object(m)) = feats.get_mut(i) {
+            m.insert("edges".into(), Value::Array(kept));
+        }
+    }
+    feats
 }
 
 /// The sketches a loft or a sweep names, in order of first mention. Each is a profile
@@ -5710,6 +5990,21 @@ fn node_indices(d: &[u8], nodes: &[Node], span: &impl Fn(&Node) -> (usize, usize
         }
     }
     index
+}
+
+/// The node an archive index names (round sw15): the node [`node_indices`] found for it, or,
+/// where no back reference gave the index (a hole wizard feature has neither dimensions nor
+/// faces of its own in its span), the one feature read between the nodes whose indices
+/// enclose it, before the node `at` that names it. Indices grow along the stream.
+fn seed_node(index: &HashMap<u32, usize>, p: u32, at: usize, is_feature: impl Fn(usize) -> bool) -> Option<usize> {
+    if let Some(&k) = index.get(&p) {
+        return Some(k);
+    }
+    let lo = index.iter().filter(|&(&q, &k)| q < p && k < at).map(|(_, &k)| k).max()?;
+    let hi = index.iter().filter(|&(&q, &k)| q > p && k > lo).map(|(_, &k)| k).min().unwrap_or(at).min(at);
+    let mut found = (lo + 1..hi).filter(|&k| is_feature(k));
+    let one = found.next()?;
+    found.next().is_none().then_some(one)
 }
 
 /// A linear or circular feature pattern (`moLPattern_c`, `moCirPattern_c`) as tree features.
@@ -6795,6 +7090,79 @@ mod pattern_tests {
             p["x"] = json!(x + 4.6);
         }
         assert!(helix_sweep(&mut [mid], "P", &h).is_none());
+    }
+
+    #[test]
+    fn a_named_axis_in_the_sketch_plane_becomes_a_sketch_line() {
+        // Lego Hand: Sketch7 on the Right plane turns about Sketch4's tilted centerline.
+        let jp = JsonPlane { origin: [0.0; 3], x: [0.0, 0.0, -1.0], y: [0.0, 1.0, 0.0] };
+        let (p, q) = axis_in_plane([0.0, 2.0528, -2.5], [0.0, -0.6, -0.8], &jp).unwrap();
+        assert_eq!(p, (2.5, 2.0528));
+        assert!((q.0 - 10.5).abs() < 1e-9 && (q.1 - (2.0528 - 6.0)).abs() < 1e-9, "{q:?}");
+        // The sketch's own y axis stays as it is; a line off the plane is not taken.
+        assert_eq!(axis_in_plane([0.0, 5.0, 0.0], [0.0, 1.0, 0.0], &jp), None);
+        assert_eq!(axis_in_plane([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], &jp), None);
+    }
+
+    #[test]
+    fn a_flipped_side_cut_cuts_the_frame_around_its_profile() {
+        let sk = json!({"type": "sketch", "name": "Sketch5", "plane": {"origin": [0.0, 0.0, 0.0]},
+            "points": [{"id": "p0", "x": 0.0, "y": 0.0}],
+            "curves": [{"id": "c0", "type": "circle", "center": "p0", "radius": 10.0}]});
+        let (out, picks) = framed_sketch(std::slice::from_ref(&sk), "Sketch5", "Cut-Extrude2-flip").unwrap();
+        assert_eq!(out["name"], json!("Cut-Extrude2-flip"));
+        assert_eq!(out["curves"].as_array().unwrap().len(), 5);
+        assert_eq!(out["points"].as_array().unwrap().len(), 5);
+        let [pick] = picks.as_slice() else { panic!("{picks:?}") };
+        assert!(pick[0] > BIG && pick[1] > BIG && pick[0] < 2.0 * BIG);
+        // A plate with a hole: the hole is cut too.
+        let plate = json!({"type": "sketch", "name": "S", "points": [
+                {"id": "p0", "x": -5.0, "y": -5.0}, {"id": "p1", "x": 5.0, "y": -5.0},
+                {"id": "p2", "x": 5.0, "y": 5.0}, {"id": "p3", "x": -5.0, "y": 5.0}, {"id": "p4", "x": 1.0, "y": 0.0}],
+            "curves": [{"id": "c0", "type": "line", "start": "p0", "end": "p1"},
+                {"id": "c1", "type": "line", "start": "p1", "end": "p2"},
+                {"id": "c2", "type": "line", "start": "p2", "end": "p3"},
+                {"id": "c3", "type": "line", "start": "p3", "end": "p0"},
+                {"id": "c4", "type": "circle", "center": "p4", "radius": 1.0}]});
+        let (_, picks) = framed_sketch(&[plate], "S", "x").unwrap();
+        assert_eq!(picks.get(1), Some(&[1.0, 0.0]));
+        // A sketch reaching out to the frame is not framed.
+        let mut far = sk;
+        far["points"][0]["x"] = json!(2.0 * BIG);
+        assert!(framed_sketch(&[far], "Sketch5", "x").is_none());
+    }
+
+    #[test]
+    fn an_edge_a_later_blend_names_again_is_left_out() {
+        let e =
+            |m: f64, cap: f64| json!({"midpoint": [cap, m, 0.0], "faces": [{"kind": "cap", "point": [cap, 0.0, 0.0]}]});
+        let feats = vec![
+            json!({"type": "fillet", "name": "Fillet1", "edges": [e(4.0, 0.0), e(6.0, 0.0), e(4.0, 1.5), e(6.0, 1.5)]}),
+            json!({"type": "fillet", "name": "Fillet2", "edges": [e(4.0, 0.0)]}),
+            json!({"type": "chamfer", "name": "Chamfer1", "edges": [e(6.0, 0.0)]}),
+            json!({"type": "fillet", "name": "Fillet3", "edges": [e(6.0, 1.5)]}),
+            json!({"type": "fillet", "name": "Fillet4", "edges": [e(6.0, 1.5)]}),
+        ];
+        let out = drop_reblended(feats);
+        assert_eq!(out[0]["edges"], json!([e(4.0, 1.5)]));
+        assert_eq!(out[1]["edges"], json!([e(4.0, 0.0)]));
+        // A blend left with no edge keeps what it read.
+        assert_eq!(out[3]["edges"], json!([e(6.0, 1.5)]));
+    }
+
+    #[test]
+    fn a_seed_without_back_references_is_the_one_feature_between_its_neighbours() {
+        // 500 Hex Hub: Cut-Extrude1 (node 20) is object 460; the pattern (node 26) names 527,
+        // and of the nodes after Cut-Extrude1 only Hole1 (node 21) is a feature.
+        let index: HashMap<u32, usize> = [(229, 10), (255, 15), (281, 16), (357, 18), (460, 20)].into_iter().collect();
+        assert_eq!(seed_node(&index, 460, 26, |_| true), Some(20));
+        assert_eq!(seed_node(&index, 527, 26, |k| k == 21), Some(21));
+        // Two features in between: not decided.
+        assert_eq!(seed_node(&index, 527, 26, |k| k == 21 || k == 24), None);
+        // A known later object bounds the stretch.
+        let mut later = index.clone();
+        later.insert(500, 22);
+        assert_eq!(seed_node(&later, 480, 26, |k| k == 21 || k == 24), Some(21));
     }
 
     #[test]
