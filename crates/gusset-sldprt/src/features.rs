@@ -622,13 +622,60 @@ fn chosen_profiles(
         let span = libm::hypot(hi[0] - lo[0], hi[1] - lo[1]);
         span.is_finite() && c.bbox[3] <= span * (1.0 + 1e-6) + 1e-9
     };
-    if (listed > 0 && chosen.len() > listed) || !chosen.iter().all(|c| on_plane(c) && fits(c)) {
+    // A chooser whose boxes are older than the sketch's dimensions (Servo_Microcontroller
+    // Enclosure Cover: boxes of circles of 12 and 11 mm drawn 10.6 and 8.1 mm since) still names
+    // the segments around each region: a point inside what they enclose picks the region.
+    let inner = |c: &Contour| {
+        let segs: Vec<&Seg> =
+            c.segs.iter().map(|&k| g.segs.iter().find(|s| s.a == k && !s.construction)).collect::<Option<_>>()?;
+        interior_point(&segs.iter().map(|s| seg_uv(g, s)).collect::<Option<Vec<_>>>()?)
+    };
+    if (listed > 0 && chosen.len() > listed) || !chosen.iter().all(|c| on_plane(c) && (fits(c) || inner(c).is_some())) {
         return None;
     }
     let mm = |v: f64| round_to(v * 1000.0, 9);
     Some(Value::Array(
-        chosen.iter().map(|c| json!({"bbox": [mm(c.bbox[0]), mm(c.bbox[1]), mm(c.bbox[2]), mm(c.bbox[3])]})).collect(),
+        chosen
+            .iter()
+            .map(|c| match inner(c).filter(|_| !fits(c)) {
+                Some((u, v)) => json!({"point": [mm(u), mm(v)]}),
+                None => json!({"bbox": [mm(c.bbox[0]), mm(c.bbox[1]), mm(c.bbox[2]), mm(c.bbox[3])]}),
+            })
+            .collect(),
     ))
+}
+
+/// A point inside what the polylines `segs` enclose (even-odd): the middle of the widest inside
+/// stretch along a few lines across their box; `None` when they enclose nothing.
+fn interior_point(segs: &[Vec<(f64, f64)>]) -> Option<(f64, f64)> {
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &(_, v) in segs.iter().flatten() {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    if !(hi - lo).is_finite() || hi - lo <= 0.0 {
+        return None;
+    }
+    let mut best: Option<(f64, (f64, f64))> = None;
+    for k in 1..12 {
+        // Off the box's simple fractions, so the line misses vertices.
+        let v = lo + (hi - lo) * (f64::from(k) - 0.4371) / 11.0;
+        let mut xs: Vec<f64> = Vec::new();
+        for w in segs.iter().flat_map(|p| p.windows(2)) {
+            let [(x0, y0), (x1, y1)] = w else { continue };
+            if (*y0 > v) != (*y1 > v) {
+                xs.push(x0 + (v - y0) / (y1 - y0) * (x1 - x0));
+            }
+        }
+        xs.sort_by(f64::total_cmp);
+        for pair in xs.chunks_exact(2) {
+            let [a, b] = pair else { continue };
+            if best.is_none_or(|(wd, _)| b - a > wd) {
+                best = Some((b - a, ((a + b) / 2.0, v)));
+            }
+        }
+    }
+    best.filter(|(wd, _)| *wd > 0.0).map(|(_, p)| p)
 }
 
 /// The first child of a node, by archive index (round sw7): after the name, the flags, the id
