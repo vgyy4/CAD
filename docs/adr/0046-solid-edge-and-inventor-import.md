@@ -1228,3 +1228,47 @@ a pick, chamfer and fillet failures); folds whose bend zone holds a step of the 
 bend relief) 3; sketch regions and loft sections about 20; face names whose curve number does not land
 on a line in larger sketches (the numbering counts entities the reader does not read: EY4180 A-00,
 A-07).
+
+## Amendment (2026-11-20, 30): Solid Edge round se9 - closed cliff corners, concave arcs, unnamed slivers
+
+Measured first (all 180 ordered parts, one per process, on this round's base: 97 as history, as
+after se8) and then, for each part whose first failure is a round, that round's input body against
+the OCCT shim's fallbacks (dumps and tools in scratch, not committed). Fixed this round, all in the
+OCCT shim (ADR 0004 amendment of this date):
+
+| cause (measured) | parts | outcome |
+|---|---|---|
+| a closed cliff corner (a ring whose side is lower than the radius) lofted once leaves its two end sections in the body as a slit of faces with no origin | 110 (cut), 055 (filled) | both history (055 within 2.1e-6 of the stored body) |
+| a sliver OCCT's fillet splits off a trimmed face is named by its history neither as modified nor generated | 059 | its first round builds; it stops at its second (r 1.27 on 2.54 mm edges) |
+| concave arcs round a cylinder had no corner (the foot of a boss with rounded corners, filled to the boss's full height) | 071 | the round builds; the features give 2592362.32 mm3, the stored body 2592281.62 (3.1e-5, the check is 2e-5) |
+| (the closed-loft change) | 057 | its 127 mm round builds; it stops at a later cut that removes all material |
+
+**Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before: 97 as history.
+After: **99 as history** (055, 110), none lost. The kernel change reaches every importer, so the
+other corpora were rerun in full: SolidWorks 370 of 1352 as history, as before, none lost (three
+parts rebuild further before their first failure); Inventor 750 of 1686, as before, none lost and
+no other outcome changed (two parts that crashed while another run filled the disk measure as before
+alone).
+
+**What is left among round failures (measured on each first failing round's input).**
+- 133-136 (four parts, one geometry: a box on a capsule, eight edges rounded): OCCT's fillet fails
+  at one vertex where the round must run on over the sphere and the cylinder past the box's
+  side, while the mirror-image vertex builds; mirroring, rotating, healing, moving seams,
+  splitting edges and other fillet parameters do not change that, and the corners there (three
+  rounded edges at the box's front corners) need OCCT's vertex blends. 136 first stops at its
+  round's edge: its profile's right lobe, an ellipse in the sketches' partition, is read as an arc.
+- 083, 088: three rounded edges meeting at the tab's back corners on B-spline faces; OCCT's
+  result has self-intersecting wires.
+- 100: a cliff corner whose far edge's ends do not line up with the round's (the strip's ends
+  are cut square to the axis, the edges are 60 degree arcs); 170 the same.
+- 044: a D-shaped narrow face (far edge ends at the round's own vertices); 044 also has failing
+  chamfers.
+- 177, 178 (one geometry), 101, 016, 063, 064, 166, 167, 043, 080, 107: plain rounds OCCT does not
+  build with no face narrower than the ball, or both faces narrower.
+- 061: a later round's edge is split differently in our model (no edge at its midpoint);
+  041 likewise at a later round.
+Other blockers are as after se8: part copies (004, 005, 009, 013) and simplified base features
+(014, 142) keep the copied or simplified body only in the result, so they are not rebuilt; 020's
+Protrusion_4 is not in the stored body at all (the stored body is the state after Protrusion_3: a
+feature in error, flag not decoded); 140's and 054/056/060's stored bodies do not measure (negative
+or zero volume); 163's spline revolve and 035's two-skin revolved cut differ in volume.

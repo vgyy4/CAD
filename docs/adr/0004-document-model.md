@@ -389,3 +389,28 @@ tries where OCCT's fillet fails:
 - Not covered yet: a narrow face whose far side is several edges or ends at the rounded edge's
   own vertices (044's D-shaped face), a round whose contact leaves its face only near an end
   (067's pipe tee), both faces narrower than the ball (101, 016).
+
+## Amendment (2026-11-20): closed cliff corners, concave arcs, unnamed slivers
+Round se9 (ADR 0046 amendment 30):
+
+- *Closed cliff corners* (a rounded circle whose narrow face's far edge is closed too) are lofted
+  in two halves and fused into one tool, at all 64 rows: one loft whose end sections lie on one
+  another left both in the body as a slit of two faces with no origin. Filled (concave) ones too;
+  where the filled corners then do not measure as their own volume, each closed filled corner is
+  tried again as one loft (Solid Edge 041's ring measures as its corner only that way).
+- *Concave arcs.* A concave arc between a plane across its axis and a cylinder about it, whose
+  ends carry on into planes tangent to the cylinder (the foot of a boss with rounded corners),
+  has a corner: the section revolved over the arc, ending on the planes through the axis at its
+  ends. A filling tool reaches less than a quarter of the radius into the material where that is
+  thinner (halved until the section's reach points lie in the body), so it adds only its corner.
+- *Far edge.* Of the narrow face's edges that touch no end of the rounded edge, the far edge is
+  the one whose end planes pass through the rounded edge's ends; a far side of several edges is
+  no longer refused outright.
+- *Origins.* A corner cut that leaves a face with no origin fails (later fallbacks are tried)
+  instead of failing in naming. A face of OCCT's fillet that its history names neither as
+  modified nor as generated (a sliver split off a face it trims) takes the origin of the input
+  face it lies on (same plane or cylinder, the nearest).
+
+Golden tests: a hole's rim in a plate thinner than the radius, a rod's foot on a disc narrower
+than the radius (closed cliff corners cut and filled, volumes by Simpson's rule over the
+section), a thin-walled rounded boss filled round its foot to its full height.
