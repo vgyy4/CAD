@@ -583,8 +583,10 @@ fn contours(d: &[u8], ids: &HashSet<u32>) -> Vec<Contour> {
 /// the chooser's contours of sketch `fid` in `[lo, hi)` (the feature's span and the stretch since
 /// the previous one: a chooser is written in the sketch's span before the feature, or in the
 /// feature's own span after a nested sketch), whose box centres lie on the sketch's plane. Each
-/// becomes a profile pick by its box (centre and diagonal, mm); a chooser that names as many
-/// contours as the sketch lists is all of them (`None`).
+/// becomes a profile pick by its box (centre and diagonal, mm); a chooser that names more
+/// contours than the sketch lists is not used (`None`). One that names as many still is: the
+/// sketch's list need not hold every region (Connecting Plate_TOP lists the eight pieces of its
+/// four circles that a square through their centres cuts, not the square's middle).
 fn chosen_profiles(
     cs: &[Contour],
     used: &mut HashSet<usize>,
@@ -620,7 +622,7 @@ fn chosen_profiles(
         let span = libm::hypot(hi[0] - lo[0], hi[1] - lo[1]);
         span.is_finite() && c.bbox[3] <= span * (1.0 + 1e-6) + 1e-9
     };
-    if (listed > 0 && chosen.len() >= listed) || !chosen.iter().all(|c| on_plane(c) && fits(c)) {
+    if (listed > 0 && chosen.len() > listed) || !chosen.iter().all(|c| on_plane(c) && fits(c)) {
         return None;
     }
     let mm = |v: f64| round_to(v * 1000.0, 9);
