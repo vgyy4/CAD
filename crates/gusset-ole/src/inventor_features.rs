@@ -2954,6 +2954,9 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let mut radii: Vec<f64> = Vec::new();
     let mut rounds: Vec<(V3, V3)> = Vec::new();
     let mut slot_ends: Vec<FullRound> = Vec::new();
+    // The edges the picks lie on: the circles, and how many picks lie on lines.
+    let mut circles: Vec<(V3, V3, f64)> = Vec::new();
+    let mut lines = 0usize;
     let mut bridged: Vec<BridgedRound> = Vec::new();
     let chamfer_d = (typ == FeatType::Chamfer).then(|| r.pval(&s, 2).ok()).flatten();
     let mm = |v: V3| [rnd_to(v[0] * CM, 1e6), rnd_to(v[1] * CM, 1e6), rnd_to(v[2] * CM, 1e6)];
@@ -3011,6 +3014,20 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                 };
                 radii.extend(rad);
                 mids.push((mm(m), local_path(m, &info, PATH_EPS).map(|[a, b]| [mm(a), mm(b)]), rad));
+                // Pieces of one circle (the result splits a whole circle in two) are one edge.
+                match info {
+                    EdgeInfo::Circle { cen, ax, r: rc } => {
+                        let same = |c: &(V3, V3, f64)| {
+                            crate::acis::dist(c.0, cen) <= 1e-9
+                                && (crate::acis::dot(unit3(c.1), unit3(ax)).abs() - 1.0).abs() <= 1e-9
+                                && (c.2 - rc).abs() <= 1e-9
+                        };
+                        if !circles.iter().any(same) {
+                            circles.push((cen, ax, rc));
+                        }
+                    }
+                    EdgeInfo::Line { .. } => lines += 1,
+                }
             }
         }
     }
@@ -3120,7 +3137,7 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     } else {
         let dist = r.pval(&s, 2)?;
         let mut ch = json!({"type": "chamfer", "name": name, "edges": edges, "distance": rnd(dist * CM)});
-        match chamfer_kind(r, &s, dist, edges.len()) {
+        match chamfer_kind(r, &s, dist, (circles.len() + lines).min(edges.len())) {
             Ok(None) => {}
             Ok(Some(Second::Angle(angle, face))) => {
                 put(&mut ch, "angle", json!(rnd(angle.to_degrees())));
