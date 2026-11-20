@@ -2471,6 +2471,20 @@ fn end_face_ref(d: &[u8], a: usize, b: usize) -> Option<Rep> {
     })
 }
 
+/// The kind byte of the last reference record in `[a, b)` (the header's `u8` before `00 00`,
+/// seven bytes before the sentinel pair): 2 a single face reference, 3 a feature's own faces.
+fn last_record_kind(d: &[u8], a: usize, b: usize) -> Option<u8> {
+    let mut from = a;
+    let mut last = None;
+    while let Some(p) = find(d, &SENTINEL, from, b) {
+        from = p + 1;
+        if d.get(p + 8..p + 16) == Some(&SENTINEL[..]) {
+            last = Some(p);
+        }
+    }
+    d.get(last?.checked_sub(7)?).copied()
+}
+
 /// Whether `(u, v)` lies inside the profile (even-odd over its drawn segments; m).
 fn inside(g: &Geometry, u: f64, v: f64) -> bool {
     let mut odd = false;
@@ -4279,13 +4293,15 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             }
             // A blind extrude that starts from a face ("from surface") names it in a single face
             // reference (`moSingleFaceRef_w`) after its dimensions, the node's last reference
-            // record; a face parallel to the sketch moves the start onto its plane (SlotBase-Back's
+            // record, of kind 2 (where other nodes end on the face their sketch lies on, kind 0,
+            // or on records of their own faces, kind 3: DC Motor, Link 5); a face parallel to the sketch moves the start onto its plane (SlotBase-Back's
             // Cut-Extrude3: sketched 15.45 mm up, the counterbores start 21.95 mm up, on the
             // ceiling of the slot Cut-Extrude1 cut, and run their 13.35 mm down from there).
             if typ == Some(0)
                 && !symmetric
                 && start_offset.is_none()
                 && let Some(sk) = last_sketch.as_ref()
+                && last_record_kind(rf, a, b) == Some(2)
                 && let Some(r) = end_face_ref(rf, a, b)
                 && let Some((pt, nf)) =
                     cap_plane(&r, &swept, &sketches, &cap_tags).or_else(|| side_plane(&r, &swept, &sketches))
