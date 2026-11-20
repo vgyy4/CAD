@@ -2768,8 +2768,10 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
     if let Some(first) = made.first() {
         g.features.insert(d.name.clone(), first.clone());
     }
-    let blends: Vec<(u32, String, String)> =
-        numbered.into_iter().filter_map(|(k, body, n)| Some((k, blend_of.get(&(body, n.clone()))?.clone(), n))).collect();
+    let blends: Vec<(u32, String, String)> = numbered
+        .into_iter()
+        .filter_map(|(k, body, n)| Some((k, blend_of.get(&(body, n.clone()))?.clone(), n)))
+        .collect();
     if !blends.is_empty() {
         g.blends.insert(d.name.clone(), blends);
     }

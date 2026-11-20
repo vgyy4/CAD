@@ -791,18 +791,28 @@ pub(super) fn pattern(g: &mut Gen, s: &Session, d: &PatternF, circular: bool) ->
     let at = g.text.len();
     let _ = writeln!(g.text, "\n{kw} {name} ({})", args.join(", "));
     builds(g, s, &name)?;
-    if d.either_way && !circular && let Some(dir) = d.direction.and_then(unit) {
+    if d.either_way
+        && !circular
+        && let Some(dir) = d.direction.and_then(unit)
+    {
         let ahead = volume(g, s)?;
         let kept = g.text.split_off(at);
         let back = format!("direction: [{}, {}, {}]", fine(-dir[0]), fine(-dir[1]), fine(-dir[2]));
-        let line = format!("\n{kw} {name} ({})\n", args.iter().map(|a| if a.starts_with("direction:") { back.clone() } else { a.clone() }).collect::<Vec<_>>().join(", "));
+        let line = format!(
+            "\n{kw} {name} ({})\n",
+            args.iter()
+                .map(|a| if a.starts_with("direction:") { back.clone() } else { a.clone() })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         g.text.push_str(&line);
         let behind = match builds(g, s, &name) {
             Ok(()) => volume(g, s)?,
             Err(_) => f64::INFINITY,
         };
         // Clearly more taken away the other way; else as written.
-        if !(behind < ahead - 1e-6 * ahead.abs().max(1.0)) {
+        let more = behind < ahead - 1e-6 * ahead.abs().max(1.0);
+        if !more {
             g.text.truncate(at);
             g.text.push_str(&kept);
             g.evaluate(s).map_err(|e| e.message)?;
