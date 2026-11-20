@@ -1108,8 +1108,12 @@ fn payload(d: &[u8], h: usize) -> Option<(Option<usize>, bool)> {
         let marked = d.get(p..p + 8).is_some_and(|w| {
             w.first() == Some(&0) && w.get(1).is_some_and(|&b| b != 0) && w.iter().skip(2).all(|&b| b == 0)
         });
+        // A converted segment marks itself the same way (Back_sup_low's base line, byte 4): its
+        // payload is two point indices, the word 1 or 0 and -1.0.
         let q = after(p + 16);
-        if marked && d.get(p + 8..p + 16) == ONE.get(8..) && matches!(u16_at(d, q), Some(0x1e | 0x1f)) {
+        let point = matches!(u16_at(d, q), Some(0x1e | 0x1f));
+        let segment = u16_at(d, q + 4).is_some_and(|w| w <= 1) && f64_at(d, q + 8).is_some_and(|m| is(m, -1.0));
+        if marked && d.get(p + 8..p + 16) == ONE.get(8..) && (point || segment) {
             return Some((Some(q), true));
         }
     }
@@ -1215,6 +1219,134 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
         }
     }
     Some(g)
+}
+
+/// Whether a side of an extrude of sketch `g` (on `jp`) would lie on a side of an earlier
+/// extrude along the same axis: a line on the plane of one of its lines, or an arc on the
+/// cylinder of one of its arcs.
+fn continues_sides<'a>(
+    g: &Geometry,
+    jp: JsonPlane,
+    (dist, symmetric): (f64, bool),
+    mut earlier: impl Iterator<Item = &'a Swept>,
+    sketches: &[Geometry],
+) -> bool {
+    let n = cross(jp.x, jp.y);
+    let model = |q: Pt| -> V3 { comb(comb(jp.origin, 1.0, jp.x, q.x * 1000.0), 1.0, jp.y, q.y * 1000.0) };
+    let len = |v: V3| dot(v, v).sqrt();
+    let ours: Vec<(&Seg, V3, V3, Option<V3>)> = g
+        .segs
+        .iter()
+        .filter(|s| !s.construction && !s.centerline && s.kind != SegKind::Ellipse)
+        .filter_map(|s| {
+            let c = (s.kind == SegKind::Arc).then(|| point(&g.pts, s.c).map(model)).flatten();
+            Some((s, model(point(&g.pts, s.s)?), model(point(&g.pts, s.e)?), c))
+        })
+        .collect();
+    earlier.any(|f| {
+        let nf = normal(f);
+        if len(cross(nf, n)) > 1e-9 {
+            return false;
+        }
+        // The two must meet along the axis (heights along `nf` from `f`'s sketch plane).
+        let span = |o: f64, d: f64, sym: bool| {
+            if sym { (o - d.abs() / 2.0, o + d.abs() / 2.0) } else { (o + d.min(0.0), o + d.max(0.0)) }
+        };
+        let (f0, f1) = if f.through { (f64::NEG_INFINITY, f64::INFINITY) } else { span(0.0, f.distance, f.symmetric) };
+        let (g0, g1) = span(dot(sub(jp.origin, f.plane.origin), nf), dist * dot(n, nf), symmetric);
+        if g0 > f1 + 1e-6 || f0 > g1 + 1e-6 {
+            return false;
+        }
+        let Some(gf) = sketches.get(f.sketch) else { return false };
+        gf.segs.iter().filter(|t| !t.construction && !t.centerline).any(|t| {
+            let at = |i: usize| point(&gf.pts, i).map(|q| lift(f, q.x * 1000.0, q.y * 1000.0, 0.0));
+            let (Some(a), Some(b)) = (at(t.s), at(t.e)) else { return false };
+            ours.iter().any(|(s, p, q, c)| match (t.kind, s.kind) {
+                (SegKind::Line, SegKind::Line) => {
+                    let m = cross(sub(b, a), nf);
+                    let lm = len(m);
+                    lm > 1e-9 && (dot(sub(*p, a), m) / lm).abs() < 1e-6 && (dot(sub(*q, a), m) / lm).abs() < 1e-6
+                }
+                (SegKind::Arc, SegKind::Arc) => {
+                    let (Some(cf), Some(c)) = (at(t.c), c) else { return false };
+                    len(cross(sub(*c, cf), nf)) < 1e-6 && (len(sub(*p, *c)) - len(sub(a, cf))).abs() < 1e-6
+                }
+                _ => false,
+            })
+        })
+    })
+}
+
+/// An extrude's draft angle (rad): its `D3`, an angle of whole half degrees under 90 whose
+/// dimension is placed (the two `f64` of its display position, 31 bytes after the value, are not
+/// both zero: Toolbox washers keep an unused 1 degree `D3` and `D4` with no position).
+fn extrude_draft(d: &[u8], slots: &[(String, usize)]) -> Option<f64> {
+    let &(_, at) = slots.iter().find(|(k, _)| k == "D3")?;
+    let v = f64_at(d, at)?;
+    let half_degrees = v.to_degrees() * 2.0;
+    let placed = f64s_at::<2>(d, at + 31).is_some_and(|w| w.iter().any(|x| x.is_finite() && *x != 0.0));
+    (v > 1e-6 && v < TAU / 4.0 && (half_degrees - half_degrees.round()).abs() < 1e-6 && placed).then_some(v)
+}
+
+/// The centre of the first box object of a span (`01 00 TT 8X 01 00 00 00`, then the centre and
+/// the diagonal, m, as a contour's box; `moBBoxCenterData_c`), in mm.
+fn revolve_box_centre(d: &[u8], a: usize, b: usize) -> Option<V3> {
+    (a..b.min(d.len()).saturating_sub(40)).find_map(|q| {
+        let head = d.get(q..q + 8)?;
+        if head.get(..2) != Some(&[1, 0][..])
+            || head.get(3).is_none_or(|b| b & 0x80 == 0)
+            || head.get(4..) != Some(&[1, 0, 0, 0][..])
+        {
+            return None;
+        }
+        let v = f64s_at::<4>(d, q + 8)?;
+        // Older files write -1 for the diagonal (8020's T-nut).
+        (v.iter().all(|x| x.is_finite() && x.abs() < 10.0) && (v[3] > 0.0 || is(v[3], -1.0)))
+            .then(|| [v[0], v[1], v[2]].map(mm))
+    })
+}
+
+/// The axis pieces that close a revolve's open profile: SolidWorks closes a profile whose
+/// loose ends lie on the axis line along the axis (Tommy Bar: a bar and its ball end, drawn
+/// from the axis and back to it, with a line from the ball's rim to the axis between them).
+/// Pairs of point indices, consecutive along the axis; empty when fewer than two loose ends lie
+/// on the axis.
+fn axis_closure(g: &Geometry, k: usize) -> Vec<(usize, usize)> {
+    let Some(ax) = g.segs.get(k) else { return Vec::new() };
+    let (Some(a), Some(b)) = (point(&g.pts, ax.s), point(&g.pts, ax.e)) else { return Vec::new() };
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let len = libm::hypot(dx, dy);
+    if len < 1e-9 {
+        return Vec::new();
+    }
+    let ends: Vec<(usize, Pt)> = g
+        .segs
+        .iter()
+        .filter(|s| !s.construction && !s.centerline && s.s != s.e)
+        .flat_map(|s| [s.s, s.e])
+        .filter_map(|i| point(&g.pts, i).map(|p| (i, p)))
+        .collect();
+    let same = |p: &Pt, q: &Pt| libm::hypot(p.x - q.x, p.y - q.y) < 1e-9;
+    let mut loose: Vec<(f64, usize)> = Vec::new();
+    for (n, (i, p)) in ends.iter().enumerate() {
+        let first = ends.iter().position(|(_, q)| same(p, q)) == Some(n);
+        let count = ends.iter().filter(|(_, q)| same(p, q)).count();
+        let off = (dx * (p.y - a.y) - dy * (p.x - a.x)) / len;
+        if first && count % 2 == 1 && off.abs() < 1e-9 {
+            loose.push((((p.x - a.x) * dx + (p.y - a.y) * dy) / len, *i));
+        }
+    }
+    if loose.len() < 2 {
+        return Vec::new();
+    }
+    loose.sort_by(|x, y| x.0.total_cmp(&y.0));
+    loose
+        .windows(2)
+        .filter_map(|w| match w {
+            [(_, p), (_, q)] => Some((*p, *q)),
+            _ => None,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4065,10 +4197,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             // behind. `D2` is the second direction's length instead (below; round sw12:
             // gt2_pulley 2's Cut-Extrude5, 10 mm each way; idler_single_v1's bore, 10 mm one way
             // and 1 mm the other, which round sw2 read as a start 1 mm behind: the same solid).
+            let draft_angle = extrude_draft(rf, &param_slots(rf, a, b, nt)?);
             let start_offset = named_params(rf, a, b, nt)?
                 .iter()
                 .find(|(k, _)| {
                     k.strip_prefix('D').is_some_and(|n| n != "1" && n != "2" && n.bytes().all(|c| c.is_ascii_digit()))
+                        && (draft_angle.is_none() || k != "D3")
                 })
                 .map(|(_, v)| mm(*v))
                 .filter(|_| op == "cut" && typ == Some(0) && !symmetric);
@@ -4183,7 +4317,60 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     },
                 );
             }
+            // Draft while extruding: the side faces lean by the angle, the sketch plane the
+            // neutral plane, pulled the way the feature runs into the part (a symmetric one: against
+            // the sketch normal, Retainer's through cut from its top face).
+            let draft = match (draft_angle, last_sketch.as_ref().and_then(|sk| sketch_by_name.get(sk))) {
+                (Some(angle), Some(&(i, jp))) if !flip => {
+                    let normal = cross(jp.x, jp.y);
+                    let reach = end_s.or(distance).filter(|d| d.abs() > 1e-9);
+                    let sign = if symmetric { -1.0 } else { reach.map_or(0.0, f64::signum) };
+                    let depth = if through_all || symmetric { 0.01 } else { reach.map_or(0.0, |d| d.abs() / 2.0) };
+                    let dir = normal.map(|c| c * sign);
+                    let points: Vec<Value> = sketches
+                        .get(i)
+                        .map(|g| {
+                            g.segs
+                                .iter()
+                                .filter(|s| !s.construction && !s.centerline)
+                                .filter_map(|s| {
+                                    let uv = seg_uv(g, s)?;
+                                    // A line's midpoint, an arc's middle sample.
+                                    let (u, v) = match uv.as_slice() {
+                                        [(u0, v0), (u1, v1)] => (f64::midpoint(*u0, *u1), f64::midpoint(*v0, *v1)),
+                                        _ => *uv.get(uv.len() / 2)?,
+                                    };
+                                    let p = comb(comb(jp.origin, 1.0, jp.x, u * 1000.0), 1.0, jp.y, v * 1000.0);
+                                    Some(json!({"point": json_v3(comb(p, 1.0, dir, depth).map(|c| round_to(c, 9) + 0.0))}))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (sign != 0.0 && !points.is_empty()).then(|| {
+                        json!({"type": "draft", "name": format!("{}-Draft", n.name), "angle": round_to(angle.to_degrees(), 9),
+                            "faces": points, "plane": {"origin": json_v3(jp.origin), "normal": json_v3(dir)}})
+                    })
+                }
+                _ => None,
+            };
+            // The extrude keeps its own side faces (no merge with coplanar faces of the body it
+            // joins), so the draft leans those only (Link 3's end piece on the arm's sides).
+            if draft.is_some()
+                && let Some(&(i, jp)) = last_sketch.as_ref().and_then(|sk| sketch_by_name.get(sk))
+                && sketches.get(i).is_some_and(|g| {
+                    continues_sides(
+                        g,
+                        jp,
+                        (end_s.or(distance).unwrap_or(0.0), symmetric),
+                        swept.iter().filter(|(k, _)| **k != n.id).map(|(_, f)| f),
+                        &sketches,
+                    )
+                })
+            {
+                js.insert("refine".into(), json!(false));
+            }
             feats.push(Value::Object(js));
+            feats.extend(draft);
             solid = true;
             if first_solid.as_deref().is_none_or(str::is_empty) {
                 first_solid = Some(n.name.clone());
@@ -4271,17 +4458,51 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 } else if first.is_some_and(one_sided) {
                     first
                 } else {
-                    (0..g.segs.len())
-                        .find(|&k| {
+                    // Centerlines before construction lines (Linear Bearing Inner: a centerline
+                    // across the profile, a construction line at its end, then the axis).
+                    let one_sided_of = |centerline: bool| {
+                        (0..g.segs.len()).find(|&k| {
                             g.segs.get(k).is_some_and(|s| {
-                                line(s) && s.id != 0xffff_ffff && (s.centerline || s.construction) && one_sided(k)
+                                line(s)
+                                    && s.id != 0xffff_ffff
+                                    && (s.centerline || (!centerline && s.construction))
+                                    && one_sided(k)
                             })
                         })
+                    };
+                    one_sided_of(true)
+                        .or_else(|| one_sided_of(false))
                         .or_else(|| {
                             (0..g.segs.len())
                                 .find(|&k| g.segs.get(k).is_some_and(|s| line(s) && on_sketch_axis(s)) && one_sided(k))
                         })
                         .or(first)
+                };
+                // A full revolve writes its body's box (centre and diagonal, model space); the
+                // centre lies on the axis. Where the line chosen above misses it, the line through
+                // it with the profile on one side is the axis (126p-door-stop-roller: a profile
+                // edge off the sketch's axes; 126p-rosette: a lone line).
+                let full = ang.is_none_or(|v| (v.abs() - TAU).abs() < 1e-9);
+                let through = |k: usize, c: V3| -> bool {
+                    let (Some(s), Some(&(_, jp))) =
+                        (g.segs.get(k).filter(|s| line(s)), sketch_by_name.get(last_sketch.as_deref().unwrap_or("")))
+                    else {
+                        return false;
+                    };
+                    let model =
+                        |q: Pt| -> V3 { comb(comb(jp.origin, 1.0, jp.x, q.x * 1000.0), 1.0, jp.y, q.y * 1000.0) };
+                    let (Some(p), Some(q)) = (point(&g.pts, s.s), point(&g.pts, s.e)) else { return false };
+                    let (p, q) = (model(p), model(q));
+                    let u = sub(q, p);
+                    let len = dot(u, u).sqrt();
+                    let w = cross(sub(c, p), u);
+                    len > 1e-9 && dot(w, w).sqrt() / len < 1e-5
+                };
+                let axis = match (named, revolve_box_centre(rf, a, b)) {
+                    (None, Some(c)) if full && !axis.is_some_and(|k| through(k, c)) => (0..g.segs.len())
+                        .find(|&k| g.segs.get(k).is_some_and(|s| s.id != 0xffff_ffff) && through(k, c) && one_sided(k))
+                        .or(axis),
+                    _ => axis,
                 };
                 let axis_json = match (axis, named) {
                     (Some(k), _) => json!({"line": format!("c{k}")}),
@@ -4289,6 +4510,21 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     (None, None) => Value::Null,
                 };
                 js.insert("axis".into(), axis_json);
+                // An open profile whose loose ends lie on the axis is closed along it.
+                let closing = axis.map(|k| axis_closure(g, k)).unwrap_or_default();
+                if !closing.is_empty()
+                    && let Some(cs) = feats
+                        .iter_mut()
+                        .rev()
+                        .find(|f| f.get("type") == Some(&json!("sketch")) && f.get("name") == Some(&json!(last_sketch)))
+                        .and_then(|f| f.get_mut("curves"))
+                        .and_then(Value::as_array_mut)
+                {
+                    for (j, (p, q)) in closing.into_iter().enumerate() {
+                        cs.push(json!({"id": format!("c{}", g.segs.len() + j), "type": "line",
+                            "start": format!("p{p}"), "end": format!("p{q}")}));
+                    }
+                }
                 // A full revolve's circles can be named by edge records.
                 if let Some(&(_, plane)) = last_sketch.as_ref().and_then(|s| sketch_by_name.get(s))
                     && ang.is_none_or(|v| (v.abs() - TAU).abs() < 1e-9)
@@ -5653,6 +5889,101 @@ mod end_face_tests {
         e.extend([0u8; 40]);
         e.extend(ONE);
         assert_eq!(payload(&e, 0), Some((Some(56), true)));
+    }
+
+    #[test]
+    fn a_converted_segment_without_a_chain_is_read_where_it_is() {
+        // Back_sup_low's base line: byte 4 in the 0.0, eight zero bytes, then the segment
+        // (points 0 and 1, the word 1, -1.0); the next entity's pair must not be taken.
+        let mut e = vec![0u8; 40];
+        e.extend([0, 4, 0, 0, 0, 0, 0, 0]);
+        e.extend(ONE.get(8..).unwrap());
+        e.extend([0u8; 8]);
+        e.extend([0, 0, 1, 0, 1, 0, 0, 0]);
+        e.extend((-1.0f64).to_le_bytes());
+        e.extend([0u8; 40]);
+        e.extend(ONE);
+        assert_eq!(payload(&e, 0), Some((Some(64), true)));
+    }
+
+    #[test]
+    fn an_open_revolve_profile_is_closed_along_its_axis() {
+        // Tommy Bar: the axis (0,0)-(290,0); a bar from the axis up and along to (275,10), a
+        // line back down to (275,0) and a ball arc from (275,10) to (277,0).
+        let seg = |kind, s, e, c, construction| Seg {
+            kind,
+            id: 1,
+            a: 1,
+            s,
+            e,
+            c,
+            dir: -1,
+            construction,
+            centerline: construction,
+            external: false,
+        };
+        let g = Geometry {
+            pts: vec![
+                pt(0.0, 0.0),
+                pt(0.29, 0.0),
+                pt(0.0, 0.006),
+                pt(0.275, 0.01),
+                pt(0.275, 0.0),
+                pt(0.251, 0.0),
+                pt(0.277, 0.0),
+            ],
+            segs: vec![
+                seg(SegKind::Line, 0, 1, 0, true),
+                seg(SegKind::Line, 0, 2, 0, false),
+                seg(SegKind::Line, 2, 3, 0, false),
+                seg(SegKind::Line, 3, 4, 0, false),
+                seg(SegKind::Arc, 6, 3, 5, false),
+            ],
+            ellipse_axes: Vec::new(),
+        };
+        assert_eq!(axis_closure(&g, 0), vec![(0, 4), (4, 6)]);
+        // A closed profile touching the axis has no loose end there.
+        let mut closed = g.clone();
+        closed.segs.remove(3);
+        closed.segs.push(seg(SegKind::Line, 6, 0, 0, false));
+        assert!(axis_closure(&closed, 0).is_empty());
+    }
+
+    #[test]
+    fn a_box_object_gives_the_revolve_axis_point() {
+        let mut d = vec![0u8; 3];
+        d.extend([1, 0, 0xb7, 0x81, 1, 0, 0, 0]);
+        for v in [-0.0032, -0.0088, 0.0, 0.0468] {
+            d.extend(f64::to_le_bytes(v));
+        }
+        d.extend([0u8; 8]);
+        let c = revolve_box_centre(&d, 0, d.len()).unwrap();
+        assert!((c[0] + 3.2).abs() < 1e-9 && (c[1] + 8.8).abs() < 1e-9, "{c:?}");
+        // Older files write -1 for the diagonal; other values are no box.
+        d[35..43].copy_from_slice(&(-1.0f64).to_le_bytes());
+        assert!(revolve_box_centre(&d, 0, d.len()).is_some());
+        d[35..43].copy_from_slice(&(-2.0f64).to_le_bytes());
+        assert_eq!(revolve_box_centre(&d, 0, d.len()), None);
+    }
+
+    #[test]
+    fn an_extrude_draft_is_a_placed_half_degree_d3() {
+        // The value at 0, its display position 31 bytes on.
+        let slot = |v: f64, pos: f64| {
+            let mut d = f64::to_le_bytes(v).to_vec();
+            d.resize(31, 0);
+            d.extend(f64::to_le_bytes(pos));
+            d.extend([0u8; 8]);
+            d
+        };
+        let names = vec![("D3".to_string(), 0usize)];
+        let deg45 = TAU / 8.0;
+        assert_eq!(extrude_draft(&slot(deg45, 0.012), &names), Some(deg45));
+        // Unplaced (Toolbox washers), not whole half degrees (a start offset in metres), or
+        // another parameter: no draft.
+        assert_eq!(extrude_draft(&slot(deg45, 0.0), &names), None);
+        assert_eq!(extrude_draft(&slot(0.0008, 0.012), &names), None);
+        assert_eq!(extrude_draft(&slot(deg45, 0.012), &[("D4".to_string(), 0)]), None);
     }
 
     #[test]

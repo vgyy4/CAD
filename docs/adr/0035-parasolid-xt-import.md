@@ -41,7 +41,8 @@ passes that text to the sandboxed STEP importer (no new OCCT code, no new unsafe
   fins' SP-curves); rolling-ball blends (circular arcs of the ball from its closest points
   on the two support surfaces, along the spine, as a bicubic B-spline; line spines are
   bounded by the blend faces' vertices). Skipped with a warning: cliff-edge blends, foreign
-  geometry, self-intersecting tori. Metres are written as millimetres.
+  geometry, self-intersecting tori. Metres are written as millimetres. (Blends, SP-curves on
+  blends and tori of negative major radius: see the amendment of 2026-11-19 below.)
 * **B-surface poles.** The Reference does not state their order: both readings are tried
   against the vertices of the faces on the surface and the one they lie on is kept
   (u-major when there is nothing to test).
@@ -148,3 +149,69 @@ Measured on the 99 SolidWorks samples (`sldprt_samples`): the idler arms import 
 difference has another cause. Other bodies moved by at most 6e-5 relative, except two zenodo
 parts whose cone/plane and cylinder curves were furthest off (`adpator` -1.6e-3, `CP20S`
 -1.4e-4).
+
+## Amendment (2026-11-19): blends from their true spine, cliff edges, lemons, contact curves
+
+Solid Edge parts (round xt1) keep most of their rounds as `BLENDED_EDGE` surfaces; 40 of the
+91 Solid Edge parts not rebuilt as history had stored bodies that did not convert to a closed
+solid. Measured causes (conversion of the 40, warnings of the old reader): blends whose ball
+could not be placed (359 surfaces: 224 cliff-edge blends, 135 rolling-ball blends with a blend,
+swept or offset support), SP-curves on blends (49), tori with a negative major radius (20,
+6 parts), mesh surfaces (2 parts). All from the files' own structure and the public
+Reference; no SDK or other reader.
+
+* **Blends are evaluated from their definition** (`blend.rs`). A blend's spine curve (an
+  intersection chart, circle, ellipse, line or B-curve) only approximates the curve of ball
+  centres: every centre is put back on the true spine by Newton steps on the ball's distances
+  to the two supports (`|range|`, on the side the sample is on). Supports may be planes,
+  quadrics, tori, offset, swept, spun or B-surfaces (numerical closest points, warm-started)
+  or blends: a blend support's closest point is its spine's nearest point moved out by its
+  radius, read from a C1 cubic fitted to its true spine within 1e-11 m (nesting would
+  otherwise multiply the Newton steps). Each row across the surface is the exact arc of the
+  ball between its two contacts, two rational quadratic spans, and rows are joined along the
+  spine by cubic Hermite spans whose tangents are the rows' own derivatives. Rows start at
+  no more than 17 of the spine's samples and are added until the surface is within 1e-6 of
+  the radius of the ball's envelope (no finer than 1e-8 m on numerical supports, 1e-10 m on
+  analytic ones); a span whose deviation does not halve after a split is left, and a surface
+  has at most 240 rows (every chart point as a row, and tiny blends that never settled,
+  made OCCT's mass properties of a SolidWorks part take 248 s). Rows run along the
+  spine's chart and across from the first support to the second, reversed when the spine's
+  sense is `-` (the old convention). Over unbounded supports the surface runs 2 % past the
+  spine's ends. Newton may move a centre only a quarter of the way to its neighbours: offset
+  supports meet in several branches, and a coarse chart's chord midpoint (023: 68 mm between
+  two chart points of a curved spine) snapped onto another branch and folded the surface.
+* **Cliff-edge blends** (`blend_type` `E`) roll on one support and touch an edge: in the
+  files the second support is a zero-range rolling-ball blend of the edge's two faces, whose
+  spine is the edge. The same construction applies (its closest point is the edge's).
+* **SP-curves on blends**: u is the spine's parameter (for an intersection chart, the base
+  parameter plus the base scale times the chord length along its points, as 041's samples
+  show to 2e-6) and v runs across the ball's arc from 0 to 1. Both are calibrated on the
+  bounding trimmed curve's two points; a curve at one u (the edge between two blends) is
+  written as the exact circular arc. A tolerant edge whose positive fin's SP-curve lies on a
+  blend takes the other fin's curve when that one does not.
+* **Lemons.** A torus with a negative major radius `-R` below its minor radius `r` is the
+  arc of radius `r` centred `R` along `-x`, between its two points on the axis, turned about
+  the axis; it is written as that `SURFACE_OF_REVOLUTION` (the arc a rational quadratic
+  B-spline), which keeps XT's parameters and natural normal. As a torus, OCCT reads points
+  back with the major radius positive (the other lobe). Checked against the analytic area of
+  091's zone between two circles: 364.33116 mm2, OCCT's face 364.331156 (a rational
+  B-spline surface of revolution gave 364.97). A negative major radius above the minor one is
+  the torus of `|R|` with its x axis and normal reversed.
+* **Contact curves.** An intersection with a blend's `BLEND_BOUND` is the ball's contact on
+  the other surface: chart points are snapped to the contact of their nearest spine point
+  (050: the chart's fit was 2 mm off, the refined curve 9e-9 m). Intersections of offset,
+  B- and blend surfaces are snapped with the analytic case's Newton steps; swept and spun
+  surfaces keep the chart's fit (refining 174's extruded-spline edges took 53 s, the chart's
+  fit 0.13 s). A closed curve
+  on a non-analytic support keeps the chart's fit: on 050 OCCT's healing threw on the seam
+  of a closed offset B-surface (`Geom_RectangularTrimmedSurface::U parameters out of
+  range`) and dropped every face's parameter curves.
+* Decoded NURBS are cached per node, B-surfaces are evaluated with their basis functions and
+  closest points start from the last answer when the point is near the last one asked for.
+
+Result: of the 40 Solid Edge stored bodies, 36 now convert to valid closed solids (none
+did); the 4 left are listed in ADR 0046 amendment 26. Every Solid Edge part converts
+without a blend, SP-curve or torus warning. Feature-history counts are unchanged (Solid
+Edge 89 of 180, SolidWorks and Inventor in PROGRESS.md): the rebuilds of these parts stop
+earlier, mostly at rounds OCCT's fillet does not build. `gusset-xt` is optimised in dev
+builds (blends took minutes unoptimised in the import worker of the OCCT sample tests).

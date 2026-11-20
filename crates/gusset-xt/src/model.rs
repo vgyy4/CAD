@@ -346,21 +346,42 @@ fn fin_sense(g: &Graph, fin: u32, edge: u32) -> bool {
 
 /// Records an edge: the positive fin's forward vertex is the end, the other fin's is the
 /// start.
-fn edge(g: &Graph, e: u32, m: &mut Model) {
+pub(crate) fn edge(g: &Graph, e: u32, m: &mut Model) {
     if m.edges.contains_key(&e) {
         return;
     }
     let head = g.ptr(e, "fin");
     let end = g.ptr(head, "vertex");
     let start = g.ptr(g.ptr(head, "other"), "vertex");
-    // A tolerant edge has no curve of its own; its fins carry trimmed SP-curves.
-    let curve = match g.ptr(e, "curve") {
-        0 => g.ptr(head, "curve"),
-        c => c,
+    // A tolerant edge has no curve of its own; its fins carry trimmed SP-curves. The positive
+    // fin's is taken unless it lies on a blend (whose surface parameters are not the ones the
+    // writer evaluates) and the other fin's does not; the other fin's runs against the edge.
+    let (curve, same_sense) = match g.ptr(e, "curve") {
+        0 => {
+            let other = g.ptr(head, "other");
+            let (a, b) = (g.ptr(head, "curve"), g.ptr(other, "curve"));
+            if on_blend(g, a) && b != 0 && !on_blend(g, b) {
+                (b, !curve_sense(g, b, 0))
+            } else {
+                (a, a == 0 || curve_sense(g, a, 0))
+            }
+        }
+        c => (c, curve_sense(g, c, 0)),
     };
     let ends = if start != 0 && end != 0 { Some((start, end)) } else { None };
-    let same_sense = curve == 0 || curve_sense(g, curve, 0);
     m.edges.insert(e, Edge { curve, ends, same_sense });
+}
+
+/// Whether a curve is an SP-curve (or a trim of one) on a blend surface.
+fn on_blend(g: &Graph, mut c: u32) -> bool {
+    for _ in 0..8 {
+        match g.type_name(c) {
+            Some("TRIMMED_CURVE") => c = g.ptr(c, "basis_curve"),
+            Some("SP_CURVE") => return g.type_name(g.ptr(c, "surface")) == Some("BLENDED_EDGE"),
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Whether a curve runs along the parameter of the geometry the STEP file gets for it. A

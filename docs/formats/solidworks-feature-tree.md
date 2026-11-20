@@ -1441,3 +1441,64 @@ Gained (sw-more, 21): split lines 7 (Practice Model - Lego Head1, the six V-Slot
 Nut, 126p-zawias-klapy-silnika), projected points 2 (126p-sunshield-diy-rod, 126p-visor-diy-rod). None lost.
 StationUpper and 5 Hole 90 Degree Joining Plate rebuild to the body's volume from the tree alone but not through
 the part import (stored bodies there); mid_elbow and mid_RT_Shoulder keep one pin each that starts inside the body.
+## L24. Round 18 (sw13: converted segments, revolve axes, extrude drafts)
+Measured from round sw12's logs (314 of 1352): of the 1038 refusals, 550 are STEP-style imports ("the history is the
+imported bodies only"); the largest of the rest were volume mismatches (85), fillet/chamfer edges and kernel fillets
+(about 60), open sketch profiles (about 10) and revolves (axis, crossing profile: about 10).
+
+* **Converted segments without an object chain.** A sketch segment converted from other geometry marks itself like
+  a projected point (L23): a nonzero byte (4 in Back_sup_low) at the second byte of the 0.0 before its payload, no
+  object chain. Its payload is two point indices, the word 1 or 0 and -1.0. The reader searched on to the next
+  0.0/1.0 pair and read the following segment's payload, so the sketch lost the segment and drew its neighbour twice
+  (Back_sup_low's base line; Segment, Grip_tip, MG90 SERVO).
+* **The revolve axis by the body's box.** A full revolve writes a box object (`01 00 TT 8X 01 00 00 00`, then the
+  centre and the diagonal in model space, m; `moBBoxCenterData_c`); older files write -1 for the diagonal (the 8020
+  T-nuts). The centre lies on the axis. Where the line the reader chose misses it, the line through the centre with
+  the profile on one side is the axis: a profile edge off the sketch's axes (126p-door-stop-roller), a lone line
+  (126p-rosette), a profile edge where the construction lines are a mirrored copy of the profile (8020 228101,
+  228104), DC Motor's Revolve6. Centerlines also go before construction lines when the first centerline cuts the
+  profile (Linear Bearing Inner).
+* **Open revolve profiles.** SolidWorks closes a revolve profile whose loose ends lie on the axis line along the
+  axis (Tommy Bar: a bar and its ball end drawn from the axis and back, a line from the ball's rim down to the axis
+  between them). The reader adds the axis pieces between consecutive loose ends to the sketch.
+* **Drafted extrudes.** An extrude drafted while extruding keeps the angle as its `D3` (rad, whole half degrees in
+  every sample: 1 to 75), placed as a dimension: the two `f64` of its display position 31 bytes after the value are
+  not both zero. Toolbox washers keep an unused `D3`/`D4` of 1 degree with no position (the parameters exist, the
+  draft is off). The tree writes a `draft` after the extrude: the sketch plane is the neutral plane, pulled the way
+  the feature runs into the part (a symmetric one against the sketch normal: Retainer's through cut from its top
+  face), the angle as written, a point on each side face (half way along a blind extrude, 0.01 mm in from the
+  sketch plane through all). An extrude whose side would continue a side of an earlier extrude meeting it along the
+  same axis keeps its own faces (`refine` off), or the draft leans the merged face (Link 3's end piece on the arm).
+  V-Slot Wheel and V-Slot Wheel_21mm (45 degree V groove up to a vertex), Retainer (5 degree hex pockets: round
+  sw12's "pockets drawn smaller than the body"), Link 3 (45 degrees). A `D3` draft is no longer read as a cut's
+  start offset. The draft-outward option was not seen.
+* **Measured, not done.**
+  - Linear pattern direction: the direction line (`c7 cf ff ff` record: length, start point, unit direction) is the
+    picked edge's own; of the directions that the rebuild could decide, eight run against it (5 Hole T Joining
+    Plate, Spacer_long/short_base_square, Grip_tip_slider's three, Universal L Bracket's two) and two with it
+    (Grip_tip_triangular_base, V-Slot Actuator End Mount's second direction). No byte found that tells them apart
+    (the seed lists, the bytes around the line record and after it were compared); left as read. 5 Hole T Joining
+    Plate is exact with its pattern reversed.
+  - Contour choosers whose box is larger than the curves they name (GT2 Pulley Screw Insert: the two circles of the
+    hub as two filled contours) and parts copied from it with stale contour lists (Bearing Shaft_RIGHT, Slotted
+    Endcap: the extrude takes the inner circle only, no chooser read). The extrude's own side-face references
+    (`moFromSktEntSurfIdRep_c`, the face's sketch key) may say which curves bound the profile; not followed up.
+  - Open cut profiles whose ends reach the body's outline (SlotMount-Attachment): SolidWorks cuts with them; the
+    reader has no outline to close them with.
+  - Extrude-with-draft parts still refused elsewhere: Link 2 and Link 4 (circular patterns whose seed list has
+    another layout), link 1 (a chamfer edge), Link_8 (an imported surface), 126p-wiper-axle-nut (flip-side cuts).
+
+**Coverage after the round** (rebuild check unchanged):
+
+| corpus | round sw12 | round sw13 |
+|---|---|---|
+| slip-pad | 24 / 35 | 24 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 274 / 1253 | **292** / 1253 |
+| all | 314 / 1352 | **332** / 1352 |
+
+Gained (sw-more, 18): converted segments (Segment, Grip_tip, MG90 SERVO, 126p-throttle: its sweep path sketch), revolve axes by the
+box centre (126p-door-stop-roller, 126p-rosette, 8020 228101 and 228104, DC Motor, Linear Bearing Inner, 5 Hole 90
+Degree Joining Plate, Link 5), open revolve profiles (Tommy Bar), drafted extrudes (V-Slot Wheel, V-Slot
+Wheel_21mm_F624ZZ, Retainer, Link 3), Expansion Block. None lost.
