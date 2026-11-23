@@ -447,8 +447,10 @@ impl Evaluator {
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
         let mut target: Option<String> = None;
-        let (mut removed, mut added) = (Vec::new(), Vec::new());
+        // Per feature, in the list's order: the material it took away and the material it added.
+        let mut stages: Vec<(Vec<Tool>, Vec<Tool>)> = Vec::new();
         for f in features {
+            let (mut removed, mut added) = (Vec::new(), Vec::new());
             let (before, after) = s.effects.get(f).ok_or_else(|| {
                 EvalError::new(name, ErrorCode::InvalidReference, format!("{f} changed no body"))
                     .with_hint("a feature pattern repeats features that add to or cut from one body")
@@ -489,6 +491,21 @@ impl Evaluator {
                 .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
                 into.push(Tool { shape: res.shape, names });
             }
+            stages.push((removed, added));
+        }
+        // All copies cut first, then all added, unless a feature that takes material away
+        // follows one that adds it (a tab and the fillet on its edge): then feature by feature.
+        let ordered = stages
+            .iter()
+            .enumerate()
+            .any(|(i, (_, a))| !a.is_empty() && stages.iter().skip(i + 1).any(|(r, _)| !r.is_empty()));
+        if !ordered {
+            let (removed, added) = stages.into_iter().fold((Vec::new(), Vec::new()), |(mut r, mut a), (r2, a2)| {
+                r.extend(r2);
+                a.extend(a2);
+                (r, a)
+            });
+            stages = vec![(removed, added)];
         }
         let Some(target) = target else { return Ok(()) };
         let (bi, body) = target_body(s, name, Some(&target))?;
@@ -510,29 +527,32 @@ impl Evaluator {
             }
             Ok(out)
         };
-        let (cuts, adds) = (copies(&removed)?, copies(&added)?);
-        let per = body.topology.faces.len() as u64;
-        self.charge(s, name, "the pattern", cuts.len() + adds.len(), per)?;
         let (mut shape, mut names, mut topo) = (body.shape.clone(), body.names.clone(), body.topology.clone());
-        if !cuts.is_empty() {
-            (shape, names, topo) = self.boolean_tools_refined(
-                name,
-                BoolOp::Cut,
-                (&shape, &names),
-                &cuts,
-                "the pattern removes the whole body",
-                &|i, ke| {
-                    let mut e = kernel_err(name, "cut", ke);
-                    if let Some(i) = i {
-                        e.message = format!("copy {}: {}", i + 1, e.message);
-                    }
-                    e
-                },
-                refine,
-            )?;
-        }
-        if !adds.is_empty() {
-            (shape, names, topo) = self.unite(name, &shape, &names, &adds, |i| format!("copy {}: ", i + 1), refine)?;
+        for (removed, added) in &stages {
+            let (cuts, adds) = (copies(removed)?, copies(added)?);
+            let per = topo.faces.len() as u64;
+            self.charge(s, name, "the pattern", cuts.len() + adds.len(), per)?;
+            if !cuts.is_empty() {
+                (shape, names, topo) = self.boolean_tools_refined(
+                    name,
+                    BoolOp::Cut,
+                    (&shape, &names),
+                    &cuts,
+                    "the pattern removes the whole body",
+                    &|i, ke| {
+                        let mut e = kernel_err(name, "cut", ke);
+                        if let Some(i) = i {
+                            e.message = format!("copy {}: {}", i + 1, e.message);
+                        }
+                        e
+                    },
+                    refine,
+                )?;
+            }
+            if !adds.is_empty() {
+                (shape, names, topo) =
+                    self.unite(name, &shape, &names, &adds, |i| format!("copy {}: ", i + 1), refine)?;
+            }
         }
         replace_body(s, bi, &body, shape, names, topo);
         Ok(())

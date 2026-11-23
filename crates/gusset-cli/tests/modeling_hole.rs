@@ -614,6 +614,33 @@ pattern_circular Ring (axis: Z, through: [30 mm, 20 mm, 0 mm], count: 4, angle: 
     assert!(close(volume(&ev, &r) - PLATE_VOLUME, 4.0 * boss, 1e-6), "{}", volume(&ev, &r) - PLATE_VOLUME);
 }
 
+/// A feature pattern of a boss and a cut into it repeats them in order: each copy of the
+/// boss gets its copy of the cut (cutting every copy first, then adding the bosses, left the
+/// copies whole).
+#[test]
+fn a_feature_pattern_cuts_into_what_it_adds_in_order() {
+    let (ev, r) = eval(&format!(
+        "sketch BossS (plane: {TOP}, next_id: 3) {{
+  p1 = point(15, 20)
+  c2 = circle(p1, 3)
+}}
+
+extrude Boss (profile: BossS, distance: 5 mm, op: add, body: E1)
+
+sketch PinS (plane: {TOP}, next_id: 3) {{
+  p1 = point(15, 20)
+  c2 = circle(p1, 1)
+}}
+
+extrude Pin (profile: PinS, distance: 5 mm, op: cut, body: E1)
+
+pattern_circular Ring (axis: Z, through: [30 mm, 20 mm, 0 mm], count: 4, angle: 360 deg, features: [Boss, Pin])"
+    ));
+    ok(&r);
+    let ring = PI * 8.0 * 5.0;
+    assert!(close(volume(&ev, &r) - PLATE_VOLUME, 4.0 * ring, 1e-6), "{}", volume(&ev, &r) - PLATE_VOLUME);
+}
+
 /// The mouth check meshes the face the hole starts on, not the whole body: on a dome 2 m
 /// across, meshing the sphere at the check's tolerance took seconds (and on an imported
 /// KUKA link with a broken face, gigabytes), while the base is one flat disc.
