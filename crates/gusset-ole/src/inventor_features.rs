@@ -1095,6 +1095,8 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let mut start = None;
     // A revolve whose sketch is turned about its axis (point, unit direction, radians) first.
     let mut turned: Option<(V3, V3, f64)> = None;
+    // The other way of a two-way extrude written as two.
+    let mut back: Option<Value> = None;
     if typ == FeatType::Extrude {
         // Slot 2 is the sweep direction: the sketch normal, or (three extrudes of one part, note
         // AR) the other way; slot 3 turns it round.
@@ -1130,6 +1132,22 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                     if t2.abs() > 1e-12 {
                         put(&mut j, "taper2_deg", json!(rnd(t2.to_degrees())));
                     }
+                }
+            }
+            // A join through all runs up to the next face (its reach ends where it meets the
+            // body: the Fishing Rod transfer gear's key, drawn across its bore, fills the bore
+            // from wall to wall), both ways as two extrudes with slot 7 set.
+            Some(5) if op == "join" => {
+                put(&mut j, "distance", json!(rnd(if rev { -THROUGH } else { THROUGH })));
+                put(&mut j, "symmetric", json!(false));
+                put(&mut j, "end_condition", json!("to_next"));
+                put(&mut j, "reverse", json!(rev));
+                if both {
+                    let mut b = j.clone();
+                    put(&mut b, "name", json!(format!("{name}_2")));
+                    put(&mut b, "distance", json!(rnd(if rev { THROUGH } else { -THROUGH })));
+                    put(&mut b, "reverse", json!(!rev));
+                    back = Some(b);
                 }
             }
             // Through all; with slot 7 set, through all both ways (notes AA).
@@ -1271,6 +1289,7 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         put(&mut j, "sketch", json!(name2));
     }
     st.out.push(j);
+    st.out.extend(back);
     if st.first_body.is_none() {
         st.first_body = Some(name.to_string());
     }
