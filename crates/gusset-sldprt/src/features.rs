@@ -191,6 +191,51 @@ fn mm(v: f64) -> f64 {
     round_to(v * 1000.0, 6)
 }
 
+/// Most point-circle pairs [`precise_points`] compares in one sketch.
+const MAX_PRECISE_PAIRS: usize = 1_000_000;
+
+/// The points of a sketch that lie on the circle of one of its drawn arcs (within 1e-6 mm), with
+/// the arc's centre, where six decimals put them more than 2e-7 mm apart in radius: the kernel
+/// builds an arc on the mean radius of its ends and refuses one whose ends miss that by more
+/// than 1e-7 mm. Full circles keep six (Motor Holder's holes moved its cut by 139 mm3 at nine).
+fn precise_points(g: &Geometry) -> HashSet<usize> {
+    let pt = |i: usize| g.pts.get(i).copied().flatten();
+    // (centre, radius in mm at full precision)
+    let circles: Vec<(usize, f64)> = g
+        .segs
+        .iter()
+        .filter(|s| s.kind == SegKind::Arc && s.s != s.e && !s.construction)
+        .filter_map(|s| {
+            let (p, c) = (pt(s.s)?, pt(s.c)?);
+            Some((s.c, libm::hypot(p.x - c.x, p.y - c.y) * 1000.0))
+        })
+        .collect();
+    let mut out = HashSet::new();
+    if circles.len().saturating_mul(g.pts.len()) > MAX_PRECISE_PAIRS {
+        return out;
+    }
+    for &(c, r) in &circles {
+        let Some(cp) = pt(c) else { continue };
+        let on: Vec<(usize, f64)> = g
+            .pts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| {
+                let p = (*p)?;
+                ((libm::hypot(p.x - cp.x, p.y - cp.y) * 1000.0 - r).abs() <= 1e-6 && i != c)
+                    .then(|| (i, libm::hypot(mm(p.x) - mm(cp.x), mm(p.y) - mm(cp.y))))
+            })
+            .collect();
+        let lo = on.iter().map(|q| q.1).fold(f64::INFINITY, f64::min);
+        let hi = on.iter().map(|q| q.1).fold(f64::NEG_INFINITY, f64::max);
+        if hi - lo > 2e-7 {
+            out.extend(on.iter().map(|q| q.0));
+            out.insert(c);
+        }
+    }
+    out
+}
+
 fn is_word(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
@@ -635,9 +680,16 @@ fn chosen_profiles(
     Some(Value::Array(
         chosen
             .iter()
-            .map(|c| match inner(c).filter(|_| !fits(c)) {
-                Some((u, v)) => json!({"point": [mm(u), mm(v)]}),
-                None => json!({"bbox": [mm(c.bbox[0]), mm(c.bbox[1]), mm(c.bbox[2]), mm(c.bbox[3])]}),
+            .map(|c| match (inner(c), fits(c)) {
+                (Some((u, v)), false) => json!({"point": [mm(u), mm(v)]}),
+                // The point inside the segments goes with the box, for a box that no longer
+                // singles out a region (round sw16: mid_shoulder_RT's six holes, boxes of 3 mm
+                // circles 0.1 mm off the 3.2 mm ones drawn since).
+                (Some((u, v)), true) => json!({
+                    "bbox": [mm(c.bbox[0]), mm(c.bbox[1]), mm(c.bbox[2]), mm(c.bbox[3])],
+                    "point": [mm(u), mm(v)],
+                }),
+                (None, _) => json!({"bbox": [mm(c.bbox[0]), mm(c.bbox[1]), mm(c.bbox[2]), mm(c.bbox[3])]}),
             })
             .collect(),
     ))
@@ -1355,7 +1407,7 @@ fn continues_sides<'a>(
         let span = |o: f64, d: f64, sym: bool| {
             if sym { (o - d.abs() / 2.0, o + d.abs() / 2.0) } else { (o + d.min(0.0), o + d.max(0.0)) }
         };
-        let (f0, f1) = if f.through { (f64::NEG_INFINITY, f64::INFINITY) } else { span(0.0, f.distance, f.symmetric) };
+        let (f0, f1) = if f.through { (f64::NEG_INFINITY, f64::INFINITY) } else { side_span(f) };
         let (g0, g1) = span(dot(sub(jp.origin, f.plane.origin), nf), dist * dot(n, nf), symmetric);
         if g0 > f1 + 1e-6 || f0 > g1 + 1e-6 {
             return false;
@@ -1662,13 +1714,20 @@ fn sketch_json(name: &str, g: &Geometry, plane: Option<&Plane>, jp: &JsonPlane) 
         }
     }
     let pid = |i: usize| format!("p{i}");
+    // Points on an arc or circle that six decimals put more than 1e-7 mm off it, and the
+    // circle's centre, keep nine (the import writes eight for points an arc runs through): the
+    // kernel builds no arc whose ends miss its circle by more than 1e-7 mm (round sw16:
+    // station_upper's lugs, arcs from the 65 mm circle 8e-7 mm apart in radius). Other points
+    // keep six, as planes and depths do, so that faces that meet stay one.
+    let precise = precise_points(g);
     let mut points = Vec::new();
     for (i, p) in g.pts.iter().enumerate() {
         let Some(p) = p else { continue };
         let mut q = Map::new();
         q.insert("id".into(), json!(pid(i)));
-        q.insert("x".into(), json!(mm(p.x)));
-        q.insert("y".into(), json!(mm(p.y)));
+        let v = |x: f64| if precise.contains(&i) { round_to(x * 1000.0, 9) } else { mm(x) };
+        q.insert("x".into(), json!(v(p.x)));
+        q.insert("y".into(), json!(v(p.y)));
         if p.ext {
             q.insert("external".into(), json!(true));
         }
@@ -2005,6 +2064,37 @@ fn edge_header(d: &[u8], i: usize) -> Option<(usize, usize)> {
         return sentinels_at(i + 20).map(|end| (usize::from(n), end));
     }
     None
+}
+
+/// The faces a shell removes: the first reference of each record of kind 3 (a face with its
+/// neighbours) that has an id of its own (`01 00*7 n 00{4,6} 03 00 00 <u32 id>`, the sentinel
+/// pair, the references). A side whose face is closed names fewer neighbours than `n` says
+/// (Linear Actuator Bracket's hole: two caps of five), so only the first reference is read.
+fn removed_faces(d: &[u8], a: usize, b: usize) -> Vec<Rep> {
+    let mut out = Vec::new();
+    let mut i = a;
+    let end = b.min(d.len());
+    while i < end {
+        let Some((_, p)) = edge_header(d, i).filter(|h| h.1 + 20 <= end) else {
+            i += 1;
+            continue;
+        };
+        let zeros = d.get(i + 9..).unwrap_or(&[]).iter().take(11).take_while(|&&c| c == 0).count();
+        let k = i + 9 + zeros;
+        let listed = (4..=6).contains(&zeros) && d.get(k) == Some(&3) && u32_at(d, k + 3).is_some_and(|id| id != 0);
+        if listed
+            && let (Some(t), Some(0), Some(fid), Some(idx)) =
+                (u16_at(d, p), u16_at(d, p + 2), u32_at(d, p + 8), u32_at(d, p + 16))
+            && t & 0x8000 != 0
+        {
+            out.push(Rep { tag: t & 0x7fff, fid, idx, ext: false, ext2: false, via: None, copy: 0 });
+            if out.len() > MAX_MATCHES {
+                break;
+            }
+        }
+        i = p;
+    }
+    out
 }
 
 /// Edge records in `[a, b)` (`edges.edge_records`). Each reference is a 20-byte core followed
@@ -2562,6 +2652,9 @@ struct Swept {
     sketch: usize,
     plane: JsonPlane,
     distance: f64,
+    /// Where its start cap lies (mm along the normal, signed as `distance`): 0 but for a
+    /// second direction (`distance2`).
+    start: f64,
     symmetric: bool,
     through: bool,
     /// A cut: its sides face into the profile.
@@ -2595,8 +2688,19 @@ fn cap_height(f: &Swept, cap: u32) -> f64 {
     } else if cap == 1 {
         d
     } else {
-        0.0
+        f.start
     }
+}
+
+/// Halfway between the caps (mm along the normal): where a point of a side is taken.
+fn mid_height(f: &Swept) -> f64 {
+    f64::midpoint(cap_height(f, 0), cap_height(f, 1))
+}
+
+/// The heights the sides span (mm along the normal), lowest first.
+fn side_span(f: &Swept) -> (f64, f64) {
+    let (a, b) = (cap_height(f, 0), cap_height(f, 1));
+    (a.min(b), a.max(b))
 }
 
 /// The face an up-to-surface or offset-from-surface end (`swEndConditions_e` 4 and 5) names: the
@@ -2691,11 +2795,7 @@ fn on_face(region: &Region, sketches: &[Geometry], q: V3) -> bool {
         }
         Region::Wall(_, a, b) => {
             let h = dot(d, normal(f));
-            let (lo, hi) = if f.symmetric {
-                (-f.distance.abs() / 2.0, f.distance.abs() / 2.0)
-            } else {
-                (f.distance.min(0.0), f.distance.max(0.0))
-            };
+            let (lo, hi) = side_span(f);
             h >= lo - 0.01 && h <= hi + 0.01 && dist_to_segment((u, v), *a, *b) < 1e-5
         }
         Region::Curved => true,
@@ -2822,7 +2922,7 @@ fn face_pick(
     if s.kind == SegKind::Arc {
         let pts = seg_uv(g, s)?;
         let &(u, v) = pts.get(pts.len() / 2)?;
-        let p = lift(f, u * 1000.0, v * 1000.0, f.distance / 2.0);
+        let p = lift(f, u * 1000.0, v * 1000.0, mid_height(f));
         return Some((p, unit(side_out(f, g, s, p)?), Region::Curved));
     }
     let (mid, out, _) = side(s)?;
@@ -2830,7 +2930,7 @@ fn face_pick(
     let (x, y) = (f.plane.x, f.plane.y);
     let nrm = [0, 1, 2].map(|i| out.0 * x.get(i).copied().unwrap_or(0.0) + out.1 * y.get(i).copied().unwrap_or(0.0));
     Some((
-        lift(f, mid.0 * 1000.0, mid.1 * 1000.0, f.distance / 2.0),
+        lift(f, mid.0 * 1000.0, mid.1 * 1000.0, mid_height(f)),
         unit(nrm),
         Region::Wall(*f, (pa.x, pa.y), (pb.x, pb.y)),
     ))
@@ -4606,6 +4706,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         sketch: i,
                         plane,
                         distance: dist,
+                        // A second direction starts the sides on the other side of the sketch
+                        // (round sw16: 6mm Motor Holder's Boss-Extrude3, 10 mm one way and 2 mm the
+                        // other; Fillet1 rounds its start cap at 2 mm, not the sketch plane).
+                        start: js.get("distance2").and_then(Value::as_f64).unwrap_or(0.0),
                         symmetric,
                         through: through_all,
                         cut: op == "cut" && !flip,
@@ -4862,8 +4966,15 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         (None, None) => None,
                     };
                     if let Some((p, q)) = ends {
-                        let on =
-                            Swept { sketch: i, plane, distance: 0.0, symmetric: false, through: false, cut: false };
+                        let on = Swept {
+                            sketch: i,
+                            plane,
+                            distance: 0.0,
+                            start: 0.0,
+                            symmetric: false,
+                            through: false,
+                            cut: false,
+                        };
                         revolved.insert(n.id, Revolved { on, axis: [p, q] });
                     }
                 }
@@ -5376,20 +5487,32 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         } else if cls.as_deref() == Some("moShell_c") {
             let ps = params(rf, a, b, nt)?;
             let recs = edge_records(rf, a, b)?;
-            let pick =
-                recs.last().and_then(|(_, reps)| reps.first()).and_then(|r| face_pick(r, &swept, &sketches, &cap_tags));
+            // Each face the shell removes is a record of kind 3 with an id of its own, the face
+            // first and its neighbours after it (round sw16: Linear Actuator Bracket removes five
+            // sides; the r3 keycaps the bottom cap, where the last record names the top). Where
+            // one of them cannot be placed, the first face of the last record, as before.
+            let listed: Vec<Option<(V3, V3, Region)>> =
+                removed_faces(rf, a, b).iter().map(|r| face_pick(r, &swept, &sketches, &cap_tags)).collect();
+            let picks: Vec<(V3, V3, Region)> = if !listed.is_empty() && listed.iter().all(Option::is_some) {
+                listed.into_iter().flatten().collect()
+            } else {
+                recs.last()
+                    .and_then(|(_, reps)| reps.first())
+                    .and_then(|r| face_pick(r, &swept, &sketches, &cap_tags))
+                    .into_iter()
+                    .collect()
+            };
             let mut js = Map::new();
             js.insert("type".into(), json!("shell"));
             js.insert("name".into(), json!(n.name));
             js.insert("thickness".into(), json!(ps.first().map(|v| mm(*v))));
-            match pick {
-                Some((pt, nrm, _)) => {
-                    js.insert("faces".into(), json!([{"point": json_v3(pt), "normal": json_v3(nrm)}]));
-                }
-                None => {
-                    js.insert("faces".into(), json!([]));
-                    js.insert("unresolved".into(), json!(true));
-                }
+            if picks.is_empty() {
+                js.insert("faces".into(), json!([]));
+                js.insert("unresolved".into(), json!(true));
+            } else {
+                let faces: Vec<Value> =
+                    picks.iter().map(|(pt, nrm, _)| json!({"point": json_v3(*pt), "normal": json_v3(*nrm)})).collect();
+                js.insert("faces".into(), Value::Array(faces));
             }
             feats.push(Value::Object(js));
         } else if cls.is_none() || is_in(&cls, &SKIPPED) {
@@ -5825,7 +5948,7 @@ fn reflect(p: V3, (o, n): (V3, V3)) -> V3 {
 fn reflect_swept(f: &Swept, plane: (V3, V3)) -> Swept {
     let dir = |v: V3| comb(v, 1.0, plane.1, -2.0 * dot(v, plane.1));
     let jp = JsonPlane { origin: reflect(f.plane.origin, plane), x: dir(f.plane.x), y: dir(f.plane.y) };
-    Swept { plane: jp, distance: -f.distance, ..*f }
+    Swept { plane: jp, distance: -f.distance, start: -f.start, ..*f }
 }
 
 /// A mirror's plane, an edge's references reflected back and the extrusions they name.
@@ -6086,8 +6209,11 @@ fn feature_pattern(
             // The written line is the picked edge's own; which way the copies run is not
             // written (round sw13: eight of ten run against it, two with it). A pattern of cuts
             // is left to the rebuild, which takes the way its copies cut more.
-            if all_cuts && let Some(o) = js.as_object_mut() {
-                o.insert("either_way".into(), json!(true));
+            // One that adds material is left to the rebuild too, which takes the way whose
+            // copies stay inside the part's edges (round sw16: the spacers' Boss-Extrude3 and
+            // Cut-Extrude1, written along the edge, ran out of the part the other way).
+            if let Some(o) = js.as_object_mut() {
+                o.insert(if all_cuts { "either_way" } else { "sense_by_box" }.into(), json!(true));
             }
             out.push(js);
             first = Some(nm);
@@ -6209,6 +6335,53 @@ mod end_face_tests {
         Some(Pt { x, y, ext: false, id: 0, alone: 0 })
     }
 
+    /// A second direction moves the start cap, the sides' middle and their span.
+    #[test]
+    fn a_second_direction_moves_the_start_cap() {
+        let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let f = Swept { sketch: 0, plane, distance: 10.0, start: -2.0, symmetric: false, through: false, cut: false };
+        assert_eq!((cap_height(&f, 0), cap_height(&f, 1)), (-2.0, 10.0));
+        assert_eq!(mid_height(&f), 4.0);
+        assert_eq!(side_span(&f), (-2.0, 10.0));
+        let g = Swept { start: 0.0, symmetric: true, ..f };
+        assert_eq!((mid_height(&g), side_span(&g)), (0.0, (-5.0, 5.0)));
+    }
+
+    /// station_upper's lug: an arc of 20 mm from the 65 mm circle whose ends, at six decimals,
+    /// are 8e-7 mm apart in radius; its points keep more digits, a square's do not.
+    #[test]
+    fn arcs_whose_rounded_ends_miss_their_circle_keep_their_digits() {
+        let seg = |kind, s, e, c| Seg {
+            kind,
+            id: 0,
+            a: 0,
+            s,
+            e,
+            c,
+            dir: 1,
+            construction: false,
+            centerline: false,
+            external: false,
+        };
+        let g = Geometry {
+            pts: vec![
+                pt(-8.33199405442242e-8, -0.06499999999994661),
+                pt(-0.019761975650654545, -0.0619230515913334),
+                pt(0.019_761_816_899_051_85, -0.061_923_102_254_718_71),
+            ],
+            segs: vec![seg(SegKind::Arc, 1, 2, 0)],
+            ellipse_axes: Vec::new(),
+        };
+        let p = precise_points(&g);
+        assert!([0, 1, 2].iter().all(|i| p.contains(i)), "{p:?}");
+        let square = Geometry {
+            pts: vec![pt(0.0, 0.0), pt(0.01, 0.0), pt(0.01, 0.01)],
+            segs: vec![seg(SegKind::Line, 0, 1, 0), seg(SegKind::Line, 1, 2, 0)],
+            ellipse_axes: Vec::new(),
+        };
+        assert!(precise_points(&square).is_empty());
+    }
+
     /// A 20 x 10 mm rectangle (sketch keys 2..5) extruded 5 mm along +z.
     fn plate() -> (HashMap<u32, Swept>, Vec<Geometry>) {
         let line = |a: u32, s: usize, e: usize| Seg {
@@ -6229,7 +6402,7 @@ mod end_face_tests {
             ellipse_axes: Vec::new(),
         };
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
-        let f = Swept { sketch: 0, plane, distance: 5.0, symmetric: false, through: false, cut: false };
+        let f = Swept { sketch: 0, plane, distance: 5.0, start: 0.0, symmetric: false, through: false, cut: false };
         (HashMap::from([(32, f)]), vec![g])
     }
 
@@ -6275,7 +6448,7 @@ mod end_face_tests {
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
         let swept = HashMap::from([(
             40,
-            Swept { sketch: 0, plane, distance: 5.0, symmetric: false, through: false, cut: false },
+            Swept { sketch: 0, plane, distance: 5.0, start: 0.0, symmetric: false, through: false, cut: false },
         )]);
         let r = Rep { tag: 9, fid: 40, idx: 1, ext: false, ext2: false, via: None, copy: 0 };
         let (p, n, _) = face_pick(&r, &swept, &[g], &HashSet::from([9u16])).unwrap();
@@ -6421,6 +6594,7 @@ mod end_face_tests {
             sketch: 0,
             plane: JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] },
             distance: 0.0,
+            start: 0.0,
             symmetric: false,
             through: false,
             cut: false,
@@ -6467,7 +6641,10 @@ mod end_face_tests {
             ellipse_axes: Vec::new(),
         });
         let plane = JsonPlane { origin: [20.0, 0.0, 0.0], x: [0.0, 1.0, 0.0], y: [0.0, 0.0, 1.0] };
-        swept.insert(33, Swept { sketch: 1, plane, distance: -10.0, symmetric: false, through: false, cut: false });
+        swept.insert(
+            33,
+            Swept { sketch: 1, plane, distance: -10.0, start: 0.0, symmetric: false, through: false, cut: false },
+        );
         // A revolve about the y axis of the Front plane: line 4 at x = 5 mm sweeps a cylinder.
         sketches.push(Geometry {
             pts: vec![pt(0.005, 0.0), pt(0.005, 0.01)],
@@ -6478,6 +6655,7 @@ mod end_face_tests {
             sketch: 2,
             plane: JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] },
             distance: 0.0,
+            start: 0.0,
             symmetric: false,
             through: false,
             cut: false,
@@ -6534,7 +6712,10 @@ mod end_face_tests {
             ellipse_axes: Vec::new(),
         });
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 0.0, 1.0] };
-        swept.insert(33, Swept { sketch: 1, plane, distance: -500.0, symmetric: false, through: true, cut: false });
+        swept.insert(
+            33,
+            Swept { sketch: 1, plane, distance: -500.0, start: 0.0, symmetric: false, through: true, cut: false },
+        );
         let cap_tags = HashSet::from([9u16]);
         let rep = |tag, fid, idx| Rep { tag, fid, idx, ext: false, ext2: false, via: None, copy: 0 };
         let mut work = 0;
@@ -6767,8 +6948,8 @@ mod end_face_tests {
             ..Default::default()
         };
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
-        let f = Swept { sketch: 0, plane, distance: 12.0, symmetric: false, through: false, cut: false };
-        let g = Swept { sketch: 1, plane, distance: 24.0, symmetric: false, through: false, cut: false };
+        let f = Swept { sketch: 0, plane, distance: 12.0, start: 0.0, symmetric: false, through: false, cut: false };
+        let g = Swept { sketch: 1, plane, distance: 24.0, start: 0.0, symmetric: false, through: false, cut: false };
         let t = touches((&f, &line, line.segs.first().unwrap()), (&g, &circle, circle.segs.first().unwrap()));
         assert_eq!(t.len(), 1, "{t:?}");
         let p = t.first().unwrap();

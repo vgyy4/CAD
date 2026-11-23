@@ -128,6 +128,11 @@ pub(super) struct PatternF {
     /// against): the sense whose copies take away more of the body is kept.
     #[serde(default)]
     either_way: bool,
+    /// A linear pattern whose copies add material too (round sw16: the spacers' bosses and
+    /// cuts): the sense whose result reaches less past the source result's edges is kept,
+    /// where they are known (`Tree::kept_edges`).
+    #[serde(default)]
+    sense_by_box: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -599,6 +604,36 @@ fn volume(g: &mut Gen, s: &Session) -> Result<f64, String> {
     Ok(v)
 }
 
+/// How far the model as built reaches past the box of the source result's edges (mm, summed
+/// over the six sides; vertices of the model against the edges' midpoints).
+fn past_kept_edges(g: &mut Gen, s: &Session) -> Result<f64, String> {
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for (m, _) in &g.kept_edges {
+        for k in 0..3 {
+            if let (Some(l), Some(h), Some(v)) = (lo.get_mut(k), hi.get_mut(k), m.get(k)) {
+                *l = l.min(*v);
+                *h = h.max(*v);
+            }
+        }
+    }
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    let mut past = [0.0f64; 6];
+    for b in &ev.bodies {
+        for v in &b.topology.vertices {
+            for k in 0..3 {
+                let (Some(p), Some(l), Some(h)) = (v.point.get(k), lo.get(k), hi.get(k)) else { continue };
+                if let Some(x) = past.get_mut(k) {
+                    *x = x.max(l - p);
+                }
+                if let Some(x) = past.get_mut(k + 3) {
+                    *x = x.max(p - h);
+                }
+            }
+        }
+    }
+    Ok(past.iter().sum())
+}
+
 fn builds(g: &mut Gen, s: &Session, name: &str) -> Result<(), String> {
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     match ev.errors().iter().find(|e| e.feature == name) {
@@ -818,6 +853,34 @@ pub(super) fn pattern(g: &mut Gen, s: &Session, d: &PatternF, circular: bool) ->
             g.evaluate(s).map_err(|e| e.message)?;
         }
     }
+    if d.sense_by_box
+        && !d.either_way
+        && !circular
+        && !g.kept_edges.is_empty()
+        && let Some(dir) = d.direction.and_then(unit)
+    {
+        let ahead = past_kept_edges(g, s)?;
+        let kept = g.text.split_off(at);
+        let back = format!("direction: [{}, {}, {}]", fine(-dir[0]), fine(-dir[1]), fine(-dir[2]));
+        let line = format!(
+            "\n{kw} {name} ({})\n",
+            args.iter()
+                .map(|a| if a.starts_with("direction:") { back.clone() } else { a.clone() })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        g.text.push_str(&line);
+        let behind = match builds(g, s, &name) {
+            Ok(()) => past_kept_edges(g, s)?,
+            Err(_) => f64::INFINITY,
+        };
+        // Clearly less outside the other way; else as written.
+        if behind >= ahead - 1e-3 {
+            g.text.truncate(at);
+            g.text.push_str(&kept);
+            g.evaluate(s).map_err(|e| e.message)?;
+        }
+    }
     g.made.push(name.clone());
     if !d.merge {
         // The copies' bodies, by the tree's names `<name>[i]`; their Gusset names are taken.
@@ -935,10 +998,21 @@ fn reflect_feature(f: &Value, o: V3, n: V3, rename: &dyn Fn(&str) -> String) -> 
             }
             if kind == "extrude" {
                 // The second side's reach (`distance2`) flips with it.
-                for key in ["distance", "distance2"] {
+                for key in ["distance", "distance2", "plane_distance"] {
                     if let Some(d) = f.get(key).and_then(Value::as_f64) {
                         set(&mut out, key, json!(-d));
                     }
+                }
+                // So does the sense of an end up to a face or the next face, which `reverse`
+                // gives against the sketch's normal; the face is reflected (round sw16: Lego
+                // Torso's mirrored arm hole, V-Slot Door Handle's mirrored boss).
+                if matches!(f.get("end_condition").and_then(Value::as_str), Some("to_face" | "to_next")) {
+                    let r = f.get("reverse").and_then(Value::as_bool).unwrap_or(false);
+                    set(&mut out, "reverse", json!(!r));
+                }
+                if let Some(face) = out.get_mut("face") {
+                    map_v3(face, "point", &pt)?;
+                    map_v3(face, "normal", &dr)?;
                 }
                 // The parameter's sign convention does not carry over: the mirrored copy
                 // uses the number.

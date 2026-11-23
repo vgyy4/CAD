@@ -1629,3 +1629,74 @@ angle, rectangular_tubing (Config-0 sketches by name), 8mm Shim (re-blended edge
 Joining Plate (flipped-side cuts), Cablechain-End (reversed face frame), and Dual V-Wheel Steel, which the baseline
 run lost to "the import worker's output did not close" and every other run imports (it passed in round sw14). None
 lost.
+
+## L27. Round 21 (sw16: shell face records, arc digits, contour points, mirrored ends, pattern senses that add)
+Measured from this round's own baseline (370 of 1352, row for row round sw15's final log): of the 982 refusals,
+550 are STEP-style imports; volume mismatches 64, stock-only, history-less and mirrored-only files 55, patterns,
+mirrors, holes and planes not resolved 44, features other than blends that do not build 43, blends the kernel
+refuses 39, blend edges not read 30, unsupported features most of the rest (split bodies 16, variable fillets 15,
+imported surfaces 14, weldments 9, splits 8).
+
+* **Shell face records.** Each face a shell removes is a reference record of kind 3 (header `01 00*7 n 00{4,6}
+  03 00 00 <u32 id>`, id not 0), the face first and its neighbours after it; a closed side names fewer neighbours
+  than `n` (Linear Actuator Bracket's hole: two caps of five). The last record, of kind 2 or an id of 0, names
+  another face: Linear Actuator Bracket removes five sides and the r3 keycaps their bottom cap, where the last
+  record names a side and the top. Linear Actuator Bracket now builds its shell but is 99 mm3 short: its Fillet1
+  rounds the shell's inner edges, which it names by the shell's own face numbers (fid of the shell, 33112 and
+  33121), not yet read.
+* **Digits of arc points.** Sketch points are written with six decimals of a millimetre; an arc's ends that lie
+  on its circle in the file can then lie up to 8e-7 mm apart in radius, and the kernel, which builds the arc on
+  their mean radius, refuses ends 1e-7 mm off it ("could not build an arc of the profile": station_upper's lugs,
+  arcs of 20 mm from a 65 mm circle; the stepper motor shafts' flat, whose line ends split the 2.5 mm arc). The
+  points on the circle of a drawn arc keep nine decimals where their rounded radii spread more than 2e-7 mm.
+  Nine for every point moved line ends shared with arcs 5e-7 mm off planes and depths read at six
+  (mid_shoulder_RT's Fillet1 then failed), and nine for full circles' centres moved Motor Holder's through cut
+  by 139 mm3; both keep six. station_gear and Servo Horn Disc 20T, whose failing arcs are pieces of full circles
+  that line ends split, get past them with nine digits there but fail later (a sketch without closed regions, a
+  fillet edge 0.6 mm off).
+* **Contour points with boxes.** A chooser box that fits its segments but no longer singles out a region (boxes
+  of 3 mm holes 0.1 mm off the 3.2 mm ones drawn since: mid_shoulder_RT's six holes) cut the whole sketch. The
+  point inside the chooser's segments now goes with the box, and the import takes it where the box fits no
+  single region (Part3's Cut-Extrude2 builds and the part imports; mid_shoulder_RT is left 2.3 mm3, 1.1e-4, off by
+  its pegs up to the arc boss).
+* **Mirrored ends up to a face.** A mirror of features builds each again on its reflected sketch, whose normal
+  the reflection turns over: an extrude up to a face or to the next face now toggles `reverse`, and its face pick
+  is reflected (Lego Torso's mirrored arm hole, 2.8e-5 off the part after the round: corner blends OCCT makes as
+  B-splines where SolidWorks' are spheres).
+* **Linear patterns that add material.** The written direction is the picked edge's own; a pattern that is not
+  all cuts is marked `sense_by_box`, and the import keeps the sense whose model reaches less past the box of the
+  stored result's edges (the spacers' LPattern1 of a boss and a cut ran 30 mm out of the part; Boss-Extrude5 up
+  to the next face then built instead of falling back to 500 mm). The spacers stay 1500 mm3 off: the copies of
+  their to-next pockets on the far wall are missing.
+* **Second directions.** A blind extrude with a `D2` starts its sides `distance2` from the sketch: its start cap,
+  the middle of its sides and their span follow (6mm Motor Holder's Boss-Extrude3, 10 mm one way and 2 mm the
+  other; its Fillet1's first edge is placed now, the second, on Boss-Extrude2's top, is still 3.1 mm off).
+* **Measured, not done.**
+  - Splines (`modifSplineList_c`, `cptsSplineList_c`): a segment writes `u32 2`, `u16` 3 or 4 and the list class
+    after its -1.0, then its handles (point indices), a pole count with `x y z` poles (m), `u32 0`, the handle count,
+    `u32 2` and the knots 0 and 1, and each handle's parameter. The r3 keycaps' side tapers are three-pole
+    quadratic Béziers through their handles at those parameters (the handle at 0.937 is where the taper meets
+    the 0.5 mm skirt); Fastening Hook's five-pole one matches neither a Bézier nor a cubic with one inner knot
+    (0.05 mm off its handles). The reader still writes them as lines. The keycaps then need their shell (OCCT
+    refuses it with the spherical dish), a variable fillet, an up-to-surface stem and its chamfer.
+  - Patterns of bodies (gears, wheel, Primary Block): the node writes no count or spacing parameters.
+  - Dowel holes placed by a 3D sketch (the vice parts): the placement sketch comes before the hole node and the
+    position is a 3D sketch point inside it.
+  - CSK holes with head clearance on the part's edge (FrameBracket_v2, spring_base): the countersink overhangs the
+    clearance floor where the part ends; Gusset's hole wants its mouth on the face.
+  - Fillets the kernel refuses where one blend runs on over a short collinear edge of another face
+    (EndStop-XAxis-Bracket1's Fillet2 edges 20 and 24) or past a 1 mm edge (BK12_block): kernel side.
+
+**Coverage after the round** (rebuild check unchanged; the round's own baseline on its base):
+
+| corpus | baseline | round sw16 |
+|---|---|---|
+| slip-pad | 25 / 35 | 25 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | 1 / 14 |
+| sw-more | 329 / 1253 | **332** / 1253 |
+| all | 370 / 1352 | **373** / 1352 |
+
+Gained (sw-more, 3): Part3 (contour points), stepper motor shaft and stepper motor shaft small (arc digits). None
+lost. Toughbox d07 imports too with nine decimals for its circle's centre, but the same digits for Motor Holder's
+hole centres lose that part, so full circles keep six (two parts to win back by a rule that tells them apart).
