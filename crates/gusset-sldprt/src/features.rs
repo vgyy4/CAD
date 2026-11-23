@@ -191,6 +191,51 @@ fn mm(v: f64) -> f64 {
     round_to(v * 1000.0, 6)
 }
 
+/// Most point-circle pairs [`precise_points`] compares in one sketch.
+const MAX_PRECISE_PAIRS: usize = 1_000_000;
+
+/// The points of a sketch that lie on one of its drawn arcs or circles (within 1e-6 mm) but
+/// more than 1e-7 mm off it once both are rounded to six decimals, with that circle's centre.
+fn precise_points(g: &Geometry) -> HashSet<usize> {
+    let pt = |i: usize| g.pts.get(i).copied().flatten();
+    // (centre, radius in mm at full precision, radius from the rounded points)
+    let circles: Vec<(usize, f64, Option<usize>)> = g
+        .segs
+        .iter()
+        .filter(|s| s.kind == SegKind::Arc && !s.construction)
+        .filter_map(|s| {
+            let (p, c) = (pt(s.s)?, pt(s.c)?);
+            Some((s.c, libm::hypot(p.x - c.x, p.y - c.y) * 1000.0, (s.s != s.e).then_some(s.s)))
+        })
+        .collect();
+    let mut out = HashSet::new();
+    if circles.len().saturating_mul(g.pts.len()) > MAX_PRECISE_PAIRS {
+        return out;
+    }
+    for &(c, r, start) in &circles {
+        let Some(cp) = pt(c) else { continue };
+        // An arc's own radius as the import sees it: from its rounded start; a circle's is written.
+        let r6 = match start.and_then(pt) {
+            Some(p) => libm::hypot(mm(p.x) - mm(cp.x), mm(p.y) - mm(cp.y)),
+            None => round_to(r, 6),
+        };
+        for (i, p) in g.pts.iter().enumerate() {
+            let Some(p) = p else { continue };
+            if i == c || (libm::hypot(p.x - cp.x, p.y - cp.y) * 1000.0 - r).abs() > 1e-6 {
+                continue;
+            }
+            if (libm::hypot(mm(p.x) - mm(cp.x), mm(p.y) - mm(cp.y)) - r6).abs() > 1e-7 {
+                out.insert(i);
+                out.insert(c);
+                if let Some(st) = start {
+                    out.insert(st);
+                }
+            }
+        }
+    }
+    out
+}
+
 fn is_word(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
@@ -1669,16 +1714,20 @@ fn sketch_json(name: &str, g: &Geometry, plane: Option<&Plane>, jp: &JsonPlane) 
         }
     }
     let pid = |i: usize| format!("p{i}");
+    // Points on an arc or circle that six decimals put more than 1e-7 mm off it, and the
+    // circle's centre, keep nine (the import writes eight for points an arc runs through): the
+    // kernel builds no arc whose ends miss its circle by more than 1e-7 mm (round sw16:
+    // station_upper's lugs, arcs from the 65 mm circle 8e-7 mm apart in radius). Other points
+    // keep six, as planes and depths do, so that faces that meet stay one.
+    let precise = precise_points(g);
     let mut points = Vec::new();
     for (i, p) in g.pts.iter().enumerate() {
         let Some(p) = p else { continue };
         let mut q = Map::new();
         q.insert("id".into(), json!(pid(i)));
-        // Nine decimals: the import keeps eight for the ends of arcs, and six would leave an
-        // arc's ends up to 5e-7 mm off its circle (round sw16: station_upper's lugs, arcs from
-        // the 65 mm circle, end 8e-7 mm apart in radius; the kernel builds no such arc).
-        q.insert("x".into(), json!(round_to(p.x * 1000.0, 9)));
-        q.insert("y".into(), json!(round_to(p.y * 1000.0, 9)));
+        let v = |x: f64| if precise.contains(&i) { round_to(x * 1000.0, 9) } else { mm(x) };
+        q.insert("x".into(), json!(v(p.x)));
+        q.insert("y".into(), json!(v(p.y)));
         if p.ext {
             q.insert("external".into(), json!(true));
         }
