@@ -4419,7 +4419,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         (a.x.abs() < 1e-12 && a.y.abs() < 1e-12 && libm::hypot(b.x, b.y) > 1e-9).then_some(b)
                     });
                     if let Some(b) = axis {
-                        let d = [0, 1, 2].map(|i| b.x * jp.x[i] + b.y * jp.y[i]);
+                        let [x0, x1, x2] = jp.x;
+                        let [y0, y1, y2] = jp.y;
+                        let d = [b.x * x0 + b.y * y0, b.x * x1 + b.y * y1, b.x * x2 + b.y * y2];
                         let len = libm::sqrt(dot(d, d));
                         if len > 1e-12 {
                             h.section = Some((jp.origin, d.map(|v| round_to(v / len, 12) + 0.0)));
@@ -6296,7 +6298,7 @@ fn frame_block(d: &[u8], a: usize, b: usize) -> Option<(V3, V3)> {
 /// this alone gives it (12 for the 12T spur gear, 66 for the internal gear).
 fn inline_count(d: &[u8], a: usize, b: usize) -> Option<u32> {
     let v = inline_value(d, a, b)?;
-    (v.fract() == 0.0 && (2.0..=10_000.0).contains(&v)).then(|| v as u32)
+    (v.fract() == 0.0 && (2.0..=10_000.0).contains(&v)).then_some(v as u32)
 }
 
 /// The first value a node keeps in its own data in the layout [`inline_count`] reads. An
