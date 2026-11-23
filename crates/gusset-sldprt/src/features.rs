@@ -194,17 +194,17 @@ fn mm(v: f64) -> f64 {
 /// Most point-circle pairs [`precise_points`] compares in one sketch.
 const MAX_PRECISE_PAIRS: usize = 1_000_000;
 
-/// The points of a sketch that lie on one of its drawn arcs or circles (within 1e-6 mm), with
-/// the circle's centre, where six decimals put them more than 2e-7 mm apart in radius: the
-/// kernel builds an arc on the mean radius of its ends and refuses one whose ends miss that by
-/// more than 1e-7 mm.
+/// The points of a sketch that lie on the circle of one of its drawn arcs (within 1e-6 mm), with
+/// the arc's centre, where six decimals put them more than 2e-7 mm apart in radius: the kernel
+/// builds an arc on the mean radius of its ends and refuses one whose ends miss that by more
+/// than 1e-7 mm. Full circles keep six (Motor Holder's holes moved its cut by 139 mm3 at nine).
 fn precise_points(g: &Geometry) -> HashSet<usize> {
     let pt = |i: usize| g.pts.get(i).copied().flatten();
     // (centre, radius in mm at full precision)
     let circles: Vec<(usize, f64)> = g
         .segs
         .iter()
-        .filter(|s| s.kind == SegKind::Arc && !s.construction)
+        .filter(|s| s.kind == SegKind::Arc && s.s != s.e && !s.construction)
         .filter_map(|s| {
             let (p, c) = (pt(s.s)?, pt(s.c)?);
             Some((s.c, libm::hypot(p.x - c.x, p.y - c.y) * 1000.0))
