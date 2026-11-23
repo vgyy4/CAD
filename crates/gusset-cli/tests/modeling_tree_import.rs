@@ -1871,6 +1871,29 @@ fn edges_named_by_their_faces_and_by_blend_faces() {
     assert!(v < after1 - 1.0 && v > after1 - 1.6, "volume {v}: {r}");
 }
 
+/// An edge on a shell's inner wall named by its faces (round sw17 of ADR 0043): each face is
+/// the face of the block the wall was offset from, through the shell; a cap by its plane.
+#[test]
+fn edges_on_a_shell_wall_are_named_through_the_shell() {
+    let inner = |mut f: Value| {
+        f["shell"] = json!("Sh");
+        f
+    };
+    let side = |c: &str| json!({"feature": "Block", "kind": "side", "sketch": "Base", "curves": [c]});
+    let floor = json!({"feature": "Block", "kind": "cap", "point": [0, 0, 0], "normal": [0, 0, -1]});
+    let (r, v) = import_v2(vec![
+        rect("Base", plane_at(0.0), 0.0, 0.0, 20.0, 10.0),
+        extrude("Block", "Base", 5.0, "new"),
+        json!({"type": "shell", "name": "Sh", "faces": [{"point": [10, 5, 5], "normal": [0, 0, 1]}], "thickness": 1}),
+        json!({"type": "fillet", "name": "Fillet1", "radius": 0.5,
+            "edges": [{"faces": [inner(side("l1")), inner(floor)], "selection": 1}]}),
+    ]);
+    // The shell leaves 1000 - 18 x 8 x 4 = 424 mm3; the inner fillet along the 18 mm wall adds
+    // 0.25 (1 - pi/4) mm2 along it.
+    let want = 424.0 + 0.25 * (1.0 - core::f64::consts::FRAC_PI_4) * 18.0;
+    assert!((v - want).abs() < 0.05, "volume {v}, expected about {want}: {r}");
+}
+
 /// A mirror of a hole and of the pattern of it (Inventor's gun box): the pattern is made again
 /// of the mirrored hole, along the reflected direction. A mirror of the pattern alone, whose
 /// hole it does not copy, is refused.

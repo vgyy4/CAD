@@ -7197,6 +7197,36 @@ mod end_face_tests {
         seen.retain(|(_, s)| s != "Sketch1");
         used.remove("Sketch1");
         assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used, |_| None).as_deref(), Some("Sketch3"));
+        // ... unless the sketch whose entities carry the index is one of them (round sw17).
+        let by_index = |r: u16| (r == 0x22c).then(|| "Sketch1".to_string());
+        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used, by_index).as_deref(), Some("Sketch1"));
+        // A node the index names that is not free there is not taken.
+        let used_one = |_: u16| Some("Sketch3".to_string());
+        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used, used_one).as_deref(), Some("Sketch3"));
+    }
+
+    /// The value a node keeps in its own data: `ff fe ff 00`, 0, -1, the f64, `08 00 00 00 10 00
+    /// 00 00`; a circular pattern's count when it is a whole number of at least two.
+    #[test]
+    fn values_kept_in_a_node_s_own_data() {
+        let rec = |v: f64| {
+            let mut d = vec![0u8; 5];
+            d.extend([0xff, 0xfe, 0xff, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+            d.extend(v.to_le_bytes());
+            d.extend([8, 0, 0, 0, 0x10, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0]);
+            d
+        };
+        let d = rec(12.0);
+        assert_eq!(inline_count(&d, 0, d.len()), Some(12));
+        let d = rec(0.0013);
+        assert_eq!(inline_value(&d, 0, d.len()), Some(0.0013));
+        assert_eq!(inline_count(&d, 0, d.len()), None);
+        // Another tail is not such a record.
+        let mut d = rec(12.0);
+        if let Some(b) = d.get_mut(25) {
+            *b = 9;
+        }
+        assert_eq!(inline_value(&d, 0, d.len()), None);
     }
 
     #[test]
