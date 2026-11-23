@@ -73,6 +73,15 @@ fn a_cut_to_the_next_face_opens_one_wall_and_a_boss_grows_to_it() {
 }
 
 #[test]
+fn a_new_body_up_to_the_next_face_leaves_the_body_it_stops_at() {
+    // The boss as a body of its own: grown from z -10 up to the tank, which keeps its volume.
+    let (ev, r) = eval(&format!("{}extrude Boss (profile: Sk3, to: next, op: new)\n", tank()));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!(close(volume(&ev, &r, "Tank"), TANK), "{}", volume(&ev, &r, "Tank"));
+    assert!(close(volume(&ev, &r, "Boss"), 1000.0), "{}", volume(&ev, &r, "Boss"));
+}
+
+#[test]
 fn the_command_cuts_up_to_the_next_face() {
     use gusset_commands::{CmdCtx, Session, execute};
     use serde_json::json;

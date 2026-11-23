@@ -241,12 +241,12 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 }
                 if let FeatureKind::Extrude(e) = &f.kind
                     && matches!(e.end, ExtrudeEnd::ToNext { .. })
-                    && !matches!(e.op, BodyOp::Add | BodyOp::Cut)
+                    && e.op == BodyOp::Intersect
                 {
                     out.push(issue_h(
                         n,
-                        "an extrude up to the next face adds to or cuts a body",
-                        "use op: add or op: cut",
+                        "an extrude up to the next face adds to or cuts a body, or makes one",
+                        "use op: add, op: cut or op: new",
                     ));
                 }
                 if let FeatureKind::Revolve(r) = &f.kind

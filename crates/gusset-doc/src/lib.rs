@@ -571,8 +571,10 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             assert!(e.contains(why), "{bad}: {e}");
         }
         let new_body = format!("{HOLE_BASE}extrude E2 (profile: P, to: next, op: new)\n");
-        let e = Document::from_text(&new_body).unwrap_err().to_string();
-        assert!(e.contains("adds to or cuts"), "{e}");
+        assert!(Document::from_text(&new_body).is_ok());
+        let common = format!("{HOLE_BASE}extrude E2 (profile: P, to: next, op: intersect, body: E)\n");
+        let e = Document::from_text(&common).unwrap_err().to_string();
+        assert!(e.contains("adds to or cuts a body, or makes one"), "{e}");
     }
 
     #[test]
