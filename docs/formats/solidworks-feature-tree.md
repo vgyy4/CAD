@@ -1818,3 +1818,19 @@ weldments and sheet metal leave nothing to rebuild.
   - Pedestal's four gussets (`moGusset_c`, header-only nodes) add nothing to the stored body (the rest gives its
     volume exactly); left refused, nothing shows why they built nothing.
   - Ribs: five parts build otherwise (5 to 22 % short); Gusset has no rib.
+
+**Coverage after the round** (rebuild check unchanged; the round's own baseline on its base):
+
+| corpus | baseline | round sw18 |
+|---|---|---|
+| slip-pad | 25 / 35 | 25 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 2 / 14 | 2 / 14 |
+| sw-more | 342 / 1253 | **347** / 1253 |
+| all | 384 / 1352 | **389** / 1352 |
+
+Gained (5): M6 cıvata (thread), 126p-visor-diy-bottom (body deletion after a mirror), Spur Gear 12 Teeth and Base
+Internal Gear 66 Teeths (parts inserted first), ballscrew_face_plate_gantry (equation-driven fillet). None lost.
+Refusals after the round: STEP-style 550, unsupported 129, volume mismatches 70 (four threads now rebuild short),
+stock-only and the like 55, blends that do not build 40, other features that do not build 39, unresolved references
+34, blend edges not read 27.

@@ -935,6 +935,6 @@ such part without its unsupported features to see what the class must make up. I
 - **Blend sizes from equations**: a fillet or chamfer without a size in the feature stream takes the dimension record
   `Config-<n>` writes after its equation.
 
-The rebuild check is unchanged. History 384 -> SWCOUNT of 1352, none lost. The tree import, the sketch solver, the
+The rebuild check is unchanged. History 384 -> 389 of 1352, none lost (full run of the round's threads, deletions and stock bodies: 388; the equation-driven blends then rerun on the three parts they reach). The tree import, the sketch solver, the
 document, the evaluator and the kernel are unchanged; the importer change is in the SolidWorks-only stock handling,
 so no Inventor, Solid Edge or Fusion import can reach it.
