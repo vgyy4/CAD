@@ -4190,6 +4190,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut planes: Vec<Value> = Vec::new();
     // name -> (index into `sketches`, written plane)
     let mut sketch_by_name: HashMap<String, (usize, JsonPlane)> = HashMap::new();
+    // Reference plane id -> a point (mm) and the normal of a sketch drawn on it (round sw17:
+    // a mirror on a plane feature names the plane, whose frame its own node does not keep).
+    let mut plane_frames: HashMap<u32, (V3, V3)> = HashMap::new();
     let mut last_sketch: Option<String> = None;
     let mut solid = false;
     let mut first_solid: Option<String> = None;
@@ -4351,6 +4354,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 plane = find_plane(rf, j, b, uc)?;
             }
             let jp = json_plane(plane.as_ref());
+            if let Some(id) = plane.as_ref().and_then(|p| p.feature_id).filter(|id| *id > 4) {
+                plane_frames.entry(id).or_insert((jp.origin, cross(jp.x, jp.y).map(|v| round_to(v, 12) + 0.0)));
+            }
             let sk = sketch_json(&n.name, &geo, plane.as_ref(), &jp);
             if let Some(h) = hole.as_mut() {
                 h.sketches += 1;
@@ -5076,24 +5082,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             // `<4 f64 display extents> 01 <R 3x3> <t> 1.0` (confirmed by the box of
             // FrameBracket's Mirror1: the Right plane, x = 0). The face list in the same body
             // (the faces it was picked by) is only the fallback.
-            let mut plane: Option<(V3, V3)> = None;
-            for i in a..b.saturating_sub(129) {
-                if rf.get(i) != Some(&1) {
-                    continue;
-                }
-                let (Some(r), Some(t), Some(sc)) =
-                    (f64s_at::<9>(rf, i + 1), f64s_at::<3>(rf, i + 73), f64_at(rf, i + 97))
-                else {
-                    continue;
-                };
-                if !orthonormal(&r) || !is(sc, 1.0) {
-                    continue;
-                }
-                let fr = frame(&r, &t, None);
-                let z = [r[2], r[5], r[8]];
-                plane = Some((fr.origin.map(|v| round_to(v * 1000.0, 6) + 0.0), z.map(|v| round_to(v, 12) + 0.0)));
-                break;
-            }
+            let mut plane = frame_block(rf, a, b);
             // A mirror on a plane feature names it: the plane's id 38 bytes before the display
             // block of the plane the mirror keeps (`<tag> 00 00 <u32 id> <u32 stamp> ... c7 cf ff ff`;
             // pulley_large's Mirror1: the Front plane). Only the three standard planes are read
@@ -5108,7 +5097,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     Some(2) => Some(([0.0; 3], [0.0, 0.0, 1.0])),
                     Some(3) => Some(([0.0; 3], [0.0, 1.0, 0.0])),
                     Some(4) => Some(([0.0; 3], [1.0, 0.0, 0.0])),
-                    _ => None,
+                    // A plane feature: the frame of a sketch drawn on it (126p-visor-diy-bottom's
+                    // Lustro4). The frame blocks a plane node keeps are not read as its plane.
+                    Some(id) => plane_frames.get(&id).copied(),
+                    None => None,
                 };
             }
             // The mirror face: the first reference of the last face list of the span (the
@@ -6224,6 +6216,26 @@ fn seed_node(index: &HashMap<u32, usize>, p: u32, at: usize, is_feature: impl Fn
     let mut found = (lo + 1..hi).filter(|&k| is_feature(k));
     let one = found.next()?;
     found.next().is_none().then_some(one)
+}
+
+/// The plane of the first frame block in `[a, b)`: `01 <R 3x3> <t> 1.0`, the plane through `t`
+/// (mm) square to R's third column (a mirror's own plane, a plane feature's).
+fn frame_block(d: &[u8], a: usize, b: usize) -> Option<(V3, V3)> {
+    for i in a..b.saturating_sub(129) {
+        if d.get(i) != Some(&1) {
+            continue;
+        }
+        let (Some(r), Some(t), Some(sc)) = (f64s_at::<9>(d, i + 1), f64s_at::<3>(d, i + 73), f64_at(d, i + 97)) else {
+            continue;
+        };
+        if !orthonormal(&r) || !is(sc, 1.0) {
+            continue;
+        }
+        let fr = frame(&r, &t, None);
+        let z = [r[2], r[5], r[8]];
+        return Some((fr.origin.map(|v| round_to(v * 1000.0, 6) + 0.0), z.map(|v| round_to(v, 12) + 0.0)));
+    }
+    None
 }
 
 /// The instance count a circular pattern also keeps in its own data (round sw17): the first
