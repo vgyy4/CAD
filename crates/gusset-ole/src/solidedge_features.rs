@@ -2579,7 +2579,7 @@ fn blend(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     let round = k == Kind::Round;
     let (set, size) = if round {
         match code(3) {
-            Some(1 | 2) => {}
+            Some(1 | 2 | 17) => {}
             other => return Err(format!("round kind {other:?} (not a constant or variable radius)")),
         }
         (2, 4)

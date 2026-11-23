@@ -439,12 +439,16 @@ fn rounds_and_chamfers_pick_their_stored_edges() {
     more.extend(obj(36, 25, &small(41.0)));
     more.extend(obj(36, 26, &small(0.0005)));
     more.extend(obj(38, 27, &func("JMChamferFunction", &[&[27], &[24], &[25], &[0], &[21], &[26]])));
-    // A round of another kind (variable radius) is not read.
-    more.extend(obj(36, 28, &small(17.0)));
+    // A round of another kind is not read.
+    more.extend(obj(36, 28, &small(5.0)));
     more.extend(obj(38, 29, &func("JMRoundFunction", &[&[29], &[27], &[21], &[28], &[23]])));
+    // Kind 17 is a constant radius too (051's, 058's and 162's rounds).
+    more.extend(obj(36, 30, &small(17.0)));
+    more.extend(obj(38, 31, &func("JMRoundFunction", &[&[31], &[29], &[21], &[30], &[23]])));
     let t = feature_tree(&part_with(1.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
     let f = t["features"].as_array().unwrap();
-    assert_eq!(f.len(), 5, "{t}");
+    assert_eq!(f.len(), 6, "{t}");
+    assert_eq!((&f[5]["type"], &f[5]["radius"]), (&json!("fillet"), &json!(1.0)), "{t}");
     assert_eq!(f[2]["type"], "fillet");
     assert_eq!(f[2]["radius"], json!(1.0));
     assert_eq!(f[2]["edges"], json!([{"midpoint": [10.0, 0.0, 0.0], "path": [[9.9, 0.0, 0.0], [10.1, 0.0, 0.0]]}]));
