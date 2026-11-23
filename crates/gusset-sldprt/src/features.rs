@@ -5267,7 +5267,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             || (cls.as_deref() == Some("VarFillet_c") && constant_radius(&params(rf, a, b, nt)?))
         {
             let fillet = cls.as_deref() != Some("Chamfer_c");
-            let ps = params(rf, a, b, nt)?;
+            let mut ps = params(rf, a, b, nt)?;
+            if ps.is_empty() {
+                ps = equation_dims(c0, &n.name)?;
+            }
             let mirror_ids: HashSet<u32> = mirror_planes.keys().copied().chain(shell_ids.iter().copied()).collect();
             let pattern_ids: HashSet<u32> = pattern_steps.keys().copied().collect();
             let sel = selection(edge_records_to(rf, a, b, &mirror_ids, &pattern_ids)?, n.id);
@@ -6016,6 +6019,29 @@ fn delete_after_mirror(
         o.insert("merge".into(), json!(false));
     }
     Ok(Some((left, json!({"type": "remove_body", "name": n.name, "target": gone}))))
+}
+
+/// The dimensions `D1`, `D2` of a feature that an equation drives, from the configuration
+/// stream (round sw18): the feature stream then holds none, and `Config-<n>` writes each
+/// equation's text (`"D1@Fillet1"="steel_sides_radius"`) and after it the dimension's own
+/// parameter record (`D1`, the value in m). NEMA23_mount's Fillet1: 6 mm.
+fn equation_dims(c0: &[u8], feature: &str) -> Result<Vec<f64>, String> {
+    let mut out = Vec::new();
+    for d in ["D1", "D2"] {
+        let text = format!("\"{d}@{feature}\"=");
+        let pat: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let Some(at) = find(c0, &pat, 0, c0.len()) else { break };
+        let mut name = UTF16_MARK.to_vec();
+        name.push(2);
+        name.extend(d.encode_utf16().flat_map(u16::to_le_bytes));
+        let Some(k) = find(c0, &name, at, (at + 1200).min(c0.len())).filter(|&k| k >= 2) else { break };
+        let tag = [c0.get(k - 2).copied().unwrap_or(0), c0.get(k - 1).copied().unwrap_or(0)];
+        let Some(v) = named_params(c0, k - 2, (k + 64).min(c0.len()), tag)?.into_iter().find(|(nm, _)| nm == d) else {
+            break;
+        };
+        out.push(v.1);
+    }
+    Ok(out)
 }
 
 /// A thread feature's library file name, in UTF-16 (`...\\thread profiles\\Metric Die.SLDLFP`).
@@ -7611,6 +7637,22 @@ mod pattern_tests {
         let mut closed = path.clone();
         closed["curves"][0]["end"] = json!("p4");
         assert!(circle_at_path_start(&closed, 7.0, "S").is_none());
+    }
+
+    #[test]
+    fn an_equation_in_the_configuration_stream_gives_a_dimension() {
+        // NEMA23_mount's Fillet1 (round sw18): the equation's text, then the D1 record (6 mm).
+        let mut c = vec![0u8; 10];
+        let text = "\"D1@Fillet1\"=\"steel_sides_radius\"";
+        c.extend([0xff, 0xfe, 0xff, text.encode_utf16().count() as u8]);
+        c.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        c.extend([0u8; 40]);
+        c.extend([0x79, 0x80, 0xff, 0xfe, 0xff, 2, b'D', 0, b'1', 0]);
+        c.extend([0, 0, 0, 0, 0, 0, 0, 0x40, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0]);
+        c.extend(0.006f64.to_le_bytes());
+        c.extend([0u8; 16]);
+        assert_eq!(equation_dims(&c, "Fillet1").unwrap(), [0.006]);
+        assert!(equation_dims(&c, "Fillet2").unwrap().is_empty());
     }
 
     #[test]
