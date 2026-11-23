@@ -3865,6 +3865,9 @@ struct HoleState {
     positions: Vec<V3>,
     face: Option<(V3, V3)>,
     target: Option<String>,
+    /// The section sketch's origin and the way its axis line runs (into the material): the
+    /// position and direction of a hole placed by a 3D sketch point (round sw17).
+    section: Option<(V3, V3)>,
 }
 
 fn json_v3(v: V3) -> Value {
@@ -3872,7 +3875,16 @@ fn json_v3(v: V3) -> Value {
 }
 
 /// `swfeat.finish_hole`: the hole's parameters by name (values in metres and radians).
-fn finish_hole(h: HoleState) -> Value {
+fn finish_hole(mut h: HoleState) -> Value {
+    // Placed by a 3D sketch (no 2D placement sketch gave centres): the hole's section sketch
+    // is drawn at the position, its axis line running into the material (L Bracket's M5
+    // Clearance Hole2 at (30, 165, 0) along +z; Movable Jaw's dowel hole down from its top).
+    if h.positions.is_empty()
+        && let Some((o, dir)) = h.section
+    {
+        h.positions = vec![o];
+        h.face = Some((o, dir.map(|v| round_to(-v, 12) + 0.0)));
+    }
     let ps: HashMap<&str, f64> = h.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
     let get = |names: &[&str]| names.iter().find_map(|k| ps.get(k).copied());
     let nonzero = |v: Option<f64>| v.filter(|x| *x != 0.0);
@@ -4289,7 +4301,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     for (ni, n) in nodes.iter().enumerate() {
         let mut cls = n.cls.clone();
         let (a, b) = span(n);
-        if hole.as_ref().is_some_and(|h| cls.as_deref() != Some("moProfileFeature_c") || h.sketches >= 2)
+        let sketchlike = matches!(cls.as_deref(), Some("moProfileFeature_c" | "mo3DProfileFeature_c"));
+        if hole.as_ref().is_some_and(|h| !sketchlike || h.sketches >= 2)
             && let Some(h) = hole.take()
         {
             let at = h.at;
@@ -4302,9 +4315,19 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         if n.suppressed && cls.as_deref() != Some("moProfileFeature_c") {
             continue;
         }
+        // A hole placed by a 3D sketch: that sketch stands for the 2D placement sketch.
+        if cls.as_deref() == Some("mo3DProfileFeature_c")
+            && let Some(h) = hole.as_mut()
+        {
+            h.sketches += 1;
+            continue;
+        }
         if cls.as_deref() == Some("moHoleWzd_c") {
             let mut j = ni + 1;
-            while nodes.get(j).is_some_and(|m| m.cls.as_deref() == Some("moProfileFeature_c")) {
+            while nodes
+                .get(j)
+                .is_some_and(|m| matches!(m.cls.as_deref(), Some("moProfileFeature_c" | "mo3DProfileFeature_c")))
+            {
                 j += 1;
             }
             let hb = nodes.get(j).map_or(rf.len(), |m| m.start);
@@ -4316,6 +4339,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 positions: Vec::new(),
                 face: None,
                 target: if solid { first_solid.clone() } else { None },
+                section: None,
             });
             feats.push(Value::Null);
             continue;
@@ -4369,6 +4393,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     .filter(|p| p.alone == 1 && p.id != 0xffff_ffff && !p.ext)
                     .copied()
                     .collect();
+                let no_centres = centres.is_empty();
                 if !centres.is_empty() && h.positions.is_empty() && plane.is_some() {
                     let mut seen: Vec<V3> = Vec::new();
                     for q in centres {
@@ -4386,6 +4411,20 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     let nrm = cross(jp.x, jp.y).map(|v| round_to(v, 12) + 0.0);
                     h.face = seen.first().map(|p| (*p, nrm));
                     h.positions = seen;
+                }
+                // The section: a drawn line from the sketch origin is the hole's axis.
+                if no_centres && plane.is_some() && h.section.is_none() {
+                    let axis = geo.segs.iter().filter(|s| s.kind == SegKind::Line && !s.construction).find_map(|s| {
+                        let (a, b) = (point(&geo.pts, s.s)?, point(&geo.pts, s.e)?);
+                        (a.x.abs() < 1e-12 && a.y.abs() < 1e-12 && libm::hypot(b.x, b.y) > 1e-9).then_some(b)
+                    });
+                    if let Some(b) = axis {
+                        let d = [0, 1, 2].map(|i| b.x * jp.x[i] + b.y * jp.y[i]);
+                        let len = libm::sqrt(dot(d, d));
+                        if len > 1e-12 {
+                            h.section = Some((jp.origin, d.map(|v| round_to(v / len, 12) + 0.0)));
+                        }
+                    }
                 }
                 planes.push(sk.get("plane").cloned().unwrap_or(Value::Null));
                 feats.push(sk);
