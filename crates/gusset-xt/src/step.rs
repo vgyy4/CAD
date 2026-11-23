@@ -390,6 +390,20 @@ impl Writer<'_> {
                 if g.type_name(base) == Some("SPUN_SURF") {
                     d = -d;
                 }
+                // OCCT drops an offset of a B-surface that is only C0 in its parameters (054's
+                // thin-walled pipes round two rational half circles): a tube's offset is written
+                // as the tube scaled, in the basis's parameters as written, where it lies within
+                // 2e-7 of the basis's size of the true offset (054's within 0.025 um).
+                if g.type_name(base) == Some("B_SURFACE")
+                    && let Some(n) = geom::surface_rc(g, g.ptr(base, "nurbs"))
+                    && crate::offset::is_c0(&n)
+                {
+                    let (lo, hi) = n.poles.iter().fold(([f64::MAX; 3], [f64::MIN; 3]), |b, p| geom::grow(b, *p));
+                    let size = geom::norm(geom::sub(hi, lo));
+                    if let Some(t) = crate::offset::tube(&n, d / self.mm(), 2e-7 * size) {
+                        return Some((self.bspline_surface(&t), flipped));
+                    }
+                }
                 Some((self.add(&format!("OFFSET_SURFACE('',#{b},{},.F.)", real(d))), flipped))
             }
             "BLENDED_EDGE" => {
