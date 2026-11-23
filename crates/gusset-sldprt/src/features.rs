@@ -742,13 +742,17 @@ fn child_ref(d: &[u8], e: usize) -> Option<u16> {
 /// The sketch an extrude or revolve uses (round sw7). Normally the last sketch read; a child
 /// index already seen names the same sketch; an index below one seen names the one sketch not yet
 /// used between the sketches of the nearest indices seen (gear box side1's Boss-Extrude5 uses
-/// Sketch5, read before the Sketch10 that Cut-Extrude3 used).
+/// Sketch5, read before the Sketch10 that Cut-Extrude3 used). Where more than one sketch is
+/// free there, the sketch whose own entity references carry the index (`by_index`, round sw17:
+/// shaft_stage_2's Cut-Extrude2 refers to 0x25d, which Sketch8's edges write as their owner; the
+/// unused Sketch7 lies between it and the boss's sketch too) picks among them.
 fn feature_sketch(
     child: Option<u16>,
     last: &Option<String>,
     order: &[String],
     seen: &[(u16, String)],
     used: &HashSet<String>,
+    by_index: impl FnOnce(u16) -> Option<String>,
 ) -> Option<String> {
     let Some(r) = child else { return last.clone() };
     if let Some((_, s)) = seen.iter().find(|(k, _)| *k == r) {
@@ -763,8 +767,21 @@ fn feature_sketch(
     let free: Vec<&String> = order.get(from..hi).unwrap_or_default().iter().filter(|s| !used.contains(*s)).collect();
     match free.as_slice() {
         [one] => Some((*one).clone()),
-        _ => last.clone(),
+        [] => last.clone(),
+        _ => by_index(r).filter(|s| free.contains(&s)).or_else(|| last.clone()),
     }
+}
+
+/// The node an archive index names, by [`node_indices`] (computed once, on first use).
+fn node_at_index(
+    cache: &mut Option<HashMap<u32, usize>>,
+    d: &[u8],
+    nodes: &[Node],
+    span: &impl Fn(&Node) -> (usize, usize),
+    r: u16,
+) -> Option<String> {
+    let index = cache.get_or_insert_with(|| node_indices(d, nodes, span));
+    index.get(&u32::from(r)).and_then(|&k| nodes.get(k)).map(|m| m.name.clone())
 }
 
 /// The first node block (either version) in `d[from..to]`.
@@ -4339,7 +4356,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             }
         };
         if is_in(&cls, &EXTRUDE) {
-            let picked = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used);
+            let picked = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used, |r| {
+                node_at_index(&mut node_index, rf, &nodes, &span, r)
+            });
             if let (Some(r), Some(sk)) = (n.child, &picked) {
                 sketch_seen.push((r, sk.clone()));
                 sketch_used.insert(sk.clone());
@@ -4775,7 +4794,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 first_solid = Some(n.name.clone());
             }
         } else if is_in(&cls, &REVOLVE) {
-            let picked = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used);
+            let picked = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used, |r| {
+                node_at_index(&mut node_index, rf, &nodes, &span, r)
+            });
             if let (Some(r), Some(sk)) = (n.child, &picked) {
                 sketch_seen.push((r, sk.clone()));
                 sketch_used.insert(sk.clone());
@@ -5470,7 +5491,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         } else if cls.as_deref() == Some("moHelix_c") {
             // A helix is a curve: it adds nothing to the part until a sweep runs along it.
             // Its base sketch, a circle, is its child as an extrude's sketch is.
-            let base = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used);
+            let base = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used, |r| {
+                node_at_index(&mut node_index, rf, &nodes, &span, r)
+            });
             if let (Some(r), Some(sk)) = (n.child, &base) {
                 sketch_seen.push((r, sk.clone()));
                 sketch_used.insert(sk.clone());
@@ -7001,15 +7024,15 @@ mod end_face_tests {
         let mut seen = vec![(0xd8u16, "Sketch1".to_string()), (0x3d2, "Sketch3".to_string())];
         let mut used: HashSet<String> = seen.iter().map(|(_, s)| s.clone()).collect();
         // Between Sketch1's index and Sketch3's: the one sketch not yet used.
-        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used).as_deref(), Some("Sketch2"));
+        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used, |_| None).as_deref(), Some("Sketch2"));
         // An index seen names its sketch again; a larger one, or none, the last sketch.
-        assert_eq!(feature_sketch(Some(0xd8), &last, &order, &seen, &used).as_deref(), Some("Sketch1"));
-        assert_eq!(feature_sketch(Some(0x500), &last, &order, &seen, &used).as_deref(), Some("Sketch3"));
-        assert_eq!(feature_sketch(None, &last, &order, &seen, &used).as_deref(), Some("Sketch3"));
+        assert_eq!(feature_sketch(Some(0xd8), &last, &order, &seen, &used, |_| None).as_deref(), Some("Sketch1"));
+        assert_eq!(feature_sketch(Some(0x500), &last, &order, &seen, &used, |_| None).as_deref(), Some("Sketch3"));
+        assert_eq!(feature_sketch(None, &last, &order, &seen, &used, |_| None).as_deref(), Some("Sketch3"));
         // Two free sketches in between: the last sketch, as before.
         seen.retain(|(_, s)| s != "Sketch1");
         used.remove("Sketch1");
-        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used).as_deref(), Some("Sketch3"));
+        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used, |_| None).as_deref(), Some("Sketch3"));
     }
 
     #[test]
