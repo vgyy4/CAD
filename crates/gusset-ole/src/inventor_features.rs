@@ -926,6 +926,89 @@ impl Reader<'_> {
         }
     }
 
+    /// A profile of sketch text (note AX): the glyphs are not curves of the sketch, so a loop of
+    /// the feature (read from the history body) runs wholly off the sketch's curves. The loops
+    /// then make a sketch of their own on the same plane, named `name`: straight edges as lines,
+    /// circular ones as arcs; with the picks of its regions. `None` when every loop has a corner
+    /// on the sketch's curves, or an edge is neither straight nor circular.
+    fn text_profile(&self, sk: &Sketch, lst: usize, name: &str) -> Option<(Value, Value)> {
+        if sk.before.is_some() {
+            return None;
+        }
+        let ac = self.history()?;
+        let (o, x, y) = ([sk.m[3], sk.m[7], sk.m[11]], [sk.m[0], sk.m[4], sk.m[8]], [sk.m[1], sk.m[5], sk.m[9]]);
+        let to2 = |p: V3| {
+            let q = sub3(p, o);
+            (dot(q, x) * CM, dot(q, y) * CM)
+        };
+        let mut loops: Vec<Vec<Vec<P2>>> = Vec::new();
+        for t in self.loop_tags(lst)? {
+            for l in ac.loop_edges_of_body(t)? {
+                loops.push(l.into_iter().map(|e| e.into_iter().map(to2).collect()).collect());
+            }
+        }
+        let polys = sk.polys();
+        let off = |q: P2| polys.iter().all(|c| crate::inventor_profile::dist_to(c, q) > TEXT_OFF);
+        let corners = |l: &Vec<Vec<P2>>| l.iter().filter_map(|e| e.first().copied()).collect::<Vec<P2>>();
+        if !loops.iter().any(|l| !l.is_empty() && corners(l).into_iter().all(off)) {
+            return None;
+        }
+        let mut pts: Vec<P2> = Vec::new();
+        let id = |q: P2, pts: &mut Vec<P2>| {
+            let k = pts.iter().position(|p| libm::hypot(p.0 - q.0, p.1 - q.1) < 1e-9).unwrap_or_else(|| {
+                pts.push(q);
+                pts.len() - 1
+            });
+            format!("t{k}")
+        };
+        let mut curves = Vec::new();
+        let mut shapes: Vec<Poly> = Vec::new();
+        for e in loops.iter().flatten() {
+            let (&a, &b) = (e.first()?, e.last()?);
+            let n = curves.len();
+            if e.len() == 2 {
+                curves.push(
+                    json!({"id": format!("tl{n}"), "type": "line", "start": id(a, &mut pts), "end": id(b, &mut pts)}),
+                );
+                shapes.push(Poly::Line(a, b));
+                continue;
+            }
+            // A circular edge: the circle through three of its samples holds every sample (a
+            // whole circle starts and ends at one point).
+            let m = *e.get(e.len() / 2)?;
+            let c = circle_through(a, *e.get(e.len() / 3)?, *e.get(2 * e.len() / 3)?)?;
+            let r = libm::hypot(a.0 - c.0, a.1 - c.1);
+            if e.iter().any(|q| (libm::hypot(q.0 - c.0, q.1 - c.1) - r).abs() > 1e-7 * r.max(1.0)) {
+                return None;
+            }
+            // Counter-clockwise from start to end in the sketch: the middle sample on the left.
+            let ccw = (m.0 - a.0) * (b.1 - a.1) - (m.1 - a.1) * (b.0 - a.0) > 0.0;
+            let (s0, s1) = if ccw { (a, b) } else { (b, a) };
+            if libm::hypot(a.0 - b.0, a.1 - b.1) < 1e-9 {
+                curves.push(
+                    json!({"id": format!("tc{n}"), "type": "circle", "center": id(c, &mut pts), "radius": rnd(r)}),
+                );
+                shapes.push(Poly::Circle(c, r));
+            } else {
+                curves.push(json!({"id": format!("ta{n}"), "type": "arc", "center": id(c, &mut pts),
+                                   "start": id(s0, &mut pts), "end": id(s1, &mut pts)}));
+                shapes.push(Poly::Arc { c, s: s0, e: s1 });
+            }
+        }
+        let flat: Vec<Vec<P2>> = loops.iter().map(|l| l.iter().flatten().copied().collect()).collect();
+        let picks = picks(&shapes, &[flat])?;
+        if picks.is_empty() {
+            return None;
+        }
+        let points: Vec<Value> =
+            pts.iter().enumerate().map(|(k, q)| json!({"id": format!("t{k}"), "x": rnd(q.0), "y": rnd(q.1)})).collect();
+        let (o, x, y) = frame(&sk.m);
+        let sketch = json!({"type": "sketch", "name": name,
+                            "plane": {"origin": arr(o), "x_axis": arr(x), "y_axis": arr(y)},
+                            "points": points, "curves": curves});
+        Some((sketch, Value::Array(picks.into_iter().map(|(a, b)| json!({"point": [a, b]})).collect())))
+    }
+
     /// How far an extrude that ends on a face (extent 4, to the next face, or 7, to a chosen
     /// face) reached, in mm along its sketch's normal: the face is named through the naming
     /// records, so the reach is measured instead on the faces the feature made in the result
@@ -1042,6 +1125,22 @@ struct HoleInfo {
     csink: Option<(f64, f64)>,
 }
 
+/// A corner of a profile loop this far (mm) from every curve of its sketch is off the sketch.
+const TEXT_OFF: f64 = 1e-4;
+
+/// The centre of the circle through three points, if they are not on a line.
+fn circle_through(a: P2, b: P2, c: P2) -> Option<P2> {
+    let d = 2.0 * (a.0 * (b.1 - c.1) + b.0 * (c.1 - a.1) + c.0 * (a.1 - b.1));
+    if d.abs() < 1e-12 {
+        return None;
+    }
+    let (a2, b2, c2) = (a.0 * a.0 + a.1 * a.1, b.0 * b.0 + b.1 * b.1, c.0 * c.0 + c.1 * c.1);
+    Some((
+        (a2 * (b.1 - c.1) + b2 * (c.1 - a.1) + c2 * (a.1 - b.1)) / d,
+        (a2 * (c.0 - b.0) + b2 * (a.0 - c.0) + c2 * (b.0 - a.0)) / d,
+    ))
+}
+
 /// Everything decoded so far.
 struct State {
     out: Vec<Value>,
@@ -1084,6 +1183,11 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     }
     let mut j = json!({"type": if typ == FeatType::Extrude {"extrude"} else {"revolve"}, "name": name,
                        "sketch": sketch.name, "profiles": r.profiles(&sketch, lst), "operation": op});
+    let text = r.text_profile(&sketch, lst, &format!("{}_text_{name}", sketch.name));
+    if let Some((_, picks)) = &text {
+        put(&mut j, "sketch", json!(format!("{}_text_{name}", sketch.name)));
+        put(&mut j, "profiles", picks.clone());
+    }
     if op != "new" {
         put(&mut j, "target", changed_bodies(r, st, f, op == "cut")?);
     } else if let Some(b) = own {
@@ -1248,6 +1352,9 @@ fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     if !st.done.contains_key(&sk) {
         st.out.push(sketch.json());
         st.done.insert(sk, ());
+    }
+    if let Some((text_sketch, _)) = text {
+        st.out.push(text_sketch);
     }
     if let Some(moved) = start {
         st.out.push(moved);
@@ -2728,11 +2835,16 @@ fn emboss(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Str
     // along it (slot 3 does not change the side of one from the face).
     let d = depth * along.signum() * if op == "join" { -1.0 } else { 1.0 };
     let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
-    let j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": r.profiles(&sketch, lst),
+    let mut j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": r.profiles(&sketch, lst),
                    "operation": op, "target": fb, "distance": rnd(d), "symmetric": false});
     if !st.done.contains_key(&sk) {
         st.out.push(sketch.json());
         st.done.insert(sk, ());
+    }
+    if let Some((text_sketch, picks)) = r.text_profile(&sketch, lst, &format!("{}_text_{name}", sketch.name)) {
+        put(&mut j, "sketch", json!(format!("{}_text_{name}", sketch.name)));
+        put(&mut j, "profiles", picks);
+        st.out.push(text_sketch);
     }
     st.out.push(j);
     Ok(())

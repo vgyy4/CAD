@@ -118,6 +118,31 @@ pub(crate) fn bspline_points(degree: u32, knots: &[f64], poles: &[P2], weights: 
     (out.len() >= 2).then_some(out)
 }
 
+/// The distance (mm) from `p` to the curve `c`.
+pub(crate) fn dist_to(c: &Poly, p: P2) -> f64 {
+    let seg = |a: P2, b: P2| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 > 0.0 { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        dist(p, (a.0 + t * dx, a.1 + t * dy))
+    };
+    match *c {
+        Poly::Line(a, b) => seg(a, b),
+        Poly::Circle(c, r) => (dist(p, c) - r).abs(),
+        Poly::Arc { c, s, e } => {
+            let a = |q: P2| libm::atan2(q.1 - c.1, q.0 - c.0);
+            let tau = 2.0 * std::f64::consts::PI;
+            let span = (a(e) - a(s)).rem_euclid(tau);
+            if (a(p) - a(s)).rem_euclid(tau) <= span {
+                (dist(p, c) - dist(s, c)).abs()
+            } else {
+                dist(p, s).min(dist(p, e))
+            }
+        }
+        _ => sample(c).windows(2).filter_map(|w| Some(seg(*w.first()?, *w.get(1)?))).fold(f64::INFINITY, f64::min),
+    }
+}
+
 fn inside(poly: &[P2], p: P2) -> bool {
     let mut c = false;
     for (i, a) in poly.iter().enumerate() {
@@ -442,6 +467,17 @@ mod tests {
         let p = picks(&curves, &[vec![outer.clone()], vec![outer]]).unwrap();
         assert_eq!(p.len(), 1, "{p:?}");
         assert!(dist(p[0], (20.0, 30.0)) > 1.5, "{p:?}");
+    }
+
+    /// Distances to a line, a circle and an arc (inside and past its span).
+    #[test]
+    fn distances_to_curves() {
+        assert!((dist_to(&Poly::Line((0.0, 0.0), (10.0, 0.0)), (5.0, 2.0)) - 2.0).abs() < 1e-12);
+        assert!((dist_to(&Poly::Line((0.0, 0.0), (10.0, 0.0)), (13.0, 4.0)) - 5.0).abs() < 1e-12);
+        assert!((dist_to(&Poly::Circle((0.0, 0.0), 2.0), (0.0, 3.0)) - 1.0).abs() < 1e-12);
+        let quarter = Poly::Arc { c: (0.0, 0.0), s: (1.0, 0.0), e: (0.0, 1.0) };
+        assert!((dist_to(&quarter, (2.0, 2.0)) - (8.0f64.sqrt() - 1.0)).abs() < 1e-12);
+        assert!((dist_to(&quarter, (0.0, -1.0)) - 2.0f64.sqrt()).abs() < 1e-12);
     }
 
     /// De Boor on a quadratic Bezier and a rational quarter circle.

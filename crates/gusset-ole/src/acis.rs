@@ -325,6 +325,26 @@ impl Acis {
     /// Every loop (face loop or wire) of the body with this tag, as points (file units).
     /// `None`: no such body, or an edge that cannot be sampled.
     pub(crate) fn loops_of_body(&self, tag: i64) -> Option<Vec<Vec<V3>>> {
+        let loops = self.loop_edges_of_body(tag)?;
+        Some(
+            loops
+                .into_iter()
+                .map(|edges| {
+                    let mut pts: Vec<V3> = Vec::new();
+                    for e in edges {
+                        let skip = usize::from(!pts.is_empty());
+                        pts.extend(e.into_iter().skip(skip));
+                    }
+                    pts
+                })
+                .collect(),
+        )
+    }
+
+    /// Every loop of the body with this tag as its edges in loop order, each edge's points
+    /// running along the loop (a straight edge its two ends, an arc its samples); file units.
+    /// `None` as for [`Self::loops_of_body`].
+    pub(crate) fn loop_edges_of_body(&self, tag: i64) -> Option<Vec<Vec<Vec<V3>>>> {
         let b = *self.bodies.get(&tag)?;
         let mut seen = vec![false; self.recs.len()];
         let mut st = vec![b];
@@ -364,33 +384,29 @@ impl Acis {
                 cur = nu;
                 order.push(cur);
             }
-            let mut segs: Vec<Vec<V3>> = Vec::new();
+            let mut edges: Vec<Vec<V3>> = Vec::new();
             for ce in order {
                 let Some(edge) = self.recs.get(ce)?.refs.iter().copied().find(|&x| self.is(x, "edge")) else {
                     continue;
                 };
-                segs.push(self.edge_samples(edge)?);
-            }
-            let mut pts: Vec<V3> = Vec::new();
-            let first_len = segs.first().map_or(0, Vec::len);
-            for mut sm in segs {
-                if pts.is_empty() {
-                    pts = sm;
-                    continue;
-                }
+                let mut sm = self.edge_samples(edge)?;
                 let (s0, s1) = (*sm.first()?, *sm.last()?);
-                if pts.len() == first_len {
-                    let (p0, pl) = (*pts.first()?, *pts.last()?);
+                if edges.len() == 1
+                    && let Some(first) = edges.first_mut()
+                {
+                    let (p0, pl) = (*first.first()?, *first.last()?);
                     if dist(p0, s0).min(dist(p0, s1)) < dist(pl, s0).min(dist(pl, s1)) {
-                        pts.reverse();
+                        first.reverse();
                     }
                 }
-                if dist(*pts.last()?, s0) > dist(*pts.last()?, s1) {
+                if let Some(last) = edges.last().and_then(|e| e.last().copied())
+                    && dist(last, s0) > dist(last, s1)
+                {
                     sm.reverse();
                 }
-                pts.extend(sm.into_iter().skip(1));
+                edges.push(sm);
             }
-            loops.push(pts);
+            loops.push(edges);
         }
         Some(loops)
     }
