@@ -138,33 +138,59 @@ fn round6(x: f64) -> f64 {
 
 /// One point (mm) inside each region of the sketch that an odd number of the feature's loops
 /// surround (`bodies`: the loops of each body the history blob keeps for it; mostly one wire per
-/// loop, so the count runs over all of them). When that leaves nothing (one loop listed twice,
-/// note AR), a region is kept that lies in one of the bodies (an odd number of its own loops).
-/// `None` when there is nothing to draw.
+/// loop, so the count runs over all of them). A region inside two bodies whose loops cross (each
+/// runs partly inside and partly outside the other: a slot drawn as a rectangle and its two end
+/// circles, each picked whole) is kept too: the picked regions overlap there, they do not make
+/// a hole (a loop wholly inside another is a hole). When that leaves nothing (one loop listed
+/// twice, note AR), a region is kept that lies in one of the bodies (an odd number of its own
+/// loops). `None` when there is nothing to draw.
 pub(crate) fn picks(curves: &[Poly], bodies: &[Vec<Vec<P2>>]) -> Option<Vec<P2>> {
-    let all: Vec<Vec<P2>> = bodies.iter().flatten().cloned().collect();
-    let res = picks_by(curves, std::slice::from_ref(&all))?;
+    let all: Vec<&Vec<P2>> = bodies.iter().flatten().collect();
+    let odd = |ls: &[&Vec<P2>], p: P2| ls.iter().filter(|l| l.len() > 2 && inside(l, p)).count() % 2 == 1;
+    let own: Vec<Vec<&Vec<P2>>> = bodies.iter().map(|b| b.iter().collect()).collect();
+    let crossing: Vec<(usize, usize)> = (0..bodies.len())
+        .flat_map(|i| (i + 1..bodies.len()).map(move |j| (i, j)))
+        .filter(|&(i, j)| {
+            let (Some(a), Some(b)) = (bodies.get(i), bodies.get(j)) else { return false };
+            a.iter().any(|la| b.iter().any(|lb| crosses(la, lb) || crosses(lb, la)))
+        })
+        .collect();
+    let keep = |p: P2| {
+        odd(&all, p) || {
+            let ins: Vec<usize> = own.iter().enumerate().filter(|(_, b)| odd(b, p)).map(|(i, _)| i).collect();
+            crossing.iter().any(|(i, j)| ins.contains(i) && ins.contains(j))
+        }
+    };
+    let res = picks_by(curves, &all, &keep)?;
     if !res.is_empty() || bodies.len() < 2 {
         return Some(res);
     }
-    picks_by(curves, bodies)
+    picks_by(curves, &all, &|p| own.iter().any(|b| odd(b, p)))
 }
 
-/// [`picks`] with a region kept when it lies in one of `bodies`. A loop that no point falls in
+/// Does loop `a` run partly inside and partly outside loop `b`?
+fn crosses(a: &[P2], b: &[P2]) -> bool {
+    if a.len() < 3 || b.len() < 3 {
+        return false;
+    }
+    let n = a.iter().filter(|&&p| inside(b, p)).count();
+    n > 0 && n < a.len()
+}
+
+/// [`picks`] with a region kept when `keep` holds at its point. A loop that no point falls in
 /// after the pass over the whole sketch (a small hole far from the rest: its inside is under a
 /// few cells) is looked at again on a grid over its own box.
-fn picks_by(curves: &[Poly], bodies: &[Vec<Vec<P2>>]) -> Option<Vec<P2>> {
+fn picks_by(curves: &[Poly], loops: &[&Vec<P2>], keep: &dyn Fn(P2) -> bool) -> Option<Vec<P2>> {
     let polys: Vec<Vec<P2>> = curves.iter().map(sample).collect();
-    let loops = || bodies.iter().flatten();
-    let all = || polys.iter().flatten().chain(loops().flatten()).copied();
+    let all = || polys.iter().flatten().chain(loops.iter().copied().flatten()).copied();
     all().next()?;
-    let mut res = picks_in(&polys, bodies, extent(all())?)?;
-    for l in loops() {
+    let mut res = picks_in(&polys, keep, extent(all())?)?;
+    for l in loops {
         if l.len() < 3 || res.iter().any(|&p| inside(l, p)) {
             continue;
         }
         let Some(b) = extent(l.iter().copied()) else { continue };
-        for p in picks_in(&polys, bodies, b).unwrap_or_default() {
+        for p in picks_in(&polys, keep, b).unwrap_or_default() {
             if !res.contains(&p) {
                 res.push(p);
             }
@@ -205,7 +231,7 @@ fn extent(pts: impl Iterator<Item = P2> + Clone) -> Option<[f64; 4]> {
 }
 
 /// [`picks`] on a grid over the box `b` (with a margin): curves outside it are left out.
-fn picks_in(polys: &[Vec<P2>], bodies: &[Vec<Vec<P2>>], b: [f64; 4]) -> Option<Vec<P2>> {
+fn picks_in(polys: &[Vec<P2>], keep: &dyn Fn(P2) -> bool, b: [f64; 4]) -> Option<Vec<P2>> {
     let [x0, x1, y0, y1] = b;
     let span = (x1 - x0).max(y1 - y0).max(1e-6);
     let x0 = x0 - span * 0.02;
@@ -308,8 +334,7 @@ fn picks_in(polys: &[Vec<P2>], bodies: &[Vec<Vec<P2>>], b: [f64; 4]) -> Option<V
             }
         }
         let p = (x0 + ((best % nx) as f64 + 0.5) * h, y0 + ((best / nx) as f64 + 0.5) * h);
-        let odd = |b: &Vec<Vec<P2>>| b.iter().filter(|l| l.len() > 2 && inside(l, p)).count() % 2 == 1;
-        if bodies.iter().any(odd) {
+        if keep(p) {
             res.push((round6(p.0), round6(p.1)));
         }
     }

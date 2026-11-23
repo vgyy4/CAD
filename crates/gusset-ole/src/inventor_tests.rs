@@ -1060,6 +1060,23 @@ mod sab {
         assert!(picks(&[], &[]).is_none());
     }
 
+    /// A slot drawn as a rectangle and a circle at each end, the three picked as one body each:
+    /// the bodies' loops cross, so the regions where they overlap are kept (no hole there).
+    #[test]
+    fn picks_keep_the_overlap_of_bodies_whose_loops_cross() {
+        let rect = vec![(0.0, -2.0), (20.0, -2.0), (20.0, 2.0), (0.0, 2.0)];
+        let curves = vec![
+            Poly::Line((0.0, -2.0), (20.0, -2.0)),
+            Poly::Line((20.0, -2.0), (20.0, 2.0)),
+            Poly::Line((20.0, 2.0), (0.0, 2.0)),
+            Poly::Line((0.0, 2.0), (0.0, -2.0)),
+            Poly::Circle((0.0, 0.0), 2.0),
+            Poly::Circle((20.0, 0.0), 2.0),
+        ];
+        let p = picks(&curves, &[vec![circle((0.0, 0.0), 2.0)], vec![circle((20.0, 0.0), 2.0)], vec![rect]]).unwrap();
+        assert_eq!(p.len(), 5, "{p:?}");
+    }
+
     #[test]
     fn a_tilted_ellipse_is_a_region_inside_its_loop() {
         let curves = vec![Poly::Ellipse { c: (5.0, 3.0), major: (0.6, 0.8), a: 4.0, b: 2.0 }];
