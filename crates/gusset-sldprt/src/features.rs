@@ -1407,7 +1407,7 @@ fn continues_sides<'a>(
         let span = |o: f64, d: f64, sym: bool| {
             if sym { (o - d.abs() / 2.0, o + d.abs() / 2.0) } else { (o + d.min(0.0), o + d.max(0.0)) }
         };
-        let (f0, f1) = if f.through { (f64::NEG_INFINITY, f64::INFINITY) } else { span(0.0, f.distance, f.symmetric) };
+        let (f0, f1) = if f.through { (f64::NEG_INFINITY, f64::INFINITY) } else { side_span(f) };
         let (g0, g1) = span(dot(sub(jp.origin, f.plane.origin), nf), dist * dot(n, nf), symmetric);
         if g0 > f1 + 1e-6 || f0 > g1 + 1e-6 {
             return false;
@@ -2652,6 +2652,9 @@ struct Swept {
     sketch: usize,
     plane: JsonPlane,
     distance: f64,
+    /// Where its start cap lies (mm along the normal, signed as `distance`): 0 but for a
+    /// second direction (`distance2`).
+    start: f64,
     symmetric: bool,
     through: bool,
     /// A cut: its sides face into the profile.
@@ -2685,8 +2688,19 @@ fn cap_height(f: &Swept, cap: u32) -> f64 {
     } else if cap == 1 {
         d
     } else {
-        0.0
+        f.start
     }
+}
+
+/// Halfway between the caps (mm along the normal): where a point of a side is taken.
+fn mid_height(f: &Swept) -> f64 {
+    f64::midpoint(cap_height(f, 0), cap_height(f, 1))
+}
+
+/// The heights the sides span (mm along the normal), lowest first.
+fn side_span(f: &Swept) -> (f64, f64) {
+    let (a, b) = (cap_height(f, 0), cap_height(f, 1));
+    (a.min(b), a.max(b))
 }
 
 /// The face an up-to-surface or offset-from-surface end (`swEndConditions_e` 4 and 5) names: the
@@ -2781,11 +2795,7 @@ fn on_face(region: &Region, sketches: &[Geometry], q: V3) -> bool {
         }
         Region::Wall(_, a, b) => {
             let h = dot(d, normal(f));
-            let (lo, hi) = if f.symmetric {
-                (-f.distance.abs() / 2.0, f.distance.abs() / 2.0)
-            } else {
-                (f.distance.min(0.0), f.distance.max(0.0))
-            };
+            let (lo, hi) = side_span(f);
             h >= lo - 0.01 && h <= hi + 0.01 && dist_to_segment((u, v), *a, *b) < 1e-5
         }
         Region::Curved => true,
@@ -2912,7 +2922,7 @@ fn face_pick(
     if s.kind == SegKind::Arc {
         let pts = seg_uv(g, s)?;
         let &(u, v) = pts.get(pts.len() / 2)?;
-        let p = lift(f, u * 1000.0, v * 1000.0, f.distance / 2.0);
+        let p = lift(f, u * 1000.0, v * 1000.0, mid_height(f));
         return Some((p, unit(side_out(f, g, s, p)?), Region::Curved));
     }
     let (mid, out, _) = side(s)?;
@@ -2920,7 +2930,7 @@ fn face_pick(
     let (x, y) = (f.plane.x, f.plane.y);
     let nrm = [0, 1, 2].map(|i| out.0 * x.get(i).copied().unwrap_or(0.0) + out.1 * y.get(i).copied().unwrap_or(0.0));
     Some((
-        lift(f, mid.0 * 1000.0, mid.1 * 1000.0, f.distance / 2.0),
+        lift(f, mid.0 * 1000.0, mid.1 * 1000.0, mid_height(f)),
         unit(nrm),
         Region::Wall(*f, (pa.x, pa.y), (pb.x, pb.y)),
     ))
@@ -4696,6 +4706,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         sketch: i,
                         plane,
                         distance: dist,
+                        // A second direction starts the sides on the other side of the sketch
+                        // (round sw16: 6mm Motor Holder's Boss-Extrude3, 10 mm one way and 2 mm the
+                        // other; Fillet1 rounds its start cap at 2 mm, not the sketch plane).
+                        start: js.get("distance2").and_then(Value::as_f64).unwrap_or(0.0),
                         symmetric,
                         through: through_all,
                         cut: op == "cut" && !flip,
@@ -4952,8 +4966,15 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         (None, None) => None,
                     };
                     if let Some((p, q)) = ends {
-                        let on =
-                            Swept { sketch: i, plane, distance: 0.0, symmetric: false, through: false, cut: false };
+                        let on = Swept {
+                            sketch: i,
+                            plane,
+                            distance: 0.0,
+                            start: 0.0,
+                            symmetric: false,
+                            through: false,
+                            cut: false,
+                        };
                         revolved.insert(n.id, Revolved { on, axis: [p, q] });
                     }
                 }
@@ -5927,7 +5948,7 @@ fn reflect(p: V3, (o, n): (V3, V3)) -> V3 {
 fn reflect_swept(f: &Swept, plane: (V3, V3)) -> Swept {
     let dir = |v: V3| comb(v, 1.0, plane.1, -2.0 * dot(v, plane.1));
     let jp = JsonPlane { origin: reflect(f.plane.origin, plane), x: dir(f.plane.x), y: dir(f.plane.y) };
-    Swept { plane: jp, distance: -f.distance, ..*f }
+    Swept { plane: jp, distance: -f.distance, start: -f.start, ..*f }
 }
 
 /// A mirror's plane, an edge's references reflected back and the extrusions they name.
@@ -6334,7 +6355,7 @@ mod end_face_tests {
             ellipse_axes: Vec::new(),
         };
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
-        let f = Swept { sketch: 0, plane, distance: 5.0, symmetric: false, through: false, cut: false };
+        let f = Swept { sketch: 0, plane, distance: 5.0, start: 0.0, symmetric: false, through: false, cut: false };
         (HashMap::from([(32, f)]), vec![g])
     }
 
@@ -6380,7 +6401,7 @@ mod end_face_tests {
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
         let swept = HashMap::from([(
             40,
-            Swept { sketch: 0, plane, distance: 5.0, symmetric: false, through: false, cut: false },
+            Swept { sketch: 0, plane, distance: 5.0, start: 0.0, symmetric: false, through: false, cut: false },
         )]);
         let r = Rep { tag: 9, fid: 40, idx: 1, ext: false, ext2: false, via: None, copy: 0 };
         let (p, n, _) = face_pick(&r, &swept, &[g], &HashSet::from([9u16])).unwrap();
@@ -6526,6 +6547,7 @@ mod end_face_tests {
             sketch: 0,
             plane: JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] },
             distance: 0.0,
+            start: 0.0,
             symmetric: false,
             through: false,
             cut: false,
@@ -6572,7 +6594,10 @@ mod end_face_tests {
             ellipse_axes: Vec::new(),
         });
         let plane = JsonPlane { origin: [20.0, 0.0, 0.0], x: [0.0, 1.0, 0.0], y: [0.0, 0.0, 1.0] };
-        swept.insert(33, Swept { sketch: 1, plane, distance: -10.0, symmetric: false, through: false, cut: false });
+        swept.insert(
+            33,
+            Swept { sketch: 1, plane, distance: -10.0, start: 0.0, symmetric: false, through: false, cut: false },
+        );
         // A revolve about the y axis of the Front plane: line 4 at x = 5 mm sweeps a cylinder.
         sketches.push(Geometry {
             pts: vec![pt(0.005, 0.0), pt(0.005, 0.01)],
@@ -6583,6 +6608,7 @@ mod end_face_tests {
             sketch: 2,
             plane: JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] },
             distance: 0.0,
+            start: 0.0,
             symmetric: false,
             through: false,
             cut: false,
@@ -6639,7 +6665,10 @@ mod end_face_tests {
             ellipse_axes: Vec::new(),
         });
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 0.0, 1.0] };
-        swept.insert(33, Swept { sketch: 1, plane, distance: -500.0, symmetric: false, through: true, cut: false });
+        swept.insert(
+            33,
+            Swept { sketch: 1, plane, distance: -500.0, start: 0.0, symmetric: false, through: true, cut: false },
+        );
         let cap_tags = HashSet::from([9u16]);
         let rep = |tag, fid, idx| Rep { tag, fid, idx, ext: false, ext2: false, via: None, copy: 0 };
         let mut work = 0;
@@ -6872,8 +6901,8 @@ mod end_face_tests {
             ..Default::default()
         };
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
-        let f = Swept { sketch: 0, plane, distance: 12.0, symmetric: false, through: false, cut: false };
-        let g = Swept { sketch: 1, plane, distance: 24.0, symmetric: false, through: false, cut: false };
+        let f = Swept { sketch: 0, plane, distance: 12.0, start: 0.0, symmetric: false, through: false, cut: false };
+        let g = Swept { sketch: 1, plane, distance: 24.0, start: 0.0, symmetric: false, through: false, cut: false };
         let t = touches((&f, &line, line.segs.first().unwrap()), (&g, &circle, circle.segs.first().unwrap()));
         assert_eq!(t.len(), 1, "{t:?}");
         let p = t.first().unwrap();
