@@ -4216,6 +4216,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     // Fillets and chamfers written as such: later edge records name their faces (`face_sel`).
     let mut blend_ids: HashSet<u32> = HashSet::new();
     let mut hole: Option<HoleState> = None;
+    // A thread node whose profile sketch is yet to come (round sw18).
+    let mut thread: Option<String> = None;
     // Sketch nodes without entities take the configuration stream's sketch objects in order,
     // when there are as many of each.
     // The end of a sketch's entities: its span, or, when that holds none, past the alignment
@@ -4313,6 +4315,15 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         // A suppressed feature adds nothing; a suppressed sketch still takes its place among the
         // configuration stream's sketches below.
         if n.suppressed && cls.as_deref() != Some("moProfileFeature_c") {
+            continue;
+        }
+        if !matches!(cls.as_deref(), Some("moProfileFeature_c" | "moRefPlane_c"))
+            && let Some(t) = thread.take()
+        {
+            feats.push(json!({"type": "unsupported", "name": t, "original_type": "moSweepThread_c"}));
+        }
+        if cls.as_deref() == Some("moSweepThread_c") {
+            thread = Some(n.name.clone());
             continue;
         }
         // A hole placed by a 3D sketch: that sketch stands for the 2D placement sketch.
@@ -4441,6 +4452,39 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             sketch_ids.insert(n.id, n.name.clone());
             last_sketch = Some(n.name.clone());
             sketch_order.push(n.name.clone());
+            if let Some(t) = thread.take() {
+                // A thread cuts the profile from the part where the profile lies in the part:
+                // reaching outward from a hole's edge or inward from a shaft's. Otherwise it adds
+                // the profile. A hole is an edge of a cut (or a hole) feature.
+                let sk = feats.last().unwrap_or(&Value::Null);
+                let made = thread_of(rf, a, b, sk).and_then(|(h, outward)| {
+                    let lib = find(rf, &THREAD_LIBRARY, a, b)?;
+                    let cut_of = |fid: u32| -> bool {
+                        let Some(nm) = nodes.iter().find(|q| q.id == fid).map(|q| q.name.as_str()) else {
+                            return false;
+                        };
+                        feats.iter().any(|f| {
+                            f.get("name").and_then(Value::as_str) == Some(nm)
+                                && (f.get("operation").and_then(Value::as_str) == Some("cut")
+                                    || f.get("type").and_then(Value::as_str) == Some("hole"))
+                        })
+                    };
+                    let recs = edge_records(rf, lib, b).ok()?;
+                    let (_, reps) = recs.first()?;
+                    let hole_edge = reps.iter().any(|r| cut_of(r.fid));
+                    let op = if outward == hole_edge { "cut" } else { "join" };
+                    Some((h, op))
+                });
+                let name = n.name.clone();
+                let sweep = made.filter(|_| solid).and_then(|(h, op)| Some((helix_sweep(&mut feats, &name, &h)?, op)));
+                if let Some((hx, op)) = sweep {
+                    sketch_used.insert(name.clone());
+                    feats.push(json!({"type": "sweep", "name": t, "sketch": name, "helix": hx,
+                        "operation": op, "target": first_solid}));
+                } else {
+                    feats.push(json!({"type": "unsupported", "name": t, "original_type": "moSweepThread_c"}));
+                }
+            }
         } else if is_in(&cls, &REVOLVE)
             && endspec_decl(rf, a, b, b"moRevEndSpec_c")?.is_none()
             && endspec_candidates(rf, a, b)?.iter().any(in_es)
@@ -5686,6 +5730,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             feats.push(json!({"type": "unsupported", "name": n.name, "original_type": cls}));
         }
     }
+    if let Some(t) = thread.take() {
+        feats.push(json!({"type": "unsupported", "name": t, "original_type": "moSweepThread_c"}));
+    }
     if let Some(h) = hole.take() {
         let at = h.at;
         if let Some(slot) = feats.get_mut(at) {
@@ -5898,6 +5945,81 @@ fn circle_at_path_start(path: &Value, dia: f64, name: &str) -> Option<Value> {
         "points": [{"id": "p0", "x": 0.0, "y": 0.0}],
         "curves": [{"id": "c0", "type": "circle", "center": "p0", "radius": round_to(dia / 2.0, 9)}],
     }))
+}
+
+/// A thread feature's library file name, in UTF-16 (`...\\thread profiles\\Metric Die.SLDLFP`).
+const THREAD_LIBRARY: [u8; 14] = *b".\0S\0L\0D\0L\0F\0P\0";
+
+/// The thread of a `moSweepThread_c` node (round sw18), from the profile sketch node that
+/// follows it (after its plane): the sketch keeps the library profile as drawn at the start of
+/// the thread, then the thread's own data: `u32 1`, the pitch (`f64`, m) and the designation
+/// (`M6x1.0`), the library file, the edge it starts at, then its dimensions `D1` to `D9`, `D4`
+/// the length and `D6` the diameter of the edge (both `f64`, m). The profile's x axis points
+/// away from the thread's axis, its y axis along it into the part: the thread is a sweep of
+/// the profile along a helix about the axis, its radius the edge's, climbing the y axis.
+/// Returns the helix and whether the profile reaches outward from the edge. Only the die and
+/// tap libraries' profiles are read.
+fn thread_of(rf: &[u8], a: usize, b: usize, sk: &Value) -> Option<(Helix, bool)> {
+    let lib = find(rf, &THREAD_LIBRARY, a, b)?;
+    let path = rfind(rf, &UTF16_MARK, a, lib)?;
+    let desig = rfind(rf, &UTF16_MARK, a, path)?;
+    if u32_at(rf, desig.checked_sub(12)?)? != 1 {
+        return None;
+    }
+    let pitch = mm(f64_at(rf, desig - 8)?);
+    let file = utf16(rf.get(path + 4..lib)?).to_lowercase();
+    let file = file.rsplit('\\').next()?;
+    if file.contains("tap") == file.contains("die") {
+        return None;
+    }
+    // `D<n>`: the name, seven zero bytes, a flag byte, `ff ff ff ff`, four zero bytes, an empty
+    // string and two bytes, then the value.
+    let dim = |k: u8| -> Option<f64> {
+        let name = [0xff, 0xfe, 0xff, 0x02, b'D', 0, b'0' + k, 0, 0, 0, 0, 0, 0, 0, 0];
+        let at = find(rf, &name, lib, b)? + name.len();
+        let tail = rf.get(at + 1..at + 13)?;
+        let head_ok = matches!(rf.get(at), Some(0x40 | 0x50))
+            && tail == [0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0xff, 0xfe, 0xff, 0];
+        if !head_ok {
+            return None;
+        }
+        f64_at(rf, at + 15).map(mm)
+    };
+    let (length, dia) = (dim(4)?, dim(6)?);
+    let ok = |v: f64| v.is_finite() && v > 1e-6 && v < 1e4;
+    if !(ok(pitch) && ok(length) && ok(dia)) {
+        return None;
+    }
+    let (o, x, y) = sketch_frame(sk)?;
+    let radius = dia / 2.0;
+    // The profile lies on the edge: its points reach to one side of it only.
+    let pts = sketch_points(sk)?;
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for c in sk.get("curves")?.as_array()? {
+        if c.get("construction").is_some() {
+            continue;
+        }
+        for k in ["start", "end", "center"] {
+            if let Some(&(u, _)) = c.get(k).and_then(Value::as_str).and_then(|id| pts.get(id)) {
+                lo = lo.min(u);
+                hi = hi.max(u);
+            }
+        }
+    }
+    let outward = match (lo >= -1e-9, hi <= 1e-9) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => return None,
+    };
+    if hi - lo >= radius {
+        return None;
+    }
+    let centre = comb(o, 1.0, x, -radius).map(|c| round_to(c, 6) + 0.0);
+    // Right-handed: the profile runs the helix up its y axis (`helix_sweep`: reversed, about
+    // the y axis, counter-clockwise).
+    let h = Helix { centre, normal: y, radius, clockwise: false, reversed: true, height: length, pitch };
+    Some((h, outward))
 }
 
 /// A helix (`moHelix_c`, round sw10) as placed in the part: about the normal of its sketch
@@ -7418,6 +7540,51 @@ mod pattern_tests {
         let mut closed = path.clone();
         closed["curves"][0]["end"] = json!("p4");
         assert!(circle_at_path_start(&closed, 7.0, "S").is_none());
+    }
+
+    #[test]
+    fn a_thread_profile_sketch_gives_the_thread_helix() {
+        // M6 cıvata's Diş1 (round sw18): pitch 1 mm before the designation, the library file,
+        // then D4 = 17 mm (length) and D6 = 6 mm (diameter); the profile is drawn at (0, 0, 3)
+        // with its x axis away from the axis (+z) and its y axis along it (-x).
+        let w16 = |s: &str| -> Vec<u8> {
+            let mut v = vec![0xff, 0xfe, 0xff, s.encode_utf16().count() as u8];
+            v.extend(s.encode_utf16().flat_map(u16::to_le_bytes));
+            v
+        };
+        let mut d = vec![0u8; 16];
+        d.extend([1, 0, 0, 0]);
+        d.extend(0.001f64.to_le_bytes());
+        d.extend(w16("M6x1.0"));
+        d.extend(w16("C:\\thread profiles\\Metric Die.SLDLFP"));
+        for (k, v) in [(4u8, 0.017f64), (6, 0.006)] {
+            d.extend([0xff, 0xfe, 0xff, 0x02, b'D', 0, b'0' + k, 0, 0, 0, 0, 0, 0, 0, 0, 0x50]);
+            d.extend([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0xff, 0xfe, 0xff, 0, 0, 0]);
+            d.extend(v.to_le_bytes());
+            d.extend([0u8; 8]);
+        }
+        let sk = json!({"type": "sketch", "name": "P",
+            "plane": {"origin": [0.0, 0.0, 3.0], "x_axis": [0.0, 0.0, 1.0], "y_axis": [-1.0, 0.0, 0.0]},
+            "points": [{"id": "a", "x": 0.0, "y": 0.0}, {"id": "b", "x": 0.0, "y": 0.875},
+                       {"id": "c", "x": -0.5413, "y": 0.5625}, {"id": "e", "x": -0.5413, "y": 0.3125},
+                       {"id": "f", "x": 0.125, "y": 0.02}],
+            "curves": [{"id": "c0", "type": "line", "start": "a", "end": "b"},
+                       {"id": "c1", "type": "line", "start": "b", "end": "c"},
+                       {"id": "c2", "type": "line", "start": "c", "end": "e"},
+                       {"id": "c3", "type": "line", "start": "e", "end": "a"},
+                       {"id": "c4", "type": "line", "start": "a", "end": "f", "construction": true}]});
+        let (h, outward) = thread_of(&d, 0, d.len(), &sk).unwrap();
+        assert!(!outward);
+        assert_eq!((h.centre, h.normal, h.radius, h.pitch, h.height), ([0.0; 3], [-1.0, 0.0, 0.0], 3.0, 1.0, 17.0));
+        // Right-handed: the tree's helix climbs -x from the profile, along a line on the axis.
+        let mut feats = vec![sk];
+        let hx = helix_sweep(&mut feats, "P", &h).unwrap();
+        assert_eq!(hx["left_handed"], json!(false));
+        assert_eq!(hx["axis"], json!([-1.0, 0.0, 0.0]));
+        assert_eq!(hx["line"], json!("helix_axis"));
+        // Without its dimensions the thread is not read.
+        let short = d.get(..d.len() - 2 * 38).unwrap().to_vec();
+        assert!(thread_of(&short, 0, short.len(), &feats[0]).is_none());
     }
 
     #[test]
