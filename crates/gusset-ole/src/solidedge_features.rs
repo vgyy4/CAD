@@ -1249,6 +1249,15 @@ fn not_a_curve(class: &str) -> bool {
         && !["JLine2d", "JArc2d", "JCircle2d", "JEllipArc2d", "JEllipse2d", "JBspCurve2d", "JPoint2d"].contains(&c)
 }
 
+/// A member whose kind the type table names as a dimension or a point on a curve, but that is
+/// laid out as a circle, arc, ellipse or B-spline (not 46 bytes, `u8 0` at +8): some parts'
+/// type tables name their curves' kinds so (015's circles, 031's splines). Key points are 46
+/// bytes like a line and stay skipped.
+fn misnamed_curve(st: &Store, m: u32) -> bool {
+    !st.kind_name(m).contains("KeyPoint")
+        && st.obj(m).is_some_and(|b| b.len() != 46 && b.get(8) == Some(&0) && curve(b).is_some())
+}
+
 /// The circle of a hole's 2D member (a hole profile lists it with its key points): the
 /// centre at +8, the diameter at +40, then `u16 0` and the circle laid out as a circle
 /// member's numbers (centre, radius, `0.0, 1.0`).
@@ -1335,7 +1344,7 @@ fn members(st: &Store, b: &[u8], at: usize, n: u32, plane: Option<(V3, V3, V3)>)
     for k in 0..n as usize {
         let m = u32_at(b, at + 4 * k).ok_or("the 2D profile is cut short")?;
         // No member (a slot left empty: 0, 0xffffffff or 0xfffffffd).
-        if m == 0 || m >= 0xffff_fff0 || not_a_curve(st.kind_name(m)) {
+        if m == 0 || m >= 0xffff_fff0 || (not_a_curve(st.kind_name(m)) && !misnamed_curve(st, m)) {
             continue;
         }
         let Some(mb) = st.obj(m) else {

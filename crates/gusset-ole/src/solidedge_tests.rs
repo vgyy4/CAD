@@ -1501,6 +1501,67 @@ fn a_lofted_circle_is_split_like_its_outline() {
     assert!(!split_loft_circle(&mut circles));
 }
 
+/// A part with one protrusion (5 mm, side 1) whose profile object (serial 3) is `p2`, with more
+/// objects (serials 4 to 7 and above 11) and a type table.
+fn part_of_profile(p2: &[u8], more: &[u8], typetable: &[u8]) -> Vec<u8> {
+    let mut c = vec![0x44, 0xf5, 0x90, 0x6c, 0, 0, 0, 0];
+    c.extend(obj(6, 1, &plane_payload([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0])));
+    let mut prof = func("JProfileRecomputeEx", &[&[1], &[2]]);
+    prof.extend(3u32.to_le_bytes());
+    prof.push(9 * 8);
+    prof.extend("Profile2d".encode_utf16().flat_map(u16::to_le_bytes));
+    c.extend(obj(26, 2, &prof));
+    c.extend(obj(65, 3, p2));
+    let mut tail = obj(36, 8, &small(13.0));
+    tail.extend(obj(36, 9, &small(1.0)));
+    tail.extend(obj(36, 10, &small(0.005)));
+    tail.extend(obj(38, 11, &func("JMProtrusionFunction", &[&[11], &[0], &[2], &[8], &[9], &[0], &[10]])));
+    c.extend(more);
+    c.extend(tail);
+    ole(&[("PSMcluster0", &c), ("PSMtypetable", typetable)])
+}
+
+/// A 2D profile object: its member list and, when given, its own copies (`u8 1`, a class id,
+/// the same count and the copies).
+fn profile2d(first: &[u32], own: Option<&[u32]>) -> Vec<u8> {
+    let mut p2 = (first.len() as u32).to_le_bytes().to_vec();
+    p2.extend(first.iter().flat_map(|m| m.to_le_bytes()));
+    if let Some(own) = own {
+        p2.push(1);
+        p2.extend([0x50; 16]);
+        p2.extend((own.len() as u32).to_le_bytes());
+        p2.extend(own.iter().flat_map(|m| m.to_le_bytes()));
+    }
+    p2.extend([0u8; 8]);
+    p2
+}
+
+/// A circle whose kind the type table names as a dimension is a curve (015); a key point
+/// shaped like a line is not.
+#[test]
+fn a_curve_under_a_dimension_kind_name_is_read() {
+    let mut tt = vec![0u8; 4];
+    for (idx, name) in [(50u32, "CLSID_JPMIDimensions"), (51, "CLSID_JKeyPoint2d")] {
+        tt.extend(idx.to_le_bytes());
+        tt.extend([1, 0, 0xff, 0xff, 0, 0, 0, 0]);
+        tt.extend((name.len() as u16 + 1).to_le_bytes());
+        tt.extend(name.as_bytes());
+        tt.push(0);
+    }
+    let mut c = vec![0, 0];
+    c.extend(f64s(&[0.0, 0.0, 0.0035, 0.0, 1.0]));
+    c.extend([0, 1, 0, 0, 0x80]);
+    let mut more = obj(50, 4, &c);
+    more.extend(obj(51, 5, &line([0.0, 0.0], [0.01, 0.0])));
+    let t = feature_tree(&part_of_profile(&profile2d(&[5, 4], None), &more, &tt), "p.par", &crate::Limits::default())
+        .unwrap();
+    assert_eq!(
+        t["features"][0]["curves"],
+        json!([{"id": "c0", "type": "circle", "center": "p0", "radius": 3.5}]),
+        "{t}"
+    );
+}
+
 /// A feature Solid Edge could not build (flag 0x08 in the function object's first byte) is not
 /// in the part's body and is left out (020).
 #[test]
