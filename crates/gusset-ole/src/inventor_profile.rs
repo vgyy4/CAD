@@ -186,11 +186,11 @@ pub(crate) fn picks(curves: &[Poly], bodies: &[Vec<Vec<P2>>]) -> Option<Vec<P2>>
             crossing.iter().any(|(i, j)| ins.contains(i) && ins.contains(j))
         }
     };
-    let res = picks_by(curves, &all, &keep)?;
+    let res = picks_by(curves, &all, &keep, true)?;
     if !res.is_empty() || bodies.len() < 2 {
         return Some(res);
     }
-    picks_by(curves, &all, &|p| own.iter().any(|b| odd(b, p)))
+    picks_by(curves, &all, &|p| own.iter().any(|b| odd(b, p)), false)
 }
 
 /// Does loop `a` run partly inside and partly outside loop `b`? Points of `a` on `b` or near
@@ -228,24 +228,25 @@ fn crosses(a: &[P2], b: &[P2]) -> bool {
 /// looked at again on a grid over its own box; so is each circle or arc a few cells across
 /// (the half discs a row of small circles on a line leaves on either side of it: a PCB edge's
 /// castellations), and the square round each curve's ends (the wedge a slanted line cuts off
-/// a long strip at its corner), on a finer grid.
-fn picks_by(curves: &[Poly], loops: &[&Vec<P2>], keep: &dyn Fn(P2) -> bool) -> Option<Vec<P2>> {
+/// a long strip at its corner), on a finer grid; unless `fine` is off (the fallback for a loop
+/// listed twice, which takes the regions its loop bounds as the sketch's grid sees them).
+fn picks_by(curves: &[Poly], loops: &[&Vec<P2>], keep: &dyn Fn(P2) -> bool, fine: bool) -> Option<Vec<P2>> {
     let polys: Vec<Vec<P2>> = curves.iter().map(sample).collect();
     let all = || polys.iter().flatten().chain(loops.iter().copied().flatten()).copied();
     all().next()?;
     let whole = extent(all())?;
     let side = |b: [f64; 4]| (b[1] - b[0]).max(b[3] - b[2]);
     let mut res = picks_in(&polys, keep, whole, &[], GRID)?;
-    let mut fine = 0usize;
+    let mut looked = 0usize;
     for l in loops {
         let Some(b) = extent(l.iter().copied()) else { continue };
         // A loop much smaller than the sketch (a profile in a corner of long lines) is looked
         // at on its own grid too, for regions under a few cells of the sketch's.
-        let small = side(b) < side(whole) / 4.0 && fine < MAX_SMALL;
+        let small = fine && side(b) < side(whole) / 4.0 && looked < MAX_SMALL;
         if l.len() < 3 || (!small && res.iter().any(|&p| inside(l, p))) {
             continue;
         }
-        fine += usize::from(small);
+        looked += usize::from(small);
         for p in picks_in(&polys, keep, b, &res, GRID).unwrap_or_default() {
             if !res.contains(&p) {
                 res.push(p);
@@ -269,7 +270,7 @@ fn picks_by(curves: &[Poly], loops: &[&Vec<P2>], keep: &dyn Fn(P2) -> bool) -> O
     }
     let r = CORNER_CELLS * cell;
     let corners = ends.into_iter().map(|q| [q.0 - r, q.0 + r, q.1 - r, q.1 + r]);
-    for b in small.chain(corners).take(MAX_SMALL) {
+    for b in small.chain(corners).take(if fine { MAX_SMALL } else { 0 }) {
         for p in picks_in(&polys, keep, b, &res, FINE_GRID).unwrap_or_default() {
             if !res.contains(&p) {
                 res.push(p);
