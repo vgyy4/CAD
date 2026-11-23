@@ -921,6 +921,25 @@ fn a_mirror_on_a_standard_plane_names_it_by_id() {
 }
 
 #[test]
+fn a_part_inserted_first_is_the_stored_stock_body() {
+    // Spur Gear 12 Teeth (round sw18): the toolbox gear (`moStock_c`) comes first; the boss
+    // after it joins its body, which the importer takes from the `StockBodies` stream.
+    let mut rf = vec![3, 0];
+    rf.extend(feature_node("moStock_c", "Gear", 4));
+    rf.extend(feature_stream(&[]).get(2..).unwrap());
+    let t = history(&rf).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap();
+    assert_eq!(f[0], serde_json::json!({"type": "stored_body", "name": "Gear", "body": 0, "stock": true}), "{t}");
+    let e = f.iter().find(|x| x["type"] == "extrude").unwrap();
+    assert_eq!((&e["operation"], &e["target"]), (&serde_json::json!("join"), &serde_json::json!("Gear")));
+    // After a body, an inserted part is not read.
+    let mut stock = feature_node("moStock_c", "Gear", 40);
+    stock.extend([0u8; 16]);
+    let why = history(&feature_stream(&stock)).unwrap_err();
+    assert!(why.contains("Gear (moStock_c) is not supported"), "{why}");
+}
+
+#[test]
 fn a_body_deletion_after_a_body_mirror_keeps_the_other_body() {
     // 126p-visor-diy-bottom (round sw18): Lustro4 mirrors the body on a plane, then
     // Obiekt-Usuń/zachowaj 6 names a face of the seed's boss: the mirror kept its copy apart.

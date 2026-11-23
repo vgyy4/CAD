@@ -1543,15 +1543,21 @@ fn stored_stock(
     stock: Result<Vec<Vec<u8>>, String>,
 ) -> Result<(Vec<Vec<u8>>, Option<String>), String> {
     let Some(feats) = tree.get_mut("features").and_then(Value::as_array_mut) else { return Ok((Vec::new(), None)) };
-    let Some(at) = feats.iter().position(|f| f.get("stock_mirror").is_some()) else {
+    let Some(at) = feats.iter().position(|f| f.get("stock_mirror").is_some() || f.get("stock").is_some()) else {
         return Ok((Vec::new(), None));
     };
+    let mirror = feats.get(at).is_some_and(|f| f.get("stock_mirror").is_some());
     let stock = stock.map_err(|e| format!("the stock body was not read: {e}"))?;
     // A part without a stock stream keeps only the finished body. Storing that body and
     // replaying the features after it would pass the rebuild check trivially (a cut or join
     // repeated on a body that has it changes nothing), so such a part comes in as bodies.
     if stock.is_empty() {
-        return Err("the file keeps only the mirrored bodies, not the part they were mirrored from".into());
+        return Err(if mirror {
+            "the file keeps only the mirrored bodies, not the part they were mirrored from"
+        } else {
+            "the file keeps only the finished bodies, not the part inserted first"
+        }
+        .into());
     }
     // Where no mirror feature is written (the stock is the part, or the image is pre-mirrored
     // below), a history of the stored body alone has nothing to edit: such a part is bodies.
@@ -1565,6 +1571,11 @@ fn stored_stock(
     let [blob] = stock.as_slice() else {
         return Err(format!("the part keeps {} stock bodies (one is expected)", stock.len()));
     };
+    // A part inserted as the first body (no mirror): the stock is that body as placed.
+    if !mirror {
+        only_stored()?;
+        return Ok((stock, None));
+    }
     let ix = |a: [f64; 3], i: usize| a.get(i).copied().unwrap_or(0.0);
     let box_of = |blobs: &[&Vec<u8>]| -> Result<gusset_kernel::BBox, String> {
         let mut out: Option<gusset_kernel::BBox> = None;
