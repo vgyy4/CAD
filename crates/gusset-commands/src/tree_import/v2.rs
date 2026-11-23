@@ -935,10 +935,21 @@ fn reflect_feature(f: &Value, o: V3, n: V3, rename: &dyn Fn(&str) -> String) -> 
             }
             if kind == "extrude" {
                 // The second side's reach (`distance2`) flips with it.
-                for key in ["distance", "distance2"] {
+                for key in ["distance", "distance2", "plane_distance"] {
                     if let Some(d) = f.get(key).and_then(Value::as_f64) {
                         set(&mut out, key, json!(-d));
                     }
+                }
+                // So does the sense of an end up to a face or the next face, which `reverse`
+                // gives against the sketch's normal; the face is reflected (round sw16: Lego
+                // Torso's mirrored arm hole, V-Slot Door Handle's mirrored boss).
+                if matches!(f.get("end_condition").and_then(Value::as_str), Some("to_face" | "to_next")) {
+                    let r = f.get("reverse").and_then(Value::as_bool).unwrap_or(false);
+                    set(&mut out, "reverse", json!(!r));
+                }
+                if let Some(face) = out.get_mut("face") {
+                    map_v3(face, "point", &pt)?;
+                    map_v3(face, "normal", &dr)?;
                 }
                 // The parameter's sign convention does not carry over: the mirrored copy
                 // uses the number.
