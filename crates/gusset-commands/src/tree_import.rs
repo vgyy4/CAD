@@ -1807,10 +1807,17 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
             for pk in picks {
                 if let Some(bx) = pk.bbox {
                     match region_by_box(&sm, &all, &outlines, bx) {
-                        Ok(id) => ids.push(id),
-                        Err(_) => whole = true,
+                        Ok(id) => {
+                            ids.push(id);
+                            continue;
+                        }
+                        // A pick that also has a point inside its region's outline: the point.
+                        Err(_) if pk.point.is_some() => {}
+                        Err(_) => {
+                            whole = true;
+                            continue;
+                        }
                     }
-                    continue;
                 }
                 let Some(pt) = pk.point else { return Err("a profile pick has no point".into()) };
                 let p = sm.map(pt[0], pt[1]);

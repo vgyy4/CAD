@@ -635,9 +635,16 @@ fn chosen_profiles(
     Some(Value::Array(
         chosen
             .iter()
-            .map(|c| match inner(c).filter(|_| !fits(c)) {
-                Some((u, v)) => json!({"point": [mm(u), mm(v)]}),
-                None => json!({"bbox": [mm(c.bbox[0]), mm(c.bbox[1]), mm(c.bbox[2]), mm(c.bbox[3])]}),
+            .map(|c| match (inner(c), fits(c)) {
+                (Some((u, v)), false) => json!({"point": [mm(u), mm(v)]}),
+                // The point inside the segments goes with the box, for a box that no longer
+                // singles out a region (round sw16: mid_shoulder_RT's six holes, boxes of 3 mm
+                // circles 0.1 mm off the 3.2 mm ones drawn since).
+                (Some((u, v)), true) => json!({
+                    "bbox": [mm(c.bbox[0]), mm(c.bbox[1]), mm(c.bbox[2]), mm(c.bbox[3])],
+                    "point": [mm(u), mm(v)],
+                }),
+                (None, _) => json!({"bbox": [mm(c.bbox[0]), mm(c.bbox[1]), mm(c.bbox[2]), mm(c.bbox[3])]}),
             })
             .collect(),
     ))
