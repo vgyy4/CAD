@@ -5499,6 +5499,15 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 pattern_steps.insert(n.id, step);
             }
             feats.extend(made);
+        } else if cls.as_deref() == Some("moDeleteBody_c")
+            && let Some((name, js)) = delete_after_mirror(rf, a, b, &nodes, &mut feats, &mirror_planes, n)?
+        {
+            // A body deletion right after a mirror of the body (round sw18): the mirror kept its
+            // copy as a body of its own, the deletion removes the body its faces name.
+            feats.push(js);
+            if first_solid.as_deref() != Some(name.as_str()) {
+                first_solid = Some(name);
+            }
         } else if cls.as_deref() == Some("moMirrorStock_c") {
             // A mirrored copy of an external part: the part keeps the source body in its
             // `StockBodies` stream (the importer hands it over as stored body 0); the
@@ -5945,6 +5954,59 @@ fn circle_at_path_start(path: &Value, dia: f64, name: &str) -> Option<Value> {
         "points": [{"id": "p0", "x": 0.0, "y": 0.0}],
         "curves": [{"id": "c0", "type": "circle", "center": "p0", "radius": round_to(dia / 2.0, 9)}],
     }))
+}
+
+/// A body deletion (`moDeleteBody_c`) that follows a mirror of the body (`moMirrorSolid_c`,
+/// no feature written after it): its record names faces of one body, the seed's (features
+/// before the mirror) or the copy's (faces of the mirror). Deleting one of them means the
+/// mirror kept the copy apart (126p-visor-diy-bottom's Obiekt-Usuń/zachowaj 6 names faces of
+/// Dodanie-wyciągnięcie1, and the part is the mirrored half): the mirror is written without
+/// merging and the deletion as a `remove_body`. Returns the body left and the deletion.
+fn delete_after_mirror(
+    rf: &[u8],
+    a: usize,
+    b: usize,
+    nodes: &[Node],
+    feats: &mut [Value],
+    mirror_planes: &HashMap<u32, (V3, V3)>,
+    n: &Node,
+) -> Result<Option<(String, Value)>, String> {
+    let ty = |f: &Value| f.get("type").and_then(Value::as_str).map(str::to_string);
+    let Some(mi) = feats.iter().rposition(|f| !matches!(ty(f).as_deref(), Some("sketch") | None)) else {
+        return Ok(None);
+    };
+    let Some(mirror) = feats.get(mi).filter(|f| {
+        ty(f).as_deref() == Some("mirror")
+            && f.get("features").and_then(Value::as_array).is_some_and(Vec::is_empty)
+            && f.get("unresolved").is_none()
+    }) else {
+        return Ok(None);
+    };
+    let (Some(mname), Some(seed)) = (
+        mirror.get("name").and_then(Value::as_str).map(str::to_string),
+        mirror.get("target").and_then(Value::as_str).map(str::to_string),
+    ) else {
+        return Ok(None);
+    };
+    let Some(mid) = nodes.iter().find(|q| q.name == mname).map(|q| q.id).filter(|id| mirror_planes.contains_key(id))
+    else {
+        return Ok(None);
+    };
+    let ids: HashSet<u32> = mirror_planes.keys().copied().collect();
+    let reps: Vec<Rep> =
+        edge_records_to(rf, a, b, &ids, &HashSet::new())?.into_iter().flat_map(|(_, _, r)| r).collect();
+    let at = |fid: u32| nodes.iter().position(|q| q.id == fid);
+    let before = |fid: u32| at(fid).zip(at(mid)).is_some_and(|(f, m)| f < m);
+    let copy = reps.iter().all(|r| r.via == Some(mid) || r.fid == mid);
+    let seed_faces = reps.iter().all(|r| r.via.is_none() && r.fid != mid && before(r.fid));
+    if reps.is_empty() || copy == seed_faces {
+        return Ok(None);
+    }
+    let (gone, left) = if copy { (mname.clone(), seed) } else { (seed, mname.clone()) };
+    if let Some(o) = feats.get_mut(mi).and_then(Value::as_object_mut) {
+        o.insert("merge".into(), json!(false));
+    }
+    Ok(Some((left, json!({"type": "remove_body", "name": n.name, "target": gone}))))
 }
 
 /// A thread feature's library file name, in UTF-16 (`...\\thread profiles\\Metric Die.SLDLFP`).

@@ -920,6 +920,46 @@ fn a_mirror_on_a_standard_plane_names_it_by_id() {
     assert!(why.contains("Mirror1") && why.contains("not resolved"), "{why}");
 }
 
+#[test]
+fn a_body_deletion_after_a_body_mirror_keeps_the_other_body() {
+    // 126p-visor-diy-bottom (round sw18): Lustro4 mirrors the body on a plane, then
+    // Obiekt-Usuń/zachowaj 6 names a face of the seed's boss: the mirror kept its copy apart.
+    let mirror = || {
+        let mut v = feature_node("moMirrorSolid_c", "Mirror1", 20);
+        v.extend([0u8; 12]);
+        v.extend([0x50, 0x46, 0, 0]);
+        v.extend(2u32.to_le_bytes());
+        v.extend([0xb4, 0x2c, 0x84, 0x5a]);
+        v.extend([0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0xdf, 0, 0, 0]);
+        v.extend([0u8; 12]);
+        for _ in 0..3 {
+            v.extend([0xc7, 0xcf, 0xff, 0xff]);
+        }
+        v.extend([0u8; 40]);
+        v
+    };
+    let delete = |fid: u32| {
+        let mut v = feature_node("moDeleteBody_c", "Body-Delete1", 30);
+        v.extend(edge_record(&[face_ref(0x50, fid, 1)], 0));
+        v.extend([0u8; 16]);
+        v
+    };
+    let mut rf = mirror();
+    rf.extend(delete(7));
+    let t = history(&feature_stream(&rf)).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap();
+    let m = f.iter().find(|x| x["type"] == "mirror").unwrap();
+    assert_eq!(m["merge"], false, "{t}");
+    let d = f.last().unwrap();
+    assert_eq!(d["type"], "remove_body");
+    assert_eq!(d["target"], "Boss-Extrude1");
+    // A face of a feature the stream does not have names no body.
+    let mut rf = mirror();
+    rf.extend(delete(99));
+    let why = history(&feature_stream(&rf)).unwrap_err();
+    assert!(why.contains("Body-Delete1 (moDeleteBody_c) is not supported"), "{why}");
+}
+
 /// A sketch on a model face: the face's plane data first (axes turned 180 degrees about the
 /// normal), then the sketch's own frame.
 #[test]
