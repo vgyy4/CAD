@@ -2007,6 +2007,37 @@ fn edge_header(d: &[u8], i: usize) -> Option<(usize, usize)> {
     None
 }
 
+/// The faces a shell removes: the first reference of each record of kind 3 (a face with its
+/// neighbours) that has an id of its own (`01 00*7 n 00{4,6} 03 00 00 <u32 id>`, the sentinel
+/// pair, the references). A side whose face is closed names fewer neighbours than `n` says
+/// (Linear Actuator Bracket's hole: two caps of five), so only the first reference is read.
+fn removed_faces(d: &[u8], a: usize, b: usize) -> Vec<Rep> {
+    let mut out = Vec::new();
+    let mut i = a;
+    let end = b.min(d.len());
+    while i < end {
+        let Some((_, p)) = edge_header(d, i).filter(|h| h.1 + 20 <= end) else {
+            i += 1;
+            continue;
+        };
+        let zeros = d.get(i + 9..).unwrap_or(&[]).iter().take(11).take_while(|&&c| c == 0).count();
+        let k = i + 9 + zeros;
+        let listed = (4..=6).contains(&zeros) && d.get(k) == Some(&3) && u32_at(d, k + 3).is_some_and(|id| id != 0);
+        if listed
+            && let (Some(t), Some(0), Some(fid), Some(idx)) =
+                (u16_at(d, p), u16_at(d, p + 2), u32_at(d, p + 8), u32_at(d, p + 16))
+            && t & 0x8000 != 0
+        {
+            out.push(Rep { tag: t & 0x7fff, fid, idx, ext: false, ext2: false, via: None, copy: 0 });
+            if out.len() > MAX_MATCHES {
+                break;
+            }
+        }
+        i = p;
+    }
+    out
+}
+
 /// Edge records in `[a, b)` (`edges.edge_records`). Each reference is a 20-byte core followed
 /// by 0 to 2 extra words, depending on its class.
 fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, String> {
@@ -5376,20 +5407,32 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         } else if cls.as_deref() == Some("moShell_c") {
             let ps = params(rf, a, b, nt)?;
             let recs = edge_records(rf, a, b)?;
-            let pick =
-                recs.last().and_then(|(_, reps)| reps.first()).and_then(|r| face_pick(r, &swept, &sketches, &cap_tags));
+            // Each face the shell removes is a record of kind 3 with an id of its own, the face
+            // first and its neighbours after it (round sw16: Linear Actuator Bracket removes five
+            // sides; the r3 keycaps the bottom cap, where the last record names the top). Where
+            // one of them cannot be placed, the first face of the last record, as before.
+            let listed: Vec<Option<(V3, V3, Region)>> =
+                removed_faces(rf, a, b).iter().map(|r| face_pick(r, &swept, &sketches, &cap_tags)).collect();
+            let picks: Vec<(V3, V3, Region)> = if !listed.is_empty() && listed.iter().all(Option::is_some) {
+                listed.into_iter().flatten().collect()
+            } else {
+                recs.last()
+                    .and_then(|(_, reps)| reps.first())
+                    .and_then(|r| face_pick(r, &swept, &sketches, &cap_tags))
+                    .into_iter()
+                    .collect()
+            };
             let mut js = Map::new();
             js.insert("type".into(), json!("shell"));
             js.insert("name".into(), json!(n.name));
             js.insert("thickness".into(), json!(ps.first().map(|v| mm(*v))));
-            match pick {
-                Some((pt, nrm, _)) => {
-                    js.insert("faces".into(), json!([{"point": json_v3(pt), "normal": json_v3(nrm)}]));
-                }
-                None => {
-                    js.insert("faces".into(), json!([]));
-                    js.insert("unresolved".into(), json!(true));
-                }
+            if picks.is_empty() {
+                js.insert("faces".into(), json!([]));
+                js.insert("unresolved".into(), json!(true));
+            } else {
+                let faces: Vec<Value> =
+                    picks.iter().map(|(pt, nrm, _)| json!({"point": json_v3(*pt), "normal": json_v3(*nrm)})).collect();
+                js.insert("faces".into(), Value::Array(faces));
             }
             feats.push(Value::Object(js));
         } else if cls.is_none() || is_in(&cls, &SKIPPED) {

@@ -1053,6 +1053,35 @@ fn a_fillet_edge_between_two_side_faces_is_picked_by_its_midpoint() {
     assert!(why.contains("Fillet1") && why.contains("0 of 1"), "{why}");
 }
 
+/// [`edge_record`] of kind 3 (a face with its neighbours) with an id of its own.
+fn face_record(refs: &[Vec<u8>]) -> Vec<u8> {
+    let mut v = edge_record(refs, 0);
+    if let Some(k) = v.get_mut(13) {
+        *k = 3;
+    }
+    v
+}
+
+#[test]
+fn a_shell_removes_the_faces_of_its_face_records() {
+    // Linear Actuator Bracket's Shell1: one record of kind 3 per removed face (the face, then
+    // its neighbours), then a record of kind 2 naming another face.
+    let mut shell = feature_node("moShell_c", "Shell1", 30);
+    shell.extend(face_record(&[face_ref(0x50, 7, 1), face_ref(0x51, 7, 0), face_ref(0x51, 7, 1)]));
+    shell.extend([0u8; 200]);
+    shell.extend(face_record(&[face_ref(0x50, 7, 2), face_ref(0x51, 7, 0), face_ref(0x51, 7, 1)]));
+    shell.extend([0u8; 200]);
+    shell.extend(edge_record(&[face_ref(0x51, 7, 0), face_ref(0x50, 7, 1)], 0));
+    shell.extend([0u8; 4]);
+    shell.extend(parameter("D1", 0.001));
+    let t = history(&feature_stream(&shell)).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap().last().unwrap();
+    let faces = f["faces"].as_array().unwrap();
+    assert_eq!(faces.len(), 2, "{f}");
+    assert!(faces.iter().all(|x| x["normal"] != serde_json::json!([0.0, 0.0, -1.0])), "{f}");
+    assert_ne!(faces[0]["normal"], faces[1]["normal"], "{f}");
+}
+
 #[test]
 fn a_shell_removes_the_first_face_of_its_last_record() {
     // RobotCap's Shell1: records naming the shell's own faces, then the one whose first
