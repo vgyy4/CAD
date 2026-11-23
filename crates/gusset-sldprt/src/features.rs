@@ -36,7 +36,7 @@ const BIG: f64 = 500.0;
 const TAU: f64 = 2.0 * core::f64::consts::PI;
 
 const PLANE_NAMES: [(u32, &str); 3] = [(2, "Front"), (3, "Top"), (4, "Right")];
-const EXTRUDE: [&str; 3] = ["moExtrusion_c", "moICE_c", "moCut_c"];
+const EXTRUDE: [&str; 4] = ["moExtrusion_c", "moICE_c", "moCut_c", "moBoss_c"];
 const REVOLVE: [&str; 2] = ["moRevolution_c", "moRevCut_c"];
 /// Classes that carry nothing the tree needs (sketches are handled before this list).
 const SKIPPED: [&str; 43] = [
@@ -4440,6 +4440,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             {
                 ps.push(v);
             }
+            if ps.is_empty()
+                && matches!(typ, Some(0 | 6))
+                && let Some(v) = inline_value(rf, a, b).filter(|v| *v > 0.0 && *v < 10.0)
+            {
+                ps.push(v);
+            }
             // A cut of the flipped side keeps what its profile sweeps: through everything that is
             // the common part with the sweep (the rebuild check says whether the part lay wholly
             // on the swept side); a blind one would need the slab as well and is left unsupported.
@@ -6226,11 +6232,18 @@ fn seed_node(index: &HashMap<u32, usize>, p: u32, at: usize, is_feature: impl Fn
 /// toolbox gears' TeethCuts have no `D1` (their tooth count is a configuration property) and
 /// this alone gives it (12 for the 12T spur gear, 66 for the internal gear).
 fn inline_count(d: &[u8], a: usize, b: usize) -> Option<u32> {
+    let v = inline_value(d, a, b)?;
+    (v.fract() == 0.0 && (2.0..=10_000.0).contains(&v)).then(|| v as u32)
+}
+
+/// The first value a node keeps in its own data in the layout [`inline_count`] reads. An
+/// extrude whose depth is a configuration's (the toolbox screws' Hex socket, 1.3 mm for M3)
+/// has no `D1` and keeps the depth (m) so.
+fn inline_value(d: &[u8], a: usize, b: usize) -> Option<f64> {
     const HEAD: [u8; 12] = [0xff, 0xfe, 0xff, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff];
     let i = find(d, &HEAD, a, b)?;
     let v = f64_at(d, i + 12)?;
-    let tail_ok = d.get(i + 20..i + 28) == Some(&[8, 0, 0, 0, 0x10, 0, 0, 0][..]);
-    (tail_ok && v.fract() == 0.0 && (2.0..=10_000.0).contains(&v)).then(|| v as u32)
+    (d.get(i + 20..i + 28) == Some(&[8, 0, 0, 0, 0x10, 0, 0, 0][..]) && v.is_finite()).then_some(v)
 }
 
 /// A linear or circular feature pattern (`moLPattern_c`, `moCirPattern_c`) as tree features.
