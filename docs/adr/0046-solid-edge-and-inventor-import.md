@@ -1272,3 +1272,39 @@ Other blockers are as after se8: part copies (004, 005, 009, 013) and simplified
 Protrusion_4 is not in the stored body at all (the stored body is the state after Protrusion_3: a
 feature in error, flag not decoded); 140's and 054/056/060's stored bodies do not measure (negative
 or zero volume); 163's spline revolve and 035's two-skin revolved cut differ in volume.
+
+## Amendment (2026-11-23, 31): Inventor round ipt12 - second spline class, mirror order, split blend supports
+
+Measured first (all 1686 parts on this round's base, as after ipt11: 750 as history), then the parts
+each change reaches (scratch, not committed). The 415 parts "with no features" were counted by record
+role: 409 hold only an imported body, 6 are derived from an assembly; no tree layout is missed there
+(note AV of `docs/formats/inventor-feature-tree.md`). Changed this round, all in `gusset-ole`'s
+Inventor reader:
+
+| rule | parts gained |
+|---|---|
+| a cylinder blend's support surface split into several faces counts once; of more than two supports, the pairs that meet must meet at one edge | 2 (iPod Nano, Holder_Tip) |
+| sketch B-splines of class `f9372fd4` (the layout of `317b7346`); a spline's ends are the listed points at its end poles (the list also names points on the curve); closed splines; arrays below their capacity | 0 (27 parts: the how-to outlines, coins and banners now read further and stop at later sketches, trimmed splines or kernel unions) |
+| mirror and pattern copies in the order the features were made, not the pick order | 0 (the EY4180 bay adapters still stop at Mirror2: the copied chamfer's edge is 1.5 mm off the mirrored pick) |
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4). Only
+`gusset-ole`'s Inventor modules changed, so the SolidWorks and Solid Edge corpora were not rerun.
+
+| corpus | parts | history before | after | without a solid |
+|---|---|---|---|---|
+| first (Zenodo) | 47 | 28 | 28 | 0 |
+| second (57 sources) | 1639 | 722 | 724 | 46 |
+
+No part went from history to body: a full run of the 1686 at the mirror-order commit, then the 55
+parts with spline records after each spline commit. SRM (the MoS2 rig's rotor) takes 807 s alone and
+times out at 900 s under load; it is a body either way.
+
+Measured and left: the `rev1 corners` mirrors (3) were saved against an earlier base (their stored body
+is 101.6 x 1066.8 x 101.6 mm, the base in the folder 76.2 x 1016 x 76.2); the `lf_basic` and `dv_*`
+lofts (the exact ruled loft from a square to a circle is 5645.40 mm3, Inventor's 5644.98) and
+`sw_twist` (a twisted square prism is exactly 3000 mm3, Inventor's 2996.89) are approximations in the
+stored body; `fl_two_sets` needs both radius sets blended in one operation (built one after the
+other, the second set's tangent chain runs over the first set's arc and down the corner edge);
+face-name curve numbers in larger sketches do not follow record order (EY4180 A-07: record position 43
+is named 47) and no class of record the sketch owns accounts for the gap; the sheet-metal fixtures
+stop at plates on plate faces, bends between plates, corners and hems.

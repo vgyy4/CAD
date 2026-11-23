@@ -841,8 +841,13 @@ every rule below is a candidate the whole-part rebuild check decides.
   three arrays `u32 n, u32 n, u32 8` + doubles: knots (n = poles + degree + 1), weights (none seen) and
   the poles (`u32 n` and two words, then x, y in cm; first and last pole are the end points). The robot
   arm's "fillets" between arcs and lines are such splines. 34 corpus parts have them. Class `f9372fd4`
-  (round ipt12) has the same layout: its first list holds only the two end points (a curve drawn by its
-  control points; the keychain, coin and banner outlines of the how-to sessions). 27 corpus parts.
+  (round ipt12) has the same layout (27 corpus parts: the keychain, coin and banner outlines of the
+  how-to sessions, the SRM coils). Its first list holds the points at the first and last poles and
+  points on the curve where other curves end (in any order); a closed curve lists its one point (first
+  and last pole meet there). Each array's second word is its capacity, not always its count (22 knots
+  in room for 32). Not read: `f9372fd4` records that keep a second copy of the curve further on (a
+  trimmed curve: the listed ends are not at its poles), and `317b7346` records whose layout does not read
+  (short ones with no curve data; 547 in the Zapdos card, Economy Seat and three more, not looked into).
 - **Profile picks.** The history blob mostly keeps one wire body per loop (an annulus is its outer loop
   and its hole loop as two bodies), so the odd count runs over all loops; a loop listed twice
   (`new_bracket_carrete`) leaves nothing and is read as the region it bounds. A 5 mm hole in a
@@ -988,3 +993,17 @@ not committed). Every rule below is a candidate the whole-part rebuild check dec
 - **Loops on arcs.** Loft sections and sheet-metal faces find their sketch by the distance of the loop's
   points to the sketch curves; lines, circles and arcs are measured exactly (the profile picks' sampled
   chords lie 0.09 mm inside an arc of 160 mm radius, past the 0.02 mm the match allows).
+
+## AV. Splines, mirror order, split blend supports; the parts with no features (round ipt12)
+- **No features (415 bodies).** Counted by record role on every one: 409 hold only a solid body record
+  before any feature (STEP and SolidWorks direct imports: the "Cut-Extrude1" or "Chamfer4" names in some
+  are face names carried over, not features), 6 are derived from an assembly (`*.iam`); the 7 robomuse
+  `_MIR` parts mirror such bases. No feature records of an unknown layout among them.
+- **Mirror and pattern copies in history order.** A mirror lists its features in the user's pick order;
+  the copies are made in the order the features were made (EY4180 A-02 lists Chamfer3 before the cut that
+  makes its edge). The bay adapters still stop at Mirror2: the copied chamfer's edge is 1.5 mm off the
+  mirrored pick.
+- **Cylinder blend supports.** A support surface split into several faces (a later cut across it) is one
+  support; of more than two, the pairs that meet within four radii of the blend's axis must meet at one
+  edge.
+
