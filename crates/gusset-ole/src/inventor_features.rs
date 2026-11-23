@@ -15,7 +15,7 @@
 //! Input is untrusted: every count, list, chain and walk is bounded, and a record that is not
 //! shaped as expected gives an `unsupported` feature or an error, never a panic.
 
-use crate::acis::{Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, RevSeg, Surf, V3, cross, dot, local_path};
+use crate::acis::{Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, RevSeg, StepChamfer, Surf, V3, cross, dot, local_path};
 use crate::inventor_dc::{Dc, FeatType, Feature, G_BODY_LIST, G_SOLID_BODY, Role, f64_at, u16_at, u32_at};
 use crate::inventor_profile::{P2, Poly, picks, sample};
 use crate::{Limits, inventor};
@@ -3369,6 +3369,44 @@ fn slot_end_rounds(st: &mut State, name: &str, ends: &[FullRound]) -> Result<(),
     Ok(())
 }
 
+/// Chamfers as wide as their steps (a cone between two coaxial cylinders, the step face
+/// between them gone): the kernel's chamfer does not build them, so each is cut as the
+/// triangle it removed (its two rims and the corner) turned a full turn about the axis, the
+/// first named as the feature.
+fn step_bevels(st: &mut State, name: &str, steps: &[StepChamfer]) -> Result<(), String> {
+    let target = st.first_body.clone().ok_or("a chamfer before any body")?;
+    for (k, sc) in steps.iter().enumerate() {
+        let nm = if k == 0 { name.to_string() } else { format!("{name}_{}", k + 1) };
+        let u = unit3(sc.dir);
+        let e = unit3(cross(u, if u[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] }));
+        let org = [sc.axis[0] * CM, sc.axis[1] * CM, sc.axis[2] * CM];
+        let [(h1, r1), (h2, r2)] = sc.rims;
+        let (hc, rc) = sc.corner;
+        let pt = |id: &str, r: f64, h: f64| json!({"id": id, "x": rnd(r * CM), "y": rnd(h * CM)});
+        let (lo, hi) = (h1.min(h2) * CM, h1.max(h2) * CM);
+        let points = vec![
+            pt("b1", r1, h1),
+            pt("b2", r2, h2),
+            pt("bc", rc, hc),
+            json!({"id": "ba0", "x": 0.0, "y": rnd(lo), "construction": true}),
+            json!({"id": "ba1", "x": 0.0, "y": rnd(hi), "construction": true}),
+        ];
+        let line = |id: &str, a: &str, b: &str| json!({"id": id, "type": "line", "start": a, "end": b});
+        let curves = vec![
+            line("bl1", "b1", "b2"),
+            line("bl2", "b2", "bc"),
+            line("bl3", "bc", "b1"),
+            json!({"id": "bax", "type": "line", "start": "ba0", "end": "ba1", "construction": true}),
+        ];
+        let sname = format!("{nm}_sketch");
+        st.out.push(json!({"type": "sketch", "name": sname, "plane": {"origin": org, "x_axis": e, "y_axis": u},
+                           "points": points, "curves": curves}));
+        st.out.push(json!({"type": "revolve", "name": nm, "sketch": sname, "profiles": "all", "operation": "cut",
+                           "target": target, "axis": {"line": "bax"}, "angle": 360.0}));
+    }
+    Ok(())
+}
+
 /// A cylinder blend between a plane and a convex cylinder that do not meet (a consumed middle
 /// face): the material it adds is the sliver between its arc and the surrounding body. It is
 /// joined as a sketch of the arc and a circumscribed polyline (1.2 radii out) whose far side
@@ -3439,6 +3477,7 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let mut lines = 0usize;
     let mut infos: Vec<(V3, EdgeInfo)> = Vec::new();
     let mut bridged: Vec<BridgedRound> = Vec::new();
+    let mut steps: Vec<StepChamfer> = Vec::new();
     let chamfer_d = (typ == FeatType::Chamfer).then(|| r.pval(&s, 2).ok()).flatten();
     let mm = |v: V3| [rnd_to(v[0] * CM, 1e6), rnd_to(v[1] * CM, 1e6), rnd_to(v[2] * CM, 1e6)];
     for &face in &faces {
@@ -3457,6 +3496,18 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         // A tagged face without a vertex (no loop the reader follows) names no edge; the
         // feature's other faces do.
         if b.verts(face).is_empty() && faces.len() > 1 {
+            continue;
+        }
+        if typ == FeatType::Chamfer
+            && let Some(sc) = b.step_chamfer(face)
+        {
+            let same = |x: &StepChamfer| {
+                crate::acis::dist(x.axis, sc.axis) + crate::acis::dist(x.dir, sc.dir) < 1e-9
+                    && x.rims.iter().zip(&sc.rims).all(|(p, q)| (p.0 - q.0).abs() + (p.1 - q.1).abs() < 1e-9)
+            };
+            if !steps.iter().any(same) {
+                steps.push(sc);
+            }
             continue;
         }
         if typ == FeatType::Fillet
@@ -3517,6 +3568,13 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                     EdgeInfo::Line { .. } => lines += 1,
                 }
             }
+        }
+    }
+    if !steps.is_empty() {
+        if !mids.is_empty() || !why.is_empty() {
+            why.push("a chamfer as wide as its step next to other chamfer edges".into());
+        } else {
+            return step_bevels(st, name, &steps);
         }
     }
     if !bridged.is_empty() {
