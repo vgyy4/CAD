@@ -1870,7 +1870,8 @@ fn work_axis(dc: &Dc, ax: usize) -> Result<(V3, V3), String> {
 }
 
 /// What a pattern or mirror copies: the features it refers to before its own settings (the
-/// `90874d18` record), as the tree names them, or (empty, with the body's tree name) the
+/// `90874d18` record), as the tree names them in the order they were made, or (empty, with
+/// the body's tree name) the
 /// whole body when the flag after its `d83ef271` record is set and it lists no feature, or
 /// when it lists every feature so far. A
 /// feature that was left out (suppressed, a cosmetic thread) is skipped; one that could not
@@ -1898,6 +1899,9 @@ fn copied_features(r: &Reader, st: &State, f: &Feature) -> Result<(Vec<String>, 
             }
         }
     }
+    // In the order they were made (the selection's order is the user's picks): a chamfer
+    // copied with the cut that made its edge comes after it (EY4180 A-02).
+    out.sort_by_key(|m| st.out.iter().position(|o| o.get("name").and_then(Value::as_str) == Some(m)));
     if out.is_empty() {
         let solids = copy_flags(r, f).first().copied().unwrap_or(false);
         return match (solids, &st.first_body) {
