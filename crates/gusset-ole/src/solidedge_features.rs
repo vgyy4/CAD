@@ -2975,13 +2975,13 @@ fn boss_side(b: &[u8], tail: usize, c: V3, n: V3) -> Option<f64> {
         if dot(off, off).sqrt() > 1e-7 || along.abs() < 1e-7 || along.abs() > 10.0 {
             continue;
         }
-        let s = along.signum();
+        let s = along > 0.0;
         if side.is_some_and(|x| x != s) {
             return None;
         }
         side = Some(s);
     }
-    side
+    side.map(|up| if up { 1.0 } else { -1.0 })
 }
 
 /// A profile of straight lines through `pts` (metres, in the frame), closed.
