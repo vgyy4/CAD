@@ -1308,3 +1308,52 @@ other, the second set's tangent chain runs over the first set's arc and down the
 face-name curve numbers in larger sketches do not follow record order (EY4180 A-07: record position 43
 is named 47) and no class of record the sketch owns accounts for the gap; the sheet-metal fixtures
 stop at plates on plate faces, bends between plates, corners and hems.
+
+## Amendment (2026-11-23, 32): Solid Edge round se10 - features in error, misnamed curves, profiles' own copies, spun offsets
+
+Measured first (all 180 ordered parts, one per process, on this round's base: 99 as history, as
+after se9), then each non-history part's tree read alone (reader probe, dumps and tools in scratch,
+not committed). Fixed this round:
+
+| cause (measured) | parts | outcome |
+|---|---|---|
+| a feature Solid Edge could not build is kept in the file but not in the stored body: its function object's first flag byte (after the `QQ` head, kind and serial) has 0x08 set (on 11 of the some 2,200 features read: 020's and 142's last, 135's three cutouts, 136's two protrusions, 019's last round, two of 010's, one of 144's; most others have 0x02) | 020 | left out (`omitted`, "a feature in error"); 020 rebuilds to its stored body |
+| some type tables name the kind of profile curves as a dimension (`JPMIDimensions`, 015's circles, 031's B-splines) or a point on a curve (012), so the members were skipped as annotations and the profile had no curves | 015, 031, 012 | a member so named that is laid out as a curve (not 46 bytes like a key point, `u8 0` at +8, readable) is read; 015 rebuilds (1e-7), 031 and 012 stop later |
+| a 2D profile lists its members twice: the curves it was drawn from, then (after `u8 1`, a class id and the same count) its own copies; the first list can name a sketch curve of an older shape (136's right lobe: an arc in the sketch, an ellipse in the body) or one stored nowhere (010, 176) | 136, 010, 176 | the own copy is read where it is a curve of the part (only failing parts' trees change); 136 then stops at the box-on-capsule round alone, like 133-135; 010 stops at a round, 176 at a union OCCT leaves invalid |
+| stored bodies: an offset of a spun surface (163's 2 mm thin wall) came out on the wrong side, because OCCT reads a SURFACE_OF_REVOLUTION with u and v swapped and keeps the offset's distance; the stored mug measured 844 mm3 against the features' 17289 | 163 | gusset-xt writes such distances negated (ADR 0035 amendment of this date); the stored body measures 17289.05 mm3 |
+| the box check: OCCT's `AddOptimal` box of 163's stored mug was 0.045 mm short of its 29.654 mm radius on one side (a B-spline profile spun with a boss on its seam) | 163 | `gs_bbox` adds the peaks of each face of revolution's circles that lie on the face (ADR 0004 amendment of this date); 163 rebuilds, 4.0e-6 in volume |
+
+**Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before: 99 as
+history. After: **102 as history** (015, 020, 163), none lost. 052 timed out in the stored body's
+STEP import once under a machine load near 18 (its tree is unchanged); measured alone it fails
+as before ("a profile of model edges other than one circle"). The kernel and gusset-xt changes
+reach every importer, so the other corpora were rerun in full on this round's base and head:
+SolidWorks 370 of 1352 as history before and after, no part's outcome or reason changed;
+Inventor 750 of 1686 before and after, none lost and no history outcome changed (two parts
+that timed out under load in the base run came in as bodies, as before). Fusion sets were not
+run here.
+
+**Left (measured).**
+- 054, 056, 060 (054 and 060 one geometry): the stored body loses its three thin-wall faces in
+  OCCT's STEP reader ("Type OffsetSurface is out of scope"): their bases are closed rational
+  B-surfaces (two cubic half circles round, a triple knot at u = 0.5, weights 1, 1/3, 1/3, 1),
+  only C0 in their parameter though tangent-continuous, and OCCT's reader refuses an offset of a
+  C0 surface; the body is an open shell of volume 0. A C1 basis cannot be had by knot removal
+  (the weights break homogeneous C1); writing the offset as a fitted B-surface would.
+- 140: the stored body (tori, -23242 mm3, 63 mm deeper than the features) is a different shape
+  in conversion, not a sign slip.
+- Part copies (004, 005, 009, 013): each copies a sibling part of its folder (P8, P7, P27, P9 of
+  the same project; the path is stored), and every one of those siblings fails itself (018, 017,
+  010, 019), so reading the copy would gain nothing yet.
+- 133-136: OCCT's fillet fails on one edge alone (135: the top-side edge whose back end meets the
+  hemisphere 0.5 mm above its seam with the capsule's cylinder; its mirror edge builds).
+- 019: every chamfer edge of the bottom and top tangent chains gives OCCT an invalid solid alone
+  (OCCT carries the chamfer along the whole tangent chain, which ends at a 0.09 mm high sliver).
+- 069, 070: lofted cutouts to a point (a 30-byte point member), and their copies.
+- 012, 017: SmartBoss features (not read); 014, 142: simplified base features; 051, 058, 162:
+  round kind 17 (its size slot is a 455-byte object, not a value).
+- 041: Round_2's edge lies 224 mm from any of ours: Round_1 (762 mm on a 304.8 mm high body,
+  a cliff round) builds, but not as Solid Edge's.
+- Other rounds as after se9: 083, 088 (three-edge corners on B-spline faces), 100, 170 (far
+  edges not lined up with the round's ends), 044, and the plain rounds OCCT does not build
+  (177, 178, 101, 016, 063, 064, 166, 167, 043, 080, 107, 061).

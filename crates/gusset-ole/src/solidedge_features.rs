@@ -1249,6 +1249,15 @@ fn not_a_curve(class: &str) -> bool {
         && !["JLine2d", "JArc2d", "JCircle2d", "JEllipArc2d", "JEllipse2d", "JBspCurve2d", "JPoint2d"].contains(&c)
 }
 
+/// A member whose kind the type table names as a dimension or a point on a curve, but that is
+/// laid out as a circle, arc, ellipse or B-spline (not 46 bytes, `u8 0` at +8): some parts'
+/// type tables name their curves' kinds so (015's circles, 031's splines). Key points are 46
+/// bytes like a line and stay skipped.
+fn misnamed_curve(st: &Store, m: u32) -> bool {
+    !st.kind_name(m).contains("KeyPoint")
+        && st.obj(m).is_some_and(|b| b.len() != 46 && b.get(8) == Some(&0) && curve(b).is_some())
+}
+
 /// The circle of a hole's 2D member (a hole profile lists it with its key points): the
 /// centre at +8, the diameter at +40, then `u16 0` and the circle laid out as a circle
 /// member's numbers (centre, radius, `0.0, 1.0`).
@@ -1309,7 +1318,8 @@ fn profile(st: &Store, serial: u32) -> Result<Profile, String> {
     if n > MAX_MEMBERS {
         return Err("the profile has too many members".into());
     }
-    let (curves, backwards) = members(st, pb, 12, n, Some(pl))?;
+    let own = own_members(pb, n);
+    let (curves, backwards) = members(st, pb, 12, n, Some(pl), &own)?;
     Ok(Profile { origin: pl.0, normal: pl.1, x: pl.2, curves, turned: false, backwards })
 }
 
@@ -1324,18 +1334,46 @@ fn profile_2d<'a>(st: &'a Store, serial: u32, f: &Func) -> Result<(PlaneFrame, &
     Ok((pl, st.obj(p2).ok_or("the 2D profile is missing")?))
 }
 
-/// The curves of a profile's `n` members, listed (`u32` serials) from `at` in `b`. A member kept
-/// only in `SKETCH.P_B` is brought into `plane`, which a copied profile does not have.
-fn members(st: &Store, b: &[u8], at: usize, n: u32, plane: Option<(V3, V3, V3)>) -> Result<Curves, String> {
+/// A 2D profile's second list of members (after the first, `u8 1`, a class id and `u32 n`):
+/// the profile's own copies of the curves the first list names; empty unless it is as long.
+fn own_members(pb: &[u8], n: u32) -> Vec<u32> {
+    let q = 12 + 4 * n as usize;
+    if pb.get(q) != Some(&1) || u32_at(pb, q + 17) != Some(n) {
+        return Vec::new();
+    }
+    (0..n as usize).map_while(|k| u32_at(pb, q + 21 + 4 * k)).collect()
+}
+
+/// The curves of a profile's `n` members, listed (`u32` serials) from `at` in `b`. A member
+/// whose own copy (`own`, at the same place, see [`own_members`]) is a curve of the part is
+/// read from the copy: the member named can be an older shape (136's right lobe, an ellipse in
+/// the body, is an arc in the sketch) or missing (010). A member kept only in `SKETCH.P_B` is
+/// brought into `plane`, which a copied profile does not have.
+fn members(
+    st: &Store,
+    b: &[u8],
+    at: usize,
+    n: u32,
+    plane: Option<(V3, V3, V3)>,
+    own: &[u32],
+) -> Result<Curves, String> {
     if n > MAX_MEMBERS {
         return Err("the profile has too many members".into());
     }
     let mut curves = Vec::new();
     let mut backwards = Vec::new();
     for k in 0..n as usize {
-        let m = u32_at(b, at + 4 * k).ok_or("the 2D profile is cut short")?;
+        let mut m = u32_at(b, at + 4 * k).ok_or("the 2D profile is cut short")?;
         // No member (a slot left empty: 0, 0xffffffff or 0xfffffffd).
-        if m == 0 || m >= 0xffff_fff0 || not_a_curve(st.kind_name(m)) {
+        if m == 0 || m >= 0xffff_fff0 {
+            continue;
+        }
+        if let Some(&c) =
+            own.get(k).filter(|&&c| st.obj(c).is_some_and(|cb| cb.get(8) == Some(&0) && curve(cb).is_some()))
+        {
+            m = c;
+        }
+        if not_a_curve(st.kind_name(m)) && !misnamed_curve(st, m) {
             continue;
         }
         let Some(mb) = st.obj(m) else {
@@ -1420,7 +1458,7 @@ fn copied_profile(st: &Store, serial: u32, f: &Func) -> Result<Profile, String> 
     };
     match from.class.as_str() {
         "JMSmartPatternFunction" => {
-            let (curves, backwards) = members(st, b, 16, n, seed_feature(4))?;
+            let (curves, backwards) = members(st, b, 16, n, seed_feature(4), &[])?;
             let (origin, normal, x) = copy_frame(b).ok_or("the copied profile's plane is not readable")?;
             Ok(Profile { origin, normal, x, curves, turned: false, backwards })
         }
@@ -1441,7 +1479,7 @@ fn copied_profile(st: &Store, serial: u32, f: &Func) -> Result<Profile, String> 
             });
             let (so, sn, sx) =
                 seed.or_else(|| seed_feature(3)).ok_or("the mirrored profile's plane is not readable")?;
-            let (curves, backwards) = members(st, b, 16, n, Some((so, sn, sx)))?;
+            let (curves, backwards) = members(st, b, 16, n, Some((so, sn, sx)), &[])?;
             let flip = |v: V3| {
                 let k = 2.0 * dot(v, mn);
                 [v[0] - k * mn[0], v[1] - k * mn[1], v[2] - k * mn[2]]
@@ -1922,6 +1960,11 @@ fn kind(class: &str) -> Kind {
         _ => Kind::Other,
     }
 }
+
+/// The flag of a function object (its byte after the `QQ` head, kind and serial) set on a
+/// feature in error, one Solid Edge could not build: 0x02 is set on most features, 0x08 only
+/// on these.
+const IN_ERROR: u8 = 0x08;
 
 /// Functions that are bookkeeping, not features of the history.
 fn bookkeeping(class: &str) -> bool {
@@ -2869,6 +2912,12 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             k,
             Kind::Cutout | Kind::RevolvedCutout | Kind::SweptCutout | Kind::LoftedCutout | Kind::HelixCutout
         );
+        if st.obj(*serial).and_then(|b| b.get(8)).is_some_and(|&f| f & IN_ERROR != 0) {
+            // A feature in error (020's last protrusion): the stored body is the state before
+            // it, so it is left out; the rebuild check still decides.
+            s.omitted.push(json!({"name": name, "why": "a feature in error, not in the part's body"}));
+            continue;
+        }
         if cut && s.first_body.is_none() {
             // A cut before any body removes nothing (176's first cutout); left out, the rebuild
             // check still decides.
