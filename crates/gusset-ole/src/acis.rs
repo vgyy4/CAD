@@ -1247,10 +1247,29 @@ fn cyl_edge(nb: &[(i64, Surf)], c: V3, ax: V3, rad: f64) -> Result<(V3, V3), Str
             _ => {}
         }
     }
-    let [a, b] = sup.as_slice() else {
-        return Err(format!("cylinder blend with {} usable supports", sup.len()));
+    // One support surface split into several faces counts once; of more than two, the pairs
+    // that meet must all meet at one edge.
+    let sup = supports(sup, None);
+    let q = match sup.as_slice() {
+        [a, b] => *inter2(a.1, b.1, (0.0, 0.0)).first().ok_or("supports do not meet")?,
+        [_, _, _, ..] => {
+            let mut at: Vec<(f64, f64)> = Vec::new();
+            for (k, a) in sup.iter().enumerate() {
+                for b in sup.iter().skip(k + 1) {
+                    if let Some(&q) = inter2(a.1, b.1, (0.0, 0.0)).first()
+                        && libm::hypot(q.0, q.1) <= 4.0 * rad
+                    {
+                        at.push(q);
+                    }
+                }
+            }
+            match at.split_first() {
+                Some((&q, rest)) if rest.iter().all(|p| libm::hypot(p.0 - q.0, p.1 - q.1) <= 1e-6 * rad.max(1.0)) => q,
+                _ => return Err(format!("cylinder blend with {} usable supports", sup.len())),
+            }
+        }
+        _ => return Err(format!("cylinder blend with {} usable supports", sup.len())),
     };
-    let q = *inter2(a.1, b.1, (0.0, 0.0)).first().ok_or("supports do not meet")?;
     Ok((add(c, add(mul(e1, q.0), mul(e2, q.1))), u))
 }
 
@@ -1771,5 +1790,9 @@ mod tests {
         assert!(dot(u, [0.0, 0.0, 1.0]).abs() > 0.999);
         // A third face beside it does not matter; a missing support does.
         assert!(cyl_edge(&nb[..1], c, [0.0, 0.0, 1.0], 1.0).unwrap_err().contains("1 usable supports"));
+        // The plane split into two faces (a cut across it) is one support.
+        let split = [nb[0].clone(), (3, Surf::Plane { p: [1.0, 5.0, 0.0], n: [1.0, 0.0, 0.0] }), nb[1].clone()];
+        let (p, _) = cyl_edge(&split, c, [0.0, 0.0, 1.0], 1.0).unwrap();
+        assert!(dist(p, [1.0, libm::sqrt(3.0), 0.5]) < 1e-9, "{p:?}");
     }
 }
