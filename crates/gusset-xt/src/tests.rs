@@ -705,6 +705,15 @@ fn apple_and_lemon_tori_are_both_written() {
     let (lemon, w) = crate::step::surface_text(&torus_graph(0.0005, 0.001), 2);
     let (line, flipped) = lemon.unwrap();
     assert!(line.ends_with(",0.5,1.0);") && !flipped && w.is_empty(), "{line} {w:?}");
+    // Where the faces' points all lie on the outer lobe of a lemon-shaped torus (140's dome),
+    // only that lobe is written, as the lemon below; on the inner lobe it stays a torus.
+    let g = torus_graph(0.0005, 0.001);
+    let outer = [[0.0015, 0.0, 0.0], [0.0, 0.0, 0.00086603]];
+    let (line, flipped) = crate::step::surface_text_near(&g, 2, &outer).0.unwrap();
+    assert!(line.contains("SURFACE_OF_REVOLUTION('',#") && !flipped, "{line}");
+    let inner = [[0.0005, 0.0, 0.0]];
+    let (line, _) = crate::step::surface_text_near(&g, 2, &inner).0.unwrap();
+    assert!(line.ends_with(",0.5,1.0);"), "{line}");
     // A horn torus (equal radii) is written too.
     assert!(!crate::step::surface_text(&torus_graph(0.001, 0.001), 2).0.unwrap().1);
     // A negative major radius below the minor one is a lemon: the arc of the minor radius

@@ -312,19 +312,37 @@ impl Writer<'_> {
                         .push(format!("torus {s} has a zero or negative radius ({ma}, {mi}); its faces are left out"));
                     return None;
                 }
-                // A lemon (minor > major) is written as it is: the face's edges select the part
-                // and its natural normal is XT's (see ADR 0035).
                 let (centre, axis, x) = (g.vec3(s, "centre")?, g.vec3(s, "axis")?, g.vec3(s, "x_axis")?);
-                if ma < 0.0 && -ma < mi {
+                // A positive major radius below the minor one: the faces may lie on the inner
+                // lobe (SolidWorks' r1 fillets on r1.5 lugs), written as a torus, OCCT's edges
+                // selecting the part; or all on the outer one (140's dome, an arc centred
+                // 0.006 mm off its axis), where OCCT keeps the inner lobe in the face too (the
+                // stored body came out -23243 mm3): that is written as the lemon below.
+                let outer = ma > 0.0 && ma < mi && {
+                    let au = geom::unit(axis)?;
+                    let side = |p: V3| {
+                        let d = geom::sub(p, centre);
+                        let z = geom::dot(d, au);
+                        let rho = geom::norm(geom::sub(d, geom::scale(au, z)));
+                        let e = |m: f64| ((rho - m) * (rho - m) + z * z - mi * mi).abs();
+                        (e(ma), e(-ma))
+                    };
+                    let hint = self.hints.get(&s).cloned().unwrap_or_default();
+                    let sides: Vec<(f64, f64)> = hint.iter().map(|p| side(*p)).collect();
+                    let tol = 1e-9 * mi * mi;
+                    sides.iter().any(|(o, i)| *o < tol && *i > 1e3 * tol)
+                        && !sides.iter().any(|(o, i)| *i < tol && *o > 1e3 * tol)
+                };
+                if (ma < 0.0 && -ma < mi) || outer {
                     // A negative major radius below the minor one (Solid Edge's revolved arcs
                     // that cross their axis) is a lemon: P(u, v) = c + (R + r cos v) X(u) +
                     // r sin v A for |v| < acos(-R / r), the arc of radius r centred at c + R x
                     // in the plane of x and A between the two points where it meets the axis,
-                    // turned about the axis (XT's parameters and natural normal). OCCT reads a
-                    // torus's points back with the major radius taken positive, which puts the
-                    // face on the other lobe, and a whole circle would put the lemon's apexes
-                    // inside the parameter range: the arc alone, a rational B-spline, ends at
-                    // them.
+                    // turned about the axis (XT's parameters and natural normal); the outer
+                    // lobe of a positive one likewise. OCCT reads a torus's points back with the
+                    // major radius taken positive, which puts a lemon's face on the other lobe,
+                    // and a whole circle would put the apexes inside the parameter range: the
+                    // arc alone, a rational B-spline, ends at them.
                     let (au, xu) = (geom::unit(axis)?, geom::unit(x)?);
                     let m = geom::add(centre, geom::scale(xu, ma));
                     let v0 = libm::acos((-ma / mi).clamp(-1.0, 1.0));
@@ -600,6 +618,12 @@ fn extent(g: &Graph, m: &Model, s: &Shell) -> f64 {
 /// The STEP entity text and flip of surface `s`, for tests.
 #[cfg(test)]
 pub(crate) fn surface_text(g: &Graph, s: u32) -> (Option<(String, bool)>, Vec<String>) {
+    surface_text_near(g, s, &[])
+}
+
+/// [`surface_text`] with points of the surface's faces (as the vertices of their edges).
+#[cfg(test)]
+pub(crate) fn surface_text_near(g: &Graph, s: u32, near: &[V3]) -> (Option<(String, bool)>, Vec<String>) {
     let mut w = Writer {
         g,
         out: String::new(),
@@ -609,7 +633,7 @@ pub(crate) fn surface_text(g: &Graph, s: u32) -> (Option<(String, bool)>, Vec<St
         vertices: BTreeMap::new(),
         edges: BTreeMap::new(),
         warnings: Vec::new(),
-        hints: BTreeMap::new(),
+        hints: BTreeMap::from([(s, near.to_vec())]),
         xf: None,
         scale: 1.0,
         faces: Vec::new(),
@@ -659,20 +683,23 @@ pub(crate) fn write(g: &Graph, m: &Model, name: &str) -> (String, Vec<String>) {
         faces: Vec::new(),
     };
     for f in m.bodies.iter().flat_map(|b| &b.shells).flat_map(|s| &s.faces) {
-        let pts = w.hints.entry(f.surface).or_default();
+        // On a torus, a ring edge's point too (which lobe a face lies on).
+        let torus = g.type_name(f.surface) == Some("TORUS");
+        let mut pts = Vec::new();
         for l in &f.loops {
             if let Loop::Edges(es) = l {
                 for (e, _) in es {
-                    if let Some((a, b)) = m.edges.get(e).and_then(|i| i.ends) {
-                        for v in [a, b] {
-                            if let Some(p) = g.vec3(g.ptr(v, "point"), "pvec") {
-                                pts.push(p);
-                            }
+                    match m.edges.get(e) {
+                        Some(Edge { ends: Some((a, b)), .. }) => {
+                            pts.extend([a, b].iter().filter_map(|v| g.vec3(g.ptr(**v, "point"), "pvec")));
                         }
+                        Some(Edge { ends: None, curve, .. }) if torus => pts.extend(w.ring_point(*curve)),
+                        _ => {}
                     }
                 }
             }
         }
+        w.hints.entry(f.surface).or_default().extend(pts);
     }
     let app = w.add("APPLICATION_CONTEXT('automotive design')");
     w.add(&format!("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#{app})"));
