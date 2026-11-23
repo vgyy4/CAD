@@ -1466,7 +1466,7 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
     };
     // Slot 17 set: the hole goes the other way (into the face whose outward normal is the
     // opposite; notes AF).
-    let mut nd = if s.get(17).is_some_and(|i| r.dc.r(i).last() == Some(&1)) { [-nd[0], -nd[1], -nd[2]] } else { nd };
+    let nd = if s.get(17).is_some_and(|i| r.dc.r(i).last() == Some(&1)) { [-nd[0], -nd[1], -nd[2]] } else { nd };
     if s.get(7).is_none() {
         let b = r.result().ok_or("slot 7 is empty and the result body is not readable")?;
         let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
@@ -1508,16 +1508,7 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
     if through {
         put(&mut j, "through", json!(true));
     } else {
-        depth = if extent == Some(7) {
-            let (d, other_way) = to_depth(r, &s, f, &pos, nd, owner)?;
-            if other_way {
-                nd = [-nd[0], -nd[1], -nd[2]];
-                put(&mut j, "face", json!({"point": arr(pos.first().copied().unwrap_or(o)), "normal": arr(nd)}));
-            }
-            d
-        } else {
-            rnd(r.pval(&s, 2)? * CM)
-        };
+        depth = if extent == Some(7) { to_depth(r, &s, f, &pos, nd, owner)? } else { rnd(r.pval(&s, 2)? * CM) };
         put(&mut j, "depth", json!(depth));
         if let Ok(pa) = r.pval(&s, 6)
             && pa != 0.0
@@ -1543,16 +1534,8 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
 /// and counterbore included).
 /// The depth (mm) of a hole that ends at a plane or face (extent 7, note AR): slot 13 a work
 /// plane (the depth to it along the hole, the same from every centre), else the face named
-/// through the naming records, measured on the hole's faces in the result body. With it, whether
-/// the hole runs against `nd` to reach the plane.
-fn to_depth(
-    r: &Reader,
-    s: &Slots,
-    f: &Feature,
-    pos: &[V3],
-    nd: V3,
-    owner: Option<usize>,
-) -> Result<(f64, bool), String> {
+/// through the naming records, measured on the hole's faces in the result body.
+fn to_depth(r: &Reader, s: &Slots, f: &Feature, pos: &[V3], nd: V3, owner: Option<usize>) -> Result<f64, String> {
     const G_PLANE: u32 = 0xce52_df42;
     let u = unit3(nd);
     let first = *pos.first().ok_or("the hole has no centre")?;
@@ -1573,12 +1556,10 @@ fn to_depth(
         }
         let depth = |p: V3| dot(sub3(p, o), n) / along;
         let d = depth(first);
-        if d.is_nan() || d == 0.0 || pos.iter().any(|&p| (depth(p) - d).abs() > 1e-6) {
+        if d.is_nan() || d <= 0.0 || pos.iter().any(|&p| (depth(p) - d).abs() > 1e-6) {
             return Err("the hole's end plane is not at one depth below its face".into());
         }
-        // A plane on the other side: the hole runs the other way, to it (the CRS-METEO i-ring's
-        // Hole5, drilled from its sketch plane out to a work plane).
-        return Ok((rnd(d.abs()), d < 0.0));
+        return Ok(rnd(d));
     }
     let b = r.result().ok_or("the hole ends at a face and the result body is not readable")?;
     let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
@@ -1588,7 +1569,7 @@ fn to_depth(
     if d.is_nan() || d <= 0.0 {
         return Err("the hole's faces do not reach below its face".into());
     }
-    Ok((rnd(d * CM), false))
+    Ok(rnd(d * CM))
 }
 
 fn hole_fallback(name: &str, pos: &[V3], info: &HoleInfo, target: &str) -> Option<Vec<Value>> {
