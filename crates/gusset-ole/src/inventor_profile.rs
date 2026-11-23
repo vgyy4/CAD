@@ -169,13 +169,15 @@ pub(crate) fn picks(curves: &[Poly], bodies: &[Vec<Vec<P2>>]) -> Option<Vec<P2>>
 }
 
 /// Does loop `a` run partly inside and partly outside loop `b`? Points of `a` on `b` or near
-/// it (a circle inscribed in a hexagon touches its sides) count neither way.
+/// it count neither way: a circle inscribed in a hexagon touches its sides, and a circle that
+/// touches a spline outline runs a little outside the outline's samples (a keychain's ring,
+/// 0.06 mm); near is within a hundredth of the smaller loop's size.
 fn crosses(a: &[P2], b: &[P2]) -> bool {
     if a.len() < 3 || b.len() < 3 {
         return false;
     }
     let size = |l: &[P2]| extent(l.iter().copied()).map_or(0.0, |e| (e[1] - e[0]).max(e[3] - e[2]));
-    let eps = 1e-4 * size(a).max(size(b));
+    let eps = 1e-2 * size(a).min(size(b));
     let clear = |p: P2| {
         b.iter().zip(b.iter().cycle().skip(1)).all(|(&u, &v)| {
             let (dx, dy) = (v.0 - u.0, v.1 - u.1);
