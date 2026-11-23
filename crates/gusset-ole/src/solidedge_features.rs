@@ -2366,13 +2366,89 @@ fn sweep(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
         let fb = s.first_body.clone().ok_or("a cut before any body")?;
         put(&mut j, "target", json!(fb));
     }
+    // A cross section at a joint inside the path (023's, where its two arcs meet) is swept both
+    // ways from it: along the curves before the joint and, a feature of its own, those after.
+    let second = path_split(&pj, &sj).map(|(before, after)| {
+        put(&mut j, "path_curves", json!(before));
+        let mut other = j.clone();
+        put(&mut other, "name", json!(format!("{name}_second")));
+        put(&mut other, "path_curves", json!(after));
+        if op == "new" {
+            put(&mut other, "operation", json!("join"));
+            put(&mut other, "target", json!(name));
+        }
+        other
+    });
     s.out.push(pj);
     s.out.push(sj);
     s.out.push(j);
+    if let Some(o) = second {
+        s.out.push(o);
+    }
     if s.first_body.is_none() {
         s.first_body = Some(name.to_string());
     }
     Ok(())
+}
+
+/// The curve ids of a path sketch (one open chain) before and after the joint that lies on
+/// the cross section's plane, when neither end of the chain does (within 1e-6 mm).
+pub(crate) fn path_split(path: &Value, section: &Value) -> Option<(Vec<String>, Vec<String>)> {
+    let v3 = |v: &Value| -> Option<V3> {
+        let a = v.as_array()?;
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+    };
+    let frame = |sk: &Value| -> Option<(V3, V3, V3)> {
+        let pl = sk.get("plane")?;
+        Some((v3(pl.get("origin")?)?, v3(pl.get("x_axis")?)?, v3(pl.get("y_axis")?)?))
+    };
+    let (o, x, y) = frame(path)?;
+    let (so, sx, sy) = frame(section)?;
+    let n = unit(cross(sx, sy))?;
+    let mut at: HashMap<&str, V3> = HashMap::new();
+    for p in path.get("points")?.as_array()? {
+        let (u, w) = (p.get("x")?.as_f64()?, p.get("y")?.as_f64()?);
+        let ([o0, o1, o2], [x0, x1, x2], [y0, y1, y2]) = (o, x, y);
+        at.insert(p.get("id")?.as_str()?, [o0 + u * x0 + w * y0, o1 + u * x1 + w * y1, o2 + u * x2 + w * y2]);
+    }
+    // The curves with their ends (a whole circle has none: no chain to split).
+    let mut ends: Vec<(String, V3, V3)> = Vec::new();
+    for c in path.get("curves")?.as_array()? {
+        if c.get("construction").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let end = |k: &str| c.get(k).and_then(Value::as_str).and_then(|id| at.get(id)).copied();
+        ends.push((c.get("id")?.as_str()?.to_string(), end("start")?, end("end")?));
+    }
+    let near = |a: V3, b: V3| a.iter().zip(b).all(|(p, q)| (p - q).abs() < 1e-6);
+    let on = |p: V3| dot([p[0] - so[0], p[1] - so[1], p[2] - so[2]], n).abs() < 1e-6;
+    // Order the chain from an end no other curve shares.
+    let shared = |p: V3, k: usize| ends.iter().enumerate().any(|(i, e)| i != k && (near(e.1, p) || near(e.2, p)));
+    let (k0, e0) = ends.iter().enumerate().find_map(|(k, e)| {
+        if !shared(e.1, k) {
+            Some((k, e.1))
+        } else if !shared(e.2, k) {
+            Some((k, e.2))
+        } else {
+            None
+        }
+    })?;
+    let (mut chain, mut joints, mut used) = (vec![k0], Vec::new(), vec![k0]);
+    let mut tip = if near(ends.get(k0)?.1, e0) { ends.get(k0)?.2 } else { ends.get(k0)?.1 };
+    while chain.len() < ends.len() {
+        let (k, e) = ends.iter().enumerate().find(|(k, e)| !used.contains(k) && (near(e.1, tip) || near(e.2, tip)))?;
+        joints.push(tip);
+        tip = if near(e.1, tip) { e.2 } else { e.1 };
+        chain.push(k);
+        used.push(k);
+    }
+    if on(e0) || on(tip) {
+        return None;
+    }
+    let t = joints.iter().position(|p| on(*p))?;
+    let ids = |r: &[usize]| r.iter().filter_map(|k| ends.get(*k).map(|e| e.0.clone())).collect::<Vec<_>>();
+    let (a, b) = chain.split_at(t + 1);
+    Some((ids(a), ids(b)))
 }
 
 /// A helical protrusion or cutout (`JMHelix*Function`): slot 2 the axis (a line object whose
@@ -2579,7 +2655,7 @@ fn blend(st: &Store, s: &mut State, f: &Func, name: &str, k: Kind) -> Result<(),
     let round = k == Kind::Round;
     let (set, size) = if round {
         match code(3) {
-            Some(1 | 2) => {}
+            Some(1 | 2 | 17) => {}
             other => return Err(format!("round kind {other:?} (not a constant or variable radius)")),
         }
         (2, 4)

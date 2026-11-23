@@ -13,6 +13,7 @@ mod decode;
 mod eval;
 mod geom;
 mod model;
+mod offset;
 mod reader;
 mod refine;
 mod schema;

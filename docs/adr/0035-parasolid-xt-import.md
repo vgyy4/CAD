@@ -232,3 +232,32 @@ closed rational B-surfaces made of two cubic half circles (a triple knot at u = 
 1, 1/3, 1/3, 1: tangent-continuous, but not C1 even in homogeneous coordinates, so the knot
 cannot be removed); their stored bodies come in as open shells of volume 0. Writing such an
 offset as a fitted B-surface would keep the faces.
+
+## Amendment (2026-11-23): offsets of C0 tubes, the outer lobe of lemon-shaped tori
+Round se11 (ADR 0046 amendment 34).
+* **Offsets of C0 tubes.** OCCT's STEP reader refuses an OFFSET_SURFACE whose basis is only C0
+  in its parameters and drops the face. Where the basis B-surface has an interior knot of full
+  multiplicity and its u lines are circles of one radius made of two halves meeting at that
+  knot (Solid Edge 054, 056, 060: thin-walled pipes swept as closed rational B-surfaces of two
+  cubic half circles), the offset is written as the basis with each row of poles scaled about
+  the centre of the circle (or, in the rows of poles, the ellipse) it describes: the midpoint
+  of the row's points at the domain's start and at the C0 knot, the scale the one that moves
+  the u line at the row's Greville abscissa onto the offset. The result is a B-surface in the
+  basis's parameters, checked on a grid (64 by four points to a row of poles) against the true
+  offset across its normal, within 2e-7 of the basis's size (054's walls within 2.5e-8 m;
+  points slide along the surface up to 3.9e-7 m where Parasolid's sweep is not quite square to
+  its sections). A first try, a bicubic Hermite fit of any C0 offset to 1e-8 of the size,
+  needed 128 cells to a knot span and wrote a 780 MB STEP file for 054; it was dropped. The
+  three stored bodies now come in closed (056 and 060 valid, 054 not by BRepCheck), but do not
+  measure: OCCT's quadratures disagree on them (056: 443753 mm3 default, 461968 adaptive, a
+  0.02 mm mesh 466521) against the features' 465295.55; the scaled walls agree with the
+  rebuilt ones in area (51780.5 against 51778.1 mm2), the swept outer walls do not (70037.8
+  against 70055.7). Left.
+* **Lemon-shaped tori.** A torus with a positive major radius below its minor one was written
+  as a TOROIDAL_SURFACE, the faces' edges selecting the part. For a face on the outer lobe
+  bounded by a circle and an apex (Solid Edge 140's revolved dome, an arc centred 0.006 mm off
+  its axis) OCCT keeps the inner lobe in the face: the stored body measured -23243 mm3. Where
+  all the points of a torus's faces (their vertices and, on tori, a point of each ring edge)
+  lie on the outer lobe, the lobe is written as the negative-major lemons are, the revolved arc
+  between the apexes; faces on the inner lobe, or with no point that tells, keep the torus.
+  140's stored body measures 17958.1591 mm3, the features 17958.1590.

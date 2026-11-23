@@ -5,7 +5,7 @@ use crate::fixtures::ole;
 use crate::solidedge_features::{
     Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, close_on_axis, close_open, copy_frame, curve,
     edge_pick, edge_set, face_pick, face_set, feature_tree, history, hole_circle, key_point_angle, key_point_reach,
-    parse_func, plane, reach_in_box, split_loft_circle, stored_box, value, vertex_set,
+    parse_func, path_split, plane, reach_in_box, split_loft_circle, stored_box, value, vertex_set,
 };
 use serde_json::json;
 
@@ -439,12 +439,16 @@ fn rounds_and_chamfers_pick_their_stored_edges() {
     more.extend(obj(36, 25, &small(41.0)));
     more.extend(obj(36, 26, &small(0.0005)));
     more.extend(obj(38, 27, &func("JMChamferFunction", &[&[27], &[24], &[25], &[0], &[21], &[26]])));
-    // A round of another kind (variable radius) is not read.
-    more.extend(obj(36, 28, &small(17.0)));
+    // A round of another kind is not read.
+    more.extend(obj(36, 28, &small(5.0)));
     more.extend(obj(38, 29, &func("JMRoundFunction", &[&[29], &[27], &[21], &[28], &[23]])));
+    // Kind 17 is a constant radius too (051's, 058's and 162's rounds).
+    more.extend(obj(36, 30, &small(17.0)));
+    more.extend(obj(38, 31, &func("JMRoundFunction", &[&[31], &[29], &[21], &[30], &[23]])));
     let t = feature_tree(&part_with(1.0, 13.0, None, &more), "p.par", &crate::Limits::default()).unwrap();
     let f = t["features"].as_array().unwrap();
-    assert_eq!(f.len(), 5, "{t}");
+    assert_eq!(f.len(), 6, "{t}");
+    assert_eq!((&f[5]["type"], &f[5]["radius"]), (&json!("fillet"), &json!(1.0)), "{t}");
     assert_eq!(f[2]["type"], "fillet");
     assert_eq!(f[2]["radius"], json!(1.0));
     assert_eq!(f[2]["edges"], json!([{"midpoint": [10.0, 0.0, 0.0], "path": [[9.9, 0.0, 0.0], [10.1, 0.0, 0.0]]}]));
@@ -1591,4 +1595,22 @@ fn a_feature_in_error_is_left_out() {
     assert_eq!(t["features"].as_array().unwrap().len(), 2, "{t}");
     assert_eq!(t["source"]["omitted"][1]["name"], "Cutout_1", "{t}");
     assert_eq!(t["source"]["omitted"][1]["why"], "a feature in error, not in the part's body");
+}
+
+#[test]
+fn a_cross_section_inside_its_path_splits_the_sweep_there() {
+    // 023's path: two arcs in the xz plane meeting at (61.58, 42.77), the cross section square
+    // to them there; the chain's ends are elsewhere.
+    let path = json!({"plane": {"origin": [0.0, 0.0, 0.0], "x_axis": [1.0, 0.0, 0.0], "y_axis": [0.0, 0.0, 1.0]},
+        "points": [{"id": "p0", "x": 61.582188856, "y": 42.774848771}, {"id": "p1", "x": 37.858050211, "y": 61.0},
+            {"id": "p2", "x": 49.038390099, "y": 51.0}, {"id": "p3", "x": 25.913688675, "y": 15.0},
+            {"id": "p4", "x": 3.044461323, "y": 81.158887841}],
+        "curves": [{"id": "c0", "type": "arc", "start": "p0", "end": "p1", "center": "p2"},
+            {"id": "c1", "type": "arc", "start": "p3", "end": "p0", "center": "p4"}]});
+    let section = |o: [f64; 3]| json!({"plane": {"origin": o, "x_axis": [0.0, 1.0, 0.0], "y_axis": [-0.83625325, 0.0, 0.548343415]}});
+    let (a, b) = path_split(&path, &section([61.582188856, 0.0, 42.774848771])).unwrap();
+    assert_eq!((a.len(), b.len()), (1, 1));
+    assert!(a != b && [&a[0], &b[0]].iter().all(|c| ["c0", "c1"].contains(&c.as_str())));
+    // A section at an end of the chain is swept as before.
+    assert!(path_split(&path, &section([37.858050211, 0.0, 61.0])).is_none());
 }
