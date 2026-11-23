@@ -934,8 +934,34 @@ fn drop_nested(nodes: &mut Vec<Node>) {
 /// the prototype settles this way). A tag below `outer`'s end names a class `Config-0`
 /// declared (round sw15: Toolbox screws declare `moProfileFeature_c` there, and their sketch
 /// nodes only refer to it), taken as counted where the count has the sketch class at that
-/// index.
+/// index. A tag one below the archive index of a node that declares its class (that node is
+/// the object right after the class, [`node_indices`]) names that class outright (round sw17:
+/// the toolbox gears' Bore and Keyway refer to 3326, ToothCut, object 3327, declares
+/// `moCut_c`; by signature they had passed for the `moBoss_c` HubNearOne declares).
 fn classify(d: &[u8], nodes: &mut [Node], outer: (&HashMap<usize, String>, usize)) {
+    let mut starts: Vec<usize> = nodes.iter().map(|n| n.start).collect();
+    starts.push(d.len());
+    starts.sort_unstable();
+    let spans: Vec<(usize, usize, u32)> = nodes
+        .iter()
+        .map(|n| {
+            let i = starts.partition_point(|&s| s <= n.start);
+            (n.start, starts.get(i).copied().unwrap_or(d.len()), n.id)
+        })
+        .collect();
+    let mut exact: HashMap<u16, Option<String>> = HashMap::new();
+    for (index, k) in patterns::object_indices(d, &spans) {
+        let Some(cls) = nodes.get(k).filter(|n| n.tag.is_none()).and_then(|n| n.cls.clone()) else { continue };
+        let Some(t) = index.checked_sub(1).and_then(|t| u16::try_from(t).ok()) else { continue };
+        exact
+            .entry(t)
+            .and_modify(|c| {
+                if c.as_deref() != Some(cls.as_str()) {
+                    *c = None;
+                }
+            })
+            .or_insert(Some(cls));
+    }
     let sig = |n: &Node| d.get(n.post..(n.post + 16).min(d.len())).unwrap_or_default();
     let strip = |s: &str| s.chars().filter(|c| !c.is_ascii_digit()).collect::<String>().trim().to_string();
     let mut tags: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
@@ -952,6 +978,10 @@ fn classify(d: &[u8], nodes: &mut [Node], outer: (&HashMap<usize, String>, usize
         if usize::from(*t) < outer.1
             && let Some(c) = outer.0.get(&usize::from(*t)).filter(|c| *c == "moProfileFeature_c")
         {
+            mapping.insert(*t, Some(c.clone()));
+            continue;
+        }
+        if let Some(Some(c)) = exact.get(t) {
             mapping.insert(*t, Some(c.clone()));
             continue;
         }
@@ -5351,7 +5381,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let circular = cls.as_deref() == Some("moCirPattern_c");
             let slots = param_slots(rf, a, b, nt)?;
             let slot = |k: &str| slots.iter().find(|(name, _)| name == k).map(|(_, at)| *at);
-            let int = |k: &str| slot(k).and_then(|at| u32_at(rf, at));
+            let inline = circular.then(|| inline_count(rf, a, b)).flatten();
+            let int = |k: &str| slot(k).and_then(|at| u32_at(rf, at)).or(if k == "D1" { inline } else { None });
             let real = |k: &str| slot(k).and_then(|at| f64_at(rf, at)).filter(|v| v.is_finite());
             let made = feature_pattern(
                 &n.name,
@@ -5361,7 +5392,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 (int, real),
                 |p| {
                     let is_feature = |k: usize| nodes.get(k).is_some_and(|m| emitted(&feats, &m.name));
-                    seed_node(index, p, ni, is_feature).and_then(|k| nodes.get(k)).map(|m| m.name.clone())
+                    seed_node(index, p, ni, is_feature)
+                        .and_then(|k| nodes.get(k))
+                        .map(|m| (m.name.clone(), m.suppressed))
                 },
                 &feats,
             );
@@ -6187,6 +6220,19 @@ fn seed_node(index: &HashMap<u32, usize>, p: u32, at: usize, is_feature: impl Fn
     found.next().is_none().then_some(one)
 }
 
+/// The instance count a circular pattern also keeps in its own data (round sw17): the first
+/// `ff fe ff 00`, `00 00 00 00`, `ff ff ff ff`, then the count as an `f64` and `08 00 00 00 10 00
+/// 00 00`. It equals `D1` where the node has one (Candle Holder's 12, Lego Head's 3); the
+/// toolbox gears' TeethCuts have no `D1` (their tooth count is a configuration property) and
+/// this alone gives it (12 for the 12T spur gear, 66 for the internal gear).
+fn inline_count(d: &[u8], a: usize, b: usize) -> Option<u32> {
+    const HEAD: [u8; 12] = [0xff, 0xfe, 0xff, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff];
+    let i = find(d, &HEAD, a, b)?;
+    let v = f64_at(d, i + 12)?;
+    let tail_ok = d.get(i + 20..i + 28) == Some(&[8, 0, 0, 0, 0x10, 0, 0, 0][..]);
+    (tail_ok && v.fract() == 0.0 && (2.0..=10_000.0).contains(&v)).then(|| v as u32)
+}
+
 /// A linear or circular feature pattern (`moLPattern_c`, `moCirPattern_c`) as tree features.
 /// Parameters: a linear pattern's instance counts are `D1` and `D2` (integers) and its spacings
 /// `D3` and `D4` (m), along the first and second written line; a circular pattern's count is
@@ -6199,7 +6245,7 @@ fn feature_pattern(
     seeds: Option<patterns::Seeds>,
     lines: &[(V3, V3)],
     (int, real): (impl Fn(&str) -> Option<u32>, impl Fn(&str) -> Option<f64>),
-    node_name: impl Fn(u32) -> Option<String>,
+    node_name: impl Fn(u32) -> Option<(String, bool)>,
     feats: &[Value],
 ) -> Vec<Value> {
     let kind = if circular { "pattern_circular" } else { "pattern_linear" };
@@ -6210,13 +6256,21 @@ fn feature_pattern(
     }
     let mut names: Vec<String> = Vec::new();
     for &p in &seeds.ptrs {
-        let Some(s) = node_name(p) else { return fail("a seed feature was not found") };
+        let Some((s, suppressed)) = node_name(p) else { return fail("a seed feature was not found") };
+        // A suppressed seed adds nothing to the copies (round sw17: the toolbox gears' TeethCuts
+        // repeat ToothCut with the suppressed fillets Breaks and RootFillets).
+        if suppressed && !emitted(feats, &s) {
+            continue;
+        }
         if !emitted(feats, &s) {
             return fail("a seed feature was not read");
         }
         if !names.contains(&s) {
             names.push(s);
         }
+    }
+    if names.is_empty() {
+        return fail("no seed feature");
     }
     let all_cuts = names.iter().all(|n| {
         feats.iter().any(|f| {
@@ -7150,7 +7204,7 @@ mod pattern_tests {
             _ => None,
         };
         let lines = [([0.0, 36.5, 1.6], [0.0, -1.0, 0.0]), ([3.5, 0.0, 1.6], [1.0, 0.0, 0.0])];
-        let names = |p: u32| (p == 0x33d).then(|| "Cut-Extrude1".to_string());
+        let names = |p: u32| (p == 0x33d).then(|| ("Cut-Extrude1".to_string(), false));
         let out = feature_pattern("LPattern1", false, seeds(&[0x33d]), &lines, (ints, reals), names, &feats);
         assert_eq!(out.len(), 2, "{out:?}");
         assert_eq!(out[0]["features"], json!(["Cut-Extrude1"]));
@@ -7216,7 +7270,7 @@ mod pattern_tests {
     #[test]
     fn a_circular_step_angle_becomes_the_total() {
         let feats = [json!({"type": "extrude", "name": "Air Hole"})];
-        let names = |_: u32| Some("Air Hole".to_string());
+        let names = |_: u32| Some(("Air Hole".to_string(), false));
         let lines = [([0.0, 2.8, 0.0], [0.0, 1.0, 0.0])];
         // Three at 120 degrees: a full turn; four at 30 degrees: 90 degrees from first to last.
         for (count, step, want) in [(3, TAU / 3.0, 360.0), (4, TAU / 12.0, 90.0)] {
