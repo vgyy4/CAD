@@ -1358,6 +1358,65 @@ run here.
   edges not lined up with the round's ends), 044, and the plain rounds OCCT does not build
   (177, 178, 101, 016, 063, 064, 166, 167, 043, 080, 107, 061).
 
+## Amendment (2026-11-23, 33): Inventor round ipt13 - blend picks past their edge, step-wide chamfers, copy order
+
+Measured first: all 1686 parts on this round's base (752 as history, as after ipt12), then the 106
+bodies whose first failure is a fillet or chamfer, each with its failing pick, the four model edges
+nearest it and the blend face's neighbours (scratch, not committed). By cause:
+
+| first failure | parts | what the pick lands near |
+|---|---|---|
+| no model edge at a pick | 39 | 6 within 0.5 mm, 16 more within 5 mm, 17 farther: an earlier feature differs (text embosses read as their whole sketch, a midplane pattern one spacing off, fillets merged with a later join's face), a fillet rolling over a neighbouring blend (the S-shaped pairs of 11061412's brackets, Zawias), a concave chamfer read as a convex one (LT-PAM stopper) |
+| spline blend surfaces (`ref`, `rb_blend_spl_sur`, `cyl_spl_sur`) | 23 | blends between a plane and a cylinder or cone off its axis, or along a spline edge: the edge is not a line or circle the reader can rebuild (CRS-METEO base radiators, connector mains, vanes and rotors: 10) |
+| cylinder blends with 0, 1 or 3 usable supports | 11 | a support used up by the blend or by a neighbouring blend of the same feature |
+| OCCT refuses the chamfer or fillet | 14 | 8 chamfers (2 as wide as their step, below), 6 fillets |
+| other: corner circles 3, support pairs 2, no edge read 5, the bay adapters (after the mirror fix, a text engraving) 4, the LEGO bricks (a text boss read as a disc) 2, a fillet with several radii, a face fillet, a full round beside other edges | 19 | |
+
+Changed this round:
+
+| rule | parts gained |
+|---|---|
+| a mirrored blend copy reflects its picks' path points with their midpoints (shared tree import) | 0 (the EY4180 bay adapters' Mirror2 builds; they then stop at a text engraving read as its whole sketch, 271 mm3 off) |
+| of a two-direction pattern's midplane direction with an even count, the extra occurrence lies along the stored direction (behind a turned one, ahead otherwise) | 0 (the bay adapters' nut traps, count 8, now land; the parts stop as above) |
+| a straight pick on no model edge takes the model's straight edge on its line nearest its midpoint, as the last resort (shared tree import) | 1 (CRS-METEO box-mount 0015; its two later versions stop at a fillet OCCT refuses) |
+| `VBL_SURF` blend faces are corner patches | 0 (fl_setback and the connector mains stop at their spline blends) |
+| chamfers as wide as their step: cut as the triangle they removed, revolved | 2 (ISO 7435 M2 set screw, GOST 12639 rivet) |
+| a feature a mirror or pattern copies, made after it but placed before it in the order record, moves to just before the copy (full place order is wrong in some files) | 1 (EY4180 Differential Signal Generator A-02) |
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4).
+
+| corpus | parts | history before | after | without a solid |
+|---|---|---|---|---|
+| first (Zenodo) | 47 | 28 | 28 | 0 |
+| second (57 sources) | 1639 | 724 | 728 | 46 |
+
+Checked: the trees of all 1686 parts were read on the base and the head; every part whose tree
+changed, that mirrors a blend, whose base failure was a missing model edge, or that is read through a
+base part (204) was rebuilt on the head: no part went from history to body. The two tree-import
+changes reach SolidWorks, Solid Edge and Fusion imports (only where a blend pick would otherwise find
+no edge, or where a mirror copies a blend whose picks carry a path); the SolidWorks and Solid Edge
+corpora were rerun on the base and the head (below).
+
+| corpus | parts | base | head |
+|---|---|---|---|
+| SolidWorks (sw-more, Slip-Pad, ARIG revisions, Zenodo) | 1352 | 373 | 373 (no part's line changed; V-Slot Door Handle crashes the test process on both) |
+| Solid Edge (ordered parts, one per process) | 180 | 102 (round se10's head) | 102 (no part's row changed; 064 crashes on both) |
+
+Fusion imports share the tree import: a straight Fusion pick with a path that names no edge now
+takes the edge on its line before the import gives up; Fusion picks without a path are unchanged.
+Fusion was not rerun (the session's job).
+
+What blocks the rest of the 106 (measured, not changed): the bay adapters' engravings and the LEGO
+bricks' stud logos are sketch text, read as their whole sketch or as the disc under it; spline blend
+surfaces (23) need the edge between a plane and a cylinder, cone or spline off its axis, which no
+line or circle the reader rebuilds; cylinder blends that rolled onto a neighbouring blend of the same
+feature (the S-shaped pairs of 11061412's Fixture Pull Bracket, Zawias) give the edge between the
+plane and that blend, not the one the model has; a concave chamfer whose step face was used up reads
+as convex (LT-PAM stopper: both corners fit the faces); OCCT refuses 6 chamfers and 6 fillets on edges
+the picks find (the box mounts' Fillet6, EndCap's outline chain, LED Washer's slot edges); AN816's
+chamfer lands 0.381 mm off because the iPart member's revolve is that much shorter. `fl_two_sets`
+was not taken up: one part needs a fillet with a radius per edge in the kernel.
+
 ## Amendment (2026-11-23, 34): Solid Edge round se11 - C0 tube offsets, apple-shaped domes, round kind 17, sections inside their paths
 
 Measured first (all 180 ordered parts, one per process, on this round's base: 102 as history, as

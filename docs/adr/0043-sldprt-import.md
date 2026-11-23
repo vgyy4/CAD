@@ -896,3 +896,25 @@ round sw15's) and took:
 The rebuild check is unchanged. History 370 -> 373 of 1352 against the round's own baseline, none lost
 (Part3 by contour points, the two stepper motor shafts by arc digits); the Inventor (722 of 1639, 28 of 47) and
 Solid Edge (99 of 180) corpora rerun with the shared tree import changes lose nothing. The kernel is unchanged.
+
+## Amendment (2026-11-23): child indices, faces across a cylinder, shell walls, tooth patterns, 3D-sketch holes (round sw17)
+
+Round sw17 (L28 in `docs/formats/solidworks-feature-tree.md`) measured its own baseline (373 of 1352, row for row
+round sw16's) and took:
+
+- **Sketches by child index**: where several unused sketches lie in the gap a child index falls in, the sketch
+  whose entity references carry the index is taken.
+- **Faces across a cylinder** (shared tree import, `named.rs`): the loose pass of an edge named by its faces also
+  takes the faces that continue a named cylindrical face across edges about the same axis.
+- **Shell walls**: references through a shell (and in-place class declarations in edge records) are read; a face
+  pick may carry `shell`, which the import resolves to the shell's `inner(<face>)` (shared tree import).
+- **Patterns**: suppressed seeds are left out; a circular pattern without `D1` takes the count kept in its own
+  data; class tags one below a declaring node's archive index name that class outright.
+- **Extrude depths** without `D1` from the same record; `moBoss_c` nodes are extrudes.
+- **Mirrors**: a mirror of every feature so far mirrors the body; a mirror on a plane feature takes a sketch's
+  plane on it.
+- **Holes placed by a 3D sketch** take the section sketch's origin and axis line.
+
+The rebuild check is unchanged. History 373 -> 384 of 1352, none lost. Only the SolidWorks reader writes face picks
+on edges, so the `named.rs` changes cannot reach Inventor, Solid Edge or Fusion imports; the Solid Edge corpus was
+rerun against the round's base binary. The kernel is unchanged.

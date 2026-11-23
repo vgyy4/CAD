@@ -36,7 +36,7 @@ const BIG: f64 = 500.0;
 const TAU: f64 = 2.0 * core::f64::consts::PI;
 
 const PLANE_NAMES: [(u32, &str); 3] = [(2, "Front"), (3, "Top"), (4, "Right")];
-const EXTRUDE: [&str; 3] = ["moExtrusion_c", "moICE_c", "moCut_c"];
+const EXTRUDE: [&str; 4] = ["moExtrusion_c", "moICE_c", "moCut_c", "moBoss_c"];
 const REVOLVE: [&str; 2] = ["moRevolution_c", "moRevCut_c"];
 /// Classes that carry nothing the tree needs (sketches are handled before this list).
 const SKIPPED: [&str; 43] = [
@@ -742,13 +742,17 @@ fn child_ref(d: &[u8], e: usize) -> Option<u16> {
 /// The sketch an extrude or revolve uses (round sw7). Normally the last sketch read; a child
 /// index already seen names the same sketch; an index below one seen names the one sketch not yet
 /// used between the sketches of the nearest indices seen (gear box side1's Boss-Extrude5 uses
-/// Sketch5, read before the Sketch10 that Cut-Extrude3 used).
+/// Sketch5, read before the Sketch10 that Cut-Extrude3 used). Where more than one sketch is
+/// free there, the sketch whose own entity references carry the index (`by_index`, round sw17:
+/// shaft_stage_2's Cut-Extrude2 refers to 0x25d, which Sketch8's edges write as their owner; the
+/// unused Sketch7 lies between it and the boss's sketch too) picks among them.
 fn feature_sketch(
     child: Option<u16>,
     last: &Option<String>,
     order: &[String],
     seen: &[(u16, String)],
     used: &HashSet<String>,
+    by_index: impl FnOnce(u16) -> Option<String>,
 ) -> Option<String> {
     let Some(r) = child else { return last.clone() };
     if let Some((_, s)) = seen.iter().find(|(k, _)| *k == r) {
@@ -763,8 +767,21 @@ fn feature_sketch(
     let free: Vec<&String> = order.get(from..hi).unwrap_or_default().iter().filter(|s| !used.contains(*s)).collect();
     match free.as_slice() {
         [one] => Some((*one).clone()),
-        _ => last.clone(),
+        [] => last.clone(),
+        _ => by_index(r).filter(|s| free.contains(&s)).or_else(|| last.clone()),
     }
+}
+
+/// The node an archive index names, by [`node_indices`] (computed once, on first use).
+fn node_at_index(
+    cache: &mut Option<HashMap<u32, usize>>,
+    d: &[u8],
+    nodes: &[Node],
+    span: &impl Fn(&Node) -> (usize, usize),
+    r: u16,
+) -> Option<String> {
+    let index = cache.get_or_insert_with(|| node_indices(d, nodes, span));
+    index.get(&u32::from(r)).and_then(|&k| nodes.get(k)).map(|m| m.name.clone())
 }
 
 /// The first node block (either version) in `d[from..to]`.
@@ -917,8 +934,34 @@ fn drop_nested(nodes: &mut Vec<Node>) {
 /// the prototype settles this way). A tag below `outer`'s end names a class `Config-0`
 /// declared (round sw15: Toolbox screws declare `moProfileFeature_c` there, and their sketch
 /// nodes only refer to it), taken as counted where the count has the sketch class at that
-/// index.
+/// index. A tag one below the archive index of a node that declares its class (that node is
+/// the object right after the class, [`node_indices`]) names that class outright (round sw17:
+/// the toolbox gears' Bore and Keyway refer to 3326, ToothCut, object 3327, declares
+/// `moCut_c`; by signature they had passed for the `moBoss_c` HubNearOne declares).
 fn classify(d: &[u8], nodes: &mut [Node], outer: (&HashMap<usize, String>, usize)) {
+    let mut starts: Vec<usize> = nodes.iter().map(|n| n.start).collect();
+    starts.push(d.len());
+    starts.sort_unstable();
+    let spans: Vec<(usize, usize, u32)> = nodes
+        .iter()
+        .map(|n| {
+            let i = starts.partition_point(|&s| s <= n.start);
+            (n.start, starts.get(i).copied().unwrap_or(d.len()), n.id)
+        })
+        .collect();
+    let mut exact: HashMap<u16, Option<String>> = HashMap::new();
+    for (index, k) in patterns::object_indices(d, &spans) {
+        let Some(cls) = nodes.get(k).filter(|n| n.tag.is_none()).and_then(|n| n.cls.clone()) else { continue };
+        let Some(t) = index.checked_sub(1).and_then(|t| u16::try_from(t).ok()) else { continue };
+        exact
+            .entry(t)
+            .and_modify(|c| {
+                if c.as_deref() != Some(cls.as_str()) {
+                    *c = None;
+                }
+            })
+            .or_insert(Some(cls));
+    }
     let sig = |n: &Node| d.get(n.post..(n.post + 16).min(d.len())).unwrap_or_default();
     let strip = |s: &str| s.chars().filter(|c| !c.is_ascii_digit()).collect::<String>().trim().to_string();
     let mut tags: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
@@ -935,6 +978,10 @@ fn classify(d: &[u8], nodes: &mut [Node], outer: (&HashMap<usize, String>, usize
         if usize::from(*t) < outer.1
             && let Some(c) = outer.0.get(&usize::from(*t)).filter(|c| *c == "moProfileFeature_c")
         {
+            mapping.insert(*t, Some(c.clone()));
+            continue;
+        }
+        if let Some(Some(c)) = exact.get(t) {
             mapping.insert(*t, Some(c.clone()));
             continue;
         }
@@ -2130,9 +2177,25 @@ fn edge_records_to(
                 break;
             }
             let mut via = None;
+            // A reference whose class is declared in place (`ff ff 01 00 <u16 n> <name>`) has
+            // no tag; the rest of it follows the name (round sw17: Linear Actuator Bracket's
+            // Fillet1 declares `moShellSurfIdRep_c` for the first face of a shell's wall).
+            let tag_of = |p: &mut usize| -> Option<u16> {
+                if d.get(*p..*p + 4) == Some(&CLASS_DECL[..]) {
+                    let n = usize::from(u16_at(d, *p + 4)?);
+                    let name = d.get(*p + 6..*p + 6 + n)?;
+                    if !(3..=40).contains(&n) || !name.iter().all(u8::is_ascii_graphic) {
+                        return None;
+                    }
+                    *p += 4 + n;
+                    return Some(0xffff);
+                }
+                u16_at(d, *p)
+            };
+            let t0 = tag_of(&mut p);
             let outer = need(u32_at(d, p + 8), "an edge record")?;
             if (mirrors.contains(&outer) || patterns.contains(&outer))
-                && u16_at(d, p).is_some_and(|t| t & 0x8000 != 0)
+                && t0.is_some_and(|t| t & 0x8000 != 0)
                 && u16_at(d, p + 2) == Some(0)
                 && u16_at(d, p + 16).is_some_and(|t| t & 0x8000 != 0)
                 && u16_at(d, p + 18) == Some(0)
@@ -2141,7 +2204,7 @@ fn edge_records_to(
                 via = Some(outer);
                 p += 16;
             }
-            let t = need(u16_at(d, p), "an edge record")?;
+            let t = need(if via.is_some() { tag_of(&mut p) } else { t0 }, "an edge record")?;
             let z = need(u16_at(d, p + 2), "an edge record")?;
             let fid = need(u32_at(d, p + 8), "an edge record")?;
             let idx = need(u32_at(d, p + 16), "an edge record")?;
@@ -2155,7 +2218,7 @@ fn edge_records_to(
             while extra < 2 && p + 4 <= d.len() {
                 let n0 = need(u16_at(d, p), "an edge record")?;
                 let n1 = need(u16_at(d, p + 2), "an edge record")?;
-                if !last && n0 & 0x8000 != 0 && n1 == 0 {
+                if !last && ((n0 & 0x8000 != 0 && n1 == 0) || d.get(p..p + 4) == Some(&CLASS_DECL[..])) {
                     break;
                 }
                 let w = need(u32_at(d, p), "an edge record")?;
@@ -3670,6 +3733,8 @@ fn midpoint_sketch(
 /// What [`face_sel`] needs to name a face by the feature that made it.
 struct Named<'a> {
     nodes: &'a [Node],
+    /// Shells read: a reference through one names the inner wall offset from the face.
+    shells: &'a HashSet<u32>,
     swept: &'a HashMap<u32, Swept>,
     revolved: &'a HashMap<u32, Revolved>,
     /// Fillets and chamfers written as such (their faces are blends of their edges).
@@ -3687,6 +3752,14 @@ struct Named<'a> {
 /// plane where it is known, or the face a fillet or chamfer made from its `idx`-th edge.
 /// `None` for faces of other features and mirror copies.
 fn face_sel(r: &Rep, m: &Named) -> Option<Value> {
+    if let Some(v) = r.via.filter(|v| m.shells.contains(v)) {
+        // A face of a shell's inner wall (round sw17): the face it was offset from, through
+        // the shell (Linear Actuator Bracket's Fillet1 rounds the wall inside its top).
+        let shell = &m.nodes.iter().find(|q| q.id == v)?.name;
+        let mut o = face_sel(&Rep { via: None, copy: 0, ..*r }, m)?;
+        o.as_object_mut()?.insert("shell".into(), json!(shell));
+        return Some(o);
+    }
     if let Some(v) = r.via {
         // A face of a pattern's copy: the seed's face, through the pattern and copy (no plane:
         // the seed's is not the copy's).
@@ -3792,6 +3865,9 @@ struct HoleState {
     positions: Vec<V3>,
     face: Option<(V3, V3)>,
     target: Option<String>,
+    /// The section sketch's origin and the way its axis line runs (into the material): the
+    /// position and direction of a hole placed by a 3D sketch point (round sw17).
+    section: Option<(V3, V3)>,
 }
 
 fn json_v3(v: V3) -> Value {
@@ -3799,7 +3875,16 @@ fn json_v3(v: V3) -> Value {
 }
 
 /// `swfeat.finish_hole`: the hole's parameters by name (values in metres and radians).
-fn finish_hole(h: HoleState) -> Value {
+fn finish_hole(mut h: HoleState) -> Value {
+    // Placed by a 3D sketch (no 2D placement sketch gave centres): the hole's section sketch
+    // is drawn at the position, its axis line running into the material (L Bracket's M5
+    // Clearance Hole2 at (30, 165, 0) along +z; Movable Jaw's dowel hole down from its top).
+    if h.positions.is_empty()
+        && let Some((o, dir)) = h.section
+    {
+        h.positions = vec![o];
+        h.face = Some((o, dir.map(|v| round_to(-v, 12) + 0.0)));
+    }
     let ps: HashMap<&str, f64> = h.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
     let get = |names: &[&str]| names.iter().find_map(|k| ps.get(k).copied());
     let nonzero = |v: Option<f64>| v.filter(|x| *x != 0.0);
@@ -4117,6 +4202,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut planes: Vec<Value> = Vec::new();
     // name -> (index into `sketches`, written plane)
     let mut sketch_by_name: HashMap<String, (usize, JsonPlane)> = HashMap::new();
+    // Reference plane id -> a point (mm) and the normal of a sketch drawn on it (round sw17:
+    // a mirror on a plane feature names the plane, whose frame its own node does not keep).
+    let mut plane_frames: HashMap<u32, (V3, V3)> = HashMap::new();
     let mut last_sketch: Option<String> = None;
     let mut solid = false;
     let mut first_solid: Option<String> = None;
@@ -4177,6 +4265,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut mirror_planes: HashMap<u32, (V3, V3)> = HashMap::new();
     // Each pattern of one direction read: the motion from one copy to the next.
     let mut pattern_steps: HashMap<u32, Step> = HashMap::new();
+    // Each shell read (round sw17): a face of its inner wall is written as a reference to the
+    // shell followed by the face it was offset from, as a mirror's copy is.
+    let mut shell_ids: HashSet<u32> = HashSet::new();
     // Node id -> name of each sketch read (lofts name their sections by id).
     let mut sketch_ids: HashMap<u32, String> = HashMap::new();
     // Node id -> name of each helix read, and the helix (round sw10): sweeps run along them.
@@ -4210,7 +4301,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     for (ni, n) in nodes.iter().enumerate() {
         let mut cls = n.cls.clone();
         let (a, b) = span(n);
-        if hole.as_ref().is_some_and(|h| cls.as_deref() != Some("moProfileFeature_c") || h.sketches >= 2)
+        let sketchlike = matches!(cls.as_deref(), Some("moProfileFeature_c" | "mo3DProfileFeature_c"));
+        if hole.as_ref().is_some_and(|h| !sketchlike || h.sketches >= 2)
             && let Some(h) = hole.take()
         {
             let at = h.at;
@@ -4223,9 +4315,19 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         if n.suppressed && cls.as_deref() != Some("moProfileFeature_c") {
             continue;
         }
+        // A hole placed by a 3D sketch: that sketch stands for the 2D placement sketch.
+        if cls.as_deref() == Some("mo3DProfileFeature_c")
+            && let Some(h) = hole.as_mut()
+        {
+            h.sketches += 1;
+            continue;
+        }
         if cls.as_deref() == Some("moHoleWzd_c") {
             let mut j = ni + 1;
-            while nodes.get(j).is_some_and(|m| m.cls.as_deref() == Some("moProfileFeature_c")) {
+            while nodes
+                .get(j)
+                .is_some_and(|m| matches!(m.cls.as_deref(), Some("moProfileFeature_c" | "mo3DProfileFeature_c")))
+            {
                 j += 1;
             }
             let hb = nodes.get(j).map_or(rf.len(), |m| m.start);
@@ -4237,6 +4339,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 positions: Vec::new(),
                 face: None,
                 target: if solid { first_solid.clone() } else { None },
+                section: None,
             });
             feats.push(Value::Null);
             continue;
@@ -4275,6 +4378,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 plane = find_plane(rf, j, b, uc)?;
             }
             let jp = json_plane(plane.as_ref());
+            if let Some(id) = plane.as_ref().and_then(|p| p.feature_id).filter(|id| *id > 4) {
+                plane_frames.entry(id).or_insert((jp.origin, cross(jp.x, jp.y).map(|v| round_to(v, 12) + 0.0)));
+            }
             let sk = sketch_json(&n.name, &geo, plane.as_ref(), &jp);
             if let Some(h) = hole.as_mut() {
                 h.sketches += 1;
@@ -4287,6 +4393,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     .filter(|p| p.alone == 1 && p.id != 0xffff_ffff && !p.ext)
                     .copied()
                     .collect();
+                let no_centres = centres.is_empty();
                 if !centres.is_empty() && h.positions.is_empty() && plane.is_some() {
                     let mut seen: Vec<V3> = Vec::new();
                     for q in centres {
@@ -4304,6 +4411,22 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     let nrm = cross(jp.x, jp.y).map(|v| round_to(v, 12) + 0.0);
                     h.face = seen.first().map(|p| (*p, nrm));
                     h.positions = seen;
+                }
+                // The section: a drawn line from the sketch origin is the hole's axis.
+                if no_centres && plane.is_some() && h.section.is_none() {
+                    let axis = geo.segs.iter().filter(|s| s.kind == SegKind::Line && !s.construction).find_map(|s| {
+                        let (a, b) = (point(&geo.pts, s.s)?, point(&geo.pts, s.e)?);
+                        (a.x.abs() < 1e-12 && a.y.abs() < 1e-12 && libm::hypot(b.x, b.y) > 1e-9).then_some(b)
+                    });
+                    if let Some(b) = axis {
+                        let [x0, x1, x2] = jp.x;
+                        let [y0, y1, y2] = jp.y;
+                        let d = [b.x * x0 + b.y * y0, b.x * x1 + b.y * y1, b.x * x2 + b.y * y2];
+                        let len = libm::sqrt(dot(d, d));
+                        if len > 1e-12 {
+                            h.section = Some((jp.origin, d.map(|v| round_to(v / len, 12) + 0.0)));
+                        }
+                    }
                 }
                 planes.push(sk.get("plane").cloned().unwrap_or(Value::Null));
                 feats.push(sk);
@@ -4339,7 +4462,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             }
         };
         if is_in(&cls, &EXTRUDE) {
-            let picked = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used);
+            let picked = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used, |r| {
+                node_at_index(&mut node_index, rf, &nodes, &span, r)
+            });
             if let (Some(r), Some(sk)) = (n.child, &picked) {
                 sketch_seen.push((r, sk.clone()));
                 sketch_used.insert(sk.clone());
@@ -4359,6 +4484,12 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if ps.is_empty()
                 && matches!(typ, Some(0 | 6))
                 && let Some(v) = equation_dimension(c0, &n.name, "D1")
+            {
+                ps.push(v);
+            }
+            if ps.is_empty()
+                && matches!(typ, Some(0 | 6))
+                && let Some(v) = inline_value(rf, a, b).filter(|v| *v > 0.0 && *v < 10.0)
             {
                 ps.push(v);
             }
@@ -4775,7 +4906,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 first_solid = Some(n.name.clone());
             }
         } else if is_in(&cls, &REVOLVE) {
-            let picked = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used);
+            let picked = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used, |r| {
+                node_at_index(&mut node_index, rf, &nodes, &span, r)
+            });
             if let (Some(r), Some(sk)) = (n.child, &picked) {
                 sketch_seen.push((r, sk.clone()));
                 sketch_used.insert(sk.clone());
@@ -4990,24 +5123,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             // `<4 f64 display extents> 01 <R 3x3> <t> 1.0` (confirmed by the box of
             // FrameBracket's Mirror1: the Right plane, x = 0). The face list in the same body
             // (the faces it was picked by) is only the fallback.
-            let mut plane: Option<(V3, V3)> = None;
-            for i in a..b.saturating_sub(129) {
-                if rf.get(i) != Some(&1) {
-                    continue;
-                }
-                let (Some(r), Some(t), Some(sc)) =
-                    (f64s_at::<9>(rf, i + 1), f64s_at::<3>(rf, i + 73), f64_at(rf, i + 97))
-                else {
-                    continue;
-                };
-                if !orthonormal(&r) || !is(sc, 1.0) {
-                    continue;
-                }
-                let fr = frame(&r, &t, None);
-                let z = [r[2], r[5], r[8]];
-                plane = Some((fr.origin.map(|v| round_to(v * 1000.0, 6) + 0.0), z.map(|v| round_to(v, 12) + 0.0)));
-                break;
-            }
+            let mut plane = frame_block(rf, a, b);
             // A mirror on a plane feature names it: the plane's id 38 bytes before the display
             // block of the plane the mirror keeps (`<tag> 00 00 <u32 id> <u32 stamp> ... c7 cf ff ff`;
             // pulley_large's Mirror1: the Front plane). Only the three standard planes are read
@@ -5022,7 +5138,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     Some(2) => Some(([0.0; 3], [0.0, 0.0, 1.0])),
                     Some(3) => Some(([0.0; 3], [0.0, 1.0, 0.0])),
                     Some(4) => Some(([0.0; 3], [1.0, 0.0, 0.0])),
-                    _ => None,
+                    // A plane feature: the frame of a sketch drawn on it (126p-visor-diy-bottom's
+                    // Lustro4). The frame blocks a plane node keeps are not read as its plane.
+                    Some(id) => plane_frames.get(&id).copied(),
+                    None => None,
                 };
             }
             // The mirror face: the first reference of the last face list of the span (the
@@ -5069,6 +5188,18 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 if mirrored.len() != seeds.ptrs.len() {
                     mirrored.clear();
                 }
+                // A mirror of every feature read so far, the one that made the body among them,
+                // mirrors the body (round sw17: Stepper Motor NEMA17 Middle's Mirror2 lists
+                // Boss-Extrude1 and all its cuts; built again reflected, the boss made a body of
+                // its own).
+                let made: Vec<&str> = feats
+                    .iter()
+                    .filter(|f| !matches!(f.get("type").and_then(Value::as_str), Some("sketch" | "unsupported") | None))
+                    .filter_map(|f| f.get("name").and_then(Value::as_str))
+                    .collect();
+                if !made.is_empty() && made.iter().all(|m| mirrored.iter().any(|x| x == m)) {
+                    mirrored.clear();
+                }
             }
             if let Some(pl) = plane {
                 mirror_planes.insert(n.id, pl);
@@ -5093,7 +5224,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         {
             let fillet = cls.as_deref() != Some("Chamfer_c");
             let ps = params(rf, a, b, nt)?;
-            let mirror_ids: HashSet<u32> = mirror_planes.keys().copied().collect();
+            let mirror_ids: HashSet<u32> = mirror_planes.keys().copied().chain(shell_ids.iter().copied()).collect();
             let pattern_ids: HashSet<u32> = pattern_steps.keys().copied().collect();
             let sel = selection(edge_records_to(rf, a, b, &mirror_ids, &pattern_ids)?, n.id);
             let mut edges = Vec::new();
@@ -5117,6 +5248,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 sketch_by_name.iter().map(|(k, (i, _))| (*i, k.clone())).collect();
             let names = Named {
                 nodes: &nodes,
+                shells: &shell_ids,
                 swept: &swept,
                 revolved: &revolved,
                 blends: &blend_ids,
@@ -5155,7 +5287,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     _ => None,
                 };
                 let reps = own.as_deref().unwrap_or(reps);
+                // An edge on a shell's inner wall is named by its faces alone.
+                let inner = reps.iter().any(|r| r.via.is_some_and(|v| shell_ids.contains(&v)));
                 let m = match mirrored_edge(reps, &swept, &mirror_planes) {
+                    _ if inner => None,
                     Some((plane, reps, swept)) => midpoint(&reps, &swept, &rounds, &sketches, &cap_tags, &mut work)?
                         .map(|m| reflect(m, plane).map(|c| round_to(c, 6) + 0.0)),
                     None if reps.iter().any(|r| r.via.is_some_and(|v| pattern_steps.contains_key(&v))) => {
@@ -5297,7 +5432,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let circular = cls.as_deref() == Some("moCirPattern_c");
             let slots = param_slots(rf, a, b, nt)?;
             let slot = |k: &str| slots.iter().find(|(name, _)| name == k).map(|(_, at)| *at);
-            let int = |k: &str| slot(k).and_then(|at| u32_at(rf, at));
+            let inline = circular.then(|| inline_count(rf, a, b)).flatten();
+            let int = |k: &str| slot(k).and_then(|at| u32_at(rf, at)).or(if k == "D1" { inline } else { None });
             let real = |k: &str| slot(k).and_then(|at| f64_at(rf, at)).filter(|v| v.is_finite());
             let made = feature_pattern(
                 &n.name,
@@ -5307,7 +5443,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 (int, real),
                 |p| {
                     let is_feature = |k: usize| nodes.get(k).is_some_and(|m| emitted(&feats, &m.name));
-                    seed_node(index, p, ni, is_feature).and_then(|k| nodes.get(k)).map(|m| m.name.clone())
+                    seed_node(index, p, ni, is_feature)
+                        .and_then(|k| nodes.get(k))
+                        .map(|m| (m.name.clone(), m.suppressed))
                 },
                 &feats,
             );
@@ -5470,7 +5608,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         } else if cls.as_deref() == Some("moHelix_c") {
             // A helix is a curve: it adds nothing to the part until a sweep runs along it.
             // Its base sketch, a circle, is its child as an extrude's sketch is.
-            let base = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used);
+            let base = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used, |r| {
+                node_at_index(&mut node_index, rf, &nodes, &span, r)
+            });
             if let (Some(r), Some(sk)) = (n.child, &base) {
                 sketch_seen.push((r, sk.clone()));
                 sketch_used.insert(sk.clone());
@@ -5505,6 +5645,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let mut js = Map::new();
             js.insert("type".into(), json!("shell"));
             js.insert("name".into(), json!(n.name));
+            shell_ids.insert(n.id);
             js.insert("thickness".into(), json!(ps.first().map(|v| mm(*v))));
             if picks.is_empty() {
                 js.insert("faces".into(), json!([]));
@@ -6130,6 +6271,46 @@ fn seed_node(index: &HashMap<u32, usize>, p: u32, at: usize, is_feature: impl Fn
     found.next().is_none().then_some(one)
 }
 
+/// The plane of the first frame block in `[a, b)`: `01 <R 3x3> <t> 1.0`, the plane through `t`
+/// (mm) square to R's third column (a mirror's own plane, a plane feature's).
+fn frame_block(d: &[u8], a: usize, b: usize) -> Option<(V3, V3)> {
+    for i in a..b.saturating_sub(129) {
+        if d.get(i) != Some(&1) {
+            continue;
+        }
+        let (Some(r), Some(t), Some(sc)) = (f64s_at::<9>(d, i + 1), f64s_at::<3>(d, i + 73), f64_at(d, i + 97)) else {
+            continue;
+        };
+        if !orthonormal(&r) || !is(sc, 1.0) {
+            continue;
+        }
+        let fr = frame(&r, &t, None);
+        let z = [r[2], r[5], r[8]];
+        return Some((fr.origin.map(|v| round_to(v * 1000.0, 6) + 0.0), z.map(|v| round_to(v, 12) + 0.0)));
+    }
+    None
+}
+
+/// The instance count a circular pattern also keeps in its own data (round sw17): the first
+/// `ff fe ff 00`, `00 00 00 00`, `ff ff ff ff`, then the count as an `f64` and `08 00 00 00 10 00
+/// 00 00`. It equals `D1` where the node has one (Candle Holder's 12, Lego Head's 3); the
+/// toolbox gears' TeethCuts have no `D1` (their tooth count is a configuration property) and
+/// this alone gives it (12 for the 12T spur gear, 66 for the internal gear).
+fn inline_count(d: &[u8], a: usize, b: usize) -> Option<u32> {
+    let v = inline_value(d, a, b)?;
+    (v.fract() == 0.0 && (2.0..=10_000.0).contains(&v)).then_some(v as u32)
+}
+
+/// The first value a node keeps in its own data in the layout [`inline_count`] reads. An
+/// extrude whose depth is a configuration's (the toolbox screws' Hex socket, 1.3 mm for M3)
+/// has no `D1` and keeps the depth (m) so.
+fn inline_value(d: &[u8], a: usize, b: usize) -> Option<f64> {
+    const HEAD: [u8; 12] = [0xff, 0xfe, 0xff, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff];
+    let i = find(d, &HEAD, a, b)?;
+    let v = f64_at(d, i + 12)?;
+    (d.get(i + 20..i + 28) == Some(&[8, 0, 0, 0, 0x10, 0, 0, 0][..]) && v.is_finite()).then_some(v)
+}
+
 /// A linear or circular feature pattern (`moLPattern_c`, `moCirPattern_c`) as tree features.
 /// Parameters: a linear pattern's instance counts are `D1` and `D2` (integers) and its spacings
 /// `D3` and `D4` (m), along the first and second written line; a circular pattern's count is
@@ -6142,7 +6323,7 @@ fn feature_pattern(
     seeds: Option<patterns::Seeds>,
     lines: &[(V3, V3)],
     (int, real): (impl Fn(&str) -> Option<u32>, impl Fn(&str) -> Option<f64>),
-    node_name: impl Fn(u32) -> Option<String>,
+    node_name: impl Fn(u32) -> Option<(String, bool)>,
     feats: &[Value],
 ) -> Vec<Value> {
     let kind = if circular { "pattern_circular" } else { "pattern_linear" };
@@ -6153,13 +6334,21 @@ fn feature_pattern(
     }
     let mut names: Vec<String> = Vec::new();
     for &p in &seeds.ptrs {
-        let Some(s) = node_name(p) else { return fail("a seed feature was not found") };
+        let Some((s, suppressed)) = node_name(p) else { return fail("a seed feature was not found") };
+        // A suppressed seed adds nothing to the copies (round sw17: the toolbox gears' TeethCuts
+        // repeat ToothCut with the suppressed fillets Breaks and RootFillets).
+        if suppressed && !emitted(feats, &s) {
+            continue;
+        }
         if !emitted(feats, &s) {
             return fail("a seed feature was not read");
         }
         if !names.contains(&s) {
             names.push(s);
         }
+    }
+    if names.is_empty() {
+        return fail("no seed feature");
     }
     let all_cuts = names.iter().all(|n| {
         feats.iter().any(|f| {
@@ -7001,15 +7190,45 @@ mod end_face_tests {
         let mut seen = vec![(0xd8u16, "Sketch1".to_string()), (0x3d2, "Sketch3".to_string())];
         let mut used: HashSet<String> = seen.iter().map(|(_, s)| s.clone()).collect();
         // Between Sketch1's index and Sketch3's: the one sketch not yet used.
-        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used).as_deref(), Some("Sketch2"));
+        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used, |_| None).as_deref(), Some("Sketch2"));
         // An index seen names its sketch again; a larger one, or none, the last sketch.
-        assert_eq!(feature_sketch(Some(0xd8), &last, &order, &seen, &used).as_deref(), Some("Sketch1"));
-        assert_eq!(feature_sketch(Some(0x500), &last, &order, &seen, &used).as_deref(), Some("Sketch3"));
-        assert_eq!(feature_sketch(None, &last, &order, &seen, &used).as_deref(), Some("Sketch3"));
+        assert_eq!(feature_sketch(Some(0xd8), &last, &order, &seen, &used, |_| None).as_deref(), Some("Sketch1"));
+        assert_eq!(feature_sketch(Some(0x500), &last, &order, &seen, &used, |_| None).as_deref(), Some("Sketch3"));
+        assert_eq!(feature_sketch(None, &last, &order, &seen, &used, |_| None).as_deref(), Some("Sketch3"));
         // Two free sketches in between: the last sketch, as before.
         seen.retain(|(_, s)| s != "Sketch1");
         used.remove("Sketch1");
-        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used).as_deref(), Some("Sketch3"));
+        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used, |_| None).as_deref(), Some("Sketch3"));
+        // ... unless the sketch whose entities carry the index is one of them (round sw17).
+        let by_index = |r: u16| (r == 0x22c).then(|| "Sketch1".to_string());
+        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used, by_index).as_deref(), Some("Sketch1"));
+        // A node the index names that is not free there is not taken.
+        let used_one = |_: u16| Some("Sketch3".to_string());
+        assert_eq!(feature_sketch(Some(0x22c), &last, &order, &seen, &used, used_one).as_deref(), Some("Sketch3"));
+    }
+
+    /// The value a node keeps in its own data: `ff fe ff 00`, 0, -1, the f64, `08 00 00 00 10 00
+    /// 00 00`; a circular pattern's count when it is a whole number of at least two.
+    #[test]
+    fn values_kept_in_a_node_s_own_data() {
+        let rec = |v: f64| {
+            let mut d = vec![0u8; 5];
+            d.extend([0xff, 0xfe, 0xff, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+            d.extend(v.to_le_bytes());
+            d.extend([8, 0, 0, 0, 0x10, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0]);
+            d
+        };
+        let d = rec(12.0);
+        assert_eq!(inline_count(&d, 0, d.len()), Some(12));
+        let d = rec(0.0013);
+        assert_eq!(inline_value(&d, 0, d.len()), Some(0.0013));
+        assert_eq!(inline_count(&d, 0, d.len()), None);
+        // Another tail is not such a record.
+        let mut d = rec(12.0);
+        if let Some(b) = d.get_mut(25) {
+            *b = 9;
+        }
+        assert_eq!(inline_value(&d, 0, d.len()), None);
     }
 
     #[test]
@@ -7093,7 +7312,7 @@ mod pattern_tests {
             _ => None,
         };
         let lines = [([0.0, 36.5, 1.6], [0.0, -1.0, 0.0]), ([3.5, 0.0, 1.6], [1.0, 0.0, 0.0])];
-        let names = |p: u32| (p == 0x33d).then(|| "Cut-Extrude1".to_string());
+        let names = |p: u32| (p == 0x33d).then(|| ("Cut-Extrude1".to_string(), false));
         let out = feature_pattern("LPattern1", false, seeds(&[0x33d]), &lines, (ints, reals), names, &feats);
         assert_eq!(out.len(), 2, "{out:?}");
         assert_eq!(out[0]["features"], json!(["Cut-Extrude1"]));
@@ -7159,7 +7378,7 @@ mod pattern_tests {
     #[test]
     fn a_circular_step_angle_becomes_the_total() {
         let feats = [json!({"type": "extrude", "name": "Air Hole"})];
-        let names = |_: u32| Some("Air Hole".to_string());
+        let names = |_: u32| Some(("Air Hole".to_string(), false));
         let lines = [([0.0, 2.8, 0.0], [0.0, 1.0, 0.0])];
         // Three at 120 degrees: a full turn; four at 30 degrees: 90 degrees from first to last.
         for (count, step, want) in [(3, TAU / 3.0, 360.0), (4, TAU / 12.0, 90.0)] {

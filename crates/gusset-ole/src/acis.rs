@@ -1273,6 +1273,88 @@ fn cyl_edge(nb: &[(i64, Surf)], c: V3, ax: V3, rad: f64) -> Result<(V3, V3), Str
     Ok((add(c, add(mul(e1, q.0), mul(e2, q.1))), u))
 }
 
+/// A chamfer as wide as the step it bevels: a cone face between two coaxial cylinders whose
+/// step face (the annulus between them, across the axis) the chamfer took whole. The kernel's
+/// chamfer does not build one; the material it removed is the triangle of `rims` and `corner`
+/// (height along `dir` from `axis`, radius) turned about the axis. File units.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StepChamfer {
+    pub(crate) axis: V3,
+    pub(crate) dir: V3,
+    pub(crate) rims: [(f64, f64); 2],
+    pub(crate) corner: (f64, f64),
+}
+
+impl Acis {
+    /// Which side of a cylinder face its material lies on, radially: -1 inside, 1 outside. The
+    /// surface's normal points away from the axis when its cosine (third double) is positive; a
+    /// reversed face (first flag) turns it round.
+    fn cyl_solid_side(&self, g: i64) -> Option<f64> {
+        let s = self.surf_rec(g).and_then(|s| self.recs.get(s))?;
+        let cos = *s.dbls.get(2)?;
+        if cos.abs() < 0.5 {
+            return None;
+        }
+        let reversed = self.rec(g)?.flags.first() == Some(&0x0a);
+        Some(if reversed { cos.signum() } else { -cos.signum() })
+    }
+
+    /// Reads a cone chamfer face `f` whose only neighbours are two coaxial cylinders of other
+    /// radii (its step face is gone). Of the two corners the chamfer can have cut, the one the
+    /// cylinder faces allow (the cylinder that ran on to the corner now lies wholly beyond its
+    /// rim, away from the other rim) with its material on the triangle's side (a chamfer that
+    /// removed material); `None` unless exactly one is.
+    pub(crate) fn step_chamfer(&self, f: i64) -> Option<StepChamfer> {
+        if !matches!(self.kind(f), Surf::Cone) {
+            return None;
+        }
+        let (o, u) = self.rev_axis(f)?;
+        let mut cyls: Vec<(i64, f64)> = Vec::new();
+        for (g, _) in self.neighbours(f) {
+            let Surf::Cyl { c, ax, r } = self.kind(g) else { return None };
+            let q = sub(c, o);
+            let off = sub(q, mul(u, dot(q, u)));
+            if (dot(unit(ax), u).abs() - 1.0).abs() > 1e-6 || dot(off, off) > 1e-12 {
+                return None;
+            }
+            if cyls.iter().all(|x| x.0 != g) {
+                cyls.push((g, r));
+            }
+        }
+        let [(ga, ra), (gb, rb)] = cyls.as_slice() else { return None };
+        let (ga, ra, gb, rb) = (*ga, *ra, *gb, *rb);
+        if (ra - rb).abs() < 1e-6 {
+            return None;
+        }
+        let hr: Vec<(f64, f64)> = self.verts(f).iter().map(|&v| Self::rh(o, u, v)).collect();
+        let at = |r0: f64| -> Option<f64> {
+            let hs: Vec<f64> = hr.iter().filter(|(r, _)| (r - r0).abs() < 1e-6).map(|x| x.1).collect();
+            let h = *hs.first()?;
+            hs.iter().all(|x| (x - h).abs() < 1e-6).then_some(h)
+        };
+        let (h1, h2) = (at(ra)?, at(rb)?);
+        if hr.iter().any(|(r, _)| (r - ra).abs() >= 1e-6 && (r - rb).abs() >= 1e-6) || (h1 - h2).abs() < 1e-6 {
+            return None;
+        }
+        let beyond = |g: i64, h: f64, k: f64| {
+            let vs = self.verts(g);
+            !vs.is_empty() && vs.iter().all(|&v| (Self::rh(o, u, v).1 - h) * (k - h) <= 1e-9)
+        };
+        let side = |x: f64| if x > 0.0 { 1.0 } else { -1.0 };
+        let mut corners = Vec::new();
+        // The first cylinder ran on to the step at the second's rim, or the second to the
+        // step at the first's; the triangle lies towards the other radius.
+        if beyond(ga, h1, h2) && self.cyl_solid_side(ga) == Some(side(rb - ra)) {
+            corners.push((h2, ra));
+        }
+        if beyond(gb, h2, h1) && self.cyl_solid_side(gb) == Some(side(ra - rb)) {
+            corners.push((h1, rb));
+        }
+        let [corner] = corners.as_slice() else { return None };
+        Some(StepChamfer { axis: o, dir: u, rims: [(h1, ra), (h2, rb)], corner: *corner })
+    }
+}
+
 /// A cylindrical blend that rolled between a plane and a convex cylinder that do not meet (a
 /// middle face between them was consumed entirely, as in a full round, but not parallel to
 /// either): file units.

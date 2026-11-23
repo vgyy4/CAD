@@ -2377,6 +2377,57 @@ fn halves_at_midpoint(ev: &gusset_eval::Evaluation, pick: &EdgePick, mid: V3) ->
     Vec::new()
 }
 
+/// The straight model edge nearest a straight source edge's midpoint among those on its line:
+/// the source edge as the blend found it, when a later feature lengthened it (Inventor merges a
+/// later join's side face that continues a blend face into the blend's face: the box mounts'
+/// corner rounds, made on a 10 mm plate, span the 40 mm of the block joined on it, so their
+/// midpoints lie 15 mm beyond the plate's edges). The pick's path gives the line; the state
+/// check rejects a wrong guess.
+fn collinear_edge(
+    ev: &gusset_eval::Evaluation,
+    pick: &EdgePick,
+    mid: V3,
+    mine: &dyn Fn(&str) -> bool,
+) -> Vec<(String, String)> {
+    let (Some(first), Some(last)) = (pick.path.first().copied(), pick.path.last().copied()) else {
+        return Vec::new();
+    };
+    let d = sub(last, first);
+    let len = norm(d);
+    if len < 1e-9 {
+        return Vec::new();
+    }
+    let u = [d[0] / len, d[1] / len, d[2] / len];
+    let off = |p: V3| {
+        let w = sub(p, mid);
+        let t = dot(w, u);
+        norm(sub(w, [u[0] * t, u[1] * t, u[2] * t]))
+    };
+    // The path must run straight through the midpoint (a circle's bends off it).
+    if off(first) > 1e-6 || off(last) > 1e-6 {
+        return Vec::new();
+    }
+    let mut best: Option<(f64, String, String)> = None;
+    for b in ev.bodies.iter().filter(|b| mine(&b.feature)) {
+        let t = &b.topology;
+        for (i, e) in t.edges.iter().enumerate() {
+            let ends: Vec<V3> =
+                e.vertices.iter().filter_map(|v| t.vertices.get(*v as usize)).map(|v| v.point).collect();
+            let ([a, z], gusset_kernel::CurveKind::Line) = (ends.as_slice(), e.kind) else { continue };
+            if off(*a) > 0.01 || off(*z) > 0.01 {
+                continue;
+            }
+            let dd = norm(sub(e.midpoint, mid));
+            if best.as_ref().is_none_or(|x| dd < x.0)
+                && let Some(n) = b.names.edges.get(i)
+            {
+                best = Some((dd, b.feature.clone(), n.to_string()));
+            }
+        }
+    }
+    best.map(|(_, body, n)| vec![(body, n)]).unwrap_or_default()
+}
+
 fn edges_holding(ev: &gusset_eval::Evaluation, pick: &EdgePick, mid: V3, pts: &[V3]) -> Vec<(String, String)> {
     let interior = pick.path.is_empty();
     let mut out = Vec::new();
@@ -2671,6 +2722,9 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
                         on_path = halves_at_midpoint(&ev, pick, mid);
                     }
                     on_path.retain(|(body, _)| mine(body));
+                    if on_path.is_empty() {
+                        on_path = collinear_edge(&ev, pick, mid, &mine);
+                    }
                     if on_path.is_empty() {
                         let near =
                             best.as_ref().map_or(String::new(), |b| format!(" (the nearest is {:.3} mm away)", b.0));
