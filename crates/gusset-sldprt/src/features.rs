@@ -5147,6 +5147,18 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 if mirrored.len() != seeds.ptrs.len() {
                     mirrored.clear();
                 }
+                // A mirror of every feature read so far, the one that made the body among them,
+                // mirrors the body (round sw17: Stepper Motor NEMA17 Middle's Mirror2 lists
+                // Boss-Extrude1 and all its cuts; built again reflected, the boss made a body of
+                // its own).
+                let made: Vec<&str> = feats
+                    .iter()
+                    .filter(|f| !matches!(f.get("type").and_then(Value::as_str), Some("sketch" | "unsupported") | None))
+                    .filter_map(|f| f.get("name").and_then(Value::as_str))
+                    .collect();
+                if !made.is_empty() && made.iter().all(|m| mirrored.iter().any(|x| x == m)) {
+                    mirrored.clear();
+                }
             }
             if let Some(pl) = plane {
                 mirror_planes.insert(n.id, pl);
