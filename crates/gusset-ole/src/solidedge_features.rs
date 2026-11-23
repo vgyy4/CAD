@@ -2408,7 +2408,8 @@ pub(crate) fn path_split(path: &Value, section: &Value) -> Option<(Vec<String>, 
     let mut at: HashMap<&str, V3> = HashMap::new();
     for p in path.get("points")?.as_array()? {
         let (u, w) = (p.get("x")?.as_f64()?, p.get("y")?.as_f64()?);
-        at.insert(p.get("id")?.as_str()?, [0, 1, 2].map(|i| o[i] + u * x[i] + w * y[i]));
+        let ([o0, o1, o2], [x0, x1, x2], [y0, y1, y2]) = (o, x, y);
+        at.insert(p.get("id")?.as_str()?, [o0 + u * x0 + w * y0, o1 + u * x1 + w * y1, o2 + u * x2 + w * y2]);
     }
     // The curves with their ends (a whole circle has none: no chain to split).
     let mut ends: Vec<(String, V3, V3)> = Vec::new();
@@ -2419,7 +2420,7 @@ pub(crate) fn path_split(path: &Value, section: &Value) -> Option<(Vec<String>, 
         let end = |k: &str| c.get(k).and_then(Value::as_str).and_then(|id| at.get(id)).copied();
         ends.push((c.get("id")?.as_str()?.to_string(), end("start")?, end("end")?));
     }
-    let near = |a: V3, b: V3| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-6);
+    let near = |a: V3, b: V3| a.iter().zip(b).all(|(p, q)| (p - q).abs() < 1e-6);
     let on = |p: V3| dot([p[0] - so[0], p[1] - so[1], p[2] - so[2]], n).abs() < 1e-6;
     // Order the chain from an end no other curve shares.
     let shared = |p: V3, k: usize| ends.iter().enumerate().any(|(i, e)| i != k && (near(e.1, p) || near(e.2, p)));
