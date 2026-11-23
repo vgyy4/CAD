@@ -713,8 +713,8 @@ impl Reader<'_> {
         Ok(sk)
     }
 
-    /// A B-spline record (`317b7346`, note AR): its first list names the curve's points (the
-    /// ends first and last); further on, `u32 degree, f64 tolerance`, then three arrays, each
+    /// A B-spline record (`317b7346` or `f9372fd4`, note AR): its first list names the curve's
+    /// points (the ends, at the first and last poles, and points on it); further on, `u32 degree, f64 tolerance`, then three arrays, each
     /// `u32 n, u32 n, u32 8` and its doubles: the knots, the weights (none for a polynomial
     /// curve) and, as `u32 n` and two more words, the poles (x, y in cm). The first and last
     /// poles must be the end points, the knots non-decreasing and `poles + degree + 1` long.
@@ -722,9 +722,7 @@ impl Reader<'_> {
     fn spline(&self, i: usize, list: &[Option<usize>], points: &[(usize, f64, f64, bool)], con: bool) -> Option<Curve> {
         const MAX_KNOTS: usize = 4096;
         let rec = self.dc.r(i);
-        let (Some(Some(s)), Some(Some(e))) = (list.first(), list.last()) else { return None };
         let at = |p: usize| points.iter().find(|q| q.0 == p).map(|q| (q.1, q.2));
-        let (ps, pe) = (at(*s)?, at(*e)?);
         let dbls = |o: usize, n: usize| -> Option<Vec<f64>> {
             (0..n).map(|k| f64_at(rec, o + 8 * k).filter(|v| v.is_finite() && v.abs() < 1e7)).collect()
         };
@@ -761,12 +759,16 @@ impl Reader<'_> {
                 })
                 .collect();
             let near = |a: P2, b: P2| libm::hypot(a.0 - b.0, a.1 - b.1) < 1e-4;
-            let ok = poles.first().is_some_and(|&p| near(p, ps))
-                && poles.last().is_some_and(|&p| near(p, pe))
-                && knots.windows(2).all(|w| matches!(*w, [a, b] if a <= b))
-                && weights.iter().all(|&w| w > 0.0)
-                && s != e;
-            return ok.then_some(Curve::Spline { id: i, s: *s, e: *e, degree, knots, poles, weights, con });
+            // The ends are the listed points at the first and last poles: the list can name
+            // points on the curve too, where other curves end (`f9372fd4`, the coin outlines).
+            let end = |q: Option<&P2>| -> Option<usize> {
+                let q = *q?;
+                let on = |p: &&Option<usize>| p.and_then(at).is_some_and(|a| near(a, q));
+                [list.first(), list.last()].into_iter().flatten().find(on).or_else(|| list.iter().find(on)).copied().flatten()
+            };
+            let (s, e) = (end(poles.first())?, end(poles.last())?);
+            let ok = knots.windows(2).all(|w| matches!(*w, [a, b] if a <= b)) && weights.iter().all(|&w| w > 0.0) && s != e;
+            return ok.then_some(Curve::Spline { id: i, s, e, degree, knots, poles, weights, con });
         }
         None
     }
