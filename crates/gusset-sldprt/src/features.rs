@@ -6064,6 +6064,12 @@ fn thread_of(rf: &[u8], a: usize, b: usize, sk: &Value) -> Option<(Helix, bool)>
         return None;
     }
     let pitch = mm(f64_at(rf, desig - 8)?);
+    // The hand is not read (every thread of the corpora is a right-handed metric one, and
+    // M6 cıvata's stored flanks lean the right-handed way); a designation that names a
+    // left-handed thread is not taken.
+    if utf16(rf.get(desig + 4..path)?).to_uppercase().contains("LH") {
+        return None;
+    }
     let file = utf16(rf.get(path + 4..lib)?).to_lowercase();
     let file = file.rsplit('\\').next()?;
     if file.contains("tap") == file.contains("die") {
@@ -7665,17 +7671,21 @@ mod pattern_tests {
             v.extend(s.encode_utf16().flat_map(u16::to_le_bytes));
             v
         };
-        let mut d = vec![0u8; 16];
-        d.extend([1, 0, 0, 0]);
-        d.extend(0.001f64.to_le_bytes());
-        d.extend(w16("M6x1.0"));
-        d.extend(w16("C:\\thread profiles\\Metric Die.SLDLFP"));
-        for (k, v) in [(4u8, 0.017f64), (6, 0.006)] {
-            d.extend([0xff, 0xfe, 0xff, 0x02, b'D', 0, b'0' + k, 0, 0, 0, 0, 0, 0, 0, 0, 0x50]);
-            d.extend([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0xff, 0xfe, 0xff, 0, 0, 0]);
-            d.extend(v.to_le_bytes());
-            d.extend([0u8; 8]);
-        }
+        let stream = |designation: &str| {
+            let mut d = vec![0u8; 16];
+            d.extend([1, 0, 0, 0]);
+            d.extend(0.001f64.to_le_bytes());
+            d.extend(w16(designation));
+            d.extend(w16("C:\\thread profiles\\Metric Die.SLDLFP"));
+            for (k, v) in [(4u8, 0.017f64), (6, 0.006)] {
+                d.extend([0xff, 0xfe, 0xff, 0x02, b'D', 0, b'0' + k, 0, 0, 0, 0, 0, 0, 0, 0, 0x50]);
+                d.extend([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0xff, 0xfe, 0xff, 0, 0, 0]);
+                d.extend(v.to_le_bytes());
+                d.extend([0u8; 8]);
+            }
+            d
+        };
+        let d = stream("M6x1.0");
         let sk = json!({"type": "sketch", "name": "P",
             "plane": {"origin": [0.0, 0.0, 3.0], "x_axis": [0.0, 0.0, 1.0], "y_axis": [-1.0, 0.0, 0.0]},
             "points": [{"id": "a", "x": 0.0, "y": 0.0}, {"id": "b", "x": 0.0, "y": 0.875},
@@ -7695,7 +7705,9 @@ mod pattern_tests {
         assert_eq!(hx["left_handed"], json!(false));
         assert_eq!(hx["axis"], json!([-1.0, 0.0, 0.0]));
         assert_eq!(hx["line"], json!("helix_axis"));
-        // Without its dimensions the thread is not read.
+        // A left-handed designation is not read, nor a thread without its dimensions.
+        let lh = stream("M6x1.0 LH");
+        assert!(thread_of(&lh, 0, lh.len(), &feats[0]).is_none());
         let short = d.get(..d.len() - 2 * 38).unwrap().to_vec();
         assert!(thread_of(&short, 0, short.len(), &feats[0]).is_none());
     }
