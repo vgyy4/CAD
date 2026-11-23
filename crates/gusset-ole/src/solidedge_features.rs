@@ -1930,6 +1930,8 @@ enum Kind {
     BaseBody,
     /// A draft of faces about a neutral plane (`JMAddDraftAssocFuntionEx`, so spelt).
     Draft,
+    /// A mounting boss with its hole and ribs (`JMSmartBossAssocFunction`).
+    SmartBoss,
     Other,
 }
 
@@ -1957,6 +1959,7 @@ fn kind(class: &str) -> Kind {
         "JMHelixCutoutFunction" => Kind::HelixCutout,
         "JMBodyFeatureAssocFunc" => Kind::BaseBody,
         "JMAddDraftAssocFuntionEx" => Kind::Draft,
+        "JMSmartBossAssocFunction" => Kind::SmartBoss,
         _ => Kind::Other,
     }
 }
@@ -2871,6 +2874,192 @@ fn hole(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The parameters of a smart boss (`JMPropsToSmartBossDataUpdateFunc`, slot 4 of the boss):
+/// slots 1 to 11, each a value object (`f64` at +8, a byte at +18: 0x9d on, 0x91 off).
+const BOSS_PARAMS: usize = 11;
+
+/// A smart boss's parameter: its value and whether it is on.
+fn boss_param(st: &Store, serial: u32) -> Option<(f64, bool)> {
+    let b = st.obj(serial)?;
+    let v = f64_at(b, 8).filter(|v| v.is_finite() && v.abs() < 1e3)?;
+    match b.get(18) {
+        Some(0x9d) => Some((v, true)),
+        Some(0x91) => Some((v, false)),
+        _ => None,
+    }
+}
+
+/// The side of a smart boss's plane it grows to: the edges the feature stored for itself
+/// (each a byte 15 or 16, centre, normal and radius, `f64`s in metres) that are centred on
+/// its axis lie on that side (012: the ribs' feet 5 mm off the plane, 017: the hole's
+/// bottom and the ribs' feet). `None` if they disagree or none is off the plane.
+fn boss_side(b: &[u8], tail: usize, c: V3, n: V3) -> Option<f64> {
+    let mut side = None;
+    for o in tail..b.len().saturating_sub(56) {
+        if !matches!(b.get(o), Some(15 | 16)) {
+            continue;
+        }
+        let Some(p) = v3_at(b, o + 1).filter(|p| finite3(*p)) else { continue };
+        let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+        let along = dot(d, n);
+        let off = cross(d, n);
+        if dot(off, off).sqrt() > 1e-7 || along.abs() < 1e-7 || along.abs() > 10.0 {
+            continue;
+        }
+        let s = along.signum();
+        if side.is_some_and(|x| x != s) {
+            return None;
+        }
+        side = Some(s);
+    }
+    side
+}
+
+/// A profile of straight lines through `pts` (metres, in the frame), closed.
+fn polygon(origin: V3, normal: V3, x: V3, pts: &[[f64; 2]]) -> Profile {
+    let curves: Vec<Curve2> = pts.iter().zip(pts.iter().cycle().skip(1)).map(|(&a, &b)| Curve2::Line(a, b)).collect();
+    let backwards = vec![false; curves.len()];
+    Profile { origin, normal, x, curves, turned: false, backwards }
+}
+
+/// A smart boss (`JMSmartBossAssocFunction`, Solid Edge's mounting boss): slot 2 a profile of
+/// sketch points (each a boss: a 78-byte point, `f64` u, v at +8, its copy at +58), slot 4 the
+/// parameters (see [`BOSS_PARAMS`]): 1 the boss's diameter, 2 and 3 the hole's diameter and
+/// depth, 4 the ribs' width, 5 how far the ribs' outer faces start outside the boss (and the
+/// recess at the hole's mouth is wider than the hole), 6 how far the ribs start from the
+/// boss's end (and the recess's depth), 7 the boss's draft, 8 the ribs' slope off the axis,
+/// 9 the rib count, 10 and 11 options seen only off. Each boss grows from its point to the
+/// next face of the body; each rib (the first along the plane's x, the others turned evenly)
+/// rises from its foot to the next face, sloping out from the boss, and is joined to the body.
+/// Measured on 012 and 017 (5 bosses; the recess and the ribs' start share their values
+/// there, so which parameter sizes the recess is not certain).
+fn smart_boss(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str) -> Result<(), String> {
+    let body = s.first_body.clone().ok_or("a boss before any body")?;
+    let pf_serial = f.slot(2).ok_or("the boss has no profile")?;
+    let pf =
+        st.func(pf_serial).filter(|p| p.class == "JProfileRecomputeEx").ok_or("the boss's profile is not readable")?;
+    let ((o, n, x), pb) = profile_2d(st, pf_serial, &pf)?;
+    let props = f.slot(4).and_then(|p| st.func(p)).filter(|p| p.class == "JMPropsToSmartBossDataUpdateFunc");
+    let props = props.ok_or("the boss's parameters are not readable")?;
+    let mut prm = [(0.0, false); BOSS_PARAMS];
+    for (k, slot) in prm.iter_mut().enumerate() {
+        *slot = props.slot(k + 1).and_then(|v| boss_param(st, v)).ok_or("a boss parameter is not readable")?;
+    }
+    let [dia, hole, depth, width, ext, offset, draft, slope, count, draft2, other] = prm;
+    let on = |p: (f64, bool)| if p.1 { p.0 } else { 0.0 };
+    if on(draft).abs() > 1e-12 || on(draft2).abs() > 1e-12 || other.1 {
+        return Err("a drafted boss or a boss option not read".into());
+    }
+    let r = dia.0 / 2.0;
+    let ribs = on(count);
+    if !(dia.1 && r > 1e-6) || ribs.fract() != 0.0 || !(0.0..=64.0).contains(&ribs) {
+        return Err("the boss's size or rib count is not readable".into());
+    }
+    let (w, ext, off, slope) = (width.0, on(ext), on(offset), on(slope));
+    if ribs > 0.0 && !(w > 1e-6 && ext >= 0.0 && off >= 0.0 && slope.abs() < 1.4) {
+        return Err("the boss's ribs are not readable".into());
+    }
+    let (hole, depth) = (on(hole), on(depth));
+    let bx = f
+        .slot(1)
+        .and_then(|p| st.obj(p))
+        .and_then(|b| parse_func(b).and_then(|pfn| stored_box(b, pfn.tail)))
+        .ok_or("the part's box before the boss is not readable")?;
+    let y = cross(n, x);
+    let nm = u32_at(pb, 8).filter(|&k| k <= MAX_MEMBERS).ok_or("the boss's profile is cut short")?;
+    let mut points = Vec::new();
+    for k in 0..nm as usize {
+        let Some(b) = u32_at(pb, 12 + 4 * k).and_then(|m| st.obj(m)) else { continue };
+        let (Some(u), Some(v)) = (f64_at(b, 8), f64_at(b, 16)) else { continue };
+        if b.len() == 78 && f64_at(b, 58) == Some(u) && f64_at(b, 66) == Some(v) && u.is_finite() && v.is_finite() {
+            points.push([o[0] + u * x[0] + v * y[0], o[1] + u * x[1] + v * y[1], o[2] + u * x[2] + v * y[2]]);
+        }
+    }
+    if points.is_empty() {
+        return Err("the boss has no point".into());
+    }
+    let b = st.obj(serial).ok_or("the boss is missing")?;
+    for (i, &c) in points.iter().enumerate() {
+        let nm = if i == 0 { name.to_string() } else { format!("{name}_{}", i + 1) };
+        let side = boss_side(b, f.tail, c, n).ok_or("the side the boss grows to is not readable")?;
+        let d = [n[0] * side, n[1] * side, n[2] * side];
+        let at = |p: V3, k: f64| [p[0] + d[0] * k, p[1] + d[1] * k, p[2] + d[2] * k];
+        let circle = |rad: f64| Profile {
+            origin: c,
+            normal: d,
+            x,
+            curves: vec![Curve2::Circle([0.0, 0.0], rad)],
+            turned: false,
+            backwards: vec![false],
+        };
+        let sk = format!("{nm}_Sketch");
+        s.out.push(sketch_json(&sk, &[circle(r)], None)?);
+        s.out.push(json!({"type": "extrude", "name": nm, "sketch": sk, "profiles": "all", "operation": "join",
+                          "target": body, "end_condition": "to_next", "reverse": false}));
+        if hole > 1e-6 && depth > 1e-6 {
+            let recess = ext > 1e-9 && off > 1e-9;
+            for (what, rad, deep) in [("Hole", hole / 2.0, depth), ("Recess", (hole + ext) / 2.0, off)] {
+                if what == "Recess" && !recess {
+                    continue;
+                }
+                let sk = format!("{nm}_{what}_Sketch");
+                s.out.push(sketch_json(&sk, &[circle(rad)], None)?);
+                s.out.push(json!({"type": "extrude", "name": format!("{nm}_{what}"), "sketch": sk, "profiles": "all",
+                                  "operation": "cut", "target": body, "distance": rnd(deep * MM), "symmetric": false}));
+            }
+        }
+        // How far along the boss the box reaches from its point: the ribs need no more.
+        let [x0, y0, z0, x1, y1, z1] = bx;
+        let reach = (0..8)
+            .map(|k| {
+                let q = [
+                    if k & 1 == 0 { x0 } else { x1 },
+                    if k & 2 == 0 { y0 } else { y1 },
+                    if k & 4 == 0 { z0 } else { z1 },
+                ];
+                dot([q[0] - c[0], q[1] - c[1], q[2] - c[2]], d)
+            })
+            .fold(0.0, f64::max);
+        let tall = reach - off;
+        if ribs > 0.0 && tall <= 1e-6 {
+            return Err("the boss's ribs start outside the part's box".into());
+        }
+        let far = r + ext + tall * libm::tan(slope.abs()) + 1e-3;
+        for k in 0..ribs as usize {
+            let a = core::f64::consts::TAU * k as f64 / ribs;
+            let e = [
+                libm::cos(a) * x[0] + libm::sin(a) * y[0],
+                libm::cos(a) * x[1] + libm::sin(a) * y[1],
+                libm::cos(a) * x[2] + libm::sin(a) * y[2],
+            ];
+            let foot = at(c, off);
+            let rib = format!("{nm}_Rib{}", k + 1);
+            // The rib's footprint, from the axis out past its slope, up to the next face.
+            let sk = format!("{rib}_Sketch");
+            let half = w / 2.0;
+            s.out.push(sketch_json(
+                &sk,
+                &[polygon(foot, d, e, &[[0.0, -half], [far, -half], [far, half], [0.0, half]])],
+                None,
+            )?);
+            s.out.push(json!({"type": "extrude", "name": rib, "sketch": sk, "profiles": "all", "operation": "new",
+                              "end_condition": "to_next", "reverse": false}));
+            // Trimmed to its slope: the wedge beyond it, across the rib's plane.
+            let side_n = cross(e, d);
+            let top = tall + 1e-3;
+            let slope_at = r + ext + top * libm::tan(slope.abs());
+            let wedge = [[r + ext, 0.0], [slope_at, top], [far + 1e-3, top], [far + 1e-3, 0.0]];
+            let sk = format!("{rib}_Trim_Sketch");
+            s.out.push(sketch_json(&sk, &[polygon(foot, side_n, e, &wedge)], None)?);
+            s.out.push(json!({"type": "extrude", "name": format!("{rib}_Trim"), "sketch": sk, "profiles": "all",
+                              "operation": "cut", "target": rib, "distance": rnd(2.0 * w * MM), "symmetric": true}));
+            s.out.push(json!({"type": "combine", "name": format!("{rib}_Join"), "target": body, "tools": [rib],
+                              "operation": "join"}));
+        }
+    }
+    Ok(())
+}
+
 /// A mirror copy of features (`JMMirrorCopyFunction`, `JMFastMirrorFunction`): slot 2 the
 /// mirror plane, 3 the features copied; each built again, reflected, into the first body.
 fn mirror(st: &Store, s: &mut State, f: &Func, name: &str) -> Result<(), String> {
@@ -3050,6 +3239,13 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             }
             Kind::Draft => {
                 if let Err(why) = draft(&st, &mut s, func, &name) {
+                    s.out.push(unsupported(&name, what, &why));
+                }
+            }
+            Kind::SmartBoss => {
+                let before = s.out.len();
+                if let Err(why) = smart_boss(&st, &mut s, (*serial, func), &name) {
+                    s.out.truncate(before);
                     s.out.push(unsupported(&name, what, &why));
                 }
             }

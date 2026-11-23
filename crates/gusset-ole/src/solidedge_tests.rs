@@ -1614,3 +1614,109 @@ fn a_cross_section_inside_its_path_splits_the_sweep_there() {
     // A section at an end of the chain is swept as before.
     assert!(path_split(&path, &section([37.858050211, 0.0, 61.0])).is_none());
 }
+
+/// A 20 x 10 x 5 mm block (feature 11, storing its box) and a smart boss (36) 3 mm below it,
+/// growing up into it: 4 mm across, a 2 mm hole 2 mm deep, four 1 mm ribs from 1 mm up.
+fn boss_part(with_record: bool) -> Vec<u8> {
+    let mut c = vec![0x44, 0xf5, 0x90, 0x6c, 0, 0, 0, 0];
+    c.extend(obj(6, 1, &plane_payload([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0])));
+    let profile = |plane: u32, me: u32, p2d: u32| {
+        let mut p = func("JProfileRecomputeEx", &[&[plane], &[me]]);
+        p.extend(p2d.to_le_bytes());
+        p.push(9 * 8);
+        p.extend("Profile2d".encode_utf16().flat_map(u16::to_le_bytes));
+        p
+    };
+    c.extend(obj(26, 2, &profile(1, 2, 3)));
+    let mut p2 = 4u32.to_le_bytes().to_vec();
+    for m in 4u32..8 {
+        p2.extend(m.to_le_bytes());
+    }
+    c.extend(obj(65, 3, &p2));
+    let pts = [[0.0, 0.0], [0.02, 0.0], [0.02, 0.01], [0.0, 0.01]];
+    for (k, s) in (4u32..8).enumerate() {
+        c.extend(obj(35, s, &line(pts[k], pts[(k + 1) % 4])));
+    }
+    c.extend(obj(36, 8, &small(13.0)));
+    c.extend(obj(36, 9, &small(2.0)));
+    c.extend(obj(36, 10, &small(0.005)));
+    let mut block = func("JMProtrusionFunction", &[&[11], &[0], &[2], &[8], &[9], &[0], &[10]]);
+    block.extend(f64s(&[0.0, 0.0, 0.0, 0.02, 0.01, 0.005]));
+    c.extend(obj(38, 11, &block));
+    c.extend(obj(6, 20, &plane_payload([0.0, 0.0, -0.003], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0])));
+    c.extend(obj(26, 21, &profile(20, 21, 22)));
+    let mut p2 = 1u32.to_le_bytes().to_vec();
+    p2.extend(23u32.to_le_bytes());
+    c.extend(obj(65, 22, &p2));
+    // The boss's point: (u, v) = (10, -5) mm in the plane's frame (y = n x x = -y), so at
+    // (10, 5) mm; its copy at +58.
+    let mut pt = f64s(&[0.01, -0.005]);
+    pt.extend([0u8; 34]);
+    pt.extend(f64s(&[0.01, -0.005]));
+    pt.extend([0u8; 4]);
+    c.extend(obj(68, 23, &pt));
+    let params: [(f64, bool); 11] = [
+        (0.004, true),
+        (0.002, true),
+        (0.002, true),
+        (0.001, true),
+        (0.0, true),
+        (0.001, true),
+        (0.0, true),
+        (0.0, true),
+        (4.0, true),
+        (0.0349, false),
+        (0.00127, false),
+    ];
+    for (k, (v, on)) in params.iter().enumerate() {
+        let mut b = v.to_le_bytes().to_vec();
+        b.extend([1, 0, if *on { 0x9d } else { 0x91 }, 0]);
+        b.extend([0u8; 12]);
+        c.extend(obj(12, 24 + k as u32, &b));
+    }
+    let slots: Vec<Vec<u32>> = std::iter::once(35).chain(24..35).map(|s| vec![s]).collect();
+    let slots: Vec<&[u32]> = slots.iter().map(Vec::as_slice).collect();
+    c.extend(obj(40, 35, &func("JMPropsToSmartBossDataUpdateFunc", &slots)));
+    let mut boss = func("JMSmartBossAssocFunction", &[&[36], &[11], &[21], &[0], &[35]]);
+    if with_record {
+        // An edge it stored: a circle 1 mm into the boss, on its axis.
+        boss.push(16);
+        boss.extend(f64s(&[0.01, 0.005, -0.002, 0.0, 0.0, 1.0, 0.002]));
+    }
+    c.extend(obj(41, 36, &boss));
+    ole(&[("PSMcluster0", &c), ("PSMtypetable", &[])])
+}
+
+#[test]
+fn a_smart_boss_grows_to_the_body_with_its_hole_and_ribs() {
+    let t = feature_tree(&boss_part(true), "p.par", &crate::Limits::default()).unwrap();
+    let f = t["features"].as_array().unwrap();
+    let named = |n: &str| f.iter().find(|x| x["name"] == n).unwrap_or_else(|| panic!("{n}: {t}"));
+    // The boss: a 2 mm circle on its plane, turned to face up (into the block), to the next face.
+    let sk = named("SmartBoss_1_Sketch");
+    assert_eq!(sk["curves"][0]["radius"], json!(2.0));
+    assert_eq!(sk["plane"]["origin"], json!([10.0, 5.0, -3.0]));
+    let boss = named("SmartBoss_1");
+    assert_eq!((boss["end_condition"].clone(), boss["operation"].clone()), (json!("to_next"), json!("join")));
+    assert_eq!(boss["reverse"], json!(false));
+    let x = &sk["plane"]["x_axis"];
+    let y = &sk["plane"]["y_axis"];
+    let n = |i: usize, j: usize| x[i].as_f64().unwrap() * y[j].as_f64().unwrap();
+    assert!((n(0, 1) - n(1, 0) - 1.0).abs() < 1e-9, "{sk}");
+    // The hole: 1 mm radius, 2 mm deep; no recess (the ribs start at the boss).
+    assert_eq!(named("SmartBoss_1_Hole")["distance"], json!(2.0));
+    assert_eq!(named("SmartBoss_1_Hole_Sketch")["curves"][0]["radius"], json!(1.0));
+    assert!(f.iter().all(|x| x["name"] != "SmartBoss_1_Recess"));
+    // Four ribs, each a body up to the next face, trimmed and joined.
+    for k in 1..=4 {
+        let rib = named(&format!("SmartBoss_1_Rib{k}"));
+        assert_eq!((rib["end_condition"].clone(), rib["operation"].clone()), (json!("to_next"), json!("new")));
+        assert_eq!(named(&format!("SmartBoss_1_Rib{k}_Sketch"))["plane"]["origin"], json!([10.0, 5.0, -2.0]));
+        assert_eq!(named(&format!("SmartBoss_1_Rib{k}_Trim"))["target"], json!(format!("SmartBoss_1_Rib{k}")));
+        assert_eq!(named(&format!("SmartBoss_1_Rib{k}_Join"))["tools"], json!([format!("SmartBoss_1_Rib{k}")]));
+    }
+    // Without an edge of its own off the plane the side it grows to is not known.
+    let t = feature_tree(&boss_part(false), "p.par", &crate::Limits::default()).unwrap();
+    let f = t["features"].as_array().unwrap();
+    assert!(f.iter().any(|x| x["type"] == "unsupported" && x["name"] == "SmartBoss_1"), "{t}");
+}
