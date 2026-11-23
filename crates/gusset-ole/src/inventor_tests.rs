@@ -1117,6 +1117,21 @@ mod sab {
         assert_eq!(p.len(), 2, "{p:?}");
     }
 
+    /// A long strip whose top corner a slanted line cuts off: the wedge, 1 mm high, is under the
+    /// region size of the sketch's grid, found on a grid round the corner.
+    #[test]
+    fn picks_find_the_wedge_a_slanted_line_cuts_off() {
+        let curves = vec![
+            Poly::Line((0.0, 0.0), (3.5, 0.0)),
+            Poly::Line((3.5, 0.0), (3.5, 210.0)),
+            Poly::Line((3.5, 210.0), (0.0, 210.0)),
+            Poly::Line((0.0, 210.0), (0.0, 0.0)),
+            Poly::Line((3.5, 210.0), (-100.0, 180.0)),
+        ];
+        let p = picks(&curves, &[vec![vec![(0.0, 0.0), (3.5, 0.0), (3.5, 210.0), (0.0, 210.0)]]]).unwrap();
+        assert_eq!(p.len(), 2, "{p:?}");
+    }
+
     #[test]
     fn a_tilted_ellipse_is_a_region_inside_its_loop() {
         let curves = vec![Poly::Ellipse { c: (5.0, 3.0), major: (0.6, 0.8), a: 4.0, b: 2.0 }];

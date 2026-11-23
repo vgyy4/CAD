@@ -182,7 +182,8 @@ fn crosses(a: &[P2], b: &[P2]) -> bool {
 /// few cells), or that is much smaller than the sketch (a profile at the end of long lines), is
 /// looked at again on a grid over its own box; so is each circle or arc a few cells across
 /// (the half discs a row of small circles on a line leaves on either side of it: a PCB edge's
-/// castellations), on a finer grid over its box.
+/// castellations), and the square round each curve's ends (the wedge a slanted line cuts off
+/// a long strip at its corner), on a finer grid.
 fn picks_by(curves: &[Poly], loops: &[&Vec<P2>], keep: &dyn Fn(P2) -> bool) -> Option<Vec<P2>> {
     let polys: Vec<Vec<P2>> = curves.iter().map(sample).collect();
     let all = || polys.iter().flatten().chain(loops.iter().copied().flatten()).copied();
@@ -212,7 +213,18 @@ fn picks_by(curves: &[Poly], loops: &[&Vec<P2>], keep: &dyn Fn(P2) -> bool) -> O
         let round = matches!(c, Poly::Circle(..) | Poly::Arc { .. } | Poly::Ellipse { .. });
         (round && side(b) < SMALL_CELLS * cell).then_some(b)
     });
-    for b in small.take(MAX_SMALL) {
+    // The corners where curves end: a line meeting another at a slant leaves a thin wedge.
+    let mut ends: Vec<P2> = Vec::new();
+    for pl in &polys {
+        for &q in pl.first().into_iter().chain(pl.last()) {
+            if ends.iter().all(|e| dist(*e, q) > cell) {
+                ends.push(q);
+            }
+        }
+    }
+    let r = CORNER_CELLS * cell;
+    let corners = ends.into_iter().map(|q| [q.0 - r, q.0 + r, q.1 - r, q.1 + r]);
+    for b in small.chain(corners).take(MAX_SMALL) {
         for p in picks_in(&polys, keep, b, &res, FINE_GRID).unwrap_or_default() {
             if !res.contains(&p) {
                 res.push(p);
@@ -224,6 +236,8 @@ fn picks_by(curves: &[Poly], loops: &[&Vec<P2>], keep: &dyn Fn(P2) -> bool) -> O
 
 /// A circle or arc less than this many cells across is looked at again on its own grid.
 const SMALL_CELLS: f64 = 16.0;
+/// So is the square this many cells either side of each point where a curve ends.
+const CORNER_CELLS: f64 = 12.0;
 /// Cells along the longest side of such a curve's grid.
 const FINE_GRID: usize = 100;
 /// Most such curves, and most small loops, looked at.
