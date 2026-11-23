@@ -840,7 +840,9 @@ every rule below is a candidate the whole-part rebuild check decides.
 - **Sketch B-splines `317b7346`.** First list: the end points; then `u32 degree, f64 tol (1e-9)` and
   three arrays `u32 n, u32 n, u32 8` + doubles: knots (n = poles + degree + 1), weights (none seen) and
   the poles (`u32 n` and two words, then x, y in cm; first and last pole are the end points). The robot
-  arm's "fillets" between arcs and lines are such splines. 34 corpus parts have them.
+  arm's "fillets" between arcs and lines are such splines. 34 corpus parts have them. Class `f9372fd4`
+  (round ipt12) has the same layout: its first list holds only the two end points (a curve drawn by its
+  control points; the keychain, coin and banner outlines of the how-to sessions). 27 corpus parts.
 - **Profile picks.** The history blob mostly keeps one wire body per loop (an annulus is its outer loop
   and its hole loop as two bodies), so the odd count runs over all loops; a loop listed twice
   (`new_bracket_carrete`) leaves nothing and is read as the region it bounds. A 5 mm hole in a
