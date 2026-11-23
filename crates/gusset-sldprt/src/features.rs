@@ -3518,6 +3518,76 @@ fn on_seg(g: &Geometry, s: &Seg, u: f64, v: f64) -> bool {
     (libm::hypot(u - c.x, v - c.y) - r).abs() < 1e-7 && near
 }
 
+/// Whether a later boss buries the side of a boss an edge lies on, around the edge's midpoint
+/// `m` (round sw19: key_d20's Chamfer1 names the edges of Extrude1's rounded ends, which
+/// Extrude2's rectangle swallowed; the arcs touch the rectangle at the very midpoints, so the
+/// sides are tested just off them, a little in from the cap and out of the wall). Such an edge
+/// is a superseded selection.
+fn buried_side(
+    reps: &[Rep],
+    m: V3,
+    swept: &HashMap<u32, Swept>,
+    rounds: &HashMap<u32, Vec<Option<Round>>>,
+    sketches: &[Geometry],
+    cap_tags: &HashSet<u16>,
+    work: &mut u64,
+) -> Result<bool, String> {
+    const STEP: f64 = 0.01;
+    for r in reps.iter().take(2).filter(|r| r.via.is_none()) {
+        let Some(Face::Side(fid, f, s)) = face_of(r, swept, rounds, sketches, cap_tags) else { continue };
+        let Some(g) = sketches.get(f.sketch) else { continue };
+        if f.cut || f.through || s.kind == SegKind::Ellipse {
+            continue;
+        }
+        let n = normal(f);
+        let (lo, hi) = side_span(f);
+        let h = dot(sub(m, f.plane.origin), n);
+        // The edge runs along a cap of the side (else the test says nothing).
+        let h_in = if (h - lo).abs() < 1e-6 {
+            h + STEP
+        } else if (h - hi).abs() < 1e-6 {
+            h - STEP
+        } else {
+            continue;
+        };
+        if hi - lo <= 2.0 * STEP {
+            continue;
+        }
+        let Some(a) = poly(f, g, &s, work)? else { continue };
+        let mut covered = true;
+        for t in [0.45, 0.55] {
+            let Some(p) = point_at(&a, t) else {
+                covered = false;
+                break;
+            };
+            let p = comb(p, 1.0, n, h_in - dot(sub(p, f.plane.origin), n));
+            let Some(out) = side_out(f, g, &s, p) else {
+                covered = false;
+                break;
+            };
+            let q = comb(p, 1.0, out, STEP);
+            let held = swept.iter().any(|(&k, o)| {
+                if k <= fid || o.cut || o.through || dot(normal(o), n).abs() < 1.0 - 1e-9 {
+                    return false;
+                }
+                let Some(og) = sketches.get(o.sketch) else { return false };
+                let (olo, ohi) = side_span(o);
+                let oh = dot(sub(q, o.plane.origin), normal(o));
+                let (u, v) = uv_of(o, q);
+                oh > olo + 1e-6 && oh < ohi - 1e-6 && inside(og, u, v)
+            });
+            if !held {
+                covered = false;
+                break;
+            }
+        }
+        if covered {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// The sketch coordinates (m) of a model point (mm) in a feature's sketch plane.
 fn uv_of(f: &Swept, p: V3) -> (f64, f64) {
     let d = sub(p, f.plane.origin);
@@ -5373,6 +5443,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         }
                     },
                 };
+                let m = match m {
+                    Some(p) if buried_side(reps, p, &swept, &rounds, &sketches, &cap_tags, &mut work)? => None,
+                    m => m,
+                };
                 mids.push(m);
                 made.push(ps.first().filter(|_| fillet).and_then(|r| round_of(reps, &swept, &sketches, &cap_tags, *r)));
                 // The edge's faces and end faces, for the importer to find it by name where
@@ -6818,6 +6892,51 @@ mod end_face_tests {
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
         let f = Swept { sketch: 0, plane, distance: 5.0, start: 0.0, symmetric: false, through: false, cut: false };
         (HashMap::from([(32, f)]), vec![g])
+    }
+
+    /// A later boss that swallows a side of the plate buries the edges along it; one that only
+    /// touches the side, or an earlier one, does not.
+    #[test]
+    fn a_side_a_later_boss_swallows_is_buried() {
+        let (plate, mut sketches) = plate();
+        let line = |a: u32, s: usize, e: usize| Seg {
+            kind: SegKind::Line,
+            id: a,
+            a,
+            s,
+            e,
+            c: 0,
+            dir: 0,
+            construction: false,
+            centerline: false,
+            external: false,
+        };
+        let rect = |x0: f64| Geometry {
+            pts: vec![pt(x0, 0.0), pt(0.02, 0.0), pt(0.02, 0.01), pt(x0, 0.01)],
+            segs: vec![line(2, 0, 1), line(3, 1, 2), line(4, 2, 3), line(5, 3, 0)],
+            ellipse_axes: Vec::new(),
+        };
+        sketches.push(rect(-0.005));
+        sketches.push(rect(0.0));
+        let f = plate.get(&32).copied().unwrap();
+        let other = |sketch| Swept { sketch, ..f };
+        let rep = |fid, idx, tag| Rep { tag, fid, idx, ext: false, ext2: false, via: None, copy: 0 };
+        // The plate's left side (key 5) against its top cap, midpoint at (0, 5, 5).
+        let reps = [rep(32, 5, 1), rep(32, 2, 9)];
+        let caps = HashSet::from([9]);
+        let rounds = HashMap::new();
+        let buried = |swept: &HashMap<u32, Swept>| {
+            buried_side(&reps, [0.0, 5.0, 5.0], swept, &rounds, &sketches, &caps, &mut 0).unwrap()
+        };
+        let with = |fid, o| {
+            let mut s = plate.clone();
+            s.insert(fid, o);
+            s
+        };
+        assert!(buried(&with(40, other(1))));
+        assert!(!buried(&with(20, other(1))));
+        assert!(!buried(&with(40, other(2))));
+        assert!(!buried(&plate));
     }
 
     #[test]
