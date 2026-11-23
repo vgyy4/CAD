@@ -215,3 +215,20 @@ without a blend, SP-curve or torus warning. Feature-history counts are unchanged
 Edge 89 of 180, SolidWorks and Inventor in PROGRESS.md): the rebuilds of these parts stop
 earlier, mostly at rounds OCCT's fillet does not build. `gusset-xt` is optimised in dev
 builds (blends took minutes unoptimised in the import worker of the OCCT sample tests).
+
+## Amendment (2026-11-23): offsets of spun surfaces
+Round se10 (ADR 0046 amendment 31). A SPUN_SURF is written as a STEP SURFACE_OF_REVOLUTION,
+whose u runs along the profile and v round the axis, as in Parasolid; OCCT's reader makes it a
+`Geom_SurfaceOfRevolution` with u round the axis and v along the profile, which turns its
+natural normal round, and keeps an OFFSET_SURFACE's distance as written. An offset of a spun
+surface is therefore written with its distance negated, so it lies where Parasolid puts it:
+Solid Edge 163's thin wall, 2 mm inside a spun B-curve, came out outside (the stored mug
+measured 844 mm3 instead of 17289). Test: an offset of a spun line, its evaluation (inside, as
+Parasolid's natural normal says) and its written distance.
+
+Left: OCCT's reader refuses an OFFSET_SURFACE whose basis is only C0 in its parameters ("out of
+scope of AP 214") and drops its face. Solid Edge 054, 056 and 060 have thin walls offset from
+closed rational B-surfaces made of two cubic half circles (a triple knot at u = 0.5, weights
+1, 1/3, 1/3, 1: tangent-continuous, but not C1 even in homogeneous coordinates, so the knot
+cannot be removed); their stored bodies come in as open shells of volume 0. Writing such an
+offset as a fitted B-surface would keep the faces.

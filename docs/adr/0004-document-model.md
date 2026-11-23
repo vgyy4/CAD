@@ -414,3 +414,15 @@ Round se9 (ADR 0046 amendment 30):
 Golden tests: a hole's rim in a plate thinner than the radius, a rod's foot on a disc narrower
 than the radius (closed cliff corners cut and filled, volumes by Simpson's rule over the
 section), a thin-walled rounded boss filled round its foot to its full height.
+
+## Amendment (2026-11-23): boxes reach the peaks of faces of revolution
+Round se10 (ADR 0046 amendment 31). `gs_bbox` measured with `BRepBndLib::AddOptimal`, which
+can miss a circle's peak on a face of revolution by far more than its tolerance: Solid Edge
+163's stored mug (a B-spline profile spun about the axis, a boss on its seam) measured 0.045 mm
+short of its 29.654 mm radius on one side, so the rebuild check's box test failed although the
+volumes agreed to 4e-6. The box now also takes, for each face of revolution, the points where
+its circles peak along each axis: the profile's centre and radius are searched along v (256
+samples, then a golden-section search), the peak's angle follows from the axis, and the point
+is added only when the face classifies it as on it, so the box never grows past the face.
+Test: a cup whose spun Bezier side bulges past its rim, with a boss on its seam: its box is the
+side's widest radius all round.
