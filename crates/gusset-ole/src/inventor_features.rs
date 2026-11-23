@@ -3445,8 +3445,9 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         let k = b.kind(face);
         // A corner patch; and a planar face with a fillet's tag is a leftover of an edge split
         // later (a fillet face is never planar).
-        // A vertex blend (`srf_srf_v_bl_spl_sur`) is the patch where blends meet at a corner.
-        let patch = matches!(&k, Surf::Other(t) if t.contains("_v_bl_"));
+        // A vertex blend (`srf_srf_v_bl_spl_sur`, or `VBL_SURF` where a setback rounds the
+        // corner: `fl_setback`) is the patch where blends meet at a corner.
+        let patch = matches!(&k, Surf::Other(t) if t.contains("_v_bl_") || t == "VBL_SURF");
         if matches!(k, Surf::Sphere) || patch || (typ == FeatType::Fillet && matches!(k, Surf::Plane { .. })) {
             continue;
         }
