@@ -1075,6 +1075,21 @@ mod sab {
         ];
         let p = picks(&curves, &[vec![circle((0.0, 0.0), 2.0)], vec![circle((20.0, 0.0), 2.0)], vec![rect]]).unwrap();
         assert_eq!(p.len(), 5, "{p:?}");
+        // A circle inscribed in a square touches its sides but does not cross it: a hole.
+        let sq = vec![(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)];
+        let curves = vec![
+            Poly::Line((-2.0, -2.0), (2.0, -2.0)),
+            Poly::Line((2.0, -2.0), (2.0, 2.0)),
+            Poly::Line((2.0, 2.0), (-2.0, 2.0)),
+            Poly::Line((-2.0, 2.0), (-2.0, -2.0)),
+            Poly::Circle((0.0, 0.0), 2.0),
+        ];
+        let touching: Vec<P2> = (0..48)
+            .map(|k| f64::from(k) * std::f64::consts::TAU / 48.0)
+            .map(|a| (2.0 * libm::cos(a), 2.0 * libm::sin(a)))
+            .collect();
+        let p = picks(&curves, &[vec![sq], vec![touching]]).unwrap();
+        assert_eq!(p.len(), 4, "{p:?}");
     }
 
     /// Small circles on a line across a large sketch: the half discs on the line's far side are

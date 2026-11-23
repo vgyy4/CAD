@@ -168,13 +168,31 @@ pub(crate) fn picks(curves: &[Poly], bodies: &[Vec<Vec<P2>>]) -> Option<Vec<P2>>
     picks_by(curves, &all, &|p| own.iter().any(|b| odd(b, p)))
 }
 
-/// Does loop `a` run partly inside and partly outside loop `b`?
+/// Does loop `a` run partly inside and partly outside loop `b`? Points of `a` on `b` or near
+/// it (a circle inscribed in a hexagon touches its sides) count neither way.
 fn crosses(a: &[P2], b: &[P2]) -> bool {
     if a.len() < 3 || b.len() < 3 {
         return false;
     }
-    let n = a.iter().filter(|&&p| inside(b, p)).count();
-    n > 0 && n < a.len()
+    let size = |l: &[P2]| extent(l.iter().copied()).map_or(0.0, |e| (e[1] - e[0]).max(e[3] - e[2]));
+    let eps = 1e-4 * size(a).max(size(b));
+    let clear = |p: P2| {
+        b.iter().zip(b.iter().cycle().skip(1)).all(|(&u, &v)| {
+            let (dx, dy) = (v.0 - u.0, v.1 - u.1);
+            let l2 = dx * dx + dy * dy;
+            let t = if l2 > 0.0 { (((p.0 - u.0) * dx + (p.1 - u.1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            dist(p, (u.0 + t * dx, u.1 + t * dy)) > eps
+        })
+    };
+    let (mut ins, mut outs) = (false, false);
+    for &p in a.iter().filter(|&&p| clear(p)) {
+        if inside(b, p) {
+            ins = true;
+        } else {
+            outs = true;
+        }
+    }
+    ins && outs
 }
 
 /// [`picks`] with a region kept when `keep` holds at its point. A loop that no point falls in
