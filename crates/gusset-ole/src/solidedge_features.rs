@@ -1923,6 +1923,11 @@ fn kind(class: &str) -> Kind {
     }
 }
 
+/// The flag of a function object (its byte after the `QQ` head, kind and serial) set on a
+/// feature in error, one Solid Edge could not build: 0x02 is set on most features, 0x08 only
+/// on these.
+const IN_ERROR: u8 = 0x08;
+
 /// Functions that are bookkeeping, not features of the history.
 fn bookkeeping(class: &str) -> bool {
     // Features are `JM*Function` and a few `JM*AssocFunc*` (thin wall, base body, feature
@@ -2869,6 +2874,12 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             k,
             Kind::Cutout | Kind::RevolvedCutout | Kind::SweptCutout | Kind::LoftedCutout | Kind::HelixCutout
         );
+        if st.obj(*serial).and_then(|b| b.get(8)).is_some_and(|&f| f & IN_ERROR != 0) {
+            // A feature in error (020's last protrusion): the stored body is the state before
+            // it, so it is left out; the rebuild check still decides.
+            s.omitted.push(json!({"name": name, "why": "a feature in error, not in the part's body"}));
+            continue;
+        }
         if cut && s.first_body.is_none() {
             // A cut before any body removes nothing (176's first cutout); left out, the rebuild
             // check still decides.

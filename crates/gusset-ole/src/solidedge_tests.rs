@@ -1500,3 +1500,15 @@ fn a_lofted_circle_is_split_like_its_outline() {
         vec![at(0.0, vec![Curve2::Circle([0.0, 0.0], 0.01)]), at(0.1, vec![Curve2::Circle([0.0, 0.0], 0.02)])];
     assert!(!split_loft_circle(&mut circles));
 }
+
+/// A feature Solid Edge could not build (flag 0x08 in the function object's first byte) is not
+/// in the part's body and is left out (020).
+#[test]
+fn a_feature_in_error_is_left_out() {
+    let mut cut = func("JMCutoutFunction", &[&[20], &[12]]);
+    cut[0] = 0x08;
+    let t = feature_tree(&part_with(1.0, 13.0, None, &obj(38, 20, &cut)), "p.par", &crate::Limits::default()).unwrap();
+    assert_eq!(t["features"].as_array().unwrap().len(), 2, "{t}");
+    assert_eq!(t["source"]["omitted"][1]["name"], "Cutout_1", "{t}");
+    assert_eq!(t["source"]["omitted"][1]["why"], "a feature in error, not in the part's body");
+}
