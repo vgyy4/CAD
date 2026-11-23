@@ -872,3 +872,27 @@ The reader changed only (gusset-sldprt); the tree import and the rebuild check a
 1352 against the round's own baseline, none lost (pattern seeds 3, Config-0 sketches 3, flipped-side cuts 2,
 re-blended edges 1, face frames 1; Dual V-Wheel Steel, lost by the baseline run to a worker pipe that did not
 close, imports again).
+
+## Amendment (2026-11-23): shell face records, arc digits, contour points, mirrored ends, pattern senses (round sw16)
+
+Round sw16 (L27 in `docs/formats/solidworks-feature-tree.md`) measured its own baseline (370 of 1352, row for row
+round sw15's) and took:
+
+- **Shell face records**: every reference record of kind 3 with an id of its own names a face the shell removes
+  (the face first, its neighbours after it); the last record's first face stays the fallback.
+- **Arc points keep their digits** where six decimals put the points on a drawn arc's circle more than 2e-7 mm
+  apart in radius (the kernel builds an arc on its ends' mean radius and refuses ends 1e-7 mm off it); every other
+  point keeps six, as planes and depths do, and full circles keep six.
+- **Contour picks carry a point and a box**: the tree import takes the point where the box fits no single region
+  (shared tree import; only the SolidWorks reader writes both).
+- **Mirrored extrudes up to a face** toggle `reverse` and reflect their face pick, since the reflected sketch's
+  normal is turned over (shared tree import, `reflect_feature`).
+- **Linear patterns that add material** are marked `sense_by_box`: the import keeps the sense whose model
+  reaches less past the box of the stored result's edges (`Tree::kept_edges`), as written where that does not
+  tell.
+- **Second directions**: a two-direction extrude's start cap lies at `distance2` for the edges and faces the
+  reader places on it; a symmetric extrude's side points sit at mid-height.
+
+The rebuild check is unchanged. History 370 -> 373 of 1352 against the round's own baseline, none lost
+(Part3 by contour points, the two stepper motor shafts by arc digits); the Inventor (722 of 1639, 28 of 47) and
+Solid Edge (99 of 180) corpora rerun with the shared tree import changes lose nothing. The kernel is unchanged.
