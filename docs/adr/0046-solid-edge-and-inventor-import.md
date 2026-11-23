@@ -1452,3 +1452,45 @@ not run here.
   of 4); not read. Ribs (018: 6, 011: 4) and delete faces likewise.
 - Others as after se10 (lofts to a point 069/070, part copies, simplified base features, the
   kernel rounds listed in amendment 32).
+
+## Amendment (2026-11-23, 36): Solid Edge round se12 - smart bosses, cutouts outside a closed profile
+
+Measured first (all 180 ordered parts, one per process, on this round's base: 103 as history,
+as after se11), then the parts se11 left with features not read (reader dumps, the stored
+bodies' faces near each boss, scratch tools, not committed). Changed this round:
+
+| cause (measured) | parts | outcome |
+|---|---|---|
+| smart bosses (`JMSmartBossAssocFunction`, Solid Edge's mounting boss) were not read. Slot 2 is a profile of sketch points (each a 78-byte point: u, v at +8, copied at +58), slot 4 a `JMPropsToSmartBossDataUpdateFunc` whose slots 1-11 are value objects (`f64` at +8; byte +18 0x9d on, 0x91 off): 1 the boss diameter, 2 and 3 the hole's diameter and depth (off in 012: no hole), 4 the rib width, 5 how far the ribs' outer faces start outside the boss (0 in 012, 0.5 mm in 017; 017's recess at the hole's mouth is that much wider than the hole), 6 how far the ribs start from the boss's end (5 mm, 1 mm; 017's recess is as deep), 7 the boss draft (0), 8 the ribs' slope off the axis (8 and 15 degrees), 9 the rib count (4), 10 and 11 off in both parts. The boss runs from its plane to the next face, on the side of the plane where the edges the feature stores on its axis lie (the plane's normal points either way: 012 and 017's first two against the boss, 017's last two with it). Ribs: the first along the plane's x, centred on the axis. | 012, 017 (5 bosses) | read: each boss an extrude up to the next face, its hole and recess cuts, each rib a body up to the next face from its foot (`to: next, op: new`, ADR 0061 amendment of this date) trimmed to its slope and joined; checked against the stored bodies' faces (boss cylinders, rib planes and slopes, the 0.053 mm2 triangles at the ribs' feet). Both parts stop earlier, at their thin walls (below) |
+| a cutout's side (slot 5) also holds for a closed profile: run from its first curve as drawn, 017's side outline is clockwise with side 1 (left): the material outside it is cut, not the inside | 017, 061 | written as the profile inside a box round it, the region between picked (`profiles: [{point}]`); 061's Round_1 then finds its edges (it stops at Round_2), 017 at its thin wall. No other part's tree changes |
+
+**Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before: 103 as
+history. After: **103 as history**, none gained, none lost. Rows that changed: 012 (now read
+whole; its first feature, a revolved dome whose closing line is solved 3.3e-7 mm off the axis,
+crashes OCCT's check of the revolve in `Extrema_ExtCC::Points` - the in-process test records a
+crash, the app's kernel worker survives it), 017 (stops at Thinwall_1), 061 (stops at Round_2).
+Moving the revolve axis onto such a line (tried, reverted) avoids 012's crash but changes 160's
+pentagons, each revolved about one of its own edges, whose union then crashes OCCT instead. The
+evaluator change (`to: next, op: new`) reaches every importer only where a tree asks for it, so
+the other corpora were rerun in full on this round's base and head: SolidWorks 384 of 1352 as history before and after, no part's outcome line changed;
+Inventor 756 of 1686 before and after, no history outcome changed (two parts that timed out
+under a machine load near 18 in the base run came in as bodies on the head). Fusion sets were not run here.
+
+**Left (measured).**
+- 012: past the crash, Thinwall_1 (a 2 mm inside shell of the apple-shaped dome, open at its
+  base) fails in OCCT's offset (no reason given).
+- 017: Cutout_3 (an open U profile, three lines drawn one way and the last the other, both free
+  ends "drawn to") is closed on the wrong side: the stored body has the notch inside the U
+  (point tests at x = 74 mm); taking the chain's direction from the most curves drawn its way
+  fixes 017's U but breaks 007, 010, 150 and 175, so it is not the rule. Thin wall and chamfers
+  follow.
+- Ribs (`JMRibAssocFunction`; 018: 6, 011: 4): slot 2 the profile (an open line), 3 = 12, 4 = 9,
+  5 the side (1 or 3), 6 the direction (1 or 2), 7 the thickness (a dimension relation), 8 = 14
+  (to the next face). The smart boss's rib (a body up to the next face, trimmed, joined) is the
+  likely form; 018 first stops at a draft whose cylinder face is not bounded by whole circles,
+  011 at DeleteFaces and DeleteRegions.
+- 067, 071: rebuilt within 4.2e-5 and 3.1e-5 of their stored volumes; 071's difference is one
+  sliver (80 mm3) between OCCT's round and Solid Edge's at the top edge x = -121.92 mm (both
+  B-spline faces, 0.1 mm apart on average).
+- Others as after se11 (thin walls 111, 145, 023; kernel rounds; 054, 056, 060; lofts to a point;
+  part copies; simplified base features).
