@@ -2147,9 +2147,25 @@ fn edge_records_to(
                 break;
             }
             let mut via = None;
+            // A reference whose class is declared in place (`ff ff 01 00 <u16 n> <name>`) has
+            // no tag; the rest of it follows the name (round sw17: Linear Actuator Bracket's
+            // Fillet1 declares `moShellSurfIdRep_c` for the first face of a shell's wall).
+            let tag_of = |p: &mut usize| -> Option<u16> {
+                if d.get(*p..*p + 4) == Some(&CLASS_DECL[..]) {
+                    let n = usize::from(u16_at(d, *p + 4)?);
+                    let name = d.get(*p + 6..*p + 6 + n)?;
+                    if !(3..=40).contains(&n) || !name.iter().all(u8::is_ascii_graphic) {
+                        return None;
+                    }
+                    *p += 4 + n;
+                    return Some(0xffff);
+                }
+                u16_at(d, *p)
+            };
+            let t0 = tag_of(&mut p);
             let outer = need(u32_at(d, p + 8), "an edge record")?;
             if (mirrors.contains(&outer) || patterns.contains(&outer))
-                && u16_at(d, p).is_some_and(|t| t & 0x8000 != 0)
+                && t0.is_some_and(|t| t & 0x8000 != 0)
                 && u16_at(d, p + 2) == Some(0)
                 && u16_at(d, p + 16).is_some_and(|t| t & 0x8000 != 0)
                 && u16_at(d, p + 18) == Some(0)
@@ -2158,7 +2174,7 @@ fn edge_records_to(
                 via = Some(outer);
                 p += 16;
             }
-            let t = need(u16_at(d, p), "an edge record")?;
+            let t = need(if via.is_some() { tag_of(&mut p) } else { t0 }, "an edge record")?;
             let z = need(u16_at(d, p + 2), "an edge record")?;
             let fid = need(u32_at(d, p + 8), "an edge record")?;
             let idx = need(u32_at(d, p + 16), "an edge record")?;
@@ -2172,7 +2188,7 @@ fn edge_records_to(
             while extra < 2 && p + 4 <= d.len() {
                 let n0 = need(u16_at(d, p), "an edge record")?;
                 let n1 = need(u16_at(d, p + 2), "an edge record")?;
-                if !last && n0 & 0x8000 != 0 && n1 == 0 {
+                if !last && ((n0 & 0x8000 != 0 && n1 == 0) || d.get(p..p + 4) == Some(&CLASS_DECL[..])) {
                     break;
                 }
                 let w = need(u32_at(d, p), "an edge record")?;
@@ -3687,6 +3703,8 @@ fn midpoint_sketch(
 /// What [`face_sel`] needs to name a face by the feature that made it.
 struct Named<'a> {
     nodes: &'a [Node],
+    /// Shells read: a reference through one names the inner wall offset from the face.
+    shells: &'a HashSet<u32>,
     swept: &'a HashMap<u32, Swept>,
     revolved: &'a HashMap<u32, Revolved>,
     /// Fillets and chamfers written as such (their faces are blends of their edges).
@@ -3704,6 +3722,14 @@ struct Named<'a> {
 /// plane where it is known, or the face a fillet or chamfer made from its `idx`-th edge.
 /// `None` for faces of other features and mirror copies.
 fn face_sel(r: &Rep, m: &Named) -> Option<Value> {
+    if let Some(v) = r.via.filter(|v| m.shells.contains(v)) {
+        // A face of a shell's inner wall (round sw17): the face it was offset from, through
+        // the shell (Linear Actuator Bracket's Fillet1 rounds the wall inside its top).
+        let shell = &m.nodes.iter().find(|q| q.id == v)?.name;
+        let mut o = face_sel(&Rep { via: None, copy: 0, ..*r }, m)?;
+        o.as_object_mut()?.insert("shell".into(), json!(shell));
+        return Some(o);
+    }
     if let Some(v) = r.via {
         // A face of a pattern's copy: the seed's face, through the pattern and copy (no plane:
         // the seed's is not the copy's).
@@ -4194,6 +4220,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut mirror_planes: HashMap<u32, (V3, V3)> = HashMap::new();
     // Each pattern of one direction read: the motion from one copy to the next.
     let mut pattern_steps: HashMap<u32, Step> = HashMap::new();
+    // Each shell read (round sw17): a face of its inner wall is written as a reference to the
+    // shell followed by the face it was offset from, as a mirror's copy is.
+    let mut shell_ids: HashSet<u32> = HashSet::new();
     // Node id -> name of each sketch read (lofts name their sections by id).
     let mut sketch_ids: HashMap<u32, String> = HashMap::new();
     // Node id -> name of each helix read, and the helix (round sw10): sweeps run along them.
@@ -5114,7 +5143,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         {
             let fillet = cls.as_deref() != Some("Chamfer_c");
             let ps = params(rf, a, b, nt)?;
-            let mirror_ids: HashSet<u32> = mirror_planes.keys().copied().collect();
+            let mirror_ids: HashSet<u32> = mirror_planes.keys().copied().chain(shell_ids.iter().copied()).collect();
             let pattern_ids: HashSet<u32> = pattern_steps.keys().copied().collect();
             let sel = selection(edge_records_to(rf, a, b, &mirror_ids, &pattern_ids)?, n.id);
             let mut edges = Vec::new();
@@ -5138,6 +5167,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 sketch_by_name.iter().map(|(k, (i, _))| (*i, k.clone())).collect();
             let names = Named {
                 nodes: &nodes,
+                shells: &shell_ids,
                 swept: &swept,
                 revolved: &revolved,
                 blends: &blend_ids,
@@ -5176,7 +5206,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     _ => None,
                 };
                 let reps = own.as_deref().unwrap_or(reps);
+                // An edge on a shell's inner wall is named by its faces alone.
+                let inner = reps.iter().any(|r| r.via.is_some_and(|v| shell_ids.contains(&v)));
                 let m = match mirrored_edge(reps, &swept, &mirror_planes) {
+                    _ if inner => None,
                     Some((plane, reps, swept)) => midpoint(&reps, &swept, &rounds, &sketches, &cap_tags, &mut work)?
                         .map(|m| reflect(m, plane).map(|c| round_to(c, 6) + 0.0)),
                     None if reps.iter().any(|r| r.via.is_some_and(|v| pattern_steps.contains_key(&v))) => {
@@ -5528,6 +5561,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let mut js = Map::new();
             js.insert("type".into(), json!("shell"));
             js.insert("name".into(), json!(n.name));
+            shell_ids.insert(n.id);
             js.insert("thickness".into(), json!(ps.first().map(|v| mm(*v))));
             if picks.is_empty() {
                 js.insert("faces".into(), json!([]));

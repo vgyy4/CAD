@@ -31,6 +31,10 @@ pub(super) struct FaceSel {
     pattern: Option<String>,
     #[serde(default)]
     copy: Option<u32>,
+    /// A face of a shell's inner wall: the shell (by the source's name); the rest names the
+    /// face the wall was offset from.
+    #[serde(default)]
+    shell: Option<String>,
 }
 
 /// What a [`FaceSel`] stands for in the document's names.
@@ -56,12 +60,22 @@ enum Want {
         k: u32,
         face: Box<Want>,
     },
+    /// The inner wall a shell made from the face the inner want names.
+    Inner {
+        shell: String,
+        face: Box<Want>,
+    },
 }
 
 /// Most source curves one side face may name.
 const MAX_CURVES: usize = 64;
 
 fn want(g: &Gen, f: &FaceSel) -> Option<Want> {
+    if let Some(sh) = &f.shell {
+        let shell = g.features.get(sh)?.clone();
+        let seed = FaceSel { shell: None, ..f.clone() };
+        return Some(Want::Inner { shell, face: Box::new(want(g, &seed)?) });
+    }
     if let Some(p) = &f.pattern {
         let pattern = g.features.get(p)?.clone();
         let k = f.copy.filter(|k| *k > 0)?;
@@ -103,7 +117,14 @@ fn on_plane(info: Option<&FaceInfo>, (p, n): (V3, V3)) -> bool {
 /// Whether the face named `r` is the one `w` wants. `loose`: a flat face given with its plane
 /// is any flat face of the model on that plane, whichever feature Gusset names it after (a
 /// later feature's coplanar face merged with it).
-fn holds(w: &Want, r: &FaceRef, info: Option<&FaceInfo>, loose: bool) -> bool {
+/// `orig` gives the model's face a name names, for the face a shell's wall was offset from.
+fn holds<'a>(
+    w: &Want,
+    r: &FaceRef,
+    info: Option<&FaceInfo>,
+    loose: bool,
+    orig: &dyn Fn(&FaceRef) -> Option<&'a FaceInfo>,
+) -> bool {
     match w {
         Want::Side { plane: Some(pl), .. } | Want::Cap { plane: Some(pl), .. } if loose => on_plane(info, *pl),
         Want::Side { feature, sketch, entities, .. } => {
@@ -115,8 +136,12 @@ fn holds(w: &Want, r: &FaceRef, info: Option<&FaceInfo>, loose: bool) -> bool {
         }
         Want::Instance { pattern, k, face } => match &r.key {
             FaceKey::Instance { k: rk, face: inner } => {
-                r.feature == *pattern && rk == k && holds(face, inner, info, loose)
+                r.feature == *pattern && rk == k && holds(face, inner, info, loose, orig)
             }
+            _ => false,
+        },
+        Want::Inner { shell, face } => match &r.key {
+            FaceKey::Inner(inner) => r.feature == *shell && holds(face, inner, orig(inner), false, orig),
             _ => false,
         },
         Want::Blend { fillet } => match &r.key {
@@ -158,8 +183,9 @@ fn edge_between(
     let mut found: Vec<Vec<(String, String)>> = Vec::new();
     for body in &ev.bodies {
         let t = &body.topology;
+        let orig = |fr: &FaceRef| body.names.faces.iter().position(|x| x == fr).and_then(|i| t.faces.get(i));
         let named = |w: &Want, f: u32| {
-            body.names.faces.get(f as usize).is_some_and(|r| holds(w, r, t.faces.get(f as usize), loose))
+            body.names.faces.get(f as usize).is_some_and(|r| holds(w, r, t.faces.get(f as usize), loose, &orig))
         };
         // Loose: a cylindrical face named is also every face that continues its cylinder
         // across edges (round sw17: SolidWorks keeps one face where a cut's arc carries on a
