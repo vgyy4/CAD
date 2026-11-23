@@ -1060,6 +1060,93 @@ mod sab {
         assert!(picks(&[], &[]).is_none());
     }
 
+    /// A slot drawn as a rectangle and a circle at each end, the three picked as one body each:
+    /// the bodies' loops cross, so the regions where they overlap are kept (no hole there).
+    #[test]
+    fn picks_keep_the_overlap_of_bodies_whose_loops_cross() {
+        let rect = vec![(0.0, -2.0), (20.0, -2.0), (20.0, 2.0), (0.0, 2.0)];
+        let curves = vec![
+            Poly::Line((0.0, -2.0), (20.0, -2.0)),
+            Poly::Line((20.0, -2.0), (20.0, 2.0)),
+            Poly::Line((20.0, 2.0), (0.0, 2.0)),
+            Poly::Line((0.0, 2.0), (0.0, -2.0)),
+            Poly::Circle((0.0, 0.0), 2.0),
+            Poly::Circle((20.0, 0.0), 2.0),
+        ];
+        let p = picks(&curves, &[vec![circle((0.0, 0.0), 2.0)], vec![circle((20.0, 0.0), 2.0)], vec![rect]]).unwrap();
+        assert_eq!(p.len(), 5, "{p:?}");
+        // A circle inscribed in a square touches its sides but does not cross it: a hole.
+        let sq = vec![(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)];
+        let curves = vec![
+            Poly::Line((-2.0, -2.0), (2.0, -2.0)),
+            Poly::Line((2.0, -2.0), (2.0, 2.0)),
+            Poly::Line((2.0, 2.0), (-2.0, 2.0)),
+            Poly::Line((-2.0, 2.0), (-2.0, -2.0)),
+            Poly::Circle((0.0, 0.0), 2.0),
+        ];
+        let touching: Vec<P2> = (0..48)
+            .map(|k| f64::from(k) * std::f64::consts::TAU / 48.0)
+            .map(|a| (2.0 * libm::cos(a), 2.0 * libm::sin(a)))
+            .collect();
+        let p = picks(&curves, &[vec![sq], vec![touching]]).unwrap();
+        assert_eq!(p.len(), 4, "{p:?}");
+    }
+
+    /// Small circles on a line across a large sketch: the half discs on the line's far side are
+    /// a few cells of the sketch's grid, found again on a grid over each circle.
+    #[test]
+    fn picks_find_half_discs_a_few_cells_across() {
+        let mut curves = vec![
+            Poly::Line((0.0, 0.0), (40.0, 0.0)),
+            Poly::Line((40.0, 0.0), (40.0, 40.0)),
+            Poly::Line((40.0, 40.0), (0.0, 40.0)),
+            Poly::Line((0.0, 40.0), (0.0, 0.0)),
+            Poly::Line((4.0, 0.0), (4.0, 40.0)),
+        ];
+        let mut outline = vec![(0.0, 0.0), (4.0, 0.0)];
+        for k in 0..5 {
+            let c = (4.0, 10.0 + 5.0 * f64::from(k));
+            curves.push(Poly::Circle(c, 0.2));
+            outline.extend((0..=16).map(|i| {
+                let a = -std::f64::consts::FRAC_PI_2 + std::f64::consts::PI * f64::from(i) / 16.0;
+                (c.0 + 0.2 * libm::cos(a), c.1 + 0.2 * libm::sin(a))
+            }));
+        }
+        outline.extend([(4.0, 40.0), (0.0, 40.0)]);
+        let p = picks(&curves, &[vec![outline]]).unwrap();
+        assert_eq!(p.iter().filter(|q| q.0 > 4.0).count(), 5, "{p:?}");
+    }
+
+    /// A profile far smaller than the sketch's long lines: the 0.3 mm strip a line leaves along
+    /// its side is under a cell of the sketch's grid, found on a grid over the loop.
+    #[test]
+    fn picks_find_thin_strips_of_a_small_loop() {
+        let curves = vec![
+            Poly::Line((0.0, 0.0), (10.0, 0.0)),
+            Poly::Line((10.0, 0.0), (10.0, 10.0)),
+            Poly::Line((10.0, 10.0), (0.0, 10.0)),
+            Poly::Line((0.0, 10.0), (0.0, 0.0)),
+            Poly::Line((0.3, -200.0), (0.3, 200.0)),
+        ];
+        let p = picks(&curves, &[vec![vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]]]).unwrap();
+        assert_eq!(p.len(), 2, "{p:?}");
+    }
+
+    /// A long strip whose top corner a slanted line cuts off: the wedge, 1 mm high, is under the
+    /// region size of the sketch's grid, found on a grid round the corner.
+    #[test]
+    fn picks_find_the_wedge_a_slanted_line_cuts_off() {
+        let curves = vec![
+            Poly::Line((0.0, 0.0), (3.5, 0.0)),
+            Poly::Line((3.5, 0.0), (3.5, 210.0)),
+            Poly::Line((3.5, 210.0), (0.0, 210.0)),
+            Poly::Line((0.0, 210.0), (0.0, 0.0)),
+            Poly::Line((3.5, 210.0), (-100.0, 180.0)),
+        ];
+        let p = picks(&curves, &[vec![vec![(0.0, 0.0), (3.5, 0.0), (3.5, 210.0), (0.0, 210.0)]]]).unwrap();
+        assert_eq!(p.len(), 2, "{p:?}");
+    }
+
     #[test]
     fn a_tilted_ellipse_is_a_region_inside_its_loop() {
         let curves = vec![Poly::Ellipse { c: (5.0, 3.0), major: (0.6, 0.8), a: 4.0, b: 2.0 }];

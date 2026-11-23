@@ -1452,3 +1452,76 @@ not run here.
   of 4); not read. Ribs (018: 6, 011: 4) and delete faces likewise.
 - Others as after se10 (lofts to a point 069/070, part copies, simplified base features, the
   kernel rounds listed in amendment 32).
+
+## Amendment (2026-11-23, 35): Inventor round ipt14 - crossing profile loops, small regions, sketch text, joins through all, pattern order
+
+Measured first: all 1686 parts on this round's base (756 as history, as after ipt13). Of the 882
+bodies, 53 build every feature and stop at the volume check; each was rebuilt feature by feature
+against the stored body (scratch, not committed). Most of those that could be told apart had a
+profile pick that left a region out or took one too many, so this round worked on the picks.
+
+| cause (measured) | rule (format notes AX) | parts gained |
+|---|---|---|
+| a slot drawn as a rectangle and two end circles, each picked whole: three bodies whose loops cross, and the parity count dropped the lens regions where they overlap | a region inside two bodies whose loops cross (each runs well inside and well outside the other) is kept; touching is not crossing (the AN818 nut's inscribed circle; a keychain's ring 0.06 mm outside a spline outline's samples) | ArmBar x2, Winding Assembly Base Ring |
+| regions under a few cells of the 500-cell region grid: half discs of 0.4 mm circles on a PCB edge, slivers a 200 mm line cuts from a 20 mm V-slot profile, a 1 mm wedge a slanted line cuts off a 210 mm strip | small circles and arcs, loops under a quarter of the sketch and the squares round curve ends are looked at again on finer grids (not for the fallback of a loop listed twice) | servo PCBs x2, fuzzy-architecture bracket and V-slot |
+| a join through all ran 10 m each way | up to the next face; with slot 7 set, both ways as two extrudes | Spool to Winder Transfer Gear |
+| sketch text is not read as curves, so the profile took the sketch's other curves | when a loop of the feature runs wholly off the sketch's curves, the feature's loops (straight and circular edges) are its sketch | LightSaber Connector |
+| a feature pattern cut every copy first and added copies after: a fillet on a tab the pattern also copies landed in the air (gusset-eval, shared) | when a feature that takes material away follows one that adds it, the copies are made feature by feature; other patterns as before | Lead Screw Coupler Connector Male |
+| (the profile pick rules together; not split by rule) | | Connection disc of gear, Proto-Board, servo horn, Testrig Bauteile 20~3, Adapter-8-5-Unterteil, EndCap (its Fillet2 failed on the base) |
+
+Tried and not kept: a hole to a work plane on the far side of its normal run the other way (the
+CRS-METEO i-rings' Hole5 builds then, and the parts stop at a chamfer on rounded faces; the unit test
+keeps such a plane refused, and with no rebuild to confirm it the commit was reverted). A cut OCCT
+leaves undone without an error (the Wago connector's end recess: its sketch plane touches the body's
+rounded side along a line; plain OCCT 8 cuts, commons and the reverse cut all take nothing up to a
+fuzzy value of 1e-5, and 1e-4 cuts it) was redone in the kernel with a growing fuzzy value when the
+tool's centroid stayed inside; the part then measures 2.0e-5 off from its arcs and gains nothing, so
+the kernel change was not kept (scratch patch; it would cost two volume integrals on every cut).
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4).
+
+| corpus | parts | history before | after | without a solid |
+|---|---|---|---|---|
+| first (Zenodo) | 47 | 28 | 28 | 0 |
+| second (57 sources) | 1639 | 728 | 744 | 46 |
+
+Checked: the trees of all 1686 parts were read on the base and the head; the full corpus was rebuilt
+on the head, and every part whose tree changed or whose feature patterns take material away after
+adding it (105) again on the final head: 16 parts went from body to history, none from history to
+body. Gameboy and Zapdos Pokemon Card (bodies on the base, 264 s and 467 s) ran past the runner's
+900 s limit on the head while the machine ran three other corpora (load 10 to 17 on 4 cores); rerun
+with a longer limit, Zapdos stops at the importer's own time limit ("importing took too long",
+313 s), and Gameboy comes in as bodies as on the base (after 1625 s; its reason is now an unequal
+chamfer whose edges' reference faces are not read). Reading Zapdos's tree takes 132 s of CPU with
+the finer grids against 116 s without.
+
+**Other formats.** Only the feature pattern order is shared (gusset-eval); the profile, text and join
+rules are in the Inventor reader. A pattern takes the new path only when a feature that takes
+material away follows one that adds it; otherwise it makes the same kernel calls as before.
+
+| corpus | parts | base | head |
+|---|---|---|---|
+| SolidWorks (sw-more, Slip-Pad, ARIG revisions, Zenodo; full run on base and head) | 1352 | 384 | 384 (two lines changed, both bodies before and after: the sw-more base-square spacers' volume gaps shrink from 1545 to 55 mm3) |
+| Solid Edge (ordered parts, one per process; full run on the head, with the new path marked) | 180 | 103 (round se11's head) | 103 (no row changed; only 145's FastPattern_2 takes the new path, and 145 has the same row on the base; 064 crashes on both) |
+
+Fusion imports reach the pattern change where a Fusion feature pattern lists a cut, fillet or chamfer
+after a join; Fusion was not rerun (the session's job).
+
+**Left (measured).** 42 bodies build every feature and stop at the volume check (53 on the base):
+- Sketch text with spline glyphs (`intcurve` edges) is not read: Main Bearing Cover's engraving,
+  the keychain's lettering. The EY4180 bay adapters' arrows are read (straight edges), but their
+  engraves cut into the air: their slot-2 direction points away from the floor; turned round they
+  take 5.3 of the 6.85 mm3 each needs (A-01 is 13.7 mm3 off, was 271). The LEGO bricks' stud logos
+  read as straight-edged letters come to within 0.15 mm3 (2x2), the O's inner loop a wire body of
+  its own like every loop here, so a hole and a second picked region cannot be told apart.
+- OCCT cuts that take nothing without an error where the tool's start face touches a cylinder of
+  the body along a line (Wago Inline; fuzzy 1e-4 cuts it, above).
+- Near misses whose cause was not found: TapaE/TapaS (9e-5 and 8e-5), the jarpoole screw (1.1e-4),
+  Spool Drive Spindle (1.4e-4: 0.21 mm3 left round its cross slot).
+- A fillet of two sets made together (`fl_two_sets`, 98 mm3: Gusset makes the second set after the
+  first and rolls it round the corner); the CRS-METEO bearing clamps (22 mm3: the bore cut after
+  their coil changes the volume neither way round).
+- As after ipt13: spline blend surfaces (23, each a different neighbourhood: supports used up by
+  neighbouring blends of the same feature, vertex blends, loft supports), no model edge at a pick,
+  derived parts whose base is not in the folder (40), imported base bodies (43), features the
+  plugin does not export (79: Design Accelerator gears, delete face, sheet-metal bends, ribs).

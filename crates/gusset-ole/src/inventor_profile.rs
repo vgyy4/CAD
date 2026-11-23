@@ -118,6 +118,31 @@ pub(crate) fn bspline_points(degree: u32, knots: &[f64], poles: &[P2], weights: 
     (out.len() >= 2).then_some(out)
 }
 
+/// The distance (mm) from `p` to the curve `c`.
+pub(crate) fn dist_to(c: &Poly, p: P2) -> f64 {
+    let seg = |a: P2, b: P2| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 > 0.0 { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        dist(p, (a.0 + t * dx, a.1 + t * dy))
+    };
+    match *c {
+        Poly::Line(a, b) => seg(a, b),
+        Poly::Circle(c, r) => (dist(p, c) - r).abs(),
+        Poly::Arc { c, s, e } => {
+            let a = |q: P2| libm::atan2(q.1 - c.1, q.0 - c.0);
+            let tau = 2.0 * std::f64::consts::PI;
+            let span = (a(e) - a(s)).rem_euclid(tau);
+            if (a(p) - a(s)).rem_euclid(tau) <= span {
+                (dist(p, c) - dist(s, c)).abs()
+            } else {
+                dist(p, s).min(dist(p, e))
+            }
+        }
+        _ => sample(c).windows(2).filter_map(|w| Some(seg(*w.first()?, *w.get(1)?))).fold(f64::INFINITY, f64::min),
+    }
+}
+
 fn inside(poly: &[P2], p: P2) -> bool {
     let mut c = false;
     for (i, a) in poly.iter().enumerate() {
@@ -138,33 +163,115 @@ fn round6(x: f64) -> f64 {
 
 /// One point (mm) inside each region of the sketch that an odd number of the feature's loops
 /// surround (`bodies`: the loops of each body the history blob keeps for it; mostly one wire per
-/// loop, so the count runs over all of them). When that leaves nothing (one loop listed twice,
-/// note AR), a region is kept that lies in one of the bodies (an odd number of its own loops).
-/// `None` when there is nothing to draw.
+/// loop, so the count runs over all of them). A region inside two bodies whose loops cross (each
+/// runs partly inside and partly outside the other: a slot drawn as a rectangle and its two end
+/// circles, each picked whole) is kept too: the picked regions overlap there, they do not make
+/// a hole (a loop wholly inside another is a hole). When that leaves nothing (one loop listed
+/// twice, note AR), a region is kept that lies in one of the bodies (an odd number of its own
+/// loops). `None` when there is nothing to draw.
 pub(crate) fn picks(curves: &[Poly], bodies: &[Vec<Vec<P2>>]) -> Option<Vec<P2>> {
-    let all: Vec<Vec<P2>> = bodies.iter().flatten().cloned().collect();
-    let res = picks_by(curves, std::slice::from_ref(&all))?;
+    let all: Vec<&Vec<P2>> = bodies.iter().flatten().collect();
+    let odd = |ls: &[&Vec<P2>], p: P2| ls.iter().filter(|l| l.len() > 2 && inside(l, p)).count() % 2 == 1;
+    let own: Vec<Vec<&Vec<P2>>> = bodies.iter().map(|b| b.iter().collect()).collect();
+    let crossing: Vec<(usize, usize)> = (0..bodies.len())
+        .flat_map(|i| (i + 1..bodies.len()).map(move |j| (i, j)))
+        .filter(|&(i, j)| {
+            let (Some(a), Some(b)) = (bodies.get(i), bodies.get(j)) else { return false };
+            a.iter().any(|la| b.iter().any(|lb| crosses(la, lb) || crosses(lb, la)))
+        })
+        .collect();
+    let keep = |p: P2| {
+        odd(&all, p) || {
+            let ins: Vec<usize> = own.iter().enumerate().filter(|(_, b)| odd(b, p)).map(|(i, _)| i).collect();
+            crossing.iter().any(|(i, j)| ins.contains(i) && ins.contains(j))
+        }
+    };
+    let res = picks_by(curves, &all, &keep, true)?;
     if !res.is_empty() || bodies.len() < 2 {
         return Some(res);
     }
-    picks_by(curves, bodies)
+    picks_by(curves, &all, &|p| own.iter().any(|b| odd(b, p)), false)
 }
 
-/// [`picks`] with a region kept when it lies in one of `bodies`. A loop that no point falls in
+/// Does loop `a` run partly inside and partly outside loop `b`? Points of `a` on `b` or near
+/// it count neither way: a circle inscribed in a hexagon touches its sides, and a circle that
+/// touches a spline outline runs a little outside the outline's samples (a keychain's ring,
+/// 0.06 mm); near is within a hundredth of the smaller loop's size.
+fn crosses(a: &[P2], b: &[P2]) -> bool {
+    if a.len() < 3 || b.len() < 3 {
+        return false;
+    }
+    let size = |l: &[P2]| extent(l.iter().copied()).map_or(0.0, |e| (e[1] - e[0]).max(e[3] - e[2]));
+    let eps = 1e-2 * size(a).min(size(b));
+    let clear = |p: P2| {
+        b.iter().zip(b.iter().cycle().skip(1)).all(|(&u, &v)| {
+            let (dx, dy) = (v.0 - u.0, v.1 - u.1);
+            let l2 = dx * dx + dy * dy;
+            let t = if l2 > 0.0 { (((p.0 - u.0) * dx + (p.1 - u.1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            dist(p, (u.0 + t * dx, u.1 + t * dy)) > eps
+        })
+    };
+    let (mut ins, mut outs) = (false, false);
+    for &p in a.iter().filter(|&&p| clear(p)) {
+        if inside(b, p) {
+            ins = true;
+        } else {
+            outs = true;
+        }
+    }
+    ins && outs
+}
+
+/// [`picks`] with a region kept when `keep` holds at its point. A loop that no point falls in
 /// after the pass over the whole sketch (a small hole far from the rest: its inside is under a
-/// few cells) is looked at again on a grid over its own box.
-fn picks_by(curves: &[Poly], bodies: &[Vec<Vec<P2>>]) -> Option<Vec<P2>> {
+/// few cells), or that is much smaller than the sketch (a profile at the end of long lines), is
+/// looked at again on a grid over its own box; so is each circle or arc a few cells across
+/// (the half discs a row of small circles on a line leaves on either side of it: a PCB edge's
+/// castellations), and the square round each curve's ends (the wedge a slanted line cuts off
+/// a long strip at its corner), on a finer grid; unless `fine` is off (the fallback for a loop
+/// listed twice, which takes the regions its loop bounds as the sketch's grid sees them).
+fn picks_by(curves: &[Poly], loops: &[&Vec<P2>], keep: &dyn Fn(P2) -> bool, fine: bool) -> Option<Vec<P2>> {
     let polys: Vec<Vec<P2>> = curves.iter().map(sample).collect();
-    let loops = || bodies.iter().flatten();
-    let all = || polys.iter().flatten().chain(loops().flatten()).copied();
+    let all = || polys.iter().flatten().chain(loops.iter().copied().flatten()).copied();
     all().next()?;
-    let mut res = picks_in(&polys, bodies, extent(all())?)?;
-    for l in loops() {
-        if l.len() < 3 || res.iter().any(|&p| inside(l, p)) {
+    let whole = extent(all())?;
+    let side = |b: [f64; 4]| (b[1] - b[0]).max(b[3] - b[2]);
+    let mut res = picks_in(&polys, keep, whole, &[], GRID)?;
+    let mut looked = 0usize;
+    for l in loops {
+        let Some(b) = extent(l.iter().copied()) else { continue };
+        // A loop much smaller than the sketch (a profile in a corner of long lines) is looked
+        // at on its own grid too, for regions under a few cells of the sketch's.
+        let small = fine && side(b) < side(whole) / 4.0 && looked < MAX_SMALL;
+        if l.len() < 3 || (!small && res.iter().any(|&p| inside(l, p))) {
             continue;
         }
-        let Some(b) = extent(l.iter().copied()) else { continue };
-        for p in picks_in(&polys, bodies, b).unwrap_or_default() {
+        looked += usize::from(small);
+        for p in picks_in(&polys, keep, b, &res, GRID).unwrap_or_default() {
+            if !res.contains(&p) {
+                res.push(p);
+            }
+        }
+    }
+    let cell = side(whole) * 1.04 / GRID as f64;
+    let small = curves.iter().zip(&polys).filter_map(|(c, pl)| {
+        let b = extent(pl.iter().copied())?;
+        let round = matches!(c, Poly::Circle(..) | Poly::Arc { .. } | Poly::Ellipse { .. });
+        (round && side(b) < SMALL_CELLS * cell).then_some(b)
+    });
+    // The corners where curves end: a line meeting another at a slant leaves a thin wedge.
+    let mut ends: Vec<P2> = Vec::new();
+    for pl in &polys {
+        for &q in pl.first().into_iter().chain(pl.last()) {
+            if ends.iter().all(|e| dist(*e, q) > cell) {
+                ends.push(q);
+            }
+        }
+    }
+    let r = CORNER_CELLS * cell;
+    let corners = ends.into_iter().map(|q| [q.0 - r, q.0 + r, q.1 - r, q.1 + r]);
+    for b in small.chain(corners).take(if fine { MAX_SMALL } else { 0 }) {
+        for p in picks_in(&polys, keep, b, &res, FINE_GRID).unwrap_or_default() {
             if !res.contains(&p) {
                 res.push(p);
             }
@@ -172,6 +279,15 @@ fn picks_by(curves: &[Poly], bodies: &[Vec<Vec<P2>>]) -> Option<Vec<P2>> {
     }
     Some(res)
 }
+
+/// A circle or arc less than this many cells across is looked at again on its own grid.
+const SMALL_CELLS: f64 = 16.0;
+/// So is the square this many cells either side of each point where a curve ends.
+const CORNER_CELLS: f64 = 12.0;
+/// Cells along the longest side of such a curve's grid.
+const FINE_GRID: usize = 100;
+/// Most such curves, and most small loops, looked at.
+const MAX_SMALL: usize = 256;
 
 /// The part of the segment `a`-`b` inside the box (`x0, x1, y0, y1`), if any (Liang-Barsky).
 fn clip(a: P2, b: P2, bx: [f64; 4]) -> Option<(P2, P2)> {
@@ -204,13 +320,14 @@ fn extent(pts: impl Iterator<Item = P2> + Clone) -> Option<[f64; 4]> {
     (x0.is_finite() && x1.is_finite() && y0.is_finite() && y1.is_finite()).then_some([x0, x1, y0, y1])
 }
 
-/// [`picks`] on a grid over the box `b` (with a margin): curves outside it are left out.
-fn picks_in(polys: &[Vec<P2>], bodies: &[Vec<Vec<P2>>], b: [f64; 4]) -> Option<Vec<P2>> {
+/// [`picks`] on a grid of `grid` cells a side over the box `b` (with a margin): curves outside
+/// it are left out, and so are regions that hold a point of `known`.
+fn picks_in(polys: &[Vec<P2>], keep: &dyn Fn(P2) -> bool, b: [f64; 4], known: &[P2], grid: usize) -> Option<Vec<P2>> {
     let [x0, x1, y0, y1] = b;
     let span = (x1 - x0).max(y1 - y0).max(1e-6);
     let x0 = x0 - span * 0.02;
     let y0 = y0 - span * 0.02;
-    let h = span * 1.04 / GRID as f64;
+    let h = span * 1.04 / grid as f64;
     let nx = ((x1 - x0) / h) as usize + 3;
     let ny = ((y1 - y0) / h) as usize + 3;
     let mut wall = vec![false; nx * ny];
@@ -273,8 +390,15 @@ fn picks_in(polys: &[Vec<P2>], bodies: &[Vec<Vec<P2>>], b: [f64; 4]) -> Option<V
     }
     let mut res = Vec::new();
     let mut depth = vec![-1i32; nx * ny];
+    let known_cells: Vec<usize> = known
+        .iter()
+        .filter_map(|p| {
+            let (i, j) = (((p.0 - x0) / h) as i64, ((p.1 - y0) / h) as i64);
+            ((0..nx as i64).contains(&i) && (0..ny as i64).contains(&j)).then(|| j as usize * nx + i as usize)
+        })
+        .collect();
     for (cid, (border, cells)) in regions.iter().enumerate() {
-        if *border || cells.len() < 4 {
+        if *border || cells.len() < 4 || known_cells.iter().any(|&c| comp.get(c) == Some(&cid)) {
             continue;
         }
         // The deepest cell: multi-source BFS from the region's boundary.
@@ -308,8 +432,7 @@ fn picks_in(polys: &[Vec<P2>], bodies: &[Vec<Vec<P2>>], b: [f64; 4]) -> Option<V
             }
         }
         let p = (x0 + ((best % nx) as f64 + 0.5) * h, y0 + ((best / nx) as f64 + 0.5) * h);
-        let odd = |b: &Vec<Vec<P2>>| b.iter().filter(|l| l.len() > 2 && inside(l, p)).count() % 2 == 1;
-        if bodies.iter().any(odd) {
+        if keep(p) {
             res.push((round6(p.0), round6(p.1)));
         }
     }
@@ -345,6 +468,17 @@ mod tests {
         let p = picks(&curves, &[vec![outer.clone()], vec![outer]]).unwrap();
         assert_eq!(p.len(), 1, "{p:?}");
         assert!(dist(p[0], (20.0, 30.0)) > 1.5, "{p:?}");
+    }
+
+    /// Distances to a line, a circle and an arc (inside and past its span).
+    #[test]
+    fn distances_to_curves() {
+        assert!((dist_to(&Poly::Line((0.0, 0.0), (10.0, 0.0)), (5.0, 2.0)) - 2.0).abs() < 1e-12);
+        assert!((dist_to(&Poly::Line((0.0, 0.0), (10.0, 0.0)), (13.0, 4.0)) - 5.0).abs() < 1e-12);
+        assert!((dist_to(&Poly::Circle((0.0, 0.0), 2.0), (0.0, 3.0)) - 1.0).abs() < 1e-12);
+        let quarter = Poly::Arc { c: (0.0, 0.0), s: (1.0, 0.0), e: (0.0, 1.0) };
+        assert!((dist_to(&quarter, (2.0, 2.0)) - (8.0f64.sqrt() - 1.0)).abs() < 1e-12);
+        assert!((dist_to(&quarter, (0.0, -1.0)) - 2.0f64.sqrt()).abs() < 1e-12);
     }
 
     /// De Boor on a quadratic Bezier and a rational quarter circle.
