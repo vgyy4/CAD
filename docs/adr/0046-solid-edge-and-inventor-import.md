@@ -1357,3 +1357,37 @@ run here.
 - Other rounds as after se9: 083, 088 (three-edge corners on B-spline faces), 100, 170 (far
   edges not lined up with the round's ends), 044, and the plain rounds OCCT does not build
   (177, 178, 101, 016, 063, 064, 166, 167, 043, 080, 107, 061).
+
+## Amendment (2026-11-23, 34): Solid Edge round se11 - C0 tube offsets, apple-shaped domes, round kind 17, sections inside their paths
+
+Measured first (all 180 ordered parts, one per process, on this round's base: 102 as history, as
+after se10), then each candidate's tree and stored body alone (probe and tools in scratch, not
+committed). Changed this round:
+
+| cause (measured) | parts | outcome |
+|---|---|---|
+| OCCT's STEP reader drops an offset of a B-surface that is only C0 in its parameters (the thin walls of 054, 056, 060: closed rational B-surfaces of two cubic half circles) | 054, 056, 060 | gusset-xt writes the offset of such a tube as the tube scaled row by row (ADR 0035 amendment of this date); the stored bodies come in closed and their rebuilds are compared, but do not match: OCCT's quadratures disagree on the stored bodies (056: 443753 mm3 by default, 461968 adaptive, a 0.02 mm mesh 466521; the features 465295.55); 054 is not valid by BRepCheck |
+| a lemon-shaped torus (positive major radius 0.006 mm below its 55.4 mm minor one) bounding 140's revolved dome kept its inner lobe in OCCT: the stored body measured -23243 mm3 | 140 | the outer lobe is written as its revolved arc where all the faces' points lie on it (ADR 0035 amendment); the stored body measures 17958.1591 mm3 against the features' 17958.1590; 140 rebuilds |
+| rounds of kind 17 (051, 058, 162) keep their radius in the same 455-byte size object as kind 1 (25.4 mm in 051) | 051, 058, 162 | read as constant radii; all three stop later, at rounds or unions OCCT does not build (051's 25.4 mm kind-17 round itself, 058's 1.27 mm round on a 2.54 mm edge, 162's Protrusion_2 union) |
+| a sweep's cross section at a joint inside its path (023: the path's two arcs meet at the section) | 023 | swept both ways from the joint, the curves after it a feature of its own (`path_curves`); 023 then stops at its thin wall (OCCT's shell) |
+
+**Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before: 102 as
+history. After: **103 as history** (140), none lost (the sweep commit reaches 023 alone, rerun
+on the final head). The gusset-xt changes reach every Parasolid-based importer, so SolidWorks
+(1352 parts) was rerun on this round's base and head; Inventor's import does not convert XT
+(its stored bodies are ACIS) and was rerun too. Fusion sets were not run here.
+
+**Left (measured).**
+- 054, 056, 060: closed now, but their stored bodies do not measure consistently (above); the
+  swept outer walls' areas differ from the exact sweep's (056: 70037.8 against 70055.7 mm2).
+- 115: RevolvedCutout_2 (a profile with one edge on its axis, 0.05 mm off the sketch's y axis)
+  fails in OCCT's revolve; moved onto the sketch axis it builds, but Round_1 and Round_2 fail
+  after it.
+- 162's stored body is a solid with a void whose outer shell loses a thin-wall face (an offset
+  of a spun C0 B-curve; the tube rule does not apply), and its Protrusion_2 union is invalid.
+- 168, 052: profiles of model edges that are 3D B-splines (not a circle).
+- SmartBoss (012, 017): a boss with a hole and stiffening ribs, its 11 parameters in a
+  `JMPropsToSmartBossDataUpdateFunc` (diameters, depths, draft angles in radians, a rib count
+  of 4); not read. Ribs (018: 6, 011: 4) and delete faces likewise.
+- Others as after se10 (lofts to a point 069/070, part copies, simplified base features, the
+  kernel rounds listed in amendment 32).
