@@ -179,31 +179,38 @@ fn crosses(a: &[P2], b: &[P2]) -> bool {
 
 /// [`picks`] with a region kept when `keep` holds at its point. A loop that no point falls in
 /// after the pass over the whole sketch (a small hole far from the rest: its inside is under a
-/// few cells) is looked at again on a grid over its own box; so is each circle or arc a few
-/// cells across (the half discs a row of small circles on a line leaves on either side of it:
-/// a PCB edge's castellations), on a finer grid over its box.
+/// few cells), or that is much smaller than the sketch (a profile at the end of long lines), is
+/// looked at again on a grid over its own box; so is each circle or arc a few cells across
+/// (the half discs a row of small circles on a line leaves on either side of it: a PCB edge's
+/// castellations), on a finer grid over its box.
 fn picks_by(curves: &[Poly], loops: &[&Vec<P2>], keep: &dyn Fn(P2) -> bool) -> Option<Vec<P2>> {
     let polys: Vec<Vec<P2>> = curves.iter().map(sample).collect();
     let all = || polys.iter().flatten().chain(loops.iter().copied().flatten()).copied();
     all().next()?;
     let whole = extent(all())?;
+    let side = |b: [f64; 4]| (b[1] - b[0]).max(b[3] - b[2]);
     let mut res = picks_in(&polys, keep, whole, &[], GRID)?;
+    let mut fine = 0usize;
     for l in loops {
-        if l.len() < 3 || res.iter().any(|&p| inside(l, p)) {
+        let Some(b) = extent(l.iter().copied()) else { continue };
+        // A loop much smaller than the sketch (a profile in a corner of long lines) is looked
+        // at on its own grid too, for regions under a few cells of the sketch's.
+        let small = side(b) < side(whole) / 4.0 && fine < MAX_SMALL;
+        if l.len() < 3 || (!small && res.iter().any(|&p| inside(l, p))) {
             continue;
         }
-        let Some(b) = extent(l.iter().copied()) else { continue };
-        for p in picks_in(&polys, keep, b, &[], GRID).unwrap_or_default() {
+        fine += usize::from(small);
+        for p in picks_in(&polys, keep, b, &res, GRID).unwrap_or_default() {
             if !res.contains(&p) {
                 res.push(p);
             }
         }
     }
-    let cell = (whole[1] - whole[0]).max(whole[3] - whole[2]) * 1.04 / GRID as f64;
+    let cell = side(whole) * 1.04 / GRID as f64;
     let small = curves.iter().zip(&polys).filter_map(|(c, pl)| {
         let b = extent(pl.iter().copied())?;
         let round = matches!(c, Poly::Circle(..) | Poly::Arc { .. } | Poly::Ellipse { .. });
-        (round && (b[1] - b[0]).max(b[3] - b[2]) < SMALL_CELLS * cell).then_some(b)
+        (round && side(b) < SMALL_CELLS * cell).then_some(b)
     });
     for b in small.take(MAX_SMALL) {
         for p in picks_in(&polys, keep, b, &res, FINE_GRID).unwrap_or_default() {
@@ -219,7 +226,7 @@ fn picks_by(curves: &[Poly], loops: &[&Vec<P2>], keep: &dyn Fn(P2) -> bool) -> O
 const SMALL_CELLS: f64 = 16.0;
 /// Cells along the longest side of such a curve's grid.
 const FINE_GRID: usize = 100;
-/// Most such curves looked at.
+/// Most such curves, and most small loops, looked at.
 const MAX_SMALL: usize = 256;
 
 /// The part of the segment `a`-`b` inside the box (`x0, x1, y0, y1`), if any (Liang-Barsky).

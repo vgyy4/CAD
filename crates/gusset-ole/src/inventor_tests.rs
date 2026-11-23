@@ -1102,6 +1102,21 @@ mod sab {
         assert_eq!(p.iter().filter(|q| q.0 > 4.0).count(), 5, "{p:?}");
     }
 
+    /// A profile far smaller than the sketch's long lines: the 0.3 mm strip a line leaves along
+    /// its side is under a cell of the sketch's grid, found on a grid over the loop.
+    #[test]
+    fn picks_find_thin_strips_of_a_small_loop() {
+        let curves = vec![
+            Poly::Line((0.0, 0.0), (10.0, 0.0)),
+            Poly::Line((10.0, 0.0), (10.0, 10.0)),
+            Poly::Line((10.0, 10.0), (0.0, 10.0)),
+            Poly::Line((0.0, 10.0), (0.0, 0.0)),
+            Poly::Line((0.3, -200.0), (0.3, 200.0)),
+        ];
+        let p = picks(&curves, &[vec![vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]]]).unwrap();
+        assert_eq!(p.len(), 2, "{p:?}");
+    }
+
     #[test]
     fn a_tilted_ellipse_is_a_region_inside_its_loop() {
         let curves = vec![Poly::Ellipse { c: (5.0, 3.0), major: (0.6, 0.8), a: 4.0, b: 2.0 }];
