@@ -6335,6 +6335,53 @@ mod end_face_tests {
         Some(Pt { x, y, ext: false, id: 0, alone: 0 })
     }
 
+    /// A second direction moves the start cap, the sides' middle and their span.
+    #[test]
+    fn a_second_direction_moves_the_start_cap() {
+        let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let f = Swept { sketch: 0, plane, distance: 10.0, start: -2.0, symmetric: false, through: false, cut: false };
+        assert_eq!((cap_height(&f, 0), cap_height(&f, 1)), (-2.0, 10.0));
+        assert_eq!(mid_height(&f), 4.0);
+        assert_eq!(side_span(&f), (-2.0, 10.0));
+        let g = Swept { start: 0.0, symmetric: true, ..f };
+        assert_eq!((mid_height(&g), side_span(&g)), (0.0, (-5.0, 5.0)));
+    }
+
+    /// station_upper's lug: an arc of 20 mm from the 65 mm circle whose ends, at six decimals,
+    /// are 8e-7 mm apart in radius; its points keep more digits, a square's do not.
+    #[test]
+    fn arcs_whose_rounded_ends_miss_their_circle_keep_their_digits() {
+        let seg = |kind, s, e, c| Seg {
+            kind,
+            id: 0,
+            a: 0,
+            s,
+            e,
+            c,
+            dir: 1,
+            construction: false,
+            centerline: false,
+            external: false,
+        };
+        let g = Geometry {
+            pts: vec![
+                pt(-8.33199405442242e-8, -0.06499999999994661),
+                pt(-0.019761975650654545, -0.0619230515913334),
+                pt(0.019761816899051848, -0.06192310225471871),
+            ],
+            segs: vec![seg(SegKind::Arc, 1, 2, 0)],
+            ellipse_axes: Vec::new(),
+        };
+        let p = precise_points(&g);
+        assert!([0, 1, 2].iter().all(|i| p.contains(i)), "{p:?}");
+        let square = Geometry {
+            pts: vec![pt(0.0, 0.0), pt(0.01, 0.0), pt(0.01, 0.01)],
+            segs: vec![seg(SegKind::Line, 0, 1, 0), seg(SegKind::Line, 1, 2, 0)],
+            ellipse_axes: Vec::new(),
+        };
+        assert!(precise_points(&square).is_empty());
+    }
+
     /// A 20 x 10 mm rectangle (sketch keys 2..5) extruded 5 mm along +z.
     fn plate() -> (HashMap<u32, Swept>, Vec<Geometry>) {
         let line = |a: u32, s: usize, e: usize| Seg {
