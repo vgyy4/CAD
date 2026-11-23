@@ -409,6 +409,41 @@ fn history_order_suppressed_thread_and_unknown_features() {
     assert_eq!(t["features"][2]["name"], "Thicken1");
 }
 
+/// The order record's entries (`0x80000003, id` and a list of two pairs): a feature a mirror
+/// copies but made after it, placed before it, moves to just before the mirror; placed after
+/// it, or with entries of another layout, the record's order stays.
+#[test]
+fn a_copied_feature_made_after_its_copy_moves_before_it() {
+    let mut r = base_records();
+    r.push((NAME, name_rec("Mirror1", Some(0xb6c2_26a3)))); // 19
+    r.push((NAME, name_rec("Thicken1", Some(T_THICKEN)))); // 20
+    r.push((FEATURE, feature(19, 0, 8, &[rf(22)]))); // 21
+    r.push((FEATURE, feature(20, 0, 9, &[]))); // 22
+    let entry = |id: u32, place: u32, laid: bool| {
+        let mut e = 0x8000_0003u32.to_le_bytes().to_vec();
+        e.extend(id.to_le_bytes());
+        e.extend([0x02, 0, 0, 0x30, 0x02, 0, 0, 0, 0x02, 0, 0, 0, 0x08, 0x01, 0, 0, 2, 0, 0, 0, 1]);
+        e.extend(place.to_le_bytes());
+        e.extend([0, if laid { 3 } else { 4 }, 0, 0, 0, 0]);
+        e.extend(place.to_le_bytes());
+        e.push(0);
+        e
+    };
+    let with = |places: [u32; 3], laid: bool| {
+        let mut r = r.clone();
+        let mut order = hdr(0, 0, 0);
+        for (id, place) in [5u32, 8, 9].into_iter().zip(places) {
+            order.extend(entry(id, place, laid));
+        }
+        r.push((ORDER, order));
+        let t = tree(&r).unwrap();
+        types(&t).into_iter().map(|(_, n)| n).filter(|n| n != "Sketch1").collect::<Vec<String>>()
+    };
+    assert_eq!(with([0, 4, 2], true), ["Extrusion1", "Thicken1", "Mirror1"]);
+    assert_eq!(with([0, 2, 4], true), ["Extrusion1", "Mirror1", "Thicken1"]);
+    assert_eq!(with([0, 4, 2], false), ["Extrusion1", "Mirror1", "Thicken1"]);
+}
+
 #[test]
 fn a_tagging_feature_changes_no_geometry() {
     let mut r = base_records();
@@ -1285,6 +1320,15 @@ fn a_rectangular_pattern_in_two_directions_is_two_patterns() {
     assert_eq!(t["features"][3]["name"], "Rectangular Pattern1_2");
     assert_eq!(t["features"][3]["direction"], json!([0.0, 1.0, 0.0]));
     assert_eq!(t["features"][3]["count"], 2);
+    // Not turned round, the extra occurrence of an even count lies ahead (the EY4180 bay
+    // adapters' count 8): count 2 is one copy forward.
+    r[28].1 = flag(0);
+    let t = copy_tree(&r);
+    assert_eq!(t["features"][3]["name"], "Rectangular Pattern1_2");
+    assert_eq!(t["features"][3]["direction"], json!([0.0, 1.0, 0.0]));
+    assert_eq!(t["features"][3]["count"], 2);
+    assert_eq!(t["features"].as_array().map(Vec::len), Some(4));
+    r[28].1 = flag(1);
     // Midplane in the first direction (count 3): one copy each way, both copied by the second.
     r[33].1 = flag(1);
     r[34].1 = flag(0);

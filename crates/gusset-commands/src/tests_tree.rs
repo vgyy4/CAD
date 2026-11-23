@@ -538,3 +538,24 @@ fn a_pick_at_the_vertex_between_two_halves_takes_both() {
     assert_eq!(sk.len(), 1, "{r}");
     assert!(sk[0].1.contains("not supported by the mock kernel"), "{r}");
 }
+
+/// A straight pick on no edge of the model, whose line holds one: the nearest edge on that
+/// line (a corner round made on a 5 mm block that a later join lengthened, so its midpoint
+/// lies beyond the block's edge). A pick on no edge's line still names nothing.
+#[test]
+fn a_straight_pick_beyond_its_edge_takes_the_edge_on_its_line() {
+    let fs = |mid: [f64; 3]| {
+        let mut f = box_features(20.0, 10.0, 5.0);
+        f.push(json!({"type": "chamfer", "name": "C1", "distance": 1,
+            "edges": [{"midpoint": mid, "path": [[mid[0], mid[1], mid[2] - 0.1], [mid[0], mid[1], mid[2] + 0.1]]}]}));
+        json!(f)
+    };
+    let mut s = session();
+    let r = import(&mut s, "line.gtree.json", &tree2(fs([20.0, 10.0, 20.0]))).unwrap();
+    let sk = skipped(&r);
+    assert!(sk.len() == 1 && sk[0].1.contains("not supported by the mock kernel"), "{r}");
+    let mut s = session();
+    let r = import(&mut s, "line.gtree.json", &tree2(fs([21.0, 10.0, 20.0]))).unwrap();
+    let sk = skipped(&r);
+    assert!(sk.len() == 1 && sk[0].1.contains("no edge of the model"), "{r}");
+}

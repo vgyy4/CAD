@@ -1046,6 +1046,12 @@ fn reflect_feature(f: &Value, o: V3, n: V3, rename: &dyn Fn(&str) -> String) -> 
             if let Some(es) = out.get_mut("edges").and_then(Value::as_array_mut) {
                 for e in es {
                     map_v3(e, "midpoint", &pt)?;
+                    // The points along the edge go with it (the EY4180 bay adapters' mirrored
+                    // chamfer: a circle whose seam sits at the pick in the copy).
+                    for p in e.get_mut("path").and_then(Value::as_array_mut).into_iter().flatten() {
+                        let v = v3_of(p).ok_or("a path point is not three numbers")?;
+                        *p = json!(pt(v));
+                    }
                 }
             }
         }
@@ -2128,4 +2134,20 @@ pub(super) fn draft(g: &mut Gen, s: &Session, d: &DraftF) -> Result<(), String> 
     g.made.push(name.clone());
     g.features.insert(d.name.clone(), body);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reflect_feature;
+    use serde_json::json;
+
+    #[test]
+    fn a_mirrored_blend_pick_reflects_its_path_too() {
+        let f = json!({"type": "chamfer", "name": "C", "distance": 0.5,
+                       "edges": [{"midpoint": [-41.75, 8.5, -20.0], "path": [[-41.7, 8.4, -20.0], [-41.7, 8.6, -20.0]]}]});
+        let r = reflect_feature(&f, [0.0; 3], [1.0, 0.0, 0.0], &|n: &str| format!("{n}'")).unwrap_or_default();
+        assert_eq!(r["name"], json!("C'"));
+        assert_eq!(r["edges"][0]["midpoint"], json!([41.75, 8.5, -20.0]));
+        assert_eq!(r["edges"][0]["path"], json!([[41.7, 8.4, -20.0], [41.7, 8.6, -20.0]]));
+    }
 }
