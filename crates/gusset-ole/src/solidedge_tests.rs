@@ -1536,6 +1536,25 @@ fn profile2d(first: &[u32], own: Option<&[u32]>) -> Vec<u8> {
     p2
 }
 
+/// A member kept neither in the part nor in the sketches is read from the profile's own copy
+/// of it, listed after the members (010, 136, 176).
+#[test]
+fn a_member_not_stored_is_read_from_the_profiles_own_copy() {
+    let pts = [[0.0, 0.0], [0.02, 0.0], [0.02, 0.01], [0.0, 0.01]];
+    let mut more = Vec::new();
+    for (k, s) in (4u32..8).enumerate() {
+        more.extend(obj(35, s, &line(pts[k], pts[(k + 1) % 4])));
+    }
+    let lines = |t: &serde_json::Value| t["features"][0]["curves"].as_array().map_or(0, Vec::len);
+    let p2 = profile2d(&[4, 30, 6, 7], None);
+    let t = feature_tree(&part_of_profile(&p2, &more, &[]), "p.par", &crate::Limits::default()).unwrap();
+    assert!(t["features"][0]["reason"].as_str().unwrap().contains("not stored"), "{t}");
+    let p2 = profile2d(&[4, 30, 6, 7], Some(&[4, 5, 6, 7]));
+    let t = feature_tree(&part_of_profile(&p2, &more, &[]), "p.par", &crate::Limits::default()).unwrap();
+    assert_eq!(lines(&t), 4, "{t}");
+    assert_eq!(t["features"][1]["type"], "extrude");
+}
+
 /// A circle whose kind the type table names as a dimension is a curve (015); a key point
 /// shaped like a line is not.
 #[test]
