@@ -382,6 +382,14 @@ impl Writer<'_> {
                 if flipped {
                     d = -d;
                 }
+                // A spun surface is written as a SURFACE_OF_REVOLUTION, whose u runs along the
+                // profile and v round the axis, as in Parasolid; OCCT reads it with u round the
+                // axis and v along the profile, which turns its natural normal round, and keeps the
+                // offset's distance: negated here so the offset lies on the side Parasolid's does
+                // (163's thin wall, offset 2 mm inside a spun B-curve, came out outside).
+                if g.type_name(base) == Some("SPUN_SURF") {
+                    d = -d;
+                }
                 Some((self.add(&format!("OFFSET_SURFACE('',#{b},{},.F.)", real(d))), flipped))
             }
             "BLENDED_EDGE" => {

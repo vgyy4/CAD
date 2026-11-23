@@ -932,3 +932,30 @@ fn a_blend_boundary_curve_is_refined_onto_the_balls_contacts() {
         assert!((p[0] - r).abs() < 1e-12 && p[2].abs() < 1e-12, "{p:?}");
     }
 }
+
+#[test]
+fn an_offset_of_a_spun_surface_is_written_for_occts_reading_of_it() {
+    // A cylinder spun from a line 10 mm off the z axis, offset 2 mm along Parasolid's natural
+    // normal (dP/du x dP/dv, u up the profile, v round the axis: inwards). OCCT reads the
+    // SURFACE_OF_REVOLUTION with u round the axis, its natural normal outwards, so the distance
+    // is written negated (163's thin wall came out on the wrong side).
+    let mut f = TextFile::new();
+    f.node(30, 3, &[("pvec", v3([0.01, 0.0, 0.0])), ("direction", v3([0.0, 0.0, 1.0]))]);
+    f.node(
+        68,
+        2,
+        &[
+            ("profile", vec![n(3)]),
+            ("base", v3([0.0; 3])),
+            ("axis", v3([0.0, 0.0, 1.0])),
+            ("x_axis", v3([1.0, 0.0, 0.0])),
+        ],
+    );
+    f.node(60, 4, &[("surface", vec![n(2)]), ("offset", vec![n(0.002)])]);
+    let g = decode(&f.finish(), &Limits::default()).unwrap();
+    let p = crate::eval::surface_at(&g, 4, 0.0, 0.0, 0).unwrap();
+    assert!((p[0] - 0.008).abs() < 1e-9 && p[1].abs() < 1e-9, "Parasolid's offset lies inside: {p:?}");
+    let (line, w) = crate::step::surface_text(&g, 4);
+    let (line, flipped) = line.unwrap();
+    assert!(line.contains("=OFFSET_SURFACE('',#") && line.ends_with(",-2.0,.F.);") && !flipped, "{line} {w:?}");
+}
