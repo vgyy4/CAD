@@ -1041,3 +1041,36 @@ not committed). Every rule below is a candidate the whole-part rebuild check dec
 - **Mirrored blend picks.** A mirrored fillet or chamfer copy reflects its picks' path points with their
   midpoints (the bay adapters' Mirror2 copies a chamfer whose edge is a whole circle: in the copy its seam
   sits at the pick, so only the path finds it).
+
+
+## AX. Profile loops that overlap, small regions, text, joins through all (round ipt14)
+- **Picked loops that cross.** A profile keeps one body per picked loop in the history blob. Loops picked
+  whole may overlap: the ArmBar's slot is a rectangle and two end circles, three bodies whose loops cross
+  (each runs well inside and well outside the other). Inventor takes their union, so a region inside two
+  crossing bodies is kept; a loop wholly inside another stays a hole (the parity rule). Touching is not
+  crossing: a circle inscribed in the AN818 nut's hexagon touches its sides, and a keychain's ring runs
+  0.06 mm outside the samples of the spline outline it touches; points within a hundredth of the smaller
+  loop's size of the other loop count neither way.
+- **Regions a few grid cells across.** The region grid has 500 cells along the sketch. Regions under a
+  few cells were lost: the half discs of 0.4 mm circles on a 38 mm PCB edge (castellations), slivers a
+  200 mm line cuts from a 20 mm V-slot profile at its end, the 1 mm wedge a slanted line cuts off a 210 mm
+  strip. Each circle or arc under 16 cells, each loop under a quarter of the sketch, and the square of 12
+  cells round each point where a curve ends are looked at again on a finer grid of their own; regions
+  already holding a pick are skipped. The fallback for a loop listed twice (note AR) keeps the
+  sketch's grid alone (it takes the regions its loop bounds as that grid sees them).
+- **Sketch text.** Text is not read as sketch curves; the feature's loops (history blob) are the glyph
+  outlines. When a loop runs wholly off the sketch's curves (every corner more than 1e-4 mm from them),
+  the loops become a sketch of their own on the same plane: straight edges as lines, circular edges as
+  arcs (`ellipse-curve` of one radius), with the picks of their regions. The LightSaber connector's
+  engraved polarity marks and lettering rebuild this way; the LEGO studs' logo (straight edges) comes to
+  0.15 mm3 of the stored body. Spline glyph edges (`intcurve`) are not read: the profile stays as before.
+  The EY4180 bay adapters' arrows are read, but their engraves then cut into the air: the emboss
+  direction (slot 2) points away from the floor they are cut into there, unlike the `em_*` fixtures;
+  turned round they take 5.3 of the 6.85 mm3 each needs (not changed).
+- **Join through all.** A join with extent 5 runs up to the next face of the body (the Fishing Rod
+  transfer gear's key, drawn across its bore, fills the bore from wall to wall); with slot 7 set, both
+  ways as two extrudes.
+- **Hole to a plane behind its face (not changed).** The CRS-METEO i-rings' Hole5 ends at a work plane
+  24.97 mm on the far side of its normal (from its sketch plane at x 41.43 mm to the plane at 66.4 mm).
+  Turned round it builds, and the i-rings then stop at a chamfer on rounded faces (cone blend corner);
+  with no rebuild to confirm it the hole is still refused.
