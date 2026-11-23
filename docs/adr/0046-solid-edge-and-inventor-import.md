@@ -1396,3 +1396,23 @@ base part (204) was rebuilt on the head: no part went from history to body. The 
 changes reach SolidWorks, Solid Edge and Fusion imports (only where a blend pick would otherwise find
 no edge, or where a mirror copies a blend whose picks carry a path); the SolidWorks and Solid Edge
 corpora were rerun on the base and the head (below).
+
+| corpus | parts | base | head |
+|---|---|---|---|
+| SolidWorks (sw-more, Slip-Pad, ARIG revisions, Zenodo) | 1352 | 373 | 373 (no part's line changed; V-Slot Door Handle crashes the test process on both) |
+| Solid Edge (ordered parts, one per process) | 180 | 102 (round se10's head) | 102 (no part's row changed; 064 crashes on both) |
+
+Fusion imports share the tree import: a straight Fusion pick with a path that names no edge now
+takes the edge on its line before the import gives up; Fusion picks without a path are unchanged.
+Fusion was not rerun (the session's job).
+
+What blocks the rest of the 106 (measured, not changed): the bay adapters' engravings and the LEGO
+bricks' stud logos are sketch text, read as their whole sketch or as the disc under it; spline blend
+surfaces (23) need the edge between a plane and a cylinder, cone or spline off its axis, which no
+line or circle the reader rebuilds; cylinder blends that rolled onto a neighbouring blend of the same
+feature (the S-shaped pairs of 11061412's Fixture Pull Bracket, Zawias) give the edge between the
+plane and that blend, not the one the model has; a concave chamfer whose step face was used up reads
+as convex (LT-PAM stopper: both corners fit the faces); OCCT refuses 6 chamfers and 6 fillets on edges
+the picks find (the box mounts' Fillet6, EndCap's outline chain, LED Washer's slot edges); AN816's
+chamfer lands 0.381 mm off because the iPart member's revolve is that much shorter. `fl_two_sets`
+was not taken up: one part needs a fillet with a radius per edge in the kernel.

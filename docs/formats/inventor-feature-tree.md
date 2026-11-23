@@ -1018,7 +1018,8 @@ not committed). Every rule below is a candidate the whole-part rebuild check dec
   all: the EY4180 bay adapters place Emboss1 before the base extrude and several later cuts before
   Extrusion4 (read in place order they start with a cut before any body). So only a feature a mirror
   or pattern copies, made after it but placed before it, moves to just before the copy; every other
-  feature keeps id order (26 parts' trees would change in full place order, 2 change now).
+  feature keeps id order (29 parts would change their order in full place order, 5 do now: EY4180
+  Differential Signal Generator A-01 to A-03, the Oriental Pearl Tower, a LEGO brick).
 - **Midplane patterns of an even count.** Of a two-direction rectangular pattern's midplane direction,
   the extra occurrence lies along the direction as stored: behind it when the direction's flag turns it
   round (the `pt_*` fixtures, count 2), ahead when not (the EY4180 bay adapters' nut traps, count 8: with
