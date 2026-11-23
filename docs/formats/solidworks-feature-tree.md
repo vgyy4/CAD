@@ -1700,3 +1700,63 @@ imported surfaces 14, weldments 9, splits 8).
 Gained (sw-more, 3): Part3 (contour points), stepper motor shaft and stepper motor shaft small (arc digits). None
 lost. Toughbox d07 imports too with nine decimals for its circle's centre, but the same digits for Motor Holder's
 hole centres lose that part, so full circles keep six (two parts to win back by a rule that tells them apart).
+
+## L28. Round 22 (sw17: sketches by child index, faces across one cylinder, shell walls, tooth patterns, 3D-sketch holes)
+Measured from this round's own baseline (373 of 1352, row for row round sw16's final log): of the 979 refusals,
+550 are STEP-style imports; unsupported features and ends 142, volume mismatches 65, stock-only, history-less and
+mirrored-only files 55, patterns, mirrors, holes, planes and sections not resolved 42, blends that do not build 40,
+other features that do not build 38, blend edges not read 27.
+
+* **Child indices that name a sketch by its entities.** Where more than one unused sketch lies between the
+  sketches of the nearest child indices seen, the sketch whose own entity references write the index as their
+  owner (`P fd 80 00 01 <u32 sketch id> <stamp>`, the back references `node_indices` reads) is the extrude's:
+  shaft_stage_2's Cut-Extrude2 refers to 0x25d, Sketch8's; the unused circle Sketch7 lies in the same gap.
+* **One face across a cylinder.** SolidWorks keeps one face where a cut's arc carries on a boss's arc of the same
+  circle and names it after one of the arcs (200mm Dock Fixed Base and its Gear Motor Mount: Fillet1's two picks on
+  the right name the left arc, c28, of Cut-Extrude3). The import's loose pass now also takes the faces that continue
+  a named cylindrical face across edges about the same axis.
+* **Shell walls.** A face of a shell's inner wall is a reference to the shell (16 bytes, as a mirror's copy) and
+  then the face it was offset from; the first such reference may declare its class (`ff ff 01 00 12 00
+  moShellSurfIdRep_c`) where a tag would be. The tree names the face `{"shell": <shell>, ...the offset face}`, the
+  import finds `Shell1/inner(<face>)`, a cap by the plane of the face it was offset from (Linear Actuator Bracket's
+  Fillet1: six picks, four on the wall).
+* **Toolbox gear teeth.** A pattern seed that is suppressed (Breaks, RootFillets) is left out of the copies. A
+  circular pattern keeps its count in its own data as well as in `D1`: the first `ff fe ff 00`, `u32 0`, `u32 -1`,
+  then the count as an `f64` and `08 00 00 00 10 00 00 00` (equal to `D1` in every pattern that has one; the gears
+  have none). A class tag one below the archive index of a node that declares its class names that class: Bore and
+  Keyway refer to 3326, ToothCut (object 3327) declares `moCut_c`; by signature they had passed for `moBoss_c`.
+  The same record keeps an extrude's depth where no `D1` is written (the keys' Extrude1, 4 mm; the toolbox screws'
+  Hex socket, 1.3 mm); older parts' `moBoss_c` nodes are extrudes.
+* **Mirrors.** A mirror of every feature read so far, the boss that made the body among them, mirrors the body
+  (Stepper Motor NEMA17 Middle's Mirror2). A mirror on a plane feature takes the plane of a sketch drawn on it
+  (126p-visor-diy-bottom's Lustro4); the frame blocks a plane node keeps did not match Parça1's and motor gövdesi's
+  planes and are not read.
+* **Holes placed by a 3D sketch.** The hole wizard node is followed by a `mo3DProfileFeature_c` instead of a 2D
+  placement sketch; the hole's section sketch is drawn at the position, its first drawn line from the origin being
+  the axis into the material. L Bracket's M5 Clearance Hole2 at (30, 165, 0) along +z, Movable Jaw's dowel hole.
+* **Measured, not done.**
+  - Circle lofts: connector twists hold for shaft_stage_1-3 (13 to 42 degrees) but output_shaft_stage_4's part is an
+    untwisted cone with connectors 2.7 degrees apart (2.8e-5), and Part3 needs slightly more twist than its
+    connectors give (6.2e-5); nothing in the loft node told them apart.
+  - GT3 pulleys (4.8e-5, 8.0e-5): a 0.2 mm, 45-degree chamfer where a set-screw hole meets the hub; SolidWorks' bevel
+    is about 0.16 mm deep on the curved faces, OCCT's 0.2 mm.
+  - Patterns of up-to-next cuts (the spacers, piston): Gusset copies the seed's removed volume; SolidWorks ends each
+    copy at its own next face.
+  - Toolbox screws: their Hex socket depth is read now, but the revolve sketch kept is another configuration's.
+  - Threads (`moSweepThread_c`, 5 parts), ribs and domes unchanged.
+
+**Coverage after the round** (rebuild check unchanged; the round's own baseline on its base):
+
+| corpus | baseline | round sw17 |
+|---|---|---|
+| slip-pad | 25 / 35 | 25 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 1 / 14 | **2** / 14 |
+| sw-more | 332 / 1253 | **342** / 1253 |
+| all | 373 / 1352 | **384** / 1352 |
+
+Gained (11): shaft_stage_2 (child index), 200mm Dock Fixed Base and its Gear Motor Mount (one face across a
+cylinder), Linear Actuator Bracket (shell walls), the 12T and 66T metric gears, part 9 and gear_stage_2_Spur_driver
+(tooth patterns), Stepper Motor NEMA17 Middle (body mirror), L Bracket and Movable Jaw (3D-sketch holes). None lost.
+Refusals after the round: STEP-style 550, unsupported 137, volume mismatches 67, stock-only and the like 55, blends
+that do not build 40, other features that do not build 38, unresolved references 34, blend edges not read 27.
