@@ -179,18 +179,34 @@ fn crosses(a: &[P2], b: &[P2]) -> bool {
 
 /// [`picks`] with a region kept when `keep` holds at its point. A loop that no point falls in
 /// after the pass over the whole sketch (a small hole far from the rest: its inside is under a
-/// few cells) is looked at again on a grid over its own box.
+/// few cells) is looked at again on a grid over its own box; so is each circle or arc a few
+/// cells across (the half discs a row of small circles on a line leaves on either side of it:
+/// a PCB edge's castellations), on a finer grid over its box.
 fn picks_by(curves: &[Poly], loops: &[&Vec<P2>], keep: &dyn Fn(P2) -> bool) -> Option<Vec<P2>> {
     let polys: Vec<Vec<P2>> = curves.iter().map(sample).collect();
     let all = || polys.iter().flatten().chain(loops.iter().copied().flatten()).copied();
     all().next()?;
-    let mut res = picks_in(&polys, keep, extent(all())?)?;
+    let whole = extent(all())?;
+    let mut res = picks_in(&polys, keep, whole, &[], GRID)?;
     for l in loops {
         if l.len() < 3 || res.iter().any(|&p| inside(l, p)) {
             continue;
         }
         let Some(b) = extent(l.iter().copied()) else { continue };
-        for p in picks_in(&polys, keep, b).unwrap_or_default() {
+        for p in picks_in(&polys, keep, b, &[], GRID).unwrap_or_default() {
+            if !res.contains(&p) {
+                res.push(p);
+            }
+        }
+    }
+    let cell = (whole[1] - whole[0]).max(whole[3] - whole[2]) * 1.04 / GRID as f64;
+    let small = curves.iter().zip(&polys).filter_map(|(c, pl)| {
+        let b = extent(pl.iter().copied())?;
+        let round = matches!(c, Poly::Circle(..) | Poly::Arc { .. } | Poly::Ellipse { .. });
+        (round && (b[1] - b[0]).max(b[3] - b[2]) < SMALL_CELLS * cell).then_some(b)
+    });
+    for b in small.take(MAX_SMALL) {
+        for p in picks_in(&polys, keep, b, &res, FINE_GRID).unwrap_or_default() {
             if !res.contains(&p) {
                 res.push(p);
             }
@@ -198,6 +214,13 @@ fn picks_by(curves: &[Poly], loops: &[&Vec<P2>], keep: &dyn Fn(P2) -> bool) -> O
     }
     Some(res)
 }
+
+/// A circle or arc less than this many cells across is looked at again on its own grid.
+const SMALL_CELLS: f64 = 16.0;
+/// Cells along the longest side of such a curve's grid.
+const FINE_GRID: usize = 100;
+/// Most such curves looked at.
+const MAX_SMALL: usize = 256;
 
 /// The part of the segment `a`-`b` inside the box (`x0, x1, y0, y1`), if any (Liang-Barsky).
 fn clip(a: P2, b: P2, bx: [f64; 4]) -> Option<(P2, P2)> {
@@ -230,13 +253,14 @@ fn extent(pts: impl Iterator<Item = P2> + Clone) -> Option<[f64; 4]> {
     (x0.is_finite() && x1.is_finite() && y0.is_finite() && y1.is_finite()).then_some([x0, x1, y0, y1])
 }
 
-/// [`picks`] on a grid over the box `b` (with a margin): curves outside it are left out.
-fn picks_in(polys: &[Vec<P2>], keep: &dyn Fn(P2) -> bool, b: [f64; 4]) -> Option<Vec<P2>> {
+/// [`picks`] on a grid of `grid` cells a side over the box `b` (with a margin): curves outside
+/// it are left out, and so are regions that hold a point of `known`.
+fn picks_in(polys: &[Vec<P2>], keep: &dyn Fn(P2) -> bool, b: [f64; 4], known: &[P2], grid: usize) -> Option<Vec<P2>> {
     let [x0, x1, y0, y1] = b;
     let span = (x1 - x0).max(y1 - y0).max(1e-6);
     let x0 = x0 - span * 0.02;
     let y0 = y0 - span * 0.02;
-    let h = span * 1.04 / GRID as f64;
+    let h = span * 1.04 / grid as f64;
     let nx = ((x1 - x0) / h) as usize + 3;
     let ny = ((y1 - y0) / h) as usize + 3;
     let mut wall = vec![false; nx * ny];
@@ -299,8 +323,15 @@ fn picks_in(polys: &[Vec<P2>], keep: &dyn Fn(P2) -> bool, b: [f64; 4]) -> Option
     }
     let mut res = Vec::new();
     let mut depth = vec![-1i32; nx * ny];
+    let known_cells: Vec<usize> = known
+        .iter()
+        .filter_map(|p| {
+            let (i, j) = (((p.0 - x0) / h) as i64, ((p.1 - y0) / h) as i64);
+            ((0..nx as i64).contains(&i) && (0..ny as i64).contains(&j)).then(|| j as usize * nx + i as usize)
+        })
+        .collect();
     for (cid, (border, cells)) in regions.iter().enumerate() {
-        if *border || cells.len() < 4 {
+        if *border || cells.len() < 4 || known_cells.iter().any(|&c| comp.get(c) == Some(&cid)) {
             continue;
         }
         // The deepest cell: multi-source BFS from the region's boundary.

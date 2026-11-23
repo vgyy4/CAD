@@ -1077,6 +1077,31 @@ mod sab {
         assert_eq!(p.len(), 5, "{p:?}");
     }
 
+    /// Small circles on a line across a large sketch: the half discs on the line's far side are
+    /// a few cells of the sketch's grid, found again on a grid over each circle.
+    #[test]
+    fn picks_find_half_discs_a_few_cells_across() {
+        let mut curves = vec![
+            Poly::Line((0.0, 0.0), (40.0, 0.0)),
+            Poly::Line((40.0, 0.0), (40.0, 40.0)),
+            Poly::Line((40.0, 40.0), (0.0, 40.0)),
+            Poly::Line((0.0, 40.0), (0.0, 0.0)),
+            Poly::Line((4.0, 0.0), (4.0, 40.0)),
+        ];
+        let mut outline = vec![(0.0, 0.0), (4.0, 0.0)];
+        for k in 0..5 {
+            let c = (4.0, 10.0 + 5.0 * f64::from(k));
+            curves.push(Poly::Circle(c, 0.2));
+            outline.extend((0..=16).map(|i| {
+                let a = -std::f64::consts::FRAC_PI_2 + std::f64::consts::PI * f64::from(i) / 16.0;
+                (c.0 + 0.2 * libm::cos(a), c.1 + 0.2 * libm::sin(a))
+            }));
+        }
+        outline.extend([(4.0, 40.0), (0.0, 40.0)]);
+        let p = picks(&curves, &[vec![outline]]).unwrap();
+        assert_eq!(p.iter().filter(|q| q.0 > 4.0).count(), 5, "{p:?}");
+    }
+
     #[test]
     fn a_tilted_ellipse_is_a_region_inside_its_loop() {
         let curves = vec![Poly::Ellipse { c: (5.0, 3.0), major: (0.6, 0.8), a: 4.0, b: 2.0 }];
