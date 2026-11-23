@@ -3709,3 +3709,56 @@ fn a_round_of_a_rods_foot_wider_than_its_plate_fills_round_with_no_slit() {
     assert!(f.face_origins.iter().all(|o| !o.is_empty()));
     assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
 }
+
+/// A body's box reaches the peak of each circle of a face of revolution that lies on the face
+/// (`add_revolution_peaks`): here a cup whose curved side bulges past its rim, with a boss on
+/// its seam. The box is the side's largest radius all round, and never more.
+#[test]
+fn the_box_of_a_revolved_bulge_reaches_its_widest_circle() {
+    let p = [[19.0, 0.0], [18.3, 12.7], [30.8, 33.6], [29.6, 44.0]];
+    let line = |a: [f64; 2], b: [f64; 2], tag: u64| ProfileEdge { seg: Seg2::Line { a, b }, tag };
+    let outer = Loop2 {
+        edges: vec![
+            ProfileEdge { seg: Seg2::Bezier { p }, tag: 1 },
+            line([29.6, 44.0], [0.0, 44.0], 2),
+            line([0.0, 44.0], [0.0, 0.0], 3),
+            line([0.0, 0.0], [19.0, 0.0], 4),
+        ],
+    };
+    let cup = k()
+        .revolve(
+            &Profile { frame: Frame::XZ, regions: vec![Region2 { outer, holes: vec![] }] },
+            &RevolveSpec { axis_origin: [0.0, 0.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::TAU },
+        )
+        .unwrap();
+    let boss_frame = Frame { origin: [20.0, 0.0, 20.0], x: [0.0, 1.0, 0.0], y: [0.0, 0.0, 1.0] };
+    let disc = Loop2 { edges: vec![ProfileEdge { seg: Seg2::Circle { center: [0.0, 0.0], radius: 3.0 }, tag: 5 }] };
+    let boss = k()
+        .extrude(
+            &Profile { frame: boss_frame, regions: vec![Region2 { outer: disc, holes: vec![] }] },
+            &ExtrudeSpec { distance: 30.0, symmetric: false },
+        )
+        .unwrap();
+    let body = k().boolean(BoolOp::Union, &cup.shape, &boss.shape).unwrap();
+    // The Bezier's largest x, densely sampled and refined.
+    let x = |t: f64| {
+        let s = 1.0 - t;
+        s * s * s * p[0][0] + 3.0 * s * s * t * p[1][0] + 3.0 * s * t * t * p[2][0] + t * t * t * p[3][0]
+    };
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..200 {
+        let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+        if x(a) < x(b) {
+            lo = a;
+        } else {
+            hi = b;
+        }
+    }
+    let r = x(0.5 * (lo + hi));
+    assert!(r > 29.6 + 0.01, "{r}");
+    let bb = k().bbox(&body.shape).unwrap();
+    for v in [-bb.min[0], -bb.min[1], bb.max[1]] {
+        assert!((v - r).abs() < 1e-6, "{v} {r} {bb:?}");
+    }
+    assert!((bb.max[0] - 50.0).abs() < 1e-6 && bb.min[2].abs() < 1e-6 && (bb.max[2] - 44.0).abs() < 1e-6, "{bb:?}");
+}

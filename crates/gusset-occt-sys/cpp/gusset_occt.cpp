@@ -8093,11 +8093,96 @@ int gs_mass(const GsShape* s, GsBuf* mass) {
   GS_GUARD_END
 }
 
+// Adds to `b` the points of a face of a surface of revolution where its circles peak along
+// each axis, those that lie on the face. BRepBndLib::AddOptimal can miss such a peak by far
+// more than its tolerance: a Solid Edge mug's outer face (163), read back from STEP, had its
+// box 0.045 mm short on one side of its 29.65 mm radius. Each circle's peaks are found along
+// the profile (its radius and centre at v), and only a point the face classifies as on it is
+// added, so the box never grows past the face.
+void add_revolution_peaks(const TopoDS_Face& f, Bnd_Box& b) {
+  BRepAdaptor_Surface sa(f, true);
+  if (sa.GetType() != GeomAbs_SurfaceOfRevolution) return;
+  double u0, u1, v0, v1;
+  BRepTools::UVBounds(f, u0, u1, v0, v1);
+  if (!(v1 > v0) || !(u1 > u0)) return;
+  const gp_Ax1 ax = sa.AxeOfRevolution();
+  const gp_XYZ o = ax.Location().XYZ(), d = ax.Direction().XYZ();
+  // The circle of the profile point at v: its centre and radius.
+  auto circle = [&](double v, gp_XYZ& c, double& rho) {
+    const gp_XYZ q = sa.Value(u0, v).XYZ() - o;
+    const double h = q.Dot(d);
+    c = o + d * h;
+    rho = (q - d * h).Modulus();
+  };
+  const double tol = BRep_Tool::Tolerance(f);
+  BRepClass_FaceClassifier cls;
+  const int n = 256;
+  for (int i = 1; i <= 3; ++i) {
+    // Along coordinate i the circle reaches its centre's coordinate plus or minus its radius
+    // times the length of e_i square to the axis, in that direction.
+    gp_XYZ t(0, 0, 0);
+    t.SetCoord(i, 1);
+    t -= d * d.Coord(i);
+    const double w = t.Modulus();
+    if (w < 1e-12) continue;
+    t /= w;
+    for (const double sign : {-1.0, 1.0}) {
+      auto reach = [&](double v) {
+        gp_XYZ c;
+        double rho;
+        circle(v, c, rho);
+        return sign * c.Coord(i) + rho * w;
+      };
+      int best = 0;
+      double top = -1e300;
+      for (int k = 0; k <= n; ++k) {
+        const double r = reach(v0 + (v1 - v0) * k / n);
+        if (r > top) {
+          top = r;
+          best = k;
+        }
+      }
+      // A golden-section search about the best sample.
+      double lo = v0 + (v1 - v0) * std::max(0, best - 1) / n, hi = v0 + (v1 - v0) * std::min(n, best + 1) / n;
+      const double g = 0.5 * (std::sqrt(5.0) - 1);
+      double x1 = hi - g * (hi - lo), x2 = lo + g * (hi - lo), f1 = reach(x1), f2 = reach(x2);
+      for (int it = 0; it < 100 && hi - lo > 1e-12 * (1 + std::fabs(v1 - v0)); ++it) {
+        if (f1 < f2) {
+          lo = x1;
+          x1 = x2;
+          f1 = f2;
+          x2 = lo + g * (hi - lo);
+          f2 = reach(x2);
+        } else {
+          hi = x2;
+          x2 = x1;
+          f2 = f1;
+          x1 = hi - g * (hi - lo);
+          f1 = reach(x1);
+        }
+      }
+      const double v = f1 > f2 ? x1 : x2;
+      gp_XYZ c;
+      double rho;
+      circle(v, c, rho);
+      if (rho < 1e-12) continue;
+      // The peak's angle from the profile point at u0, about the axis.
+      const gp_XYZ q = (sa.Value(u0, v).XYZ() - c) / rho, want = t * sign;
+      double u = u0 + std::atan2(q.Crossed(want).Dot(d), q.Dot(want));
+      while (u < u0) u += 2 * M_PI;
+      cls.Perform(f, gp_Pnt2d(u, v), tol);
+      if (cls.State() != TopAbs_IN && cls.State() != TopAbs_ON) continue;
+      b.Add(sa.Value(u, v));
+    }
+  }
+}
+
 int gs_bbox(const GsShape* s, GsBuf* bbox) {
   GS_GUARD_BEGIN
   if (!s || !bbox) return fail("null argument");
   Bnd_Box b;
   BRepBndLib::AddOptimal(s->s, b, false, false);
+  for (TopExp_Explorer ex(s->s, TopAbs_FACE); ex.More(); ex.Next()) add_revolution_peaks(TopoDS::Face(ex.Current()), b);
   if (b.IsVoid()) return fail("shape is empty");
   double x0, y0, z0, x1, y1, z1;
   b.Get(x0, y0, z0, x1, y1, z1);
