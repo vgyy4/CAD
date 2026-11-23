@@ -15,7 +15,9 @@
 //! Input is untrusted: every count, list, chain and walk is bounded, and a record that is not
 //! shaped as expected gives an `unsupported` feature or an error, never a panic.
 
-use crate::acis::{Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, RevSeg, StepChamfer, Surf, V3, cross, dot, local_path};
+use crate::acis::{
+    Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, RevSeg, StepChamfer, Surf, V3, cross, dot, local_path,
+};
 use crate::inventor_dc::{Dc, FeatType, Feature, G_BODY_LIST, G_SOLID_BODY, Role, f64_at, u16_at, u32_at};
 use crate::inventor_profile::{P2, Poly, picks, sample};
 use crate::{Limits, inventor};
