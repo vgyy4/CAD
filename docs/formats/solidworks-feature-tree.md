@@ -1831,6 +1831,6 @@ weldments and sheet metal leave nothing to rebuild.
 
 Gained (5): M6 cıvata (thread), 126p-visor-diy-bottom (body deletion after a mirror), Spur Gear 12 Teeth and Base
 Internal Gear 66 Teeths (parts inserted first), ballscrew_face_plate_gantry (equation-driven fillet). None lost.
-Refusals after the round: STEP-style 550, unsupported 129, volume mismatches 70 (four threads now rebuild short),
+Refusals after the round: STEP-style 550, unsupported 129, volume mismatches 70 (three threads now rebuild short; the cup's does not build),
 stock-only and the like 55, blends that do not build 40, other features that do not build 39, unresolved references
 34, blend edges not read 27.
