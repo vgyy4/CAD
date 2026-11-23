@@ -103,3 +103,17 @@ cutting the bottom wall only from below, the top wall only from inside, the same
 on the bottom face, a side wall over its whole height; refusals above the tank and inside a
 wall. The Solid Edge reader writes `to_next` for extent 16 (both ways, side 6: a second feature
 reversed); measured gains in ADR 0046 amendment 22.
+
+## Amendment (2026-11-23): a body of its own up to the next face
+
+Solid Edge's smart boss (ADR 0046 amendment 36) has ribs that run from their foot up to the
+next face of the part and are trimmed to their slope. An `add` up to the next face joins the
+stretch at once, so the trim would cut the part too.
+
+**Decision.** `to: next` also takes `op: new`: the stretch an add would join (the start pieces
+outside the material, stopped at the target) becomes a body of its own; the body it stops at is
+the most recent body (an `op: new` takes no `body:`). It can then be cut on its own and joined
+with `combine`. `op: intersect` stays refused. The tree import accepts `operation: "new"` with
+`end_condition: "to_next"`; the command `feature.up_to_next` keeps to add and cut. Test (OCCT):
+the boss below the closed tank as a body of its own measures its 1000 mm3 and leaves the tank as
+it was.
