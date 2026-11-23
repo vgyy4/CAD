@@ -1285,6 +1285,15 @@ fn a_rectangular_pattern_in_two_directions_is_two_patterns() {
     assert_eq!(t["features"][3]["name"], "Rectangular Pattern1_2");
     assert_eq!(t["features"][3]["direction"], json!([0.0, 1.0, 0.0]));
     assert_eq!(t["features"][3]["count"], 2);
+    // Not turned round, the extra occurrence of an even count lies ahead (the EY4180 bay
+    // adapters' count 8): count 2 is one copy forward.
+    r[28].1 = flag(0);
+    let t = copy_tree(&r);
+    assert_eq!(t["features"][3]["name"], "Rectangular Pattern1_2");
+    assert_eq!(t["features"][3]["direction"], json!([0.0, 1.0, 0.0]));
+    assert_eq!(t["features"][3]["count"], 2);
+    assert_eq!(t["features"].as_array().map(Vec::len), Some(4));
+    r[28].1 = flag(1);
     // Midplane in the first direction (count 3): one copy each way, both copied by the second.
     r[33].1 = flag(1);
     r[34].1 = flag(0);

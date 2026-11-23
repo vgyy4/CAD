@@ -1558,7 +1558,7 @@ fn pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
         let sh: V3 = u.map(|c| -c * spacing * f64::from(count - 1) / 2.0);
         let holes_only = tgt.iter().all(|t| st.holes.contains_key(t));
         if !holes_only {
-            midplane_halves(st, name, &tgt, u, spacing, count)?;
+            midplane_halves(st, name, &tgt, u, spacing, count, false)?;
             return Ok(());
         }
         for t in &tgt {
@@ -1690,7 +1690,10 @@ fn two_way_pattern(
         feats.extend(made.iter().cloned());
         // The last flag of each direction: midplane.
         if flag(n - 2 + k) {
-            made.extend(midplane_halves(st, &nm, &feats, u, rnd(spacing * CM), count)?);
+            // The extra occurrence of an even count lies along the stored direction: behind
+            // a direction turned round (the fixtures' count 2), ahead of one that is not (the
+            // EY4180 bay adapters' nut traps, count 8).
+            made.extend(midplane_halves(st, &nm, &feats, u, rnd(spacing * CM), count, !flag(k))?);
             continue;
         }
         st.out.push(json!({"type": "pattern_linear", "name": nm, "features": feats,
@@ -1705,8 +1708,9 @@ fn two_way_pattern(
 
 /// A midplane pattern of features (occurrences on both sides of the originals): Gusset
 /// patterns run one way, so it is a pattern each way sharing the originals. An odd count has
-/// `(count - 1) / 2` copies each way; an even count one more backward (`count / 2`) than
-/// forward (confirmed for 2 on the `pt_*` fixtures: the copy is behind). The names of the
+/// `(count - 1) / 2` copies each way; an even count one more on one side: backward
+/// (`count / 2` copies) unless `extra_ahead` (confirmed for 2 on the `pt_*` fixtures: the copy
+/// is behind a turned direction; for 8 on the EY4180 bay adapters: ahead). The names of the
 /// patterns made.
 fn midplane_halves(
     st: &mut State,
@@ -1715,18 +1719,24 @@ fn midplane_halves(
     u: V3,
     spacing: f64,
     count: u32,
+    extra_ahead: bool,
 ) -> Result<Vec<String>, String> {
-    let (fw, bw) =
-        if count.is_multiple_of(2) { (count / 2, count / 2 + 1) } else { (count.div_ceil(2), count.div_ceil(2)) };
+    let (fw, bw) = match (count.is_multiple_of(2), extra_ahead) {
+        (true, false) => (count / 2, count / 2 + 1),
+        (true, true) => (count / 2 + 1, count / 2),
+        (false, _) => (count.div_ceil(2), count.div_ceil(2)),
+    };
     let mut made = Vec::new();
     if fw > 1 {
         st.out.push(json!({"type": "pattern_linear", "name": name, "features": feats, "direction": u, "spacing": spacing, "count": fw}));
         made.push(name.to_string());
     }
-    let back = if made.is_empty() { name.to_string() } else { format!("{name}_back") };
-    let neg = [rnd(-u[0]), rnd(-u[1]), rnd(-u[2])];
-    st.out.push(json!({"type": "pattern_linear", "name": back, "features": feats, "direction": neg, "spacing": spacing, "count": bw}));
-    made.push(back);
+    if bw > 1 {
+        let back = if made.is_empty() { name.to_string() } else { format!("{name}_back") };
+        let neg = [rnd(-u[0]), rnd(-u[1]), rnd(-u[2])];
+        st.out.push(json!({"type": "pattern_linear", "name": back, "features": feats, "direction": neg, "spacing": spacing, "count": bw}));
+        made.push(back);
+    }
     Ok(made)
 }
 
