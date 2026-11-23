@@ -194,43 +194,43 @@ fn mm(v: f64) -> f64 {
 /// Most point-circle pairs [`precise_points`] compares in one sketch.
 const MAX_PRECISE_PAIRS: usize = 1_000_000;
 
-/// The points of a sketch that lie on one of its drawn arcs or circles (within 1e-6 mm) but
-/// more than 1e-7 mm off it once both are rounded to six decimals, with that circle's centre.
+/// The points of a sketch that lie on one of its drawn arcs or circles (within 1e-6 mm), with
+/// the circle's centre, where six decimals put them more than 2e-7 mm apart in radius: the
+/// kernel builds an arc on the mean radius of its ends and refuses one whose ends miss that by
+/// more than 1e-7 mm.
 fn precise_points(g: &Geometry) -> HashSet<usize> {
     let pt = |i: usize| g.pts.get(i).copied().flatten();
-    // (centre, radius in mm at full precision, radius from the rounded points)
-    let circles: Vec<(usize, f64, Option<usize>)> = g
+    // (centre, radius in mm at full precision)
+    let circles: Vec<(usize, f64)> = g
         .segs
         .iter()
         .filter(|s| s.kind == SegKind::Arc && !s.construction)
         .filter_map(|s| {
             let (p, c) = (pt(s.s)?, pt(s.c)?);
-            Some((s.c, libm::hypot(p.x - c.x, p.y - c.y) * 1000.0, (s.s != s.e).then_some(s.s)))
+            Some((s.c, libm::hypot(p.x - c.x, p.y - c.y) * 1000.0))
         })
         .collect();
     let mut out = HashSet::new();
     if circles.len().saturating_mul(g.pts.len()) > MAX_PRECISE_PAIRS {
         return out;
     }
-    for &(c, r, start) in &circles {
+    for &(c, r) in &circles {
         let Some(cp) = pt(c) else { continue };
-        // An arc's own radius as the import sees it: from its rounded start; a circle's is written.
-        let r6 = match start.and_then(pt) {
-            Some(p) => libm::hypot(mm(p.x) - mm(cp.x), mm(p.y) - mm(cp.y)),
-            None => round_to(r, 6),
-        };
-        for (i, p) in g.pts.iter().enumerate() {
-            let Some(p) = p else { continue };
-            if i == c || (libm::hypot(p.x - cp.x, p.y - cp.y) * 1000.0 - r).abs() > 1e-6 {
-                continue;
-            }
-            if (libm::hypot(mm(p.x) - mm(cp.x), mm(p.y) - mm(cp.y)) - r6).abs() > 1e-7 {
-                out.insert(i);
-                out.insert(c);
-                if let Some(st) = start {
-                    out.insert(st);
-                }
-            }
+        let on: Vec<(usize, f64)> = g
+            .pts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| {
+                let p = (*p)?;
+                ((libm::hypot(p.x - cp.x, p.y - cp.y) * 1000.0 - r).abs() <= 1e-6 && i != c)
+                    .then(|| (i, libm::hypot(mm(p.x) - mm(cp.x), mm(p.y) - mm(cp.y))))
+            })
+            .collect();
+        let lo = on.iter().map(|q| q.1).fold(f64::INFINITY, f64::min);
+        let hi = on.iter().map(|q| q.1).fold(f64::NEG_INFINITY, f64::max);
+        if hi - lo > 2e-7 {
+            out.extend(on.iter().map(|q| q.0));
+            out.insert(c);
         }
     }
     out
