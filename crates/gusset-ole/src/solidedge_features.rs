@@ -1724,6 +1724,49 @@ fn curve2_points(c: &Curve2) -> Vec<[f64; 2]> {
     }
 }
 
+/// The points along a profile's curves from `from`, each curve taken from the end it meets,
+/// back to `from` with every curve used; `None` if the curves are not one closed loop.
+fn walk(curves: &[Curve2], backwards: &[bool], from: [f64; 2]) -> Option<Vec<[f64; 2]>> {
+    let same = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
+    let mut used = vec![false; curves.len()];
+    let mut pts = vec![from];
+    while let Some(&cur) = pts.last() {
+        if pts.len() > 1 && same(cur, from) {
+            break;
+        }
+        let next = (0..curves.len()).find_map(|k| {
+            if used.get(k).copied().unwrap_or(true) {
+                return None;
+            }
+            let c = curves.get(k)?;
+            curve_ends(c)?;
+            let mut q = curve2_points(c);
+            if backwards.get(k).copied().unwrap_or(false) {
+                q.reverse();
+            }
+            if !same(*q.first()?, cur) {
+                q.reverse();
+            }
+            same(*q.first()?, cur).then_some((k, q))
+        });
+        let (k, q) = next?;
+        *used.get_mut(k)? = true;
+        pts.extend(q.into_iter().skip(1));
+    }
+    used.iter().all(|u| *u).then_some(pts)
+}
+
+/// The signed area (positive counter-clockwise) of a profile that is one closed loop, run
+/// from its first curve as drawn; `None` for several loops or a whole circle or ellipse.
+pub(crate) fn loop_area(curves: &[Curve2], backwards: &[bool]) -> Option<f64> {
+    let (a, b) = curve_ends(curves.first()?)?;
+    let from = if backwards.first().copied().unwrap_or(false) { b.0 } else { a.0 };
+    let pts = walk(curves, backwards, from)?;
+    let area =
+        pts.windows(2).map(|w| w.first().zip(w.get(1)).map_or(0.0, |(a, b)| a[0] * b[1] - b[0] * a[1])).sum::<f64>();
+    Some(area / 2.0)
+}
+
 /// Whether `p` lies inside the region the curves bound (even-odd).
 fn inside(curves: &[Curve2], p: [f64; 2]) -> bool {
     let mut odd = false;
@@ -2094,12 +2137,35 @@ fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Ki
     let extent = code(3).ok_or("the extent is not readable")?;
     let side = code(4).ok_or("the side is not readable")?;
     let mut profiles = profiles;
+    // A cutout of the material outside its closed profile: a point of the region between the
+    // profile and a box round it, in millimetres in the sketch.
+    let mut outside = None;
     if k == Kind::Cutout
         && let [one] = profiles.as_mut_slice()
     {
         // Turned over, the chain's left is the seed's right.
         let side = code(5).map(|s| if one.turned { 3 - s } else { s });
-        close_open(&mut one.curves, &one.backwards, side)?;
+        if free_ends(&one.curves, &one.backwards)?.is_none() {
+            // A closed profile cuts on its side too (1 left of the loop as drawn, 2 right):
+            // outside it where that is not the side it encloses (017's side outline).
+            let area = loop_area(&one.curves, &one.backwards);
+            if let (Some(s), Some(a)) = (side, area)
+                && ((s == 1 && a < 0.0) || (s == 2 && a > 0.0))
+            {
+                let pts: Vec<[f64; 2]> = one.curves.iter().flat_map(curve2_points).collect();
+                let lo = pts.iter().fold([f64::MAX; 2], |m, p| [m[0].min(p[0]), m[1].min(p[1])]);
+                let hi = pts.iter().fold([f64::MIN; 2], |m, p| [m[0].max(p[0]), m[1].max(p[1])]);
+                let (x0, y0, x1, y1) = (lo[0] - OPEN_REACH, lo[1] - OPEN_REACH, hi[0] + OPEN_REACH, hi[1] + OPEN_REACH);
+                let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+                for (a, b) in corners.iter().zip(corners.iter().cycle().skip(1)) {
+                    one.curves.push(Curve2::Line(*a, *b));
+                    one.backwards.push(false);
+                }
+                outside = Some([rnd((x0 + 1e-3) * MM), rnd((y0 + 1e-3) * MM)]);
+            }
+        } else {
+            close_open(&mut one.curves, &one.backwards, side)?;
+        }
     } else if k == Kind::Protrusion
         && let [one] = profiles.as_mut_slice()
         && let Some((a, b)) = free_ends(&one.curves, &one.backwards)?
@@ -2134,6 +2200,9 @@ fn solid(st: &Store, s: &mut State, (serial, f): (u32, &Func), name: &str, k: Ki
     };
     let mut j = json!({"type": if revolve {"revolve"} else {"extrude"}, "name": name, "sketch": sketch,
                        "profiles": "all", "operation": op});
+    if let Some(p) = outside {
+        put(&mut j, "profiles", json!([{"point": p}]));
+    }
     // A second feature the first needs (the other way of a cut to the next face both ways).
     let mut second = None;
     if op != "new" {

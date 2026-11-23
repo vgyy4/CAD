@@ -5,7 +5,7 @@ use crate::fixtures::ole;
 use crate::solidedge_features::{
     Curve2, Edge3, Profile, SetCurve, Store, axis_in_plane, axis_line, close_on_axis, close_open, copy_frame, curve,
     edge_pick, edge_set, face_pick, face_set, feature_tree, history, hole_circle, key_point_angle, key_point_reach,
-    parse_func, path_split, plane, reach_in_box, split_loft_circle, stored_box, value, vertex_set,
+    loop_area, parse_func, path_split, plane, reach_in_box, split_loft_circle, stored_box, value, vertex_set,
 };
 use serde_json::json;
 
@@ -1719,4 +1719,31 @@ fn a_smart_boss_grows_to_the_body_with_its_hole_and_ribs() {
     let t = feature_tree(&boss_part(false), "p.par", &crate::Limits::default()).unwrap();
     let f = t["features"].as_array().unwrap();
     assert!(f.iter().any(|x| x["type"] == "unsupported" && x["name"] == "SmartBoss_1"), "{t}");
+}
+
+#[test]
+fn a_closed_loop_runs_from_its_first_curve_as_drawn() {
+    // A 2 x 1 square from (0, 0) along +x first: counter-clockwise, area 2, whichever way its
+    // other sides were drawn; from (0, 0) up first: clockwise.
+    let ccw = [
+        Curve2::Line([0.0, 0.0], [2.0, 0.0]),
+        Curve2::Line([2.0, 1.0], [2.0, 0.0]),
+        Curve2::Line([2.0, 1.0], [0.0, 1.0]),
+        Curve2::Line([0.0, 0.0], [0.0, 1.0]),
+    ];
+    assert!((loop_area(&ccw, &[false; 4]).unwrap() - 2.0).abs() < 1e-12);
+    let mut cw = ccw.clone();
+    cw.rotate_left(3);
+    assert!((loop_area(&cw, &[false; 4]).unwrap() + 2.0).abs() < 1e-12);
+    // An arc drawn clockwise (kept counter-clockwise from its end) first: the half disc below
+    // the x axis run from (1, 0) round to (-1, 0), then back along the axis: clockwise.
+    let half = [
+        Curve2::Arc([0.0, 0.0], 1.0, core::f64::consts::PI, 2.0 * core::f64::consts::PI),
+        Curve2::Line([-1.0, 0.0], [1.0, 0.0]),
+    ];
+    assert!(loop_area(&half, &[true, false]).unwrap() < -1.5);
+    // Two loops, or a whole circle: not one loop run from a curve.
+    let two = [ccw.to_vec(), vec![Curve2::Line([5.0, 0.0], [6.0, 0.0]), Curve2::Line([6.0, 0.0], [5.0, 0.0])]].concat();
+    assert!(loop_area(&two, &[false; 6]).is_none());
+    assert!(loop_area(&[Curve2::Circle([0.0, 0.0], 1.0)], &[false]).is_none());
 }
