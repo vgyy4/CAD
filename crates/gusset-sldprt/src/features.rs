@@ -1674,8 +1674,11 @@ fn sketch_json(name: &str, g: &Geometry, plane: Option<&Plane>, jp: &JsonPlane) 
         let Some(p) = p else { continue };
         let mut q = Map::new();
         q.insert("id".into(), json!(pid(i)));
-        q.insert("x".into(), json!(mm(p.x)));
-        q.insert("y".into(), json!(mm(p.y)));
+        // Nine decimals: the import keeps eight for the ends of arcs, and six would leave an
+        // arc's ends up to 5e-7 mm off its circle (round sw16: station_upper's lugs, arcs from
+        // the 65 mm circle, end 8e-7 mm apart in radius; the kernel builds no such arc).
+        q.insert("x".into(), json!(round_to(p.x * 1000.0, 9)));
+        q.insert("y".into(), json!(round_to(p.y * 1000.0, 9)));
         if p.ext {
             q.insert("external".into(), json!(true));
         }
