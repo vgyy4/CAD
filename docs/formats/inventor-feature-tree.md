@@ -1007,3 +1007,36 @@ not committed). Every rule below is a candidate the whole-part rebuild check dec
   support; of more than two, the pairs that meet within four radii of the blend's axis must meet at one
   edge.
 
+
+## AW. Browser places, midplane even counts, blend picks past their edge (round ipt13)
+- **Places in the order record.** Each entry of `452121b6` is `0x80000003, id`, then a list
+  (`0x30000002`, count 2, `2`, `0x108`) of two pairs: `u32 2, u8 1, u32 a` and `u8 0, u32 3, u8 0,
+  u32 place`. Every feature has two entries, its id and its id with the top bit set, at places `p` and
+  `p + 1`; the record lists them by id. In most files the places follow the browser: a feature moved up
+  after it was made keeps its id but takes an earlier place (the LEGO bricks' Fillet1, made after the
+  pattern that copies it, sits before the pattern; EY4180 A-02's Extrusion11 before Mirror3). Not in
+  all: the EY4180 bay adapters place Emboss1 before the base extrude and several later cuts before
+  Extrusion4 (read in place order they start with a cut before any body). So only a feature a mirror
+  or pattern copies, made after it but placed before it, moves to just before the copy; every other
+  feature keeps id order (26 parts' trees would change in full place order, 2 change now).
+- **Midplane patterns of an even count.** Of a two-direction rectangular pattern's midplane direction,
+  the extra occurrence lies along the direction as stored: behind it when the direction's flag turns it
+  round (the `pt_*` fixtures, count 2), ahead when not (the EY4180 bay adapters' nut traps, count 8: with
+  one more behind, the eight copies of each trap ran 12 mm too far to one side).
+- **Blend faces merged with a later join.** When a later join's side face continues a blend face (the
+  join's sketch projects the rounded outline), the result body holds one face from the plate's floor to
+  the block's top and tags it with the blend: the CRS-METEO box mounts' corner rounds, made on a 10 mm
+  plate, span 40 mm, and their picks' midpoints lie 15 mm past the plate's edges. The importer then
+  takes the straight model edge on the pick's line nearest its midpoint.
+- **Corner patches.** `VBL_SURF` (the vertex blend of a fillet with setbacks, `fl_setback`) is a corner
+  patch like `srf_srf_v_bl_spl_sur`: it names no edge.
+- **Chamfers as wide as their step.** A chamfer cone whose only neighbours are two coaxial cylinders of
+  other radii took the step face between them whole (the M2 ISO 7435 set screw's dog point, the GOST
+  12639 rivet's tube end, 0.1 mm wide). Of the two corners it can have cut, the cylinder that ran on to
+  the corner lies wholly beyond its rim; a cylinder's material lies inside when its surface's cosine
+  (third double of `cone-surface`) is positive and the face is forward (flag `0x0b`), outside when one of
+  them is turned; the chamfer removed material when the cylinder's material lies on the triangle's
+  side. The kernel's chamfer does not build these; the triangle is revolved a full turn and cut.
+- **Mirrored blend picks.** A mirrored fillet or chamfer copy reflects its picks' path points with their
+  midpoints (the bay adapters' Mirror2 copies a chamfer whose edge is a whole circle: in the copy its seam
+  sits at the pick, so only the path finds it).
