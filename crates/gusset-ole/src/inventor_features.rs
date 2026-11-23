@@ -726,22 +726,25 @@ impl Reader<'_> {
         let dbls = |o: usize, n: usize| -> Option<Vec<f64>> {
             (0..n).map(|k| f64_at(rec, o + 8 * k).filter(|v| v.is_finite() && v.abs() < 1e7)).collect()
         };
-        for j in self.dc.body(i)..rec.len().saturating_sub(24) {
-            let Some(degree) = u32_at(rec, j).filter(|d| (1..=9).contains(d)) else { continue };
+        // The first offset where the whole layout reads (an earlier match of the degree and
+        // tolerance words can be part of something else).
+        (self.dc.body(i)..rec.len().saturating_sub(24)).find_map(|j| -> Option<Curve> {
+            let degree = u32_at(rec, j).filter(|d| (1..=9).contains(d))?;
             if !f64_at(rec, j + 4).is_some_and(|t| t > 0.0 && t < 1e-3) {
-                continue;
+                return None;
             }
             let (Some(nk), Some(nk2), Some(8)) = (u32_at(rec, j + 12), u32_at(rec, j + 16), u32_at(rec, j + 20)) else {
-                continue;
+                return None;
             };
             let nk = nk as usize;
-            if nk != nk2 as usize || nk > MAX_KNOTS {
-                continue;
+            // The second word is the array's capacity (32 for 22 knots on a closed curve).
+            if nk > nk2 as usize || nk > MAX_KNOTS {
+                return None;
             }
             let knots = dbls(j + 24, nk)?;
             let o = j + 24 + 8 * nk;
             let (nw, nw2, es) = (u32_at(rec, o)? as usize, u32_at(rec, o + 4)? as usize, u32_at(rec, o + 8)?);
-            if nw != nw2 || es != 8 || nw > MAX_KNOTS {
+            if nw > nw2 || es != 8 || nw > MAX_KNOTS {
                 return None;
             }
             let weights = dbls(o + 12, nw)?;
@@ -764,13 +767,21 @@ impl Reader<'_> {
             let end = |q: Option<&P2>| -> Option<usize> {
                 let q = *q?;
                 let on = |p: &&Option<usize>| p.and_then(at).is_some_and(|a| near(a, q));
-                [list.first(), list.last()].into_iter().flatten().find(on).or_else(|| list.iter().find(on)).copied().flatten()
+                [list.first(), list.last()]
+                    .into_iter()
+                    .flatten()
+                    .find(on)
+                    .or_else(|| list.iter().find(on))
+                    .copied()
+                    .flatten()
             };
             let (s, e) = (end(poles.first())?, end(poles.last())?);
-            let ok = knots.windows(2).all(|w| matches!(*w, [a, b] if a <= b)) && weights.iter().all(|&w| w > 0.0) && s != e;
-            return ok.then_some(Curve::Spline { id: i, s, e, degree, knots, poles, weights, con });
-        }
-        None
+            // A closed curve lists its one end point (its first and last poles meet there).
+            let ok = knots.windows(2).all(|w| matches!(*w, [a, b] if a <= b))
+                && weights.iter().all(|&w| w > 0.0)
+                && (s != e || (np > 2 && list.len() == 1));
+            ok.then_some(Curve::Spline { id: i, s, e, degree, knots, poles, weights, con })
+        })
     }
 
     /// An ellipse record: the tail holds `f64 s, a, b, u8` (cm; `s` = y component of the major
