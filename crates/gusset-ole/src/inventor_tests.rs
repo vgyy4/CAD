@@ -409,6 +409,41 @@ fn history_order_suppressed_thread_and_unknown_features() {
     assert_eq!(t["features"][2]["name"], "Thicken1");
 }
 
+/// The order record's entries (`0x80000003, id` and a list of two pairs): the second pair's
+/// number is the feature's place in the browser, which sorts features moved up after they were
+/// made.
+#[test]
+fn features_follow_their_browser_place() {
+    let mut r = base_records();
+    r.push((NAME, name_rec("Thicken1", Some(T_THICKEN)))); // 19
+    r.push((NAME, name_rec("Thicken2", Some(T_THICKEN)))); // 20
+    r.push((FEATURE, feature(19, 0, 8, &[]))); // 21
+    r.push((FEATURE, feature(20, 0, 9, &[]))); // 22
+    let entry = |id: u32, place: u32, laid: bool| {
+        let mut e = 0x8000_0003u32.to_le_bytes().to_vec();
+        e.extend(id.to_le_bytes());
+        e.extend([0x02, 0, 0, 0x30, 0x02, 0, 0, 0, 0x02, 0, 0, 0, 0x08, 0x01, 0, 0, 2, 0, 0, 0, 1]);
+        e.extend(place.to_le_bytes());
+        e.extend([0, if laid { 3 } else { 4 }, 0, 0, 0, 0]);
+        e.extend(place.to_le_bytes());
+        e.push(0);
+        e
+    };
+    let with = |laid: bool| {
+        let mut r = r.clone();
+        let mut order = hdr(0, 0, 0);
+        for (id, place) in [(5u32, 0u32), (8, 4), (9, 2)] {
+            order.extend(entry(id, place, laid));
+        }
+        r.push((ORDER, order));
+        let t = tree(&r).unwrap();
+        types(&t).into_iter().map(|(_, n)| n).collect::<Vec<String>>()
+    };
+    assert_eq!(with(true), ["Sketch1", "Extrusion1", "Thicken2", "Thicken1"]);
+    // An entry of another layout keeps the record's order.
+    assert_eq!(with(false), ["Sketch1", "Extrusion1", "Thicken1", "Thicken2"]);
+}
+
 #[test]
 fn a_tagging_feature_changes_no_geometry() {
     let mut r = base_records();

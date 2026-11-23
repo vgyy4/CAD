@@ -525,9 +525,43 @@ impl Dc {
             order
         };
         let (strict, loose) = (scan(true), scan(false));
-        let order = if strict.len() == loose.len() { strict } else { loose };
+        let order = if strict.len() == loose.len() { self.browser_order(r, strict, &ids) } else { loose };
         let rest: Vec<usize> = (0..all.len()).filter(|k| !order.contains(k)).collect();
         order.into_iter().chain(rest).filter_map(|k| all.get(k).cloned()).collect()
+    }
+
+    /// The features of the order record by their place in the browser: each entry's id is
+    /// followed by a list of two (`0x30000002`, count 2, `2`, `0x108`) pairs `u8, u32` (the
+    /// second's `u32` the node's place; a feature has two entries, its id and its id with the
+    /// top bit set, at places `2k` and `2k + 1`). A feature moved up in the browser after it was
+    /// made (the LEGO bricks' Fillet1, made after the pattern that copies it) keeps its id
+    /// order in the record but not its place. Unless every feature's entry has this layout,
+    /// the record's order is kept.
+    fn browser_order(&self, r: &[u8], order: Vec<usize>, ids: &HashMap<u32, usize>) -> Vec<usize> {
+        const HEAD: [u8; 16] = [0x02, 0, 0, 0x30, 0x02, 0, 0, 0, 0x02, 0, 0, 0, 0x08, 0x01, 0, 0];
+        let mut place: HashMap<usize, u32> = HashMap::new();
+        for k in 4..r.len().saturating_sub(3) {
+            if u32_at(r, k - 4) != Some(0x8000_0003) {
+                continue;
+            }
+            let Some(&f) = u32_at(r, k).and_then(|v| ids.get(&v)) else { continue };
+            let at = |a: usize, b: usize| r.get(k + a..k + b);
+            let laid = at(4, 20) == Some(&HEAD[..])
+                && at(20, 25) == Some(&[2, 0, 0, 0, 1][..])
+                && at(29, 35) == Some(&[0, 3, 0, 0, 0, 0][..]);
+            match (laid, u32_at(r, k + 35)) {
+                (true, Some(p)) if !place.contains_key(&f) => {
+                    place.insert(f, p);
+                }
+                _ => return order,
+            }
+        }
+        if order.iter().any(|f| !place.contains_key(f)) {
+            return order;
+        }
+        let mut out = order;
+        out.sort_by_key(|f| place.get(f).copied().unwrap_or(u32::MAX));
+        out
     }
 
     /// The items of the first `0x30000002` list at or after `start` (default: the body), and
