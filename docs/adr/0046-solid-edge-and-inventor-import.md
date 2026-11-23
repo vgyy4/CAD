@@ -1373,9 +1373,11 @@ committed). Changed this round:
 
 **Coverage (180 ordered parts, OCCT `par_history`, one part per process).** Before: 102 as
 history. After: **103 as history** (140), none lost (the sweep commit reaches 023 alone, rerun
-on the final head). The gusset-xt changes reach every Parasolid-based importer, so SolidWorks
-(1352 parts) was rerun on this round's base and head; Inventor's import does not convert XT
-(its stored bodies are ACIS) and was rerun too. Fusion sets were not run here.
+on the final head). The gusset-xt changes reach every Parasolid-based importer, so the other
+corpora were rerun in full on this round's base and head: SolidWorks 373 of 1352 as history
+before and after, no part's outcome line changed; Inventor (whose import does not convert XT:
+its stored bodies are ACIS) 752 of 1686 before and after, no outcome changed. Fusion sets were
+not run here.
 
 **Left (measured).**
 - 054, 056, 060: closed now, but their stored bodies do not measure consistently (above); the
