@@ -3206,35 +3206,6 @@ fn a_revolved_dome_measures_its_exact_volume_however_it_is_turned() {
 }
 
 #[test]
-fn a_profile_line_a_little_off_its_axis_revolves() {
-    // Solid Edge 012's dome as its sketch solves: the line up the axis ends 3.3e-7 mm off it.
-    // OCCT's check of the revolve took the line for one crossing the axis and crashed; the axis
-    // now lies along the line, and the dome measures as the one drawn exactly on the axis.
-    let dome = |x3: f64| {
-        let (p0, p1, c, p3) = (
-            [0.46200990034390699, 14.312737980008693],
-            [42.813093000000002, 14.312738],
-            [42.556047989653997, 15.376805419647297],
-            [x3, 57.483505720344006],
-        );
-        let line = |a: [f64; 2], b: [f64; 2], tag: u64| ProfileEdge { seg: Seg2::Line { a, b }, tag };
-        let edges = vec![
-            line(p0, p1, 1),
-            line(p1, p3, 2),
-            ProfileEdge { seg: Seg2::Arc { center: c, start: p3, end: p0, ccw: true }, tag: 3 },
-        ];
-        let p = Profile { frame: Frame::XZ, regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }] };
-        let s = k()
-            .revolve(&p, &RevolveSpec { axis_origin: p1, axis_dir: [0.0, 1000.0], angle: std::f64::consts::TAU })
-            .unwrap()
-            .shape;
-        k().mass_properties(&s).unwrap().volume
-    };
-    let (off, on) = (dome(42.813092670002099), dome(42.813093000000002));
-    assert!(close(off, on, 1e-7), "{off} vs {on}");
-}
-
-#[test]
 fn a_shell_of_a_spindle_dome_is_its_section_offset_and_revolved() {
     // 3722's globe: a base cylinder r 33.5 mm, 19 mm tall, under a dome of r 54 mm about a
     // centre 0.658 mm off the axis (a spindle torus, a point of it on the axis), the corner

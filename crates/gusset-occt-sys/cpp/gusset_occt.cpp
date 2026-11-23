@@ -2353,23 +2353,6 @@ int gs_revolve(const GsProfile* p, const double axis_origin[2], const double axi
   if (ad.Magnitude() < 1e-12) return fail("revolve axis has zero length");
   gp_Ax1 axis(ao, gp_Dir(ad));
   bool full = angle >= 2 * M_PI - 1e-9;
-  // A profile line along the axis but a little off its direction (012's dome: solved 3e-7 mm
-  // off it at the far end) crashes OCCT's check of the revolve, which takes the line for one
-  // crossing the axis: the axis is moved onto the longest such line (by at most 1e-6 mm).
-  {
-    const gp_Lin along(axis);
-    double best = 1e-6;
-    for (size_t i = 0; i < p->nsegs; ++i) {
-      const GsSeg& s = p->segs[i];
-      if (s.kind != GS_SEG_LINE) continue;
-      const gp_Pnt a = f.at(s.a[0], s.a[1]), b = f.at(s.b[0], s.b[1]);
-      if (a.Distance(b) <= best || along.Distance(a) > 1e-6 || along.Distance(b) > 1e-6) continue;
-      best = a.Distance(b);
-      gp_Vec v(a, b);
-      if (v.Dot(gp_Vec(axis.Direction())) < 0) v.Reverse();
-      axis = gp_Ax1(a, gp_Dir(v));
-    }
-  }
 
   std::vector<TopoDS_Shape> solids;
   std::vector<BRepPrimAPI_MakeRevol*> ops;
