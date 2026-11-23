@@ -918,3 +918,23 @@ round sw16's) and took:
 The rebuild check is unchanged. History 373 -> 384 of 1352, none lost. Only the SolidWorks reader writes face picks
 on edges, so the `named.rs` changes cannot reach Inventor, Solid Edge or Fusion imports; the Solid Edge corpus was
 rerun against the round's base binary. The kernel is unchanged.
+
+## Amendment (2026-11-23): threads, body deletions after a mirror, parts inserted first, equation-driven blends (round sw18)
+
+Round sw18 (L29 in `docs/formats/solidworks-feature-tree.md`) measured its own baseline (384 of 1352, row for row
+round sw17's final log), broke the 137 refusals at an unsupported feature or end down by class, and rebuilt each
+such part without its unsupported features to see what the class must make up. It took:
+
+- **Threads** (`moSweepThread_c`): read from the profile sketch that follows the node (pitch, length `D4`, edge
+  diameter `D6`, the library profile as drawn); a right-handed helical sweep of the profile about the edge's axis,
+  cutting where the profile lies in the part. The hand is not read; a left-handed designation is not taken.
+- **Body deletions after a body mirror** (`moDeleteBody_c`): the mirror kept its copy apart; it is written without
+  merging and the deletion as `remove_body`.
+- **Parts inserted first** (`moStock_c` before any body): a stored body from the `StockBodies` stream, as for
+  mirrored stock parts (the importer's stock handling takes `stock` as well as `stock_mirror`).
+- **Blend sizes from equations**: a fillet or chamfer without a size in the feature stream takes the dimension record
+  `Config-<n>` writes after its equation.
+
+The rebuild check is unchanged. History 384 -> SWCOUNT of 1352, none lost. The tree import, the sketch solver, the
+document, the evaluator and the kernel are unchanged; the importer change is in the SolidWorks-only stock handling,
+so no Inventor, Solid Edge or Fusion import can reach it.

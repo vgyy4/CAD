@@ -1760,3 +1760,61 @@ cylinder), Linear Actuator Bracket (shell walls), the 12T and 66T metric gears, 
 (tooth patterns), Stepper Motor NEMA17 Middle (body mirror), L Bracket and Movable Jaw (3D-sketch holes). None lost.
 Refusals after the round: STEP-style 550, unsupported 137, volume mismatches 67, stock-only and the like 55, blends
 that do not build 40, other features that do not build 38, unresolved references 34, blend edges not read 27.
+
+## L29. Round 23 (sw18: threads, body deletions after a mirror, parts inserted first, equation-driven blends)
+Measured from this round's own baseline (384 of 1352, row for row round sw17's final log). The 137 refusals at an
+unsupported feature or end, by class: split bodies (`moSplitBody_c`, `Stock-<part>-1`) 16, variable fillets 15,
+imported surfaces 14, weldments 9, threads (`moSweepThread_c`) 8, splits (`moSplit_c`) 8, ribs 6, end conditions
+(up to surface 4, offset from surface 3, through all? 2, up to vertex 1, unknown 1) 11, sheet metal 8, domes 4,
+move face 4, inserted parts (`moStock_c`) 4, body deletions 3, combines 3, imported Parasolid/STEP bodies 3, others
+one or two each. For each of the 137 a scratch build dropped the unsupported features and rebuilt the rest against
+the part's own body: where the rest builds, the mismatch is what the class must make up. Threads (seven of eight
+build otherwise), body deletions, inserted parts and domes came out ahead; split bodies, imported surfaces,
+weldments and sheet metal leave nothing to rebuild.
+
+* **Threads** (`moSweepThread_c`). The node itself is a header; it is followed by a plane and a profile sketch (`Thread
+  Profile1`, `Diş Profili1`) that keeps the library profile as drawn at the start of the thread, then the thread's own
+  data: `u32 1` and the pitch (`f64`, m) right before the designation (`M6x1.0`), the library file
+  (`...\thread profiles\Metric Die.SLDLFP`), the start edge (`moCircleRef_w`, then its face records), and the
+  dimensions `D1`..`D9`, written `D1`..`D5`, `D7`, `D6`, `D8`, `D9` in the order of their ids. In the 2017-2023 files
+  `D4` is the length (M6 cıvata 17 mm, Screw Spindle 157, cup 45, Handlebar cap 8, 126p-wiper-axle-nut 12) and `D6`
+  the edge's diameter (6, 38, 38, 12, 14.8); `D7` equals the pitch in the 2020+ files but not in the 2017 and 2018
+  ones (1.82 and 5 against 2 and 2.5), so the pitch is read before the designation. The profile's x axis points away
+  from the thread's axis and its y axis along it into the part, its origin on the edge: the axis passes `D6 / 2`
+  behind the origin along x. The thread is a sweep of the profile along a helix about that axis (radius `D6 / 2`, the
+  pitch, `D4` high) climbing the y axis. Whether it cuts: the profile lies in the part when it reaches outward from a
+  hole's edge or inward from a shaft's; an edge is a hole's when a face of its record belongs to a cut or a hole
+  feature (the cup's Thread1 starts at the hole wizard's face and adds its profile; M6 cıvata's and Screw Spindle's,
+  on revolve faces, cut). The hand is not read: M6 cıvata's stored flanks lean the right-handed way (their sampled
+  normals' sign matches the right-handed sweep's, not the left-handed one's); a designation naming `LH` is left
+  unread. M6 cıvata rebuilds exactly (675.5427 mm3). Not taken: Screw Rod and Crank write `D4` = 0 (an end
+  condition other than blind length, not decoded); Handlebar cap and the cup add their profile in a hole and come
+  out short (1435.5 against 1463.8 mm3; the cup's sweep fails in OCCT's boolean, "GeomConvert Concatenation Error");
+  the wiper nut's tap profile cuts 190 mm3 where the stored part lost 280 (its flanks are 280 mm2 against 256, the
+  stored thread is not the drawn profile at this pitch); Screw Spindle's stored body has 33088 mm3 more than its
+  other features give; Curved Rail Holder's thread ends otherwise.
+* **Body deletions after a body mirror** (`moDeleteBody_c`). The node's edge record names faces of the body it
+  deletes. Right after a mirror of the body, a deletion that names faces of the seed body (features before the
+  mirror) or of the copy (faces through the mirror) shows that the mirror kept its copy apart: the mirror is written
+  without merging and the deletion as `remove_body` (126p-visor-diy-bottom's Obiekt-Usuń/zachowaj 6 names
+  Dodanie-wyciągnięcie1's faces; the part is the mirrored half, z 5 to 10). The mirror's merge option itself was not
+  found: 126p-sunshield-diy-bottom keeps both halves as two bodies (its stored part has two) and its merged mirror
+  fails in OCCT; comparing the two non-merging mirror nodes with nine other body mirrors byte by byte found no
+  flag at a fixed offset.
+  claw1 and claw2 delete one of two pieces a cut leaves in one body, which the tree cannot name.
+* **Parts inserted first** (`moStock_c` before any body: the toolbox gears Spur Gear 12 Teeth and Base Internal Gear
+  66 Teeths start from). The part keeps the inserted body in `Config-0-StockBodies` (1529 and 28895 mm3 against the
+  finished 2735 and 28594, so the features after it are not replayed on the finished body); it becomes stored body 0
+  as a mirrored stock does, without a mirror. Inserted parts after a body (4 in tread, Electromagnet plus String
+  Guide) are moved and mated and stay refused.
+* **Blend sizes from equations.** A fillet whose radius an equation drives keeps no `D1` in the feature stream;
+  `Config-0` writes the equation's text (`"D1@Fillet1"="steel_sides_radius"`) and after it the dimension's own
+  parameter record (`D1`, m). ballscrew_face_plate_gantry rebuilds; NEMA23_mount and NEMA23_mount_gantry stop at
+  Fillet2, whose radius is in neither stream.
+* **Measured, not done.**
+  - Domes (`moDome_c`, `D1` the height): M4_bolt's dome is on a hexagonal socket bottom, reversed (a B-spline face,
+    9.79 mm3 removed); robotCasterWheel's on a drafted circle is a hemisphere (883.5 mm3 = a cap of radius and height
+    7.5), but the reader cannot size the drafted face; Arduino Mega Board and sensor pannel have many on thin pads.
+  - Pedestal's four gussets (`moGusset_c`, header-only nodes) add nothing to the stored body (the rest gives its
+    volume exactly); left refused, nothing shows why they built nothing.
+  - Ribs: five parts build otherwise (5 to 22 % short); Gusset has no rib.
