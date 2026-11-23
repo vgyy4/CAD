@@ -409,15 +409,15 @@ fn history_order_suppressed_thread_and_unknown_features() {
     assert_eq!(t["features"][2]["name"], "Thicken1");
 }
 
-/// The order record's entries (`0x80000003, id` and a list of two pairs): the second pair's
-/// number is the feature's place in the browser, which sorts features moved up after they were
-/// made.
+/// The order record's entries (`0x80000003, id` and a list of two pairs): a feature a mirror
+/// copies but made after it, placed before it, moves to just before the mirror; placed after
+/// it, or with entries of another layout, the record's order stays.
 #[test]
-fn features_follow_their_browser_place() {
+fn a_copied_feature_made_after_its_copy_moves_before_it() {
     let mut r = base_records();
-    r.push((NAME, name_rec("Thicken1", Some(T_THICKEN)))); // 19
-    r.push((NAME, name_rec("Thicken2", Some(T_THICKEN)))); // 20
-    r.push((FEATURE, feature(19, 0, 8, &[]))); // 21
+    r.push((NAME, name_rec("Mirror1", Some(0xb6c2_26a3)))); // 19
+    r.push((NAME, name_rec("Thicken1", Some(T_THICKEN)))); // 20
+    r.push((FEATURE, feature(19, 0, 8, &[rf(22)]))); // 21
     r.push((FEATURE, feature(20, 0, 9, &[]))); // 22
     let entry = |id: u32, place: u32, laid: bool| {
         let mut e = 0x8000_0003u32.to_le_bytes().to_vec();
@@ -429,19 +429,19 @@ fn features_follow_their_browser_place() {
         e.push(0);
         e
     };
-    let with = |laid: bool| {
+    let with = |places: [u32; 3], laid: bool| {
         let mut r = r.clone();
         let mut order = hdr(0, 0, 0);
-        for (id, place) in [(5u32, 0u32), (8, 4), (9, 2)] {
+        for (id, place) in [5u32, 8, 9].into_iter().zip(places) {
             order.extend(entry(id, place, laid));
         }
         r.push((ORDER, order));
         let t = tree(&r).unwrap();
-        types(&t).into_iter().map(|(_, n)| n).collect::<Vec<String>>()
+        types(&t).into_iter().map(|(_, n)| n).filter(|n| n != "Sketch1").collect::<Vec<String>>()
     };
-    assert_eq!(with(true), ["Sketch1", "Extrusion1", "Thicken2", "Thicken1"]);
-    // An entry of another layout keeps the record's order.
-    assert_eq!(with(false), ["Sketch1", "Extrusion1", "Thicken1", "Thicken2"]);
+    assert_eq!(with([0, 4, 2], true), ["Extrusion1", "Thicken1", "Mirror1"]);
+    assert_eq!(with([0, 2, 4], true), ["Extrusion1", "Mirror1", "Thicken1"]);
+    assert_eq!(with([0, 4, 2], false), ["Extrusion1", "Mirror1", "Thicken1"]);
 }
 
 #[test]

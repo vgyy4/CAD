@@ -525,19 +525,20 @@ impl Dc {
             order
         };
         let (strict, loose) = (scan(true), scan(false));
-        let order = if strict.len() == loose.len() { self.browser_order(r, strict, &ids) } else { loose };
+        let order = if strict.len() == loose.len() { self.browser_order(r, strict, &ids, &all) } else { loose };
         let rest: Vec<usize> = (0..all.len()).filter(|k| !order.contains(k)).collect();
         order.into_iter().chain(rest).filter_map(|k| all.get(k).cloned()).collect()
     }
 
-    /// The features of the order record by their place in the browser: each entry's id is
-    /// followed by a list of two (`0x30000002`, count 2, `2`, `0x108`) pairs `u8, u32` (the
-    /// second's `u32` the node's place; a feature has two entries, its id and its id with the
-    /// top bit set, at places `2k` and `2k + 1`). A feature moved up in the browser after it was
-    /// made (the LEGO bricks' Fillet1, made after the pattern that copies it) keeps its id
-    /// order in the record but not its place. Unless every feature's entry has this layout,
-    /// the record's order is kept.
-    fn browser_order(&self, r: &[u8], order: Vec<usize>, ids: &HashMap<u32, usize>) -> Vec<usize> {
+    /// The order record's features, moved where a copy needs them: each entry's id is followed
+    /// by a list of two (`0x30000002`, count 2, `2`, `0x108`) pairs `u8, u32` (the second's
+    /// `u32` a place; a feature has two entries, its id and its id with the top bit set, at
+    /// places `2k` and `2k + 1`). A feature a mirror or pattern copies but made after it (the
+    /// LEGO bricks' Fillet1, EY4180 A-02's Extrusion11), whose place comes before the copy's,
+    /// moves to just before the copy. Places are not the browser order in every file (EY4180's
+    /// bay adapters place an emboss before the base extrude), so nothing else moves; unless
+    /// every feature's entry has this layout, the record's order is kept.
+    fn browser_order(&self, r: &[u8], order: Vec<usize>, ids: &HashMap<u32, usize>, all: &[Feature]) -> Vec<usize> {
         const HEAD: [u8; 16] = [0x02, 0, 0, 0x30, 0x02, 0, 0, 0, 0x02, 0, 0, 0, 0x08, 0x01, 0, 0];
         let mut place: HashMap<usize, u32> = HashMap::new();
         for k in 4..r.len().saturating_sub(3) {
@@ -559,8 +560,30 @@ impl Dc {
         if order.iter().any(|f| !place.contains_key(f)) {
             return order;
         }
+        let of_rec: HashMap<usize, usize> = all.iter().enumerate().map(|(k, f)| (f.rec, k)).collect();
         let mut out = order;
-        out.sort_by_key(|f| place.get(f).copied().unwrap_or(u32::MAX));
+        let copies: Vec<usize> = out
+            .iter()
+            .copied()
+            .filter(|&k| {
+                all.get(k).is_some_and(|f| {
+                    matches!(f.typ, Some(FeatType::Mirror | FeatType::RectPattern | FeatType::CircPattern))
+                })
+            })
+            .collect();
+        for c in copies {
+            let Some(f) = all.get(c) else { continue };
+            for (_, x) in self.refs(f.rec) {
+                let Some(&m) = of_rec.get(&x) else { continue };
+                let (Some(pc), Some(pm)) = (out.iter().position(|&k| k == c), out.iter().position(|&k| k == m)) else {
+                    continue;
+                };
+                if pm > pc && place.get(&m) < place.get(&c) {
+                    out.remove(pm);
+                    out.insert(pc, m);
+                }
+            }
+        }
         out
     }
 
