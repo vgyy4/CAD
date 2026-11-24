@@ -1878,3 +1878,39 @@ round sw18's final log).
 | all | 389 / 1352 | **391** / 1352 |
 
 Gained (2): key_d20 and key_d25 (blend edges on swallowed boss sides). None lost; no other row changed.
+
+## L31. Round 25 (rib1: ribs)
+Gusset gained a rib (ADR 0062); the reader writes `moRib_c` as one.
+
+* **Record.** The rib's sketch is the node's child, as an extrude's. `D1` is the thickness (5 mm in all 13 ribs of the
+  corpus). The thickness dimension's two points (`f64` x, y, z, m each) follow `D1`'s value by 31 bytes: in five of the
+  six parts they lie on either side of the sketch plane, a half thickness off (centred) or on it and a thickness off
+  (Quick Release Housing's Rib1, z 17.5 and 12.5 on a plane at z 17.5: all to the back). 3D Platform Pivot's lie at
+  x 5 and 10 with the sketch plane read at x = -10, so its side stays open. Two unit-vector groups and a frame follow
+  (an in-plane square to the line in engine_block's ribs, the line's direction or its mirror image in the others);
+  which side of the line the rib grows to was not read from them: the reader writes one side with `either` and the
+  import takes the other where the rib meets no face toward the first.
+* **Lines.** The rib is the sketch's lines that are not construction geometry; engine_block's rib sketches also
+  hold arcs (converted part edges) that are not part of the rib.
+* **Mirror seeds.** Quick Release Housing's Mirror1 names Rib1 by an index no back reference gives; its Sketch5
+  reads as index 7670 between Cut-Extrude1 (563) and Mirror1 (775), so the seed's bracket was empty. The one feature
+  up to the mirror is taken there.
+* **Measured, not done.**
+  - Fillets on rib faces (3D Platform Pivot's Fillet4: 2 of 10 edges; ArmBaseNew's and Attached part to platform's
+    Fillet6: 0 of 2): their edge records name the rib's faces (`Rib1/1`, `Rib1/2`); which face of the rib each index
+    is was not decoded, so the edges are neither placed nor named.
+  - Quick Release Housing: Mirror2 mirrors Mirror1 (a mirror of the rib); the import does not copy a mirror of
+    features again.
+  - engine_block's Parça1 builds its six ribs and stops at a body move/copy (`moMoveCopyBody_c`) after them.
+
+**Coverage after the round** (rebuild check unchanged; the round's own baseline on its base):
+
+| corpus | baseline | round rib1 |
+|---|---|---|
+| slip-pad | 25 / 35 | 25 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 2 / 14 | 2 / 14 |
+| sw-more | 349 / 1253 | **350** / 1253 |
+| all | 391 / 1352 | **392** / 1352 |
+
+Gained (1): motor kapağı (two ribs, each mirrored). None lost; the five other rib parts changed only their reason.

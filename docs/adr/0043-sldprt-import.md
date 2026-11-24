@@ -954,3 +954,24 @@ mismatches left are the kernel's blends or two-section lofts with a connector tw
 unchanged. History 389 -> 391 of 1352, none lost (full run row for row: only the two keys changed). The change is in the SolidWorks reader alone
 (`gusset-sldprt`); the tree import, sketch solver, document, evaluator and kernel are unchanged, so no Inventor,
 Solid Edge or Fusion import can reach it.
+
+## Amendment (2026-11-24): ribs (round rib1)
+
+Round rib1 (L31 in `docs/formats/solidworks-feature-tree.md`) added Gusset's rib (ADR 0062) and wired the reader
+to it:
+
+- **Ribs** (`moRib_c`): the sketch is the node's child (as an extrude's); the rib's lines are the sketch's lines that
+  are not construction geometry (engine_block's rib sketches also hold arcs: converted part edges); `D1` is the
+  thickness. The tree's rib grows in the sketch plane, square to its first line. Which side of the lines it grows to
+  is not decoded: the reader writes one side with `either`, and the import takes the other where the rib meets no
+  face toward the first. The thickness dimension's two points follow `D1`'s value by 31 bytes; one on the sketch
+  plane and the other a thickness off it make a one-sided rib (Quick Release Housing), else it is centred.
+- **Mirror seeds past an index out of order**: a seed index that falls between two indexed nodes with no feature
+  between them (Quick Release Housing's Sketch5 reads as 7670 between 563 and 775) is the one feature up to the
+  mirror (its Mirror1 names Rib1).
+- Mirrors of features copy ribs (the import reflects the sketch and the directions).
+
+The rebuild check is unchanged. History 391 -> 392 of 1352, none lost (full run row for row against the round's base:
+only the six rib parts changed; motor kapağı rebuilds). The rib is new to the document, evaluator, kernel (a flag of
+the up-to-next sweep, ADR 0062) and tree import; no other feature or tree type reaches the new code, and the
+Inventor and Solid Edge corpora were rerun in full (ADR 0046 amendment 38).

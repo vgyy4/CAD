@@ -656,3 +656,14 @@ is resolved as before, so other sources are unchanged.
   one candidate left is an error, as is none.
 - `optional: true` (with `faces` and no `midpoint`): a source selection that may be superseded;
   where the model has no such edge the pick is left out.
+
+## Amendment (2026-11-24): ribs
+
+Version 2 adds `rib` (ADR 0062): `sketch`, optional `curves` (its lines), `thickness` (mm), and either
+`toward` (a model-space direction in the sketch plane: the rib grows square to each line on that side,
+its thickness across the plane) or `normal` (a model-space direction along the sketch normal: the rib
+grows that way, its thickness in the plane). `side` (model-space, across the sketch plane) puts the
+whole thickness of an in-plane rib on that side; without it the thickness is centred. `either: true`
+says the source does not know the side of the lines: where the rib meets no face toward `toward`, the
+import builds it toward the opposite side. `target` names the body it joins. Mirrors of features
+copy ribs (the sketch and the directions reflected).

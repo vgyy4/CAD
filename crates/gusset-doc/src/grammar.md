@@ -1073,5 +1073,8 @@ mm and/or `rotate: {axis, origin, angle}` degrees, the turn first; `copy: true` 
 named after the feature), `scale_body` (`target`, `factor` or `factors: [x, y, z]`, `center`),
 `remove_body` (`target`), `draft` (`faces: [{point, normal}]`, `plane: {origin, normal}`,
 `angle` degrees, `flip`) and `thread` (`face: {point, normal}`, `pitch`, `major`, `minor`, `angle`
-degrees, `length`, `offset`, `along: [x, y, z]`, `modeled`, `left`, `designation`). The exporter plugins in `plugins/` write these files.
+degrees, `length`, `offset`, `along: [x, y, z]`, `modeled`, `left`, `designation`) and `rib` (ADR 0062:
+`sketch`, `curves`, `thickness`, `toward: [x, y, z]` in the sketch plane or `normal: [x, y, z]` along
+it, `side: [x, y, z]` for the whole thickness to one side, `either` when the side of the lines is not
+known, `target`). The exporter plugins in `plugins/` write these files.
 Anything that cannot be imported is listed in `skipped_user_text` with its reason.
