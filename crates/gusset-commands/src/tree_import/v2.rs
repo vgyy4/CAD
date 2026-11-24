@@ -1030,6 +1030,16 @@ fn reflect_feature(f: &Value, o: V3, n: V3, rename: &dyn Fn(&str) -> String) -> 
                 }
             }
         }
+        "rib" => {
+            if let Some(sk) = f.get("sketch").and_then(Value::as_str) {
+                set(&mut out, "sketch", json!(rename(sk)));
+            }
+            for key in ["toward", "normal", "side"] {
+                if out.get(key).is_some() {
+                    map_v3(&mut out, key, &dr)?;
+                }
+            }
+        }
         "hole" => {
             if let Some(face) = out.get_mut("face") {
                 map_v3(face, "point", &pt)?;
@@ -1263,7 +1273,7 @@ fn mirror_features(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value], o: V3
         let idx = *g.index.get(fname).ok_or_else(|| format!("its feature '{}' was not imported", short(fname)))?;
         let f = feats.get(idx).ok_or("its feature is missing")?;
         let kind = f.get("type").and_then(Value::as_str).unwrap_or("");
-        if matches!(kind, "extrude" | "revolve") {
+        if matches!(kind, "extrude" | "revolve" | "rib") {
             // The sketch is mirrored once per mirror feature.
             let sk = f.get("sketch").and_then(Value::as_str).ok_or("a solid without a sketch")?;
             if mirrored.insert(sk.to_string()) {
@@ -1301,6 +1311,11 @@ fn mirror_features(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value], o: V3
                 let dd = serde_json::from_value::<DraftF>(rf).map_err(|e| e.to_string())?;
                 draft(g, s, &dd)?;
                 last = Some(dd.name);
+            }
+            "rib" => {
+                let rd = serde_json::from_value::<RibF>(rf).map_err(|e| e.to_string())?;
+                rib(g, s, &rd)?;
+                last = Some(rd.name);
             }
             "pattern_linear" | "pattern_circular" => {
                 // Of features this mirror copies: their copies must be made already.
@@ -2150,4 +2165,110 @@ mod tests {
         assert_eq!(r["edges"][0]["midpoint"], json!([41.75, 8.5, -20.0]));
         assert_eq!(r["edges"][0]["path"], json!([[41.7, 8.4, -20.0], [41.7, 8.6, -20.0]]));
     }
+}
+
+/// A rib (ADR 0062): sketch lines thickened and grown up to the body. Directions are in model
+/// space: `toward` grows it in the sketch plane, `normal` along the sketch's normal; `side`
+/// puts the whole thickness on one side (across the plane for `toward`), else it is centred.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct RibF {
+    name: String,
+    sketch: String,
+    #[serde(default)]
+    curves: Vec<String>,
+    /// mm.
+    thickness: f64,
+    #[serde(default)]
+    toward: Option<V3>,
+    #[serde(default)]
+    normal: Option<V3>,
+    #[serde(default)]
+    side: Option<V3>,
+    /// The reader cannot tell which side of the lines `toward` is: the other side is tried
+    /// where the rib meets no face toward the first.
+    #[serde(default)]
+    either: bool,
+    #[serde(default)]
+    target: Option<String>,
+}
+
+pub(super) fn rib(g: &mut Gen, s: &Session, d: &RibF) -> Result<(), String> {
+    let t = finite(d.thickness, "the thickness")?;
+    if !(t > 1e-9 && t <= MAX_LENGTH) {
+        return Err("the rib's thickness is not positive or too large".into());
+    }
+    let sm = g.sketches.get(&d.sketch).ok_or_else(|| format!("its sketch '{}' was not imported", short(&d.sketch)))?;
+    if d.curves.len() > MAX_PICKS {
+        return Err("too many rib curves".into());
+    }
+    let mut path = sm.name.clone();
+    if !d.curves.is_empty() {
+        let mut ids = Vec::new();
+        for c in &d.curves {
+            ids.push(sm.ids.get(c).ok_or_else(|| format!("unknown rib curve '{}'", short(c)))?.clone());
+        }
+        path = format!("{path}.curves({})", ids.join(", "));
+    }
+    let (x, y) = (sm.x, sm.y);
+    let n = cross(x, y);
+    let unit = |v: V3, what: &str| -> Result<V3, String> {
+        let v = [finite(v[0], what)?, finite(v[1], what)?, finite(v[2], what)?];
+        let l = norm(v);
+        if l > 1e-9 { Ok(v.map(|c| c / l)) } else { Err(format!("{what} is zero")) }
+    };
+    let mut args = format!("path: {path}, thickness: {} mm", num(t));
+    let mut other = None;
+    let in_plane = match (d.toward, d.normal) {
+        (Some(v), None) => {
+            let v = unit(v, "the rib's direction")?;
+            let (u, w) = (dot(v, x), dot(v, y));
+            if u.hypot(w) < 1e-6 {
+                return Err("the rib's direction is not in its sketch plane".into());
+            }
+            other = d.either.then(|| format!(", toward: [{}, {}]", fine(-u), fine(-w)));
+            let _ = write!(args, ", toward: [{}, {}]", fine(u), fine(w));
+            true
+        }
+        (None, Some(v)) => {
+            let along = dot(unit(v, "the rib's direction")?, n);
+            if along.abs() < 1e-6 {
+                return Err("the rib's direction is not along its sketch normal".into());
+            }
+            args.push_str(if along > 0.0 { ", normal: true" } else { ", normal: true, reverse: true" });
+            false
+        }
+        _ => return Err("a rib grows either in its sketch plane (toward) or along the normal".into()),
+    };
+    if let Some(v) = d.side {
+        if !in_plane {
+            return Err("a rib along the normal with its thickness to one side is not supported".into());
+        }
+        let across = dot(unit(v, "the rib's side")?, n);
+        if across.abs() < 1e-6 {
+            return Err("the rib's side is not across its sketch plane".into());
+        }
+        args.push_str(if across > 0.0 { ", side: front" } else { ", side: back" });
+    }
+    if let Some(tg) = &d.target {
+        let _ = write!(args, ", body: {}", g.body_named(tg, "target")?);
+    }
+    let name = g.fresh(&d.name, "Rib");
+    let text_len = g.text.len();
+    let _ = writeln!(g.text, "\nrib {name} ({args})");
+    let first = builds(g, s, &name);
+    if let (Err(why), Some(flip)) = (&first, other) {
+        let why = why.clone();
+        // The other side of the lines (`either`): `toward` is the first argument after the
+        // thickness, so the rest of the arguments stay as they were.
+        g.text.truncate(text_len);
+        let head = format!("path: {path}, thickness: {} mm", num(t));
+        let rest = args.split_once(", toward: [").and_then(|(_, r)| r.split_once(']')).map_or("", |(_, r)| r);
+        let _ = writeln!(g.text, "\nrib {name} ({head}{flip}{rest})");
+        builds(g, s, &name).map_err(|_| why)?;
+    } else {
+        first?;
+    }
+    g.made.push(name.clone());
+    g.features.insert(d.name.clone(), name);
+    Ok(())
 }

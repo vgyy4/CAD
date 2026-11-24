@@ -1263,7 +1263,7 @@ pub fn apply_with(
                 })
             }
             "hole" | "pattern_linear" | "pattern_circular" | "mirror" | "shell" | "sweep" | "loft" | "stored_body"
-            | "move_body" | "draft" | "scale_body" | "remove_body" | "offset_face" | "split" | "thread"
+            | "move_body" | "draft" | "scale_body" | "remove_body" | "offset_face" | "split" | "thread" | "rib"
                 if tree.version < 2 =>
             {
                 Err(format!("feature type '{kind}' is in version 2 files; this file says version 1"))
@@ -1307,6 +1307,9 @@ pub fn apply_with(
             "draft" => serde_json::from_value::<v2::DraftF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::draft(&mut g, s, &d)),
+            "rib" => serde_json::from_value::<v2::RibF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::rib(&mut g, s, &d)),
             "shell" => serde_json::from_value::<v2::ShellF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::shell(&mut g, s, &d)),
@@ -1344,6 +1347,7 @@ pub fn apply_with(
                         | "fillet"
                         | "chamfer"
                         | "draft"
+                        | "rib"
                         | "pattern_linear"
                         | "pattern_circular"
                 ) {
