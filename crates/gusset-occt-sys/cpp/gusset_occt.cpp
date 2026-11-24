@@ -4540,6 +4540,8 @@ TopoDS_Shape end_trimmed(const TopoDS_Shape& s, const EndTrim& t, TopoDS_Shape* 
   return one;
 }
 
+int exact_corners(const GsShape* s, const std::vector<uint32_t>& idx, bool concave, double ideal, bool trim,
+                  CornerCut& cut);
 int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge>& es,
                 const std::vector<uint32_t>& idx, bool fillet, const std::vector<std::array<double, 2>>& ext,
                 CornerCut& cut, bool trim = false) {
@@ -4755,8 +4757,63 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
   const double before = std::fabs(measured_volume(s->s, trim)), after = std::fabs(measured_volume(result, trim));
   const double change = concave ? after - before : before - after;
   const double tol = 1e-7 * std::max(1.0, before);
-  if (longer ? change < ideal - tol : std::fabs(change - ideal) > tol)
-    return fail("the corners were not all material");
+  if (longer ? change < ideal - tol : std::fabs(change - ideal) > tol) {
+    if (longer || change < ideal - tol) return fail("the corners were not all material");
+    return exact_corners(s, idx, concave, ideal, trim, cut);
+  }
+  return corner_origins(*b, [&](const TopoDS_Shape& f) { return b->IsDeleted(f); }, s->s, result, idx, cut);
+}
+
+// The face of a corner `exact` on the surface of `face` (its cutter's blend face): the one with
+// a point inside it on that surface (the largest of several), else null.
+TopoDS_Shape exact_blend_face(const TopoDS_Shape& exact, const TopoDS_Shape& face) {
+  if (exact.IsNull() || face.IsNull() || face.ShapeType() != TopAbs_FACE) return TopoDS_Shape();
+  const Handle(Geom_Surface) target = BRep_Tool::Surface(TopoDS::Face(face));
+  const GeomAbs_SurfaceType kind = BRepAdaptor_Surface(TopoDS::Face(face), false).GetType();
+  TopoDS_Shape best;
+  double best_area = 0;
+  for (TopExp_Explorer ex(exact, TopAbs_FACE); ex.More(); ex.Next()) {
+    const TopoDS_Face f = TopoDS::Face(ex.Current());
+    if (BRepAdaptor_Surface(f, false).GetType() != kind) continue;
+    double u0, u1, v0, v1;
+    BRepTools::UVBounds(f, u0, u1, v0, v1);
+    const gp_Pnt p = BRepAdaptor_Surface(f, false).Value(0.5 * (u0 + u1), 0.5 * (v0 + v1));
+    GeomAPI_ProjectPointOnSurf pr(p, target);
+    if (!pr.IsDone() || pr.NbPoints() < 1 || pr.LowerDistance() > 1e-7) continue;
+    GProp_GProps g;
+    BRepGProp::SurfaceProperties(f, g);
+    if (g.Mass() > best_area) {
+      best_area = g.Mass();
+      best = f;
+    }
+  }
+  return best;
+}
+
+// The corners cut away (filled) as they are, not by their oversized tools: a tool reaches
+// out past the faces beside its edge for a clean boolean, and where the body goes on out there
+// (a face beside the edge exactly as wide as the blend's touching line, ending where an
+// earlier round of the body next to it begins: SolidWorks Part2's 5 mm rounds of a 5 mm tab
+// beside a 5 mm round) it took more than the corner. Each corner alone lies in the body
+// (outside it, filled) exactly when the material changed is their volume.
+int exact_corners(const GsShape* s, const std::vector<uint32_t>& idx, bool concave, double ideal, bool trim,
+                  CornerCut& cut) {
+  std::vector<Corner>& cs = cut.cs;
+  ShapeList args, tools;
+  args.Append(s->s);
+  for (auto& c : cs) {
+    if (c.swept || c.exact.IsNull()) return fail("the corners were not all material");
+    c.face = exact_blend_face(c.exact, c.face);
+    if (c.face.IsNull()) return fail("the corners were not all material");
+    c.caps.clear();
+    tools.Append(c.exact);
+  }
+  auto b = run_boolean_checked(concave ? GS_BOOL_UNION : GS_BOOL_CUT, args, tools);
+  TopoDS_Shape result = b->Shape();
+  if (result.IsNull()) return fail("no result");
+  const double before = std::fabs(measured_volume(s->s, trim)), after = std::fabs(measured_volume(result, trim));
+  const double change = concave ? after - before : before - after;
+  if (std::fabs(change - ideal) > 1e-7 * std::max(1.0, before)) return fail("the corners were not all material");
   return corner_origins(*b, [&](const TopoDS_Shape& f) { return b->IsDeleted(f); }, s->s, result, idx, cut);
 }
 
