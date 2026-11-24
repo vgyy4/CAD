@@ -1389,6 +1389,9 @@ fn mirror_body(g: &mut Gen, s: &Session, d: &MirrorF, o: V3, n: V3) -> Result<()
     Ok(())
 }
 
+/// A reflection across a plane (a point, a unit normal) and the tag its copies' names carry.
+type Reflection = (V3, V3, String);
+
 fn mirror_features(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value], o: V3, n: V3) -> Result<(), String> {
     // A tag of its own per mirror (two mirrors named alike must not share copies), joined
     // with a character no source name has in practice.
@@ -1402,7 +1405,7 @@ fn mirror_features(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value], o: V3
     // In the tree's order: a list may name a fillet before the boss it rounds (Link 6's Mirror3).
     let mut order = d.features.clone();
     order.sort_by_key(|f| g.index.get(f).copied().unwrap_or(usize::MAX));
-    let mut work: Vec<(String, Vec<(V3, V3, String)>)> =
+    let mut work: Vec<(String, Vec<Reflection>)> =
         order.iter().rev().map(|f| (f.clone(), vec![(o, n, tag.clone())])).collect();
     let mut nested = 0usize;
     let mut copied: HashSet<String> = HashSet::new();
