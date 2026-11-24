@@ -121,3 +121,11 @@ release's OCCT source archive carries the patches next to the unmodified source
   integrated exactly as before (OCCT goldens unchanged); the faces it changes were measured
   wrong. Test: `a_periodic_bspline_face_off_its_knots_measures_fast_and_exactly` (over 5
   minutes without the patch, 0.1 s with it). To offer upstream.
+- `gusset-0007-fillet-tangency-null-face.patch` (2026-11-24): `ChFi3d::IsTangentFaces` read the
+  surfaces of the faces it is given without looking; `ChFi3d_Builder::PerformIntersectionAtEnd`
+  passes null faces where its search for the faces next to a fillet's end edge finds none (an
+  Inventor part, HOOK, whose round ends at a vertex among faces the search misses): a
+  segmentation fault in `BRep_Tool::Continuity`. It now throws `Standard_Failure`, which the
+  fillet builder reports as a failed fillet. Every call with an edge and two faces is unchanged
+  (OCCT goldens unchanged). Tested by interposing the patched function on the pinned build: HOOK's
+  fillet fails cleanly ("fillet failed") instead of ending the process. To offer upstream.
