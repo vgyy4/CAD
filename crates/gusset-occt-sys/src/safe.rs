@@ -217,7 +217,16 @@ pub fn extrude_to_face(
 /// Extrudes a profile up to the next face of `target`: a protrusion to the first face it
 /// meets, or (`cut`) a cut through the first stretch of material it meets.
 pub fn extrude_to_next(p: &ProfileData, target: &RawShape, reverse: bool, cut: bool) -> ShimResult<OpOut> {
-    let flags = i32::from(reverse) | (i32::from(cut) << 1);
+    to_next(p, target, i32::from(reverse) | (i32::from(cut) << 1))
+}
+
+/// A rib's sweep up to the next face of `target` (ADR 0062): pieces from the profile's ends
+/// outside the part that run past it are dropped.
+pub fn rib_to_next(p: &ProfileData, target: &RawShape, reverse: bool) -> ShimResult<OpOut> {
+    to_next(p, target, i32::from(reverse) | 4)
+}
+
+fn to_next(p: &ProfileData, target: &RawShape, flags: i32) -> ShimResult<OpOut> {
     let raw = p.raw();
     let mut out = std::ptr::null_mut();
     let mut origins = GsBuf::default();

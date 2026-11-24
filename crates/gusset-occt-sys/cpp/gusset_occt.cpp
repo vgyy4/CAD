@@ -2215,12 +2215,15 @@ int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face,
 // outside the material that hold the start cap, which must stop at the target (not run to the
 // prism's far end). Flag 2 set (a cut through the next stretch of material): the pieces inside
 // the material that hold the start cap or share a face with a start piece outside it. Flag 1
-// reverses the sweep. Faces from the target's surfaces are the end caps.
+// reverses the sweep. Faces from the target's surfaces are the end caps. Flag 4 (a rib, ADR
+// 0062; not with flag 2): the profile reaches past the part's sides, so start pieces outside the
+// material that run to the prism's far end are dropped instead of refused.
 int gs_extrude_to_next(const GsProfile* p, const GsShape* target, int flags, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   if (!p || !target || !out || !origins) return fail("null argument");
   const bool reverse = (flags & 1) != 0;
   const bool cut = (flags & 2) != 0;
+  const bool open = !cut && (flags & 4) != 0;
   Frame f = make_frame(p, 0.0);
   const double sgn = reverse ? -1.0 : 1.0;
   gp_Dir dir(f.n.X() * sgn, f.n.Y() * sgn, f.n.Z() * sgn);
@@ -2288,7 +2291,10 @@ int gs_extrude_to_next(const GsProfile* p, const GsShape* target, int flags, GsS
     std::vector<const Piece*> keep;
     for (const auto& pc : pieces) {
       if (!pc.at_start || pc.inside == !cut) continue;
-      if (!cut && pc.at_end) return fail("the extrusion meets no face of the body ahead of the profile");
+      if (!cut && pc.at_end) {
+        if (open) continue;
+        return fail("the extrusion meets no face of the body ahead of the profile");
+      }
       keep.push_back(&pc);
     }
     if (cut) {
@@ -2304,6 +2310,7 @@ int gs_extrude_to_next(const GsProfile* p, const GsShape* target, int flags, GsS
         if (next) keep.push_back(&pc);
       }
     }
+    if (keep.empty() && open) continue;
     if (keep.empty())
       return fail(cut ? "the extrusion meets no material of the body ahead of the profile"
                       : "the profile starts inside the body, so there is no next face to extrude up to");
@@ -2324,7 +2331,7 @@ int gs_extrude_to_next(const GsProfile* p, const GsShape* target, int flags, GsS
       ++nsolids;
     }
   }
-  if (nsolids == 0) return fail("extrusion failed");
+  if (nsolids == 0) return fail(open ? "the rib meets no face of the body beside its lines" : "extrusion failed");
   TopoDS_Shape result = nsolids == 1 ? single : TopoDS_Shape(comp);
   ShapeMap out_faces;
   TopExp::MapShapes(result, TopAbs_FACE, out_faces);

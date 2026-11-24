@@ -204,6 +204,16 @@ pub trait Kernel: Send + Sync + Debug {
         unsupported("extrude up to the next face", self.name())
     }
 
+    /// A rib's sweep (ADR 0062): [`Kernel::extrude_to_next`] adding, for a profile that reaches
+    /// past the part's sides (the rib's lines extended past their ends). The start pieces
+    /// outside `target` that stop on it are the result; those that run past it (from the
+    /// extended ends outside the part) are dropped instead of refused. Fails where no piece
+    /// stops on `target`.
+    fn rib_to_next(&self, profile: &Profile, target: &Shape, reverse: bool) -> KResult<OpResult> {
+        let _ = (profile, target, reverse);
+        unsupported("rib", self.name())
+    }
+
     /// Rotational sweep of a planar profile around an in-plane axis.
     fn revolve(&self, profile: &Profile, spec: &RevolveSpec) -> KResult<OpResult> {
         let _ = (profile, spec);

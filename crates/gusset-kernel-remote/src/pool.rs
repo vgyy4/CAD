@@ -140,6 +140,11 @@ impl Kernel for PoolKernel {
         k.extrude_to_next(profile, &s, reverse, cut)
     }
 
+    fn rib_to_next(&self, profile: &Profile, target: &Shape, reverse: bool) -> KResult<OpResult> {
+        let (k, s) = self.on_one(target)?;
+        k.rib_to_next(profile, &s, reverse)
+    }
+
     fn revolve(&self, profile: &Profile, spec: &RevolveSpec) -> KResult<OpResult> {
         self.here()?.revolve(profile, spec)
     }

@@ -99,6 +99,7 @@ impl<K: Kernel> Server<K> {
                 Reply::Op(k.extrude_to_face(&p, &t, face, offset, rev, ext)?)
             }
             Request::ExtrudeToNext(p, t, rev, cut) => Reply::Op(k.extrude_to_next(&p, &t, rev, cut)?),
+            Request::RibToNext(p, t, rev) => Reply::Op(k.rib_to_next(&p, &t, rev)?),
             Request::Extrude(p, spec) => Reply::Op(k.extrude(&p, &spec)?),
             Request::Revolve(p, spec) => Reply::Op(k.revolve(&p, &spec)?),
             Request::Sweep(p, path, spec) => Reply::Op(k.sweep(&p, &path, &spec)?),

@@ -9,7 +9,7 @@ use gusset_kernel::{
 };
 
 /// Protocol version, checked by `Ping`.
-pub const VERSION: u32 = 13;
+pub const VERSION: u32 = 14;
 
 /// A fault the worker injects on request (tests only, ADR 0022 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +36,8 @@ pub(crate) enum Request {
     ExtrudeToFace(Profile, Shape, u32, f64, bool, bool),
     /// Up to the next face: `reverse`, `cut` (ADR 0061 amendment).
     ExtrudeToNext(Profile, Shape, bool, bool),
+    /// A rib's sweep up to the next face: `reverse` (ADR 0062).
+    RibToNext(Profile, Shape, bool),
     Revolve(Profile, RevolveSpec),
     Sweep(Profile, SweepPath, SweepSpec),
     Loft(Vec<Profile>, LoftSpec),
@@ -224,6 +226,12 @@ impl Request {
                 w.bool(*reverse);
                 w.bool(*cut);
             }
+            Request::RibToNext(p, target, reverse) => {
+                w.u8(41);
+                p.put(&mut w, s)?;
+                put_shape(&mut w, s, target)?;
+                w.bool(*reverse);
+            }
             Request::ExtrudeToFace(p, target, face, offset, reverse, extend) => {
                 w.u8(37);
                 p.put(&mut w, s)?;
@@ -359,6 +367,7 @@ impl Request {
                 r.bool()?,
             ),
             40 => Request::ExtrudeToNext(Profile::get(&mut r, s)?, get_shape(&mut r, s)?, r.bool()?, r.bool()?),
+            41 => Request::RibToNext(Profile::get(&mut r, s)?, get_shape(&mut r, s)?, r.bool()?),
             3 => Request::Revolve(Profile::get(&mut r, s)?, RevolveSpec::get(&mut r, s)?),
             4 => Request::Sweep(Profile::get(&mut r, s)?, SweepPath::get(&mut r, s)?, SweepSpec::get(&mut r, s)?),
             5 => Request::Loft(Vec::<Profile>::get(&mut r, s)?, LoftSpec::get(&mut r, s)?),
