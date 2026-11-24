@@ -1340,9 +1340,11 @@ pub(crate) enum EdgeInfo {
     Circle { cen: V3, ax: V3, r: f64 },
 }
 
-/// The vertices are two points on opposite sides of the axis: the arc between them is half a
-/// circle, but which half is not known from them.
-fn is_half_circle(cen: V3, ax: V3, vs: &[V3]) -> bool {
+/// The vertices are an arc's two ends alone: which of the two arcs between them is the face's
+/// is not known from them (a half circle; an arc of more than half a circle, which the largest
+/// gap between the vertices takes for its complement: Drag Lock's bottom round of the hub,
+/// 262 degrees between a tangent line and a fillet).
+fn arc_ends_only(cen: V3, ax: V3, vs: &[V3]) -> bool {
     let u = unit(ax);
     let mut dirs: Vec<V3> = Vec::new();
     for &v in vs {
@@ -1352,8 +1354,7 @@ fn is_half_circle(cen: V3, ax: V3, vs: &[V3]) -> bool {
             dirs.push(unit(q));
         }
     }
-    let [a, b] = dirs.as_slice() else { return false };
-    dot(*a, *b) < -1.0 + 1e-9
+    dirs.len() == 2
 }
 
 /// The midpoint of the arc the vertices `vs` bound on a circle; of a whole circle (fewer than
@@ -1846,10 +1847,9 @@ impl Acis {
             return Err("no vertices".into());
         }
         let circle = |cen: V3, ax: V3, r: f64| {
-            // A half circle has its two ends diametrically opposite: which half is not in the
-            // vertices, so the face's own arcs say.
+            // Of an arc given by its two ends alone the face's own arcs say which side it runs.
             let mut pts = vs.clone();
-            if is_half_circle(cen, ax, &vs) {
+            if arc_ends_only(cen, ax, &vs) {
                 pts.extend(self.arc_samples(f, cen, ax));
             }
             (circ_mid(cen, ax, r, &pts), EdgeInfo::Circle { cen, ax, r })
@@ -2187,8 +2187,9 @@ mod tests {
     fn the_midpoint_of_a_half_circle_comes_from_its_arc_not_its_two_ends() {
         let ax = [0.0, 0.0, 1.0];
         let ends = [[2.0, 0.0, 0.0], [-2.0, 0.0, 0.0]];
-        assert!(is_half_circle([0.0; 3], ax, &ends));
-        assert!(!is_half_circle([0.0; 3], ax, &[ends[0], [0.0, 2.0, 0.0]]));
+        assert!(arc_ends_only([0.0; 3], ax, &ends));
+        assert!(arc_ends_only([0.0; 3], ax, &[ends[0], [0.0, 2.0, 0.0]]));
+        assert!(!arc_ends_only([0.0; 3], ax, &[ends[0], [0.0, 2.0, 0.0], ends[1]]));
         // Points along the upper half give its crest, those of the lower half the opposite one.
         let arc = |s: f64| {
             (0..=8).map(move |k| {
@@ -2200,6 +2201,18 @@ mod tests {
         let down: Vec<V3> = arc(-1.0).collect();
         assert!(dist(circ_mid([0.0; 3], ax, 2.0, &up), [0.0, 2.0, 0.0]) < 1e-9);
         assert!(dist(circ_mid([0.0; 3], ax, 2.0, &down), [0.0, -2.0, 0.0]) < 1e-9);
+        // Three quarters of a circle from (2, 0) round through (0, 2) and (-2, 0) to (0, -2):
+        // its two ends alone give the other quarter's middle, its points its own.
+        let ends = [[2.0, 0.0, 0.0], [0.0, -2.0, 0.0]];
+        let h = libm::sqrt(2.0);
+        assert!(dist(circ_mid([0.0; 3], ax, 2.0, &ends), [h, -h, 0.0]) < 1e-9);
+        let long: Vec<V3> = (0..=12)
+            .map(|k| {
+                let t = 1.5 * std::f64::consts::PI * f64::from(k) / 12.0;
+                [2.0 * libm::cos(t), 2.0 * libm::sin(t), 0.0]
+            })
+            .collect();
+        assert!(dist(circ_mid([0.0; 3], ax, 2.0, &long), [-h, h, 0.0]) < 1e-9);
     }
 
     #[test]
