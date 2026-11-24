@@ -27,6 +27,8 @@ use std::collections::HashMap;
 
 /// Centimetres to millimetres.
 const CM: f64 = 10.0;
+/// Why a cut or join cannot be read: no feature before it made a solid.
+const NO_BODY: &str = "a cut or join before any body";
 /// Most features read from one part.
 const MAX_FEATURES: usize = 2000;
 /// Most curves of one sketch.
@@ -2711,7 +2713,7 @@ fn sweep(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     let mut j = json!({"type": "sweep", "name": name, "sketch": profile.name, "path": path.name,
                        "path_curves": ids, "operation": op});
     if op != "new" {
-        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        let fb = st.first_body.clone().ok_or(NO_BODY)?;
         put(&mut j, "target", json!(fb));
     }
     for (k, sketch) in [(sk, profile), (pk, path)] {
@@ -2800,7 +2802,7 @@ fn coil(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
     }
     let mut j = json!({"type": "sweep", "name": name, "sketch": sketch.name, "helix": helix, "operation": op});
     if op != "new" {
-        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        let fb = st.first_body.clone().ok_or(NO_BODY)?;
         put(&mut j, "target", json!(fb));
     }
     if !st.done.contains_key(&sk) {
@@ -2880,7 +2882,7 @@ fn emboss(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Str
         None => along.signum(),
     };
     let d = depth * into * if op == "join" { -1.0 } else { 1.0 };
-    let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+    let fb = st.first_body.clone().ok_or(NO_BODY)?;
     let mut j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": r.profiles(&sketch, lst),
                    "operation": op, "target": fb, "distance": rnd(d), "symmetric": false});
     if !st.done.contains_key(&sk) {
@@ -3125,7 +3127,7 @@ fn changed_bodies(r: &Reader, st: &State, f: &Feature, many: bool) -> Result<Val
         }
     }
     match named.as_slice() {
-        [] => Ok(json!(st.first_body.clone().ok_or("a cut or join before any body")?)),
+        [] => Ok(json!(st.first_body.clone().ok_or(NO_BODY)?)),
         [one, ..] if !many || named.len() == 1 => Ok(json!(one)),
         _ => Ok(json!(named)),
     }
@@ -3394,7 +3396,7 @@ fn plate(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     let mut j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": profiles,
                        "operation": op, "distance": rnd(d), "symmetric": symmetric});
     if op != "new" {
-        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        let fb = st.first_body.clone().ok_or(NO_BODY)?;
         put(&mut j, "target", json!(fb));
     }
     if !st.done.contains_key(&k) {
@@ -3453,7 +3455,7 @@ fn loft(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
     }
     let mut j = json!({"type": "loft", "name": name, "sketches": names, "ruled": names.len() == 2, "operation": op});
     if op != "new" {
-        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        let fb = st.first_body.clone().ok_or(NO_BODY)?;
         put(&mut j, "target", json!(fb));
     }
     st.out.extend(used);
@@ -4284,9 +4286,21 @@ pub fn feature_tree_with(
                 Ok(())
             }
         };
-        if let Err(why) = res {
-            st.out.truncate(before);
-            st.out.push(unsupported(&name, &typ.label(), Some(why)));
+        // A feature dragged above the part's first solid (its id is later than one placed after
+        // it) has nothing to cut or join: Inventor builds it as an error and the result holds
+        // nothing of it (the EY4180 bay adapters' Emboss1).
+        let seq = r.dc.seq(f.rec);
+        let moved_up = feats.iter().skip(k + 1).filter_map(|g| r.dc.seq(g.rec)).any(|q| seq.is_some_and(|s| q < s));
+        match res {
+            Err(why) if st.first_body.is_none() && moved_up && why == NO_BODY => {
+                st.out.truncate(before);
+                st.omitted.push(json!({"name": name, "why": format!("{} placed before the first solid", typ.label())}));
+            }
+            Err(why) => {
+                st.out.truncate(before);
+                st.out.push(unsupported(&name, &typ.label(), Some(why)));
+            }
+            Ok(()) => {}
         }
         let made: Vec<String> = st
             .out
