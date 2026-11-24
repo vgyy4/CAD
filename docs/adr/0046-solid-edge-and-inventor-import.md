@@ -1728,3 +1728,44 @@ the largest volume any such pairing gives; Inventor's pairing is not found), and
 own name, 32 with the Design Accelerator gears) hold no features of their own. The sheet-metal parts whose
 second face no sketch holds also bend, hem and corner (not read). Delete face (8 first failures) stays
 unread: no tree type takes it, and four of the eight have further failures behind it.
+
+## Amendment (2026-11-24, 43): Inventor round ipt18 - cuts OCCT misses, a fillet crash refused
+
+- **Missed cuts** (format notes BB, ADR 0004 amendment of this date): the kernel retries with a fuzzy
+  value a cut that came back with next to nothing removed although its tool overlaps the target. The
+  CRS-METEO bearing clamps' cut of the coil's top (a disc on the ring's own top and round side, across
+  the coil's B-spline faces) now removes the coil above the ring; both clamps rebuild.
+- **Helical splits that are not kept** leave the shape's tolerances as they were (the clamps' stored
+  coil kept a 1.77 mm vertex from a refused split).
+- **HOOK** no longer ends the process: OCCT patch `gusset-0007` (ADR 0002) turns the null faces
+  `ChFi3d_Builder::PerformIntersectionAtEnd` passed to `ChFi3d::IsTangentFaces` into a failed fillet.
+  The corpus runs here interposed the patched function on the pinned OCCT build (the session's
+  install predates the patch); a rebuilt OCCT carries it.
+
+| corpus | parts | base | head |
+|---|---|---|---|
+| Inventor new (ipt-more etc.; full base and head runs) | 1639 | 761 | 763 (+2, none lost) |
+| Inventor old (Zenodo) | 47 | 28 | 28 |
+| SolidWorks (all 1352; base: round sw21's final run of the same code) | 1352 | 401 | 401 (no row changed) |
+| Solid Edge (180) | 180 | 103 | 103 (no row changed) |
+
+Gained: CRS-METEO `bearing-clamp` and its `OldVersions` copy. HOOK is a body ("fillet failed")
+instead of a crash. None lost: two Testrig `SRM` rotors (bodies, an unread coil) ran over the corpus
+runner's 900 s in the volume of their stored body (`gs_mass`, 720 s and 506 s in the base run on a
+quieter machine), not in the change; rerun alone they still did under the session's load. The kernel
+change costs three volume integrations per cut (Slip-Pad: 46-48 s against 45 s).
+
+**Measured, not kept.** A first-wall test in place of the volumes (skip the check when a face of the
+result comes from a tool's face alone and lies inside the target) misses the clamps: OCCT's failed cut
+splits the disc along the coil's section and keeps that piece, yet leaves the coil whole.
+
+**Left (measured).** `lf_basic`, `dv_basic` and `dv_scale_mirror`: Inventor pairs the loft exactly as
+Gusset does (corners to diagonals, even angles); the stored faces are 2.4 um B-spline fits whose
+volume is 0.24 mm3 under the exact loft's, and the stored body reads 0.18 mm3 less again (7.4e-5 in
+all), so they stay bodies under the strict check. The Wago clamp's 2.004e-5 is not the fuzzy value's
+(5e-5 and 1e-4 mm cut the same to 5e-6 mm3). `fl_two_sets` needs a fillet of two radii at once (its
+second fillet runs on along the first's tangent arc: 98 mm3); terminal_mount_front's full round spans
+the wider pair of sides, the kernel's the closest. The 26 parts whose first failure is a `ref` or
+`rb_blend_spl_sur` blend are rolling-ball fillets along edges that are neither lines nor circles (90 of
+168 faces measured run between two cylinders): picks by the edge's two support faces would reach them.
+The ISO 7046 recesses' tapered join "to next" and the rest of amendment 41's list stand.

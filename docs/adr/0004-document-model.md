@@ -426,3 +426,26 @@ samples, then a golden-section search), the peak's angle follows from the axis, 
 is added only when the face classifies it as on it, so the box never grows past the face.
 Test: a cup whose spun Bezier side bulges past its rim, with a boss on its seam: its box is the
 side's widest radius all round.
+
+## Amendment (2026-11-24): cuts OCCT misses, helical splits that are not kept
+Round ipt18 (ADR 0046 amendment 43).
+- *Missed cuts.* OCCT's cut can come back unchanged where its tool plainly overlaps the target:
+  the CRS-METEO bearing clamps cut the top off a coil swept up a ring's bore with a disc of the
+  ring's radius, and the disc's plane finds no intersection with the coil's B-spline faces in
+  memory (its common with the body measures 0; a STEP round trip, a forced same-parameter pass
+  or ShapeFix of the body, or a fuzzy value of 1e-6 mm all find it). `gs_boolean` and
+  `gs_boolean_many` now retry a cut that removed less than a hundredth of the smaller of its
+  tools' and its target's volume, where the boxes meet and the cut either removed nothing (to
+  1e-6 of the target's volume) or kept no face of its tools, with a fuzzy value of 1e-6, 1e-5,
+  then 1e-4 mm; the first retry that removes at least that hundredth is kept, else the cut stays
+  as it was. A tool that only touches the target, or misses it, is left alone. The check costs
+  three volume integrations per cut (SolidWorks' Slip-Pad corpus: 46-48 s against 45 s).
+- *Helical splits.* `split_helical_bands` (the half-turn split of thread bands before a boolean)
+  ran its same-parameter pass on the split shape, which raised the tolerances of the vertices and
+  edges it shares with the input in place, and then refused the split as invalid: the clamp's
+  stored coil kept a vertex of 1.77 mm. The tolerances of the input's vertices and edges are now
+  put back when the split is not kept.
+
+Golden test: `a_cut_across_a_coils_top_takes_it_off` (a ring, a thread tooth coiled up its bore
+and out past its top, the top cut off by a disc of the ring's radius: 225.245 mm3 and 3 mm high;
+unchanged at 247.506 mm3 without the retry).

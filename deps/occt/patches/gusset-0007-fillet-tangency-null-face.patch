@@ -1,0 +1,17 @@
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d.cxx
+index e76af29..e1f1c10 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d.cxx
+@@ -162,6 +162,12 @@ bool ChFi3d::IsTangentFaces(const TopoDS_Edge&  theEdge,
+                             const TopoDS_Face&  theFace2,
+                             const GeomAbs_Shape theOrder)
+ {
++  // A corner whose neighbouring faces were not found passes null faces here (a vertex where a
++  // fillet ends among faces the search misses): refuse it rather than read through them.
++  if (theEdge.IsNull() || theFace1.IsNull() || theFace2.IsNull())
++  {
++    throw Standard_Failure("ChFi3d::IsTangentFaces: null edge or face");
++  }
+   if (theOrder == GeomAbs_G1 && BRep_Tool::Continuity(theEdge, theFace1, theFace2) != GeomAbs_C0)
+   {
+     return true;

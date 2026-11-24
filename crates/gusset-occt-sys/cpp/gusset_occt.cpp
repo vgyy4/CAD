@@ -133,6 +133,8 @@
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <ElCLib.hxx>
 #include <BRep_Builder.hxx>
+#include <BRep_TEdge.hxx>
+#include <BRep_TVertex.hxx>
 #include <BRep_Tool.hxx>
 #include <BinTools.hxx>
 #include <Bnd_Box.hxx>
@@ -2730,23 +2732,60 @@ class HelicalBandDivide : public ShapeUpgrade_FaceDivide {
   }
 };
 
+// The tolerances of a shape's vertices and edges, to put back on them: `BRepLib::SameParameter`
+// on a shape made from another raises the tolerances of the sub-shapes they share in place.
+class SavedTolerances {
+ public:
+  explicit SavedTolerances(const TopoDS_Shape& s) {
+    ShapeMap vs, es;
+    TopExp::MapShapes(s, TopAbs_VERTEX, vs);
+    TopExp::MapShapes(s, TopAbs_EDGE, es);
+    for (int i = 1; i <= vs.Extent(); ++i) {
+      occ::handle<BRep_TVertex> t = occ::handle<BRep_TVertex>::DownCast(vs(i).TShape());
+      if (!t.IsNull()) vertices_.emplace_back(t, t->Tolerance());
+    }
+    for (int i = 1; i <= es.Extent(); ++i) {
+      occ::handle<BRep_TEdge> t = occ::handle<BRep_TEdge>::DownCast(es(i).TShape());
+      if (!t.IsNull()) edges_.emplace_back(t, t->Tolerance());
+    }
+  }
+  void restore() const {
+    for (const auto& [t, tol] : vertices_) t->Tolerance(tol);
+    for (const auto& [t, tol] : edges_) t->Tolerance(tol);
+  }
+
+ private:
+  std::vector<std::pair<occ::handle<BRep_TVertex>, double>> vertices_;
+  std::vector<std::pair<occ::handle<BRep_TEdge>, double>> edges_;
+};
+
 // `s` with its helical bands (`wraps_between_helices`) split into half turns, and the split's
-// history in `h`; `s` itself and a null `h` where it has none, or the split is not valid.
+// history in `h`; `s` itself and a null `h` where it has none, or the split is not valid. A
+// split that is not kept leaves `s` as it was: the same-parameter pass over the split raises
+// the tolerances of the vertices and edges it shares with `s` (the CRS-METEO bearing clamps'
+// coil, whose bore band split badly: a vertex of the stored body went from 1.3e-4 to 1.8 mm).
 TopoDS_Shape split_helical_bands(const TopoDS_Shape& s, occ::handle<BRepTools_History>& h) {
   h.Nullify();
   bool any = false;
   for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More() && !any; ex.Next())
     any = wraps_between_helices(TopoDS::Face(ex.Current()));
   if (!any) return s;
+  const SavedTolerances saved(s);
   ShapeUpgrade_ShapeDivideAngle divide(M_PI, s);
   occ::handle<HelicalBandDivide> tool = new HelicalBandDivide;
   tool->SetSplitSurfaceTool(new ShapeUpgrade_SplitSurfaceAngle(M_PI));
   tool->SetWireDivideTool(nullptr);
   divide.SetSplitFaceTool(tool);
-  if (!divide.Perform() || divide.GetContext().IsNull()) return s;
+  if (!divide.Perform() || divide.GetContext().IsNull()) {
+    saved.restore();
+    return s;
+  }
   TopoDS_Shape out = divide.Result();
   BRepLib::SameParameter(out, 1e-6, true);
-  if (!BRepCheck_Analyzer(out).IsValid()) return s;
+  if (!BRepCheck_Analyzer(out).IsValid()) {
+    saved.restore();
+    return s;
+  }
   h = divide.GetContext()->History();
   return out;
 }
@@ -2778,7 +2817,7 @@ struct AfterSplit {
 // coplanar faces and collinear edges are unified; unification can turn a valid result
 // invalid (FreeCAD's examples: a pad touching a mirrored body), so callers retry without.
 std::unique_ptr<BRepAlgoAPI_BooleanOperation> run_boolean(int op, const ShapeList& args, const ShapeList& tools,
-                                                          bool simplify) {
+                                                          bool simplify, double fuzzy = 0) {
   std::unique_ptr<BRepAlgoAPI_BooleanOperation> b;
   switch (op) {
     case GS_BOOL_UNION: b = std::make_unique<BRepAlgoAPI_Fuse>(); break;
@@ -2791,6 +2830,7 @@ std::unique_ptr<BRepAlgoAPI_BooleanOperation> run_boolean(int op, const ShapeLis
   // Sequential on purpose: model-defining operations must give the same topology order
   // on every run and machine (spec "Determinism").
   b->SetRunParallel(false);
+  if (fuzzy > 0) b->SetFuzzyValue(fuzzy);
   b->Build();
   if (!b->IsDone() || b->HasErrors()) throw Standard_Failure("boolean operation failed");
   if (simplify) b->SimplifyResult(true, true);
@@ -2800,16 +2840,62 @@ std::unique_ptr<BRepAlgoAPI_BooleanOperation> run_boolean(int op, const ShapeLis
 // The boolean with unification, or without it when unification breaks the result.
 // With `refine` false the result is kept as the boolean made it (FreeCAD's Refine = false).
 std::unique_ptr<BRepAlgoAPI_BooleanOperation> run_boolean_checked(int op, const ShapeList& args,
-                                                                  const ShapeList& tools, bool refine = true) {
+                                                                  const ShapeList& tools, bool refine = true,
+                                                                  double fuzzy = 0) {
   if (refine) {
-    auto unified = run_boolean(op, args, tools, true);
+    auto unified = run_boolean(op, args, tools, true, fuzzy);
     const BRepCheck_Analyzer unified_check(unified->Shape(), Standard_True, Standard_True);
     if (unified_check.IsValid()) return unified;
   }
-  auto unrefined = run_boolean(op, args, tools, false);
+  auto unrefined = run_boolean(op, args, tools, false, fuzzy);
   const BRepCheck_Analyzer unrefined_check(unrefined->Shape(), Standard_True, Standard_True);
   if (unrefined_check.IsValid()) return unrefined;
   throw Standard_Failure("boolean operation produced an invalid solid");
+}
+
+// A cut that removed nothing, or that keeps none of its tools' faces and removed next to nothing,
+// may be one OCCT missed: the plane of a cylinder cut across a helical sweep's B-spline faces
+// (the CRS-METEO bearing clamps' coil top, the cylinder on the body's own round side) finds no
+// intersection, and the cut comes back unchanged. Such a cut, where the tools' and the target's
+// boxes meet, runs again with a fuzzy value of 1e-6, 1e-5, then 1e-4 mm; the first retry that
+// removes at least a hundredth of the smaller of the tools' and the target's volume is kept (a
+// tool that only touches the target takes no more than a sliver, and the cut stays as it was).
+std::unique_ptr<BRepAlgoAPI_BooleanOperation> retry_missed_cut(std::unique_ptr<BRepAlgoAPI_BooleanOperation> b,
+                                                               const ShapeList& args, const ShapeList& tools,
+                                                               bool refine) {
+  double before = 0, tool = 0;
+  Bnd_Box arg_box, tool_box;
+  for (ShapeList::Iterator it(args); it.More(); it.Next()) {
+    before += signed_volume(it.Value());
+    BRepBndLib::Add(it.Value(), arg_box);
+  }
+  for (ShapeList::Iterator it(tools); it.More(); it.Next()) {
+    tool += std::fabs(signed_volume(it.Value()));
+    BRepBndLib::Add(it.Value(), tool_box);
+  }
+  const double after = signed_volume(b->Shape());
+  const double least = 0.01 * std::min(tool, std::fabs(before));
+  if (!(least > 0) || before - after >= least || arg_box.IsOut(tool_box)) return b;
+  if (std::fabs(before - after) > 1e-6 * std::max(1.0, std::fabs(before))) {
+    ShapeMap out_faces;
+    TopExp::MapShapes(b->Shape(), TopAbs_FACE, out_faces);
+    for (ShapeList::Iterator it(tools); it.More(); it.Next()) {
+      for (TopExp_Explorer ex(it.Value(), TopAbs_FACE); ex.More(); ex.Next()) {
+        if (out_faces.Contains(ex.Current())) return b;
+        for (ShapeList::Iterator m(b->Modified(ex.Current())); m.More(); m.Next()) {
+          if (out_faces.Contains(m.Value())) return b;
+        }
+      }
+    }
+  }
+  for (const double fuzzy : {1e-6, 1e-5, 1e-4}) {
+    try {
+      auto retry = run_boolean_checked(GS_BOOL_CUT, args, tools, refine, fuzzy);
+      if (!retry->Shape().IsNull() && after - signed_volume(retry->Shape()) >= least) return retry;
+    } catch (const Standard_Failure&) {
+    }
+  }
+  return b;
 }
 
 
@@ -5979,6 +6065,7 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, int refine, G
   std::unique_ptr<BRepAlgoAPI_BooleanOperation> b;
   try {
     b = run_boolean_checked(op, args, tools, refine != 0);  // validated
+    if (op == GS_BOOL_CUT) b = retry_missed_cut(std::move(b), args, tools, refine != 0);
   } catch (const Standard_Failure&) {
     // An intersection is the same either way round, and OCCT can fail one way only (3777:
     // two bars with flats on one cylinder, "Courbes non jointives" with one as the object).
@@ -6016,6 +6103,7 @@ int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, 
   for (size_t i = 0; i < ntools; ++i) tool_list.Append(split_helical_bands(tools[i]->s, splits[i + 1]));
   if (op != GS_BOOL_UNION && op != GS_BOOL_CUT) return fail("only union and cut take several tools at once");
   auto b = run_boolean_checked(op, args, tool_list, refine != 0);
+  if (op == GS_BOOL_CUT) b = retry_missed_cut(std::move(b), args, tool_list, refine != 0);
   TopoDS_Shape result = b->Shape();
   if (result.IsNull()) return fail("boolean operation produced no result");
   ShapeMap out_faces;
