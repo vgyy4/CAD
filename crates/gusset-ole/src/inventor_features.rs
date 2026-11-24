@@ -2866,10 +2866,31 @@ fn emboss(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Str
     // An emboss rises away from the material its sketch lies on, an engrave cuts into it (slot
     // 3 does not change the side of one from the face). Slot 2 is the sketch's normal: it
     // points into the material from a work plane under the part (`em_engrave`) but out of the
-    // face a sketch on a face lies on (BICYCLE SPANNER, Storage-Rack A-01). The side is where
-    // the result lies wholly (an emboss's own height aside); where the result lies on both
-    // sides, the direction.
-    let into = match r.result().and_then(|b| b.reach_along(o.map(|c| c / CM), n)) {
+    // face a sketch on a face lies on (BICYCLE SPANNER, Storage-Rack A-01). The faces the
+    // feature made (`NMx_Emboss*FaceTag`) lie off the sketch plane on the side it cut or rose
+    // to (a glyph's floor or top; the EY4180 bay adapters' arrow cut into a floor with walls on
+    // both sides). Where the result keeps none, the side is where the result lies wholly (an
+    // emboss's own height aside); where it lies on both sides, the direction.
+    let res = r.result();
+    let own = res.and_then(|b| {
+        let fid = i64::from(r.dc.seq(f.rec)?);
+        let t: Vec<f64> = b
+            .emboss_faces(fid)
+            .into_iter()
+            .flat_map(|g| b.verts(g))
+            .map(|p| dot(sub3(p.map(|c| c * CM), o), n))
+            .collect();
+        let tol = 1e-4;
+        let (lo, hi) = t.iter().fold((0.0f64, 0.0f64), |(a, b), &v| (a.min(v), b.max(v)));
+        // Wholly to one side: an engrave's faces lie on the material's side, an emboss's off it.
+        let side = match (lo > -tol, hi < tol) {
+            (true, false) => 1.0,
+            (false, true) => -1.0,
+            _ => return None,
+        };
+        Some(if op == "join" { -side } else { side })
+    });
+    let into = own.unwrap_or_else(|| match res.and_then(|b| b.reach_along(o.map(|c| c / CM), n)) {
         Some((lo, hi)) => {
             let (lo, hi) = (lo * CM, hi * CM);
             let tol = 1e-4 + if op == "join" { depth } else { 0.0 };
@@ -2880,7 +2901,7 @@ fn emboss(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Str
             }
         }
         None => along.signum(),
-    };
+    });
     let d = depth * into * if op == "join" { -1.0 } else { 1.0 };
     let fb = st.first_body.clone().ok_or(NO_BODY)?;
     let mut j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": r.profiles(&sketch, lst),

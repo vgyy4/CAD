@@ -997,6 +997,23 @@ impl Acis {
         out
     }
 
+    /// Faces an emboss or engrave with id `fid` made: those that carry an
+    /// `NMx_EmbossBottomFaceTag` (a glyph's floor or top) or `NMx_EmbossRimFaceTag` (its walls)
+    /// attribute whose 4th int is `fid`.
+    pub(crate) fn emboss_faces(&self, fid: i64) -> Vec<i64> {
+        let mut out = Vec::new();
+        for r in &self.recs {
+            if (r.ty.starts_with("NMx_EmbossBottomFaceTag") || r.ty.starts_with("NMx_EmbossRimFaceTag"))
+                && r.ints.get(3) == Some(&fid)
+                && let Some(&f) = r.refs.iter().find(|&&y| self.is(y, "face"))
+                && !out.contains(&f)
+            {
+                out.push(f);
+            }
+        }
+        out
+    }
+
     /// The profile of a solid of revolution that a feature with id `fid` made, from its faces
     /// in the result (those carrying its id as a sweep would, see [`Acis::sweep_faces`]): every
     /// one a cone, cylinder or torus about one axis, or a plane across it. Each gives a piece
