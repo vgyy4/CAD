@@ -1183,3 +1183,44 @@ not committed). Every rule below is a candidate the whole-part rebuild check dec
   5 degree taper carries them out through the head's underside (1.9 mm3); the gun body is 19.4 mm3 short
   after its holes (cut as revolves), measured before them by a failing comparison boolean; the sheet-metal
   fixtures whose second face no sketch holds also have bends, corners and hems, which are not read.
+
+## BB. Missed cuts, a fillet crash, what the stored loft is (round ipt18)
+- **A cut OCCT misses.** The CRS-METEO bearing clamps (`bearing-clamp`, its `OldVersions` copy) cut the
+  top off their coil (`Extrusion3`, a disc of the ring's own 6.1 mm radius from the ring's top up 10 mm,
+  22.26 mm3 of coil above it). OCCT's cut of the body as built in memory came back unchanged (its common
+  with the disc measured 0): the disc's plane across the coil's B-spline faces finds no intersection,
+  while its cylinder lies on the ring's own round side and its plane on the ring's top, so the result
+  even holds pieces of the disc's faces. A fuzzy value of 1e-6 mm finds the coil (a STEP round trip, a
+  forced same-parameter pass or ShapeFix of the body also do). The kernel now retries such a cut (kernel
+  side, ADR 0004 amendment): one that removed less than a hundredth of the smaller of its tools' and
+  its target's volume and either removed nothing at all or kept no face of its tools runs again with a
+  fuzzy value of 1e-6, 1e-5, then 1e-4 mm, and the first retry that removes at least that hundredth is
+  kept. Both clamps rebuild (355.5578 against the stored 355.5581 mm3). The Wago clamp's slot is found
+  at 5e-5 mm as at 1e-4 mm (2152.805664 against 2152.805669 mm3 after it), so its 0.0425 mm3 (2.004e-5)
+  is not the fuzzy value's: it stays a body.
+- **The coil's bore band.** Before that cut the kernel splits helical bands into half turns
+  (`split_helical_bands`); on the clamp the split's same-parameter pass raised a vertex the body shares
+  with it from 1.3e-4 to 1.77 mm before the split was refused as invalid, and the stored feature's body
+  kept that tolerance. A refused split now puts the shared vertices' and edges' tolerances back.
+- **HOOK's fillet.** The round of HOOK's 90 mm arc (note BA) ends at a vertex whose faces
+  `ChFi3d_Builder::PerformIntersectionAtEnd` does not find; it passed null faces to
+  `ChFi3d::IsTangentFaces`, a segmentation fault. OCCT patch `gusset-0007` (ADR 0002) makes that a
+  failed fillet: HOOK is a body ("fillet failed") instead of a crash.
+- **The stored loft is a fit.** `lf_basic` (square of 20 mm to a circle of radius 7.5 mm, 20 mm up)
+  stores four `loft_spl_sur` faces, each between a side of the square and a quarter of the circle with
+  their parameters paired linearly: the corners go to the diagonals and the circle runs at even angles,
+  the pairing Gusset's ruled loft makes (exact volume 5645.3965 mm3, by the ruled surface's own
+  integral). Each face carries a degree-3 B-spline fit (3 x 1 Bezier patches, fit tolerance 2.4 um),
+  and that fit encloses 5645.156 mm3 (integrated from its poles); the stored body as Gusset reads it
+  measures 5644.9794 mm3. No pairing is wrong: the 7.4e-5 is the stored faces' fit (and the reading of
+  it), so `lf_basic`, `dv_basic` and `dv_scale_mirror` (twice the size) stay bodies under the strict check.
+- **Measured, not changed.** `fl_two_sets` (one fillet of two sets, 3 and 5 mm, on two edges meeting at
+  a corner) builds as two fillets; OCCT's second runs on along the first's tangent arc and the
+  box's vertical edge (98 mm3 too much); a fillet of several radii at once is not in the document.
+  terminal_mount_front's full round (`Fillet1`) is across the bar's 13 mm width (radius 6.5 mm, the
+  stored face); the kernel's full round takes the closest pair of parallel sides (the 5 mm thickness).
+  The tegu enclosure's `rev1 corners_MIR` derived parts measure 2.52 times their base part's volume.
+  The fillets whose blend surface is a `ref` or `rb_blend_spl_sur` (26 first failures) are rolling-ball
+  blends whose subtype names its two supports: of 168 such faces in nine of those parts, 90 run between
+  two cylinders, the rest between planes, cylinders, tori and earlier blends at a slant; their edges are
+  neither lines nor circles, which a pick's midpoint and path must be.
