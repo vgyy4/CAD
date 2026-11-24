@@ -1567,3 +1567,24 @@ under a machine load near 18 in the base run came in as bodies on the head). Fus
   B-spline faces, 0.1 mm apart on average).
 - Others as after se11 (thin walls 111, 145, 023; kernel rounds; 054, 056, 060; lofts to a point;
   part copies; simplified base features).
+
+## Amendment (2026-11-24, 38): round rib1 - ribs measured in Solid Edge and Inventor
+
+Gusset gained a rib (ADR 0062: the document's `rib`, the kernel's sweep up to the next face with the
+pieces past the part dropped, tree type `rib`); the SolidWorks reader writes it (ADR 0043 amendment,
+round rib1). Neither reader here writes it yet:
+
+- **Solid Edge** (`JMRibAssocFunction`, amendment 36's slots: 2 the open profile, 5 the side, 6 the
+  direction, 7 the thickness relation, 8 = 14 up to the next face): the two parts with ribs stop
+  before them (018 at a draft whose cylinder face is not bounded by whole circles, 011 at
+  DeleteFaces and DeleteRegions), so a reading could not be checked against a stored body; left
+  unwired. The smart boss's ribs stay as they are (a body up to the next face, trimmed, joined).
+- **Inventor**: three parts stop at a rib first (Corliss's `rb_parallel`, `rb_thick4`,
+  `rb_normal_sym_draft`: `Rib1`, feature class `d968d1e0`, not read); no other part reports one first.
+  Their records were not decoded this round (the third also has a draft on the rib's sides, which
+  Gusset's rib does not take).
+
+Both corpora were rerun in full on this round's base and head (one part per process, the round's
+own binaries): Inventor 744 of 1639 and 28 of 47 as history before and after, every part's outcome
+class unchanged; Solid Edge 103 of 180 before and after, one row differing outside history (052
+timed out under load on the base and gave its usual reason on the head).
