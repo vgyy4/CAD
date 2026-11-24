@@ -616,7 +616,15 @@ fn contours(d: &[u8], ids: &HashSet<u32>) -> Vec<Contour> {
         }
         i = q + 40;
         let (Some(fid), false) = (fid, mixed) else { continue };
-        let listed = key(e.saturating_sub(4)) || key(e.saturating_sub(6));
+        // A chooser declared by its class word writes `ff ff ff ff`, four zero bytes, a `u32`,
+        // `03 00`, the word and the `u16` count right before its first contour: word and count
+        // read as a key (round sw22: the gear's Sketch25 chooser `ce 8b 02 00`, 166862).
+        let chooser = e.checked_sub(18).is_some_and(|h| {
+            d.get(h..h + 8) == Some(&[0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0][..])
+                && d.get(e - 6..e - 4) == Some(&[3, 0][..])
+                && d.get(e - 3).is_some_and(|b| b & 0x80 != 0)
+        });
+        let listed = !chooser && (key(e.saturating_sub(4)) || key(e.saturating_sub(6)));
         out.push(Contour { at: e, fid, listed, bbox, segs });
     }
     out
