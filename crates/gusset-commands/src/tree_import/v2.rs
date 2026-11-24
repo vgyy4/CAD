@@ -1141,7 +1141,7 @@ pub(super) fn mirror(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value]) -> 
     // bodies, and cuts of those bodies the list holds (1119's legs: `Mirror1` of a sweep and a
     // notch cut in it, `Mirror2` of the sweep, `Mirror1` and the notch), whose effect the
     // copies of the bodies carry.
-    if let Some(bodies) = new_body_copies(g, d, feats) {
+    if let Some(bodies) = new_body_copies(g, &d.features, feats) {
         let mut last = None;
         for b in bodies {
             let copy = MirrorF { features: Vec::new(), target: Some(b), merge: Some(false), ..d.clone() };
@@ -1168,17 +1168,24 @@ pub(super) fn mirror(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value]) -> 
 /// own as a sweep, or is an imported mirror of such features, or is a cut whose targets include
 /// one of those bodies (the copy carries its effect); `None` otherwise (the features are built
 /// again, reflected).
-fn new_body_copies(g: &Gen, d: &MirrorF, feats: &[Value]) -> Option<Vec<String>> {
+fn new_body_copies(g: &Gen, list: &[String], feats: &[Value]) -> Option<Vec<String>> {
     let find = |n: &str| feats.iter().find(|f| f.get("name").and_then(Value::as_str) == Some(n));
     let kind = |f: &Value| f.get("type").and_then(Value::as_str).unwrap_or("").to_string();
     let op = |f: &Value| f.get("operation").and_then(Value::as_str).unwrap_or("").to_string();
     let mut bodies = Vec::new();
     let mut cuts = Vec::new();
-    for name in &d.features {
+    for name in list {
         let f = find(name)?;
         match (kind(f).as_str(), op(f).as_str()) {
             ("sweep", "new") => bodies.push(name.clone()),
-            ("mirror", _) if g.features.contains_key(name) && f.get("features").is_some() => bodies.push(name.clone()),
+            // A mirror that copied bodies itself; a mirror whose copies joined a body is a
+            // mirror of features (its copies are built again, see `mirror_features`).
+            ("mirror", _)
+                if g.features.contains_key(name)
+                    && seeds_of(f).is_some_and(|l| new_body_copies(g, &l, feats).is_some()) =>
+            {
+                bodies.push(name.clone())
+            }
             ("extrude", "cut") => cuts.push(f),
             _ => return None,
         }
@@ -1194,6 +1201,12 @@ fn new_body_copies(g: &Gen, d: &MirrorF, feats: &[Value]) -> Option<Vec<String>>
         }
     };
     cuts.iter().all(|c| targets(c).iter().any(|t| bodies.contains(t))).then_some(bodies)
+}
+
+/// The features a mirror of features lists (`None` for a mirror of the whole body).
+fn seeds_of(f: &Value) -> Option<Vec<String>> {
+    let l: Vec<String> = f.get("features")?.as_array()?.iter().filter_map(Value::as_str).map(str::to_string).collect();
+    (!l.is_empty()).then_some(l)
 }
 
 /// The text name of the plane through `o` with normal `n`: a base plane when it is one, else
@@ -1266,28 +1279,66 @@ fn mirror_features(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value], o: V3
     // A tag of its own per mirror (two mirrors named alike must not share copies), joined
     // with a character no source name has in practice.
     let tag = g.fresh(&d.name, "Mirror");
-    let rename = |nm: &str| format!("{nm}\u{1}{tag}");
     let mut mirrored: HashSet<String> = HashSet::new();
     let mut last = None;
-    for fname in &d.features {
-        let idx = *g.index.get(fname).ok_or_else(|| format!("its feature '{}' was not imported", short(fname)))?;
+    // Each seed with the reflections that copy it, the first applied first. A listed mirror of
+    // features stands for what it made: its own seeds, and their copies across its plane, each
+    // reflected across this one (Quick Release Housing's Mirror2 of Mirror1, a mirror of a rib:
+    // four ribs).
+    // In the tree's order: a list may name a fillet before the boss it rounds (Link 6's Mirror3).
+    let mut order = d.features.clone();
+    order.sort_by_key(|f| g.index.get(f).copied().unwrap_or(usize::MAX));
+    let mut work: Vec<(String, Vec<(V3, V3, String)>)> =
+        order.iter().rev().map(|f| (f.clone(), vec![(o, n, tag.clone())])).collect();
+    let mut nested = 0usize;
+    let mut copied: HashSet<String> = HashSet::new();
+    while let Some((fname, chain)) = work.pop() {
+        let idx = *g.index.get(&fname).ok_or_else(|| format!("its feature '{}' was not imported", short(&fname)))?;
         let f = feats.get(idx).ok_or("its feature is missing")?;
         let kind = f.get("type").and_then(Value::as_str).unwrap_or("");
+        if kind == "mirror" {
+            let seeds = seeds_of(f).ok_or("a mirror of the whole body cannot be mirrored as a feature")?;
+            let plane = serde_json::from_value::<MirrorPlane>(f.get("plane").cloned().unwrap_or_default())
+                .map_err(|e| e.to_string())?;
+            let pn = unit(finite3(plane.normal, "the mirror plane")?).ok_or("the mirror plane has no normal")?;
+            let po = finite3(plane.origin, "the mirror plane")?;
+            nested += 1;
+            if chain.len() > 4 || nested > MAX_PICKS {
+                return Err("its mirrors of mirrors nest too deep".into());
+            }
+            let mut inner = vec![(po, pn, format!("{tag}\u{2}{nested}"))];
+            inner.extend(chain.iter().cloned());
+            work.extend(seeds.iter().rev().map(|x| (x.clone(), inner.clone())));
+            work.extend(seeds.into_iter().rev().map(|x| (x, chain.clone())));
+            continue;
+        }
+        // A seed listed again, and copied by this chain already, is copied once.
+        let key = chain.iter().fold(fname.clone(), |a, (_, _, t)| format!("{a}\u{1}{t}"));
+        if !copied.insert(key) {
+            continue;
+        }
+        let rename = |nm: &str| chain.iter().fold(nm.to_string(), |a, (_, _, t)| format!("{a}\u{1}{t}"));
+        let reflect = |v: &Value| -> Result<Value, String> {
+            let mut v = v.clone();
+            for (co, cn, t) in &chain {
+                v = reflect_feature(&v, *co, *cn, &|nm: &str| format!("{nm}\u{1}{t}"))?;
+            }
+            Ok(v)
+        };
         if matches!(kind, "extrude" | "revolve" | "rib") {
-            // The sketch is mirrored once per mirror feature.
+            // The sketch is mirrored once per copy.
             let sk = f.get("sketch").and_then(Value::as_str).ok_or("a solid without a sketch")?;
-            if mirrored.insert(sk.to_string()) {
+            if mirrored.insert(rename(sk)) {
                 let sidx = *g.index.get(sk).ok_or_else(|| format!("its sketch '{}' was not imported", short(sk)))?;
                 let src = feats.get(sidx).ok_or("its sketch is missing")?;
-                let rf = reflect_feature(src, o, n, &rename)?;
-                let sd = serde_json::from_value::<SketchF>(rf).map_err(|e| e.to_string())?;
+                let sd = serde_json::from_value::<SketchF>(reflect(src)?).map_err(|e| e.to_string())?;
                 sketch(g, &sd)?;
             }
         }
-        let mut rf = reflect_feature(f, o, n, &rename)?;
+        let mut rf = reflect(f)?;
         // A copy's target is the copy of the target when that is copied too.
         if let Some(tg) = f.get("target").and_then(Value::as_str)
-            && d.features.iter().any(|x| x == tg)
+            && g.features.contains_key(&rename(tg))
         {
             set(&mut rf, "target", json!(rename(tg)));
         }
