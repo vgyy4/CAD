@@ -1987,6 +1987,63 @@ pub(crate) fn local_path(m: V3, info: &EdgeInfo, eps: f64) -> Option<[V3; 2]> {
 mod tests {
     use super::*;
 
+    /// The tokens of an `exact_int_cur` subtype (narrow layout): a word, ints and doubles.
+    fn exact_tokens(rational: bool, degree: i32, knots: &[(f64, i32)], poles: &[[f64; 4]]) -> Vec<u8> {
+        let word = |w: &[u8]| [&[0x0d, w.len() as u8][..], w].concat();
+        let int = |v: i32| [&[0x04][..], &v.to_le_bytes()].concat();
+        let dbl = |v: f64| [&[0x06][..], &v.to_le_bytes()].concat();
+        let mut b = word(b"exact_int_cur");
+        b.extend(int(23100));
+        b.push(0x0a);
+        b.extend(word(if rational { b"nurbs" } else { b"nubs" }));
+        b.extend(int(degree));
+        b.push(0x0a);
+        b.extend(int(knots.len() as i32));
+        for &(t, m) in knots {
+            b.extend(dbl(t));
+            b.extend(int(m));
+        }
+        for p in poles {
+            for &v in p.iter().take(if rational { 4 } else { 3 }) {
+                b.extend(dbl(v));
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn exact_b_spline_curves_are_read_and_evaluated() {
+        // A quadratic Bezier: end knots of multiplicity `degree` as written.
+        let b = exact_tokens(
+            false,
+            2,
+            &[(0.0, 2), (1.0, 2)],
+            &[[0.0, 0.0, 0.0, 0.0], [1.0, 2.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0]],
+        );
+        let c = exact_curve(&b, 0, false).unwrap();
+        assert_eq!(c.knots, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        assert_eq!(c.range(), Some((0.0, 1.0)));
+        let m = c.at(0.5).unwrap();
+        assert!(dist(m, [1.0, 1.0, 0.0]) < 1e-12);
+        assert!(dist(c.at(1.0).unwrap(), [2.0, 0.0, 0.0]) < 1e-12);
+        // A rational quarter circle (poles as points, weights apart).
+        let w = core::f64::consts::FRAC_1_SQRT_2;
+        let b = exact_tokens(
+            true,
+            2,
+            &[(0.0, 2), (1.0, 2)],
+            &[[1.0, 0.0, 0.0, 1.0], [1.0, 1.0, 0.0, w], [0.0, 1.0, 0.0, 1.0]],
+        );
+        let c = exact_curve(&b, 0, false).unwrap();
+        let m = c.at(0.5).unwrap();
+        assert!((libm::hypot(m[0], m[1]) - 1.0).abs() < 1e-12);
+        // Another subtype, or knots that do not increase, are not read.
+        assert!(exact_curve(&[&[0x0d, 3][..], b"ref"].concat(), 0, false).is_none());
+        let bad =
+            exact_tokens(false, 2, &[(1.0, 2), (0.0, 2)], &[[0.0; 4], [1.0, 2.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0]]);
+        assert!(exact_curve(&bad, 0, false).is_none());
+    }
+
     #[test]
     fn the_supports_of_a_trimmed_torus_blend_are_the_curves_it_touches() {
         use super::{Curve2, supports};
