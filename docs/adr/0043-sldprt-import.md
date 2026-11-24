@@ -1009,3 +1009,21 @@ Round sw21 (L33 in `docs/formats/solidworks-feature-tree.md`):
 The rebuild check is unchanged. History 396 -> 401 of 1352, none lost (full run row for row against the round's
 base). Only the SolidWorks reader changed (`gusset-sldprt`): the tree import, document, evaluator and kernel are
 untouched, so the Inventor and Solid Edge corpora were not rerun.
+
+## Amendment (2026-11-24): bodies made apart, patterns of bodies, choosers by class word (round sw22)
+
+Round sw22 (L34 in `docs/formats/solidworks-feature-tree.md`):
+
+- **Body lists**: in the files that write them (one SolidWorks build: the Ahm3d0x RC car parts), every node lists
+  the body tags it makes and takes in and the ids of the bodies it leaves. Where every solid feature has them and
+  every tag resolves, a boss that takes in no body after the first makes a body of its own, a circular pattern of
+  one body repeats the body its reference names by id (copies kept apart), a boss that takes in several joins the
+  one with the longest history and a `combine` joins the others, and a body a cut removes whole is left out with
+  the features that made it. A new body's extrude takes the region its own contour names (by the middle of the
+  tooth-like chain its segments draw against a circle, else by the listed box).
+- **Contour choosers declared by their class word** are no longer taken for the sketch's own contour list (their
+  word and count read as a contour key).
+
+The rebuild check is unchanged. History 401 -> 402 of 1352, none lost (full run row for row against the round's base).
+Only the SolidWorks reader changed (`gusset-sldprt`): the tree import, document, evaluator and kernel are
+untouched, so the Inventor and Solid Edge corpora were not rerun.

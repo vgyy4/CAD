@@ -2033,3 +2033,71 @@ round sw20's final log).
 Gained (5): Link_5 and Link_1v2 (simple holes end flat), 10-32 Nylock Nut (a simple hole's counterbore),
 1.5Kw-Bracket and GT2 Belt Clamp (converted edges close the profile). None lost. One other row changed reason:
 SlotMount-Attachment (above).
+
+## L34. Round 28 (sw22: bodies made apart, patterns of bodies, choosers by class word)
+Measured from this round's own baseline (401 of 1352 on the round's base, row for row the same as round sw21's final log).
+
+* **Body lists** (the Ahm3d0x parts: ten files, all from one SolidWorks build). Every node writes, after its common
+  header block (`00 00 80 bf`, zeros with one `01`, `ff ff ff ff`, an 8-byte stamp, `02 00`, a 3-byte build word
+  (`ab 7e 05`), `00 01 00` and 12 zero bytes), the bodies it leaves and takes in: a `u32` 0 or 1 and that many
+  `u16`-counted lists of `u16` body tags, the bodies it makes; the same for the bodies it takes in; a zero `u16`;
+  a `u32` count of `u32` body ids. The gear 2: Boss-Extrude1 makes tag 0x3d (id 0x65) from nothing,
+  Boss-Extrude6 0x3e and Boss-Extrude9 0x4a (id 0x82) likewise: three bodies (a pin, a ring, a tooth);
+  CirPattern2 makes twelve tags (0x3f to 0x4b) from nothing; Boss-Extrude10 makes 0x59 from 0x3e, 0x4a and nine of
+  the twelve; Boss-Extrude13 merges the other three; Boss-Extrude12 makes a tooth of its own (id 0x94) that
+  CirPattern3 repeats sixteen times; Cut-Extrude3 takes in 0x3d and makes nothing: the pin is gone. The part
+  keeps 18 bodies (the gear, 9004.72 mm3, and 17 teeth of 48.35). A cut that changes a body takes it in and makes
+  a new tag (the wheel's cuts: 0x5e4 in, 0x5e6 out).
+* **Patterns of bodies.** The seed list's body list (`T 01 00` after the empty lists) holds a `moCompSolidBody_c`
+  (declared, or by its class word), a class word, `02` and six zero bytes, then the body's id twice (the gear 2's
+  CirPattern3: `3c 8c 2e 80 02 00 00 00 00 00 00 94 00 00 00 94 00 00 00`, Boss-Extrude12's id). A circular
+  pattern of one body whose id is read is written with its count, axis and angle; the body lists then say which
+  body that is.
+* **What the tree gets** (only where every solid feature has lists and every tag resolves): a boss that takes in
+  no body after the first is a new body; a pattern of bodies repeats the body its id names, copies kept apart
+  (`merge: false`, named `<pattern>[i]` in the order its tags are listed); a boss that takes in several bodies
+  joins the one with the longest history and a `combine` joins the others to it; a body a cut removes whole is
+  left out with the features that made it, and the cut too.
+* **A feature's own contours.** Next to the chooser of L18, a feature writes a contour of its own for each region
+  it extrudes: its references name the feature's id (not the sketch's), its box is the solid's (centre mid-depth,
+  diagonal over the depth: Boss-Extrude12's 10.77 mm for a 3.99 mm tooth 10 deep), its segment keys those of the
+  region. A new body's extrude whose sketch draws more than the region (Sketch21: the tooth closed against a
+  circle of r 14, whose disk would come along) takes the region the sketch lists with the same keys: by the middle
+  of the polygon its open chain and the chord between the chain's ends enclose, where the other keys are circles
+  holding both ends (any circle of the sketch holding them where the contour's circle key is gone: the gear 3
+  redraws its root circle three times, its stored boxes lie at the gear 2's r 11.9 while its tooth lies at 8.3 to
+  10.0); else by the listed box with its centre on the sketch.
+* **Choosers declared by class word.** A chooser declared by its class word writes `ff ff ff ff`, four zero bytes,
+  a `u32`, `03 00`, the word and its `u16` count right before its first contour (`ce 8b 02 00`): word and count read
+  as a listed contour's key (0x28bce = 166862), so the chooser's first contour counted as the sketch's and the
+  chooser fell through to the whole sketch (the gear 2's Boss-Extrude13: two of Sketch25's three teeth). The head
+  now tells it apart.
+* **Measured, not done.**
+  - The gears (the gear 2, the gear 3, the mian gear) still differ: their middle layer (Boss-Extrude10) has in the
+    part a bore of the pin's radius (r 4.5, 4.5 and 3.5) that its sketch does not draw (Sketch17: the root circle
+    twice, one of them converted, the teeth; no point at the bore's radius) and whose chooser does not name (a disk
+    of r 8.25 and the teeth, older than the sketch). The cut that removes the pin (lists: the pin in, nothing out) gives exactly the gear 2 when it also cuts the
+    gear the other way (9826.608 mm3, its last feature); the mian gear only with a cut through the whole part along
+    the axis (5200.888 mm3), and there the cut comes before Boss-Extrude10 in the stream: not taken. The gear 3 also lacks
+    one tooth (20.75 mm3) once the bore is made.
+  - wheel axV2 (two copies) now stops at Loft2, a loft from a cap with holes (the evaluator lofts no profile with
+    holes).
+  - base v2 mirrors bodies (Mirror1 makes four tags from nothing); body mirrors with lists are not read.
+  - zsCAD 4aq/4bq/5aq/5cq/5cd: four stored input bodies (`moBaseBody_c`) and two cuts; the stored bodies' own
+    volumes were not measured this round.
+
+**Coverage after the round** (rebuild check unchanged; the round's own baseline on its base):
+
+| corpus | baseline | round sw22 |
+|---|---|---|
+| slip-pad | 28 / 35 | 28 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 2 / 14 | 2 / 14 |
+| sw-more | 356 / 1253 | **357** / 1253 |
+| all | 401 / 1352 | **402** / 1352 |
+
+Gained (1): wheel (Ahm3d0x: Boss-Extrude6 a spoke body of its own, CirPattern2 fifteen copies of it kept apart,
+18 bodies). None lost. Other rows that changed reason: the gear 2, the gear 3 and the mian gear (from the pattern of
+bodies to the volume of the bore above: 10144.69 against 9826.61, 2347.42 against 2050.08, 5893.61 against
+5200.89 mm3), wheel axV2 twice (to Loft2, above), Example2 (the chooser fix: Kes-Ekstrüzyon8 now builds, 306606
+against 318270 mm3), link 1 (six features that do not build to five).
