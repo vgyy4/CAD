@@ -27,6 +27,8 @@ use std::collections::HashMap;
 
 /// Centimetres to millimetres.
 const CM: f64 = 10.0;
+/// Why a cut or join cannot be read: no feature before it made a solid.
+const NO_BODY: &str = "a cut or join before any body";
 /// Most features read from one part.
 const MAX_FEATURES: usize = 2000;
 /// Most curves of one sketch.
@@ -2711,7 +2713,7 @@ fn sweep(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     let mut j = json!({"type": "sweep", "name": name, "sketch": profile.name, "path": path.name,
                        "path_curves": ids, "operation": op});
     if op != "new" {
-        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        let fb = st.first_body.clone().ok_or(NO_BODY)?;
         put(&mut j, "target", json!(fb));
     }
     for (k, sketch) in [(sk, profile), (pk, path)] {
@@ -2800,7 +2802,7 @@ fn coil(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
     }
     let mut j = json!({"type": "sweep", "name": name, "sketch": sketch.name, "helix": helix, "operation": op});
     if op != "new" {
-        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        let fb = st.first_body.clone().ok_or(NO_BODY)?;
         put(&mut j, "target", json!(fb));
     }
     if !st.done.contains_key(&sk) {
@@ -2864,10 +2866,31 @@ fn emboss(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Str
     // An emboss rises away from the material its sketch lies on, an engrave cuts into it (slot
     // 3 does not change the side of one from the face). Slot 2 is the sketch's normal: it
     // points into the material from a work plane under the part (`em_engrave`) but out of the
-    // face a sketch on a face lies on (BICYCLE SPANNER, Storage-Rack A-01). The side is where
-    // the result lies wholly (an emboss's own height aside); where the result lies on both
-    // sides, the direction.
-    let into = match r.result().and_then(|b| b.reach_along(o.map(|c| c / CM), n)) {
+    // face a sketch on a face lies on (BICYCLE SPANNER, Storage-Rack A-01). The faces the
+    // feature made (`NMx_Emboss*FaceTag`) lie off the sketch plane on the side it cut or rose
+    // to (a glyph's floor or top; the EY4180 bay adapters' arrow cut into a floor with walls on
+    // both sides). Where the result keeps none, the side is where the result lies wholly (an
+    // emboss's own height aside); where it lies on both sides, the direction.
+    let res = r.result();
+    let own = res.and_then(|b| {
+        let fid = i64::from(r.dc.seq(f.rec)?);
+        let t: Vec<f64> = b
+            .emboss_faces(fid)
+            .into_iter()
+            .flat_map(|g| b.verts(g))
+            .map(|p| dot(sub3(p.map(|c| c * CM), o), n))
+            .collect();
+        let tol = 1e-4;
+        let (lo, hi) = t.iter().fold((0.0f64, 0.0f64), |(a, b), &v| (a.min(v), b.max(v)));
+        // Wholly to one side: an engrave's faces lie on the material's side, an emboss's off it.
+        let side = match (lo > -tol, hi < tol) {
+            (true, false) => 1.0,
+            (false, true) => -1.0,
+            _ => return None,
+        };
+        Some(if op == "join" { -side } else { side })
+    });
+    let into = own.unwrap_or_else(|| match res.and_then(|b| b.reach_along(o.map(|c| c / CM), n)) {
         Some((lo, hi)) => {
             let (lo, hi) = (lo * CM, hi * CM);
             let tol = 1e-4 + if op == "join" { depth } else { 0.0 };
@@ -2878,9 +2901,9 @@ fn emboss(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Str
             }
         }
         None => along.signum(),
-    };
+    });
     let d = depth * into * if op == "join" { -1.0 } else { 1.0 };
-    let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+    let fb = st.first_body.clone().ok_or(NO_BODY)?;
     let mut j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": r.profiles(&sketch, lst),
                    "operation": op, "target": fb, "distance": rnd(d), "symmetric": false});
     if !st.done.contains_key(&sk) {
@@ -3125,7 +3148,7 @@ fn changed_bodies(r: &Reader, st: &State, f: &Feature, many: bool) -> Result<Val
         }
     }
     match named.as_slice() {
-        [] => Ok(json!(st.first_body.clone().ok_or("a cut or join before any body")?)),
+        [] => Ok(json!(st.first_body.clone().ok_or(NO_BODY)?)),
         [one, ..] if !many || named.len() == 1 => Ok(json!(one)),
         _ => Ok(json!(named)),
     }
@@ -3394,7 +3417,7 @@ fn plate(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Stri
     let mut j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": profiles,
                        "operation": op, "distance": rnd(d), "symmetric": symmetric});
     if op != "new" {
-        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        let fb = st.first_body.clone().ok_or(NO_BODY)?;
         put(&mut j, "target", json!(fb));
     }
     if !st.done.contains_key(&k) {
@@ -3453,7 +3476,7 @@ fn loft(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
     }
     let mut j = json!({"type": "loft", "name": name, "sketches": names, "ruled": names.len() == 2, "operation": op});
     if op != "new" {
-        let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
+        let fb = st.first_body.clone().ok_or(NO_BODY)?;
         put(&mut j, "target", json!(fb));
     }
     st.out.extend(used);
@@ -4284,9 +4307,21 @@ pub fn feature_tree_with(
                 Ok(())
             }
         };
-        if let Err(why) = res {
-            st.out.truncate(before);
-            st.out.push(unsupported(&name, &typ.label(), Some(why)));
+        // A feature dragged above the part's first solid (its id is later than one placed after
+        // it) has nothing to cut or join: Inventor builds it as an error and the result holds
+        // nothing of it (the EY4180 bay adapters' Emboss1).
+        let seq = r.dc.seq(f.rec);
+        let moved_up = feats.iter().skip(k + 1).filter_map(|g| r.dc.seq(g.rec)).any(|q| seq.is_some_and(|s| q < s));
+        match res {
+            Err(why) if st.first_body.is_none() && moved_up && why == NO_BODY => {
+                st.out.truncate(before);
+                st.omitted.push(json!({"name": name, "why": format!("{} placed before the first solid", typ.label())}));
+            }
+            Err(why) => {
+                st.out.truncate(before);
+                st.out.push(unsupported(&name, &typ.label(), Some(why)));
+            }
+            Ok(()) => {}
         }
         let made: Vec<String> = st
             .out

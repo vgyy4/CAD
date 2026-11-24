@@ -530,13 +530,12 @@ impl Dc {
         order.into_iter().chain(rest).filter_map(|k| all.get(k).cloned()).collect()
     }
 
-    /// The order record's features, moved where a copy needs them: each entry's id is followed
-    /// by a list of two (`0x30000002`, count 2, `2`, `0x108`) pairs `u8, u32` (the second's
-    /// `u32` a place; a feature has two entries, its id and its id with the top bit set, at
-    /// places `2k` and `2k + 1`). A feature a mirror or pattern copies but made after it (the
-    /// LEGO bricks' Fillet1, EY4180 A-02's Extrusion11), whose place comes before the copy's,
-    /// moves to just before the copy. Places are not the browser order in every file (EY4180's
-    /// bay adapters place an emboss before the base extrude), so nothing else moves; unless
+    /// The order record's features in browser order: each entry's id is followed by a list of
+    /// two (`0x30000002`, count 2, `2`, `0x108`) pairs `u8, u32` (the second's `u32` a place; a
+    /// feature has two entries, its id and its id with the top bit set, at places `2k` and
+    /// `2k + 1`). Features go by place: one dragged up after it was made (the LEGO bricks'
+    /// Fillet1 before the pattern that copies it, the EY4180 bay adapters' nut traps after the
+    /// floor's vents and their fills, an emboss above the base extrude) is built there. Unless
     /// every feature's entry has this layout, the record's order is kept.
     fn browser_order(&self, r: &[u8], order: Vec<usize>, ids: &HashMap<u32, usize>, all: &[Feature]) -> Vec<usize> {
         const HEAD: [u8; 16] = [0x02, 0, 0, 0x30, 0x02, 0, 0, 0, 0x02, 0, 0, 0, 0x08, 0x01, 0, 0];
@@ -560,28 +559,25 @@ impl Dc {
         if order.iter().any(|f| !place.contains_key(f)) {
             return order;
         }
-        let of_rec: HashMap<usize, usize> = all.iter().enumerate().map(|(k, f)| (f.rec, k)).collect();
+        // Id order (the record's) says which of two features was made first.
+        let made: HashMap<usize, usize> = order.iter().enumerate().map(|(k, &f)| (f, k)).collect();
         let mut out = order;
-        let copies: Vec<usize> = out
-            .iter()
-            .copied()
-            .filter(|&k| {
-                all.get(k).is_some_and(|f| {
-                    matches!(f.typ, Some(FeatType::Mirror | FeatType::RectPattern | FeatType::CircPattern))
-                })
-            })
-            .collect();
-        for c in copies {
-            let Some(f) = all.get(c) else { continue };
-            for (_, x) in self.refs(f.rec) {
-                let Some(&m) = of_rec.get(&x) else { continue };
-                let (Some(pc), Some(pm)) = (out.iter().position(|&k| k == c), out.iter().position(|&k| k == m)) else {
-                    continue;
-                };
-                if pm > pc && place.get(&m) < place.get(&c) {
-                    out.remove(pm);
-                    out.insert(pc, m);
+        out.sort_by_key(|f| place.get(f).copied());
+        // A blend made after a shell but placed before it stays after it: Gusset's shell cannot
+        // offset a blend face whose offset vanishes inside the corner it rounds (the bay
+        // adapters' Chamfer1 of the floor's outer edge, 2 mm against a 4 mm wall), and there
+        // the shell before the blend gives the same solid.
+        let is = |f: usize, t: &[FeatType]| all.get(f).and_then(|x| x.typ).is_some_and(|y| t.contains(&y));
+        let mut k = 0;
+        while k < out.len() {
+            let Some(&b) = out.get(k) else { break };
+            let shell = out.iter().skip(k + 1).rposition(|&s| is(s, &[FeatType::Shell]) && made.get(&s) < made.get(&b));
+            match shell {
+                Some(at) if is(b, &[FeatType::Fillet, FeatType::Chamfer]) => {
+                    out.remove(k);
+                    out.insert(k + at + 1, b);
                 }
+                _ => k += 1,
             }
         }
         out

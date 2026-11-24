@@ -1136,3 +1136,50 @@ not committed). Every rule below is a candidate the whole-part rebuild check dec
   they keep the normal (the stored arrows are on the floor's outer face, note AY). Slot 11's
   `797737b1` record is the depth arrow as for ribs; it points away from the material in `em_engrave` and
   into it in BICYCLE SPANNER, so it does not give the side either.
+
+## BA. Browser order by place, emboss faces, long round arcs (round ipt17)
+- **Places are the browser order.** Note AW kept id order and moved only a feature a copy needs, because
+  the EY4180 bay adapters, read in place order, start with an emboss before the base extrude. That
+  emboss is the place order's own evidence: it was dragged above `Extrusion1` after it was made and
+  Inventor built nothing of it (the result has no face tagged with its id, and the stored body is
+  13.7 mm3 short of the id-order rebuild exactly by the bay adapters' other two differences). The nut
+  traps `Extrusion13`-`15` and their mirror sit after the floor's vents (`Extrusion18`, its pattern) and
+  the fill `Extrusion19` by place, though made before them; the result keeps the traps whole where the
+  fill would have closed them in id order (two corners of 3.18 mm3, the volume of the fill's hexagon over
+  the trap, its tapered top included). The importer now builds every feature at its place when every
+  entry has the layout of note AW. A cut or join placed before the first solid that was made after a
+  feature placed later is left out ("placed before the first solid"). One exception: a fillet or chamfer
+  made after a shell but placed before it stays after the shell. The bay adapters' `Chamfer1` (2 mm on the
+  floor's outer edge) sits before `Shell1` (4 mm walls); its offset inside the corner vanishes (a 2 mm
+  chamfer at a square corner keeps an inner chamfer only above 0.59 of the wall), which Gusset's shell
+  does not build, and the shell first gives the same solid there. Of the 1686 parts 110 change order;
+  none of their outcomes changes but the bay adapters'.
+- **Emboss faces.** An emboss's or engrave's faces carry `NMx_EmbossBottomFaceTag` (the glyph's floor or
+  top) and `NMx_EmbossRimFaceTag` (its walls), the fourth int the feature's id, in the result body, like a
+  sweep's `NMx_Sweep_Generated_Brep_tag`. Where they lie off the sketch plane is the side the feature cut
+  or rose to; note AZ's whole-body rule and the sketch normal are the fallbacks when the result keeps none
+  of them. The bay adapters' `Emboss2` (an arrow sketched on the floor's inner face, walls on both sides)
+  cuts 1 mm into the floor (its floor faces at y = 3 mm, the sketch at 4 mm); note AZ's "stored arrows on
+  the floor's outer face" was the trap fill of the item above.
+- **Round arcs of more than half a circle.** A fillet or chamfer face on a circle whose vertices are its
+  arc's two ends alone (no vertex between them) gave its edge's midpoint from the complement of the
+  largest gap between the vertices, which is the other arc when the face runs more than half way round
+  (Drag Lock's bottom round of its hub, about 262 degrees between the lever's tangent line and Fillet1).
+  As for half circles (note AV), the samples of the face's own arcs now say which side it runs. 13 parts'
+  trees change; Drag Lock rebuilds. HOOK's round of its 90 mm arc (217 degrees) is now found and the
+  kernel's fillet crashes on it (OCCT `ChFi3d_Builder::PerformIntersectionAtEnd`, a null face): the
+  corpus test, whose kernel runs in its own process, stops there; the app's kernel worker fails that
+  one operation.
+- **Measured, not changed.** BEARING's `Sweep1` profile list picks the race's region of a sketch that
+  also holds a ball's circle (the region the reader's `profiles` gives, as an extrude's); with only that
+  region, the tree's join of the swept race to the balls, whose spheres touch its groove, fails in the
+  kernel ("removed all material"), so the sweep stays whole-sketch. The CRS-METEO bearing clamps'
+  `Extrusion3` (a cut of the coil's top above the ring, 22.3 mm3) and the Wago clamp's `Extrusion15` (the
+  slot at the +x end, 36.4 mm3) come back from the kernel's cut unchanged: the Wago tool's end plane
+  touches the body's round end along a line and OCCT's boolean misses the overlap (a fuzzy value of
+  1e-4 mm finds it; the clamp's cut misses only on the shape as built in memory, not after a STEP round
+  trip). With the Wago cut made, the part is 0.0425 mm3 (2.004e-5) off its stored body, spread over its
+  ends. The ISO 7046 recesses are a join "to next" written blind 1.1 times the reach: the quadrants'
+  5 degree taper carries them out through the head's underside (1.9 mm3); the gun body is 19.4 mm3 short
+  after its holes (cut as revolves), measured before them by a failing comparison boolean; the sheet-metal
+  fixtures whose second face no sketch holds also have bends, corners and hems, which are not read.

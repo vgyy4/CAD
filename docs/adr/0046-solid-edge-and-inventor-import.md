@@ -1683,3 +1683,48 @@ were rerun in full against their own baselines (the base's test binaries, same w
 every row unchanged. Inventor: 772 of 1686 history, none gained or lost; four parts get further (EY4180's A-01 and
 A-03, FPV_Chasis and Heatpad Tray now copy their mirrors of mirrors and stop at a chamfer, a fillet or a pattern of
 mirror copies), and one part that timed out under load in the base run now gives its reason.
+
+## Amendment (2026-11-24, 41): Inventor round ipt17 - browser places, emboss faces, long round arcs
+
+- **Browser order** (format notes BA): features are built in the order of their places in the order
+  record (note AW), no longer in id order with only copied features moved. The EY4180 bay adapters show
+  it: their nut traps sit after the floor's vents and fill by place, and the stored body keeps the traps
+  whole; an emboss dragged above the base extrude built nothing in Inventor (no face of it in the result)
+  and is now left out ("placed before the first solid"). A fillet or chamfer made after a shell but
+  placed before it stays after the shell (Gusset's shell does not offset a blend face whose offset vanishes
+  in its corner). 110 parts change order; only the bay adapters' outcome changes.
+- **Emboss sides from their own faces**: the result tags an emboss's glyph floor or top
+  (`NMx_EmbossBottomFaceTag`) and walls (`NMx_EmbossRimFaceTag`); where they lie off the sketch plane is the
+  side (amendment 39's whole-body rule is the fallback). The bay adapters' arrow cuts into their floor.
+- **Round arcs of more than half a circle**: a blend face whose vertices are its arc's two ends takes the
+  side from its own arcs' samples (as half circles did), not from the largest gap between the vertices,
+  which is the other arc past 180 degrees. Drag Lock rebuilds; HOOK's fillet is now found and crashes the
+  kernel's fillet (OCCT, a null face in `ChFi3d_Builder::PerformIntersectionAtEnd`): the corpus test runs
+  the kernel in its own process and stops on it, the app's kernel worker fails the one operation.
+
+| corpus | parts | base | head |
+|---|---|---|---|
+| Inventor new (ipt-more etc.; full base and head runs, the arc change rerun on the 13 parts whose trees it changes) | 1639 | 756 | 761 (+5, none lost) |
+| Inventor old (Zenodo) | 47 | 28 | 28 |
+
+Gained: EY4180 5.25-Bay-Adapter A-01, A-01_MIR, A-02 and A-03 (A-01's tree, the others derived from it),
+Drag Lock. None lost (HOOK, a body before, now crashes the in-process test kernel: see above). The changes
+are in the Inventor reader only (`inventor_dc.rs`, `inventor_features.rs`, `acis.rs`); no code shared with
+SolidWorks, Solid Edge or Fusion changed, so those corpora were not rerun.
+
+**Measured, not kept.** A sweep that takes the regions its profile list names (a shared tree change:
+`profiles` on `sweep`, the extrude's region picks) gains nothing: BEARING's race, swept alone, then fails
+to join the balls that touch its groove ("removed all material"). A kernel retry of cuts that leave none of
+their tool's faces on the result (OCCT misses a tool whose end plane touches a round end along a line; a
+fuzzy value of 1e-4 mm finds it) makes the Wago clamp's slot but leaves the part 2.004e-5 off its stored
+volume. Neither is committed.
+
+**Left (measured).** 29 bodies stop at the volume check: the CRS-METEO bearing clamps (the cut of the
+coil's top comes back unchanged from the kernel in memory, though it cuts after a STEP round trip), the
+Wago clamp (above), the ISO 7046 recesses (a tapered join "to next" written blind runs out through the
+head's underside), the gun body (19.4 mm3 short after its holes), the ruled lofts of the Oblikovati
+fixtures (0.42 mm3 over: Gusset pairs the square's corners with the circle's points on the diagonals,
+the largest volume any such pairing gives; Inventor's pairing is not found), and the others of amendment 39. Self-named derives ("Solid1::" a file of the part's
+own name, 32 with the Design Accelerator gears) hold no features of their own. The sheet-metal parts whose
+second face no sketch holds also bend, hem and corner (not read). Delete face (8 first failures) stays
+unread: no tree type takes it, and four of the eight have further failures behind it.
