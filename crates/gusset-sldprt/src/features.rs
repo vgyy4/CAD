@@ -6754,9 +6754,14 @@ fn feature_pattern(
             (None, Some(total)) => total * 360.0 / TAU,
             (None, None) => 360.0,
         };
-        if count > 1 {
+        let axis = json!({"origin": json_v3(*origin), "direction": json_v3(*dir)});
+        if !seeds.skipped.is_empty() {
+            // Which instance each id is was not measured (Link 2's and Link 4's parts stop
+            // earlier, at a loft and a mirror).
+            return fail("instances left out");
+        } else if count > 1 {
             out.push(json!({"type": kind, "name": name, "features": names, "count": count,
-                "axis": {"origin": json_v3(*origin), "direction": json_v3(*dir)}, "angle": round_to(angle, 9)}));
+                "axis": axis, "angle": round_to(angle, 9)}));
         }
     } else {
         let dirs = [(int("D1"), real("D3"), lines.first()), (int("D2"), real("D4"), lines.get(1))];
@@ -7725,7 +7730,7 @@ mod pattern_tests {
     use super::*;
 
     fn seeds(ptrs: &[u32]) -> Option<patterns::Seeds> {
-        Some(patterns::Seeds { ptrs: ptrs.to_vec(), bodies: 0 })
+        Some(patterns::Seeds { ptrs: ptrs.to_vec(), bodies: 0, skipped: vec![] })
     }
 
     #[test]
@@ -7817,7 +7822,7 @@ mod pattern_tests {
             assert_eq!(out[0]["axis"]["origin"], json!([0.0, 2.8, 0.0]));
         }
         // A pattern of bodies is not read.
-        let body = Some(patterns::Seeds { ptrs: vec![], bodies: 1 });
+        let body = Some(patterns::Seeds { ptrs: vec![], bodies: 1, skipped: vec![] });
         let out = feature_pattern("P", true, body, &lines, (|_: &str| Some(3), |_: &str| None), names, &feats);
         assert_eq!(out[0]["why"], "a pattern of bodies");
     }
