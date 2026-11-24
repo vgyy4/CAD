@@ -1260,6 +1260,8 @@ struct Geometry {
     /// Per elliptical segment (its index in `segs`), the point indices of its axis ends:
     /// major +, minor +, major -, minor -.
     ellipse_axes: Vec<(usize, [usize; 4])>,
+    /// The segments that are converted model edges (their flags are not read).
+    converted: Vec<usize>,
 }
 
 /// Entity headers in `[a, b)`: `FF FF 1F 00 <1|3> <8 bytes> 00 00 80 BF`, non-overlapping.
@@ -1359,6 +1361,10 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
             if one > 1 || !is(m1, -1.0) {
                 continue;
             }
+            // A converted model edge: the object chain in its reference slot covers the flags.
+            if u16_at(d, h + 35)? != 0 {
+                g.converted.push(g.segs.len());
+            }
             let (s, e) = (usize::from(s), usize::from(e));
             // Bit 0x08 is construction; bit 0x01 is not part of the profile either
             // (confirmed by volume on baseJoint and Top_mainplate).
@@ -1423,6 +1429,95 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
         }
     }
     Some(g)
+}
+
+/// Converted model edges that close the profile (round sw21). A converted edge writes an object
+/// chain where other entities write their flags (`u16` at +37), so whether it is construction is
+/// not read; the chain's class words make most of them construction. Where the profile is open
+/// and its loose ends lie on such edges, those edges are profile lines: 1.5Kw-Bracket's Sketch3
+/// ends its arc slots on the bracket's converted outline, which closes them (cap's converted
+/// circle around its lugs, construction, closes nothing and stays so). Edges are taken in turns,
+/// each turn those that hold a loose end, while every first loose end lies on one.
+fn close_by_converted(g: &mut Geometry) -> bool {
+    let converted = g.converted.clone();
+    let on = |g: &Geometry, k: usize, p: Pt| -> bool {
+        let Some(q) = g.segs.get(k) else { return false };
+        let (Some(a), Some(b)) = (point(&g.pts, q.s), point(&g.pts, q.e)) else { return false };
+        let near = |u: Pt| libm::hypot(u.x - p.x, u.y - p.y) < 1e-9;
+        if near(a) || near(b) {
+            return true;
+        }
+        if q.kind != SegKind::Line {
+            return false;
+        }
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let len = libm::hypot(dx, dy);
+        let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (len * len);
+        len > 1e-9 && (dx * (p.y - a.y) - dy * (p.x - a.x)).abs() / len < 1e-9 && t > 0.0 && t < 1.0
+    };
+    let loose = |g: &Geometry| -> Vec<Pt> {
+        let ends: Vec<Pt> = g
+            .segs
+            .iter()
+            .filter(|s| !s.construction && s.kind != SegKind::Ellipse && s.s != s.e)
+            .flat_map(|s| [point(&g.pts, s.s), point(&g.pts, s.e)])
+            .flatten()
+            .collect();
+        let same = |p: &Pt, q: &Pt| libm::hypot(p.x - q.x, p.y - q.y) < 1e-9;
+        ends.iter()
+            .enumerate()
+            .filter(|&(n, p)| {
+                ends.iter().position(|q| same(p, q)) == Some(n) && ends.iter().filter(|q| same(p, q)).count() % 2 == 1
+            })
+            .map(|(_, p)| *p)
+            .collect()
+    };
+    // A profile that already closes a region (a loop of its segments, or a circle) is left as read:
+    // Link 6's Sketch5 closes a rectangle and leaves an arc whose ends rest on converted lines.
+    let key = |p: Pt| ((p.x * 1e9).round() as i64, (p.y * 1e9).round() as i64);
+    let mut root: HashMap<(i64, i64), (i64, i64)> = HashMap::new();
+    fn find_root(root: &mut HashMap<(i64, i64), (i64, i64)>, k: (i64, i64)) -> (i64, i64) {
+        let mut r = k;
+        for _ in 0..100_000 {
+            match root.get(&r) {
+                Some(&up) if up != r => r = up,
+                _ => break,
+            }
+        }
+        root.insert(k, r);
+        r
+    }
+    for q in g.segs.iter().filter(|s| !s.construction && s.kind != SegKind::Ellipse) {
+        let (Some(a), Some(b)) = (point(&g.pts, q.s), point(&g.pts, q.e)) else { continue };
+        let (ra, rb) = (find_root(&mut root, key(a)), find_root(&mut root, key(b)));
+        if ra == rb {
+            return false;
+        }
+        root.insert(ra, rb);
+    }
+    let first = loose(g);
+    let free = |g: &Geometry| -> Vec<usize> {
+        converted.iter().copied().filter(|&k| g.segs.get(k).is_some_and(|s| s.construction)).collect()
+    };
+    if first.is_empty() || !first.iter().all(|&p| free(g).iter().any(|&k| on(g, k, p))) {
+        return false;
+    }
+    let mut changed = false;
+    for _ in 0..converted.len() {
+        let ends = loose(g);
+        let take: Vec<usize> = free(g).into_iter().filter(|&k| ends.iter().any(|&p| on(g, k, p))).collect();
+        if take.is_empty() {
+            break;
+        }
+        for k in take {
+            if let Some(s) = g.segs.get_mut(k) {
+                s.construction = false;
+                s.centerline = false;
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 /// Whether a side of an extrude of sketch `g` (on `jp`) would lie on a side of an earlier
@@ -4283,6 +4378,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut planes: Vec<Value> = Vec::new();
     // name -> (index into `sketches`, written plane)
     let mut sketch_by_name: HashMap<String, (usize, JsonPlane)> = HashMap::new();
+    // Sketches whose converted edges close their profile: the feature index, the sketch index, and
+    // the closed sketch (taken by the extrude or revolve that uses it).
+    let mut closable: HashMap<String, (usize, usize, Value, Geometry)> = HashMap::new();
     // Reference plane id -> a point (mm) and the normal of a sketch drawn on it (round sw17:
     // a mirror on a plane feature names the plane, whose frame its own node does not keep).
     let mut plane_frames: HashMap<u32, (V3, V3)> = HashMap::new();
@@ -4527,6 +4625,13 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 continue;
             }
             planes.push(sk.get("plane").cloned().unwrap_or(Value::Null));
+            // The sketch with converted edges that close its profile, for an extrude or revolve
+            // (a rib's or sweep's open sketch keeps them as read).
+            let mut alt = geo.clone();
+            if close_by_converted(&mut alt) {
+                let js = sketch_json(&n.name, &alt, plane.as_ref(), &jp);
+                closable.insert(n.name.clone(), (feats.len(), sketches.len(), js, alt));
+            }
             feats.push(sk);
             sketches.push(geo);
             sketch_by_name.insert(n.name.clone(), (sketches.len() - 1, jp));
@@ -4595,6 +4700,14 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 sketch_used.insert(sk.clone());
             }
             let last_sketch = &picked;
+            if let Some((fi, si, js, g)) = picked.as_ref().and_then(|sk| closable.remove(sk)) {
+                if let Some(slot) = feats.get_mut(fi) {
+                    *slot = js;
+                }
+                if let Some(slot) = sketches.get_mut(si) {
+                    *slot = g;
+                }
+            }
             let dec = endspec_decl(rf, a, b, b"moEndSpec_c")?;
             let mut cands: Vec<EndSpec> =
                 dec.into_iter().chain(endspec_candidates(rf, a, b)?.into_iter().filter(in_es)).collect();
@@ -5039,6 +5152,14 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 sketch_used.insert(sk.clone());
             }
             let last_sketch = &picked;
+            if let Some((fi, si, js, g)) = picked.as_ref().and_then(|sk| closable.remove(sk)) {
+                if let Some(slot) = feats.get_mut(fi) {
+                    *slot = js;
+                }
+                if let Some(slot) = sketches.get_mut(si) {
+                    *slot = g;
+                }
+            }
             let ps = params(rf, a, b, nt)?;
             let ang = ps.iter().find(|v| v.abs() <= TAU + 1e-9);
             let op = op_for("moRevCut_c", solid);
@@ -6959,6 +7080,7 @@ mod end_face_tests {
             ],
             segs: vec![seg(SegKind::Arc, 1, 2, 0)],
             ellipse_axes: Vec::new(),
+            converted: Vec::new(),
         };
         let p = precise_points(&g);
         assert!([0, 1, 2].iter().all(|i| p.contains(i)), "{p:?}");
@@ -6966,8 +7088,53 @@ mod end_face_tests {
             pts: vec![pt(0.0, 0.0), pt(0.01, 0.0), pt(0.01, 0.01)],
             segs: vec![seg(SegKind::Line, 0, 1, 0), seg(SegKind::Line, 1, 2, 0)],
             ellipse_axes: Vec::new(),
+            converted: Vec::new(),
         };
         assert!(precise_points(&square).is_empty());
+    }
+
+    #[test]
+    fn converted_edges_that_close_the_profile_are_profile_lines() {
+        let line = |s: usize, e: usize, construction: bool| Seg {
+            kind: SegKind::Line,
+            id: 0,
+            a: 0,
+            s,
+            e,
+            c: 0,
+            dir: 0,
+            construction,
+            centerline: construction,
+            external: construction,
+        };
+        // A U of three lines whose ends rest on a converted line x = 0 (from y = -1 to 3),
+        // and a converted square elsewhere that closes nothing.
+        let mut g = Geometry {
+            pts: vec![
+                pt(0.0, 0.0),
+                pt(0.01, 0.0),
+                pt(0.01, 0.01),
+                pt(0.0, 0.01),
+                pt(0.0, -0.01),
+                pt(0.0, 0.03),
+                pt(0.05, 0.05),
+                pt(0.06, 0.05),
+            ],
+            segs: vec![line(0, 1, false), line(1, 2, false), line(2, 3, false), line(4, 5, true), line(6, 7, true)],
+            ellipse_axes: Vec::new(),
+            converted: vec![3, 4],
+        };
+        assert!(close_by_converted(&mut g));
+        let flags: Vec<bool> = g.segs.iter().map(|s| s.construction).collect();
+        assert_eq!(flags, [false, false, false, false, true]);
+        // A closed profile keeps its converted edges as they were read.
+        let mut closed = g.clone();
+        closed.segs.truncate(3);
+        closed.segs.push(line(3, 0, false));
+        closed.segs.push(line(4, 5, true));
+        closed.converted = vec![4];
+        assert!(!close_by_converted(&mut closed));
+        assert!(closed.segs.get(4).is_some_and(|s| s.construction));
     }
 
     /// A 20 x 10 mm rectangle (sketch keys 2..5) extruded 5 mm along +z.
@@ -6988,6 +7155,7 @@ mod end_face_tests {
             pts: vec![pt(0.0, 0.0), pt(0.02, 0.0), pt(0.02, 0.01), pt(0.0, 0.01)],
             segs: vec![line(2, 0, 1), line(3, 1, 2), line(4, 2, 3), line(5, 3, 0)],
             ellipse_axes: Vec::new(),
+            converted: Vec::new(),
         };
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
         let f = Swept { sketch: 0, plane, distance: 5.0, start: 0.0, symmetric: false, through: false, cut: false };
@@ -7015,6 +7183,7 @@ mod end_face_tests {
             pts: vec![pt(x0, 0.0), pt(0.02, 0.0), pt(0.02, 0.01), pt(x0, 0.01)],
             segs: vec![line(2, 0, 1), line(3, 1, 2), line(4, 2, 3), line(5, 3, 0)],
             ellipse_axes: Vec::new(),
+            converted: Vec::new(),
         };
         sketches.push(rect(-0.005));
         sketches.push(rect(0.0));
@@ -7077,7 +7246,12 @@ mod end_face_tests {
             centerline: false,
             external: false,
         };
-        let g = Geometry { pts: vec![pt(0.0, 0.0), pt(0.01, 0.0)], segs: vec![circle], ellipse_axes: Vec::new() };
+        let g = Geometry {
+            pts: vec![pt(0.0, 0.0), pt(0.01, 0.0)],
+            segs: vec![circle],
+            ellipse_axes: Vec::new(),
+            converted: Vec::new(),
+        };
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
         let swept = HashMap::from([(
             40,
@@ -7156,6 +7330,7 @@ mod end_face_tests {
                 seg(SegKind::Arc, 6, 3, 5, false),
             ],
             ellipse_axes: Vec::new(),
+            converted: Vec::new(),
         };
         assert_eq!(axis_closure(&g, 0), vec![(0, 4), (4, 6)]);
         // A closed profile touching the axis has no loose end there.
@@ -7222,6 +7397,7 @@ mod end_face_tests {
             pts: vec![pt(0.011, 0.0), pt(0.021, 0.0), pt(0.021, 0.006), pt(0.011, 0.006)],
             segs: vec![seg(1, 0, 1), seg(2, 1, 2), seg(3, 2, 3), seg(4, 3, 0)],
             ellipse_axes: Vec::new(),
+            converted: Vec::new(),
         }];
         let on = Swept {
             sketch: 0,
@@ -7272,6 +7448,7 @@ mod end_face_tests {
             pts: vec![pt(0.005, 0.0025), pt(0.006, 0.0025)],
             segs: vec![seg(SegKind::Arc, 7, 1, 1, 0)],
             ellipse_axes: Vec::new(),
+            converted: Vec::new(),
         });
         let plane = JsonPlane { origin: [20.0, 0.0, 0.0], x: [0.0, 1.0, 0.0], y: [0.0, 0.0, 1.0] };
         swept.insert(
@@ -7283,6 +7460,7 @@ mod end_face_tests {
             pts: vec![pt(0.005, 0.0), pt(0.005, 0.01)],
             segs: vec![seg(SegKind::Line, 4, 0, 1, 0)],
             ellipse_axes: Vec::new(),
+            converted: Vec::new(),
         });
         let on = Swept {
             sketch: 2,
@@ -7343,6 +7521,7 @@ mod end_face_tests {
             pts: vec![pt(-0.01, 0.003), pt(0.03, 0.003)],
             segs: vec![line],
             ellipse_axes: Vec::new(),
+            converted: Vec::new(),
         });
         let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 0.0, 1.0] };
         swept.insert(
