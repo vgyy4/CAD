@@ -640,13 +640,13 @@ What the unexported kinds are (parts of the second corpus that stopped at one, r
 | none (`?`) | Design Accelerator sub-features, iFeature parts | 28 | no |
 | `55585fc6` | sheet-metal face (plate) | 30 | unfolded plates (AM) |
 | `b41914da` | coil | 14 | yes (AI); the parts stop at other features |
-| `285e398c` | emboss / engrave | 10 | from the face (AJ) |
+| `285e398c` | emboss / engrave | 10 | from the face (AJ; side AZ) |
 | `2f54efe0` | loft | 10 | no (see AN) |
 | `8371a8ba` | split | 9 | trim and split faces (AL) |
 | `d3166e68` | delete face | 7 | no |
 | `c0236733` | combine | 6 | yes (AK) |
 | `7ba16b06` | iFeature (a Design Accelerator spur gear's teeth, parameters `iFeature1:1:...`) | 4 | no |
-| `d968d1e0` | rib (`rb_*` fixtures) | 3 | no |
+| `d968d1e0` | rib (`rb_*` fixtures) | 3 | parallel to the sketch, to the next face (AZ) |
 | `4c37ffe8` | sheet-metal fold (angle, bend radius) | with the plates | no |
 | `4cf758f2`, `6880587f`, `9310f2aa` | sheet-metal flange, corner, flat pattern | with the plates | no |
 
@@ -668,7 +668,7 @@ difference not found yet (the coil adds 47.6 mm3 where 25.3 are missing).
 
 ## AJ. Embosses `285e398c`
 Slot 0 the kind (3 emboss from the face, 2 engrave from the face; 1, from a plane, not read), slot 1 the
-profile loops, slot 2 a direction record whose last three doubles point into the material, slot 5 the
+profile loops, slot 2 a direction record (the sketch's normal; not the side, note AZ), slot 5 the
 depth (cm), slot 6 the taper, slot 9 the face of a wrapped emboss (refused). The emboss's faces carry no
 tag with its id in the result body, so the reach is not measured: an emboss rises against the direction,
 an engrave cuts along it (`em_emboss`, `em_engrave`, `em_flip`: slot 3 set in `em_flip` does not change
@@ -1104,3 +1104,35 @@ not committed). Every rule below is a candidate the whole-part rebuild check dec
 - **Engraves into the air (not changed).** The EY4180 bay adapters' engraves, turned round, cut 7.3
   mm3 each but in the wrong place: the stored body has its arrows on the opposite face (cells 19 mm
   wide: 3.2 mm3 left there, 3.3 mm3 cut too much on our side), so the direction alone is not the cause.
+
+## AZ. Ribs `d968d1e0`, the side of embosses (round ipt16)
+- **Ribs.** 18 slots (the three `rb_*` fixtures, the only parts with the class). Slots 0 and 1 are
+  `22947391` lists of one loop (`a477243b`, its `cc0f7521` body a tag of the history blob); the rib's
+  sketch is the `90874d11` record named by the `d61732c1` record that also points at both lists and the
+  feature (the loops' usual `f9884c43` profile record is not there). Slot 3 is the thickness parameter
+  (`rb_parallel` 2 mm, `rb_thick4` 4 mm); slot 6 a second length (1 mm, 2 mm in `rb_normal_sym_draft`)
+  that is inactive in the parallel ribs (header byte 13 bit 3, as the `90874d28` flags), active in the
+  rib normal to its sketch (there slot 3 matches its 10 mm height and slot 6 its 2 mm width at the top); slot 11 the
+  taper of the sides (2 degrees in `rb_normal_sym_draft`), 12 and 5 flags set only in that rib, slots
+  13-15 three more parameters (0, 1, 1 mm). Slot 7 is the sketch's direction record, slot 8 the body
+  (`d5daaa83`), slot 17 a placement. Slot 9 (`d83ef271`) lists two `797737b1` manipulator records:
+  the first holds two points (cm, at +22 and +46), the thickness arrow (from the sketch plane to 2 mm
+  above it in the parallel ribs; from -1 to +1 mm across the line in the symmetric one), then a 2D frame
+  at the line's middle (its x along the line, its y square to it: on the rib's far side in
+  `rb_parallel`, not a side to rely on).
+- **Read** (parallel ribs, slot 6 inactive, no taper): the tree's `rib` (ADR 0062) with the sketch's
+  non-construction lines, the thickness, `toward` the opposite of the outward normal of the result's
+  face made by the rib (`INV_NMX_GEN_TAG` with its id) through the first line, and `side` along the
+  arrow when it runs from the sketch plane a thickness off it (centred when it runs half a thickness
+  each way). Both parallel fixtures rebuild (the rib fills the corner between the two blocks: a
+  triangle 2 or 4 mm high). Normal ribs and drafted sides are refused (Gusset's rib takes no draft).
+- **Emboss sides.** Slot 2 of an emboss is its sketch's direction record, the sketch normal: it points
+  into the part in `em_*` (sketches on the XY plane under the block) but out of it where the sketch lies
+  on a top face (BICYCLE SPANNER's and Storage-Rack A-01's lettering, LOCK GUIDE), whose engraves cut
+  into the air. The side is now read from the result: where all of the result (its points, and its
+  circles and ellipses as far as they reach) lies on one side of the sketch plane, an engrave cuts and an
+  emboss rises from the other (an emboss's own height allowed); where it lies on both sides, the normal
+  is kept. The EY4180 bay adapters' sketches lie on the floor's inner face with walls on both sides, so
+  they keep the normal (the stored arrows are on the floor's outer face, note AY). Slot 11's
+  `797737b1` record is the depth arrow as for ribs; it points away from the material in `em_engrave` and
+  into it in BICYCLE SPANNER, so it does not give the side either.

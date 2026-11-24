@@ -1638,3 +1638,39 @@ Both corpora were rerun in full on this round's base and head (one part per proc
 own binaries): Inventor 744 of 1639 and 28 of 47 as history before and after, every part's outcome
 class unchanged; Solid Edge 103 of 180 before and after, one row differing outside history (052
 timed out under load on the base and gave its usual reason on the head).
+
+## Amendment (2026-11-24, 39): Inventor round ipt16 - ribs, the side of engraves
+
+- **Ribs** (`d968d1e0`, format notes AZ): a rib parallel to its sketch, up to the next face, is written
+  as the tree's `rib` (ADR 0062): the sketch named by the `d61732c1` record beside the profile list, its
+  non-construction lines, slot 3 the thickness, `toward` against the outward normal of the result face
+  the rib made through its first line, `side` from the thickness arrow slot 9 keeps. A rib normal to its
+  sketch or of a finite extent (slot 6 active) and drafted rib sides (slot 11) are refused with that
+  reason. `rb_parallel` and `rb_thick4` rebuild; `rb_normal_sym_draft` stays out (normal, drafted 2
+  degrees). No other part of the corpus has the class.
+- **Engrave and emboss sides** (notes AJ, AZ): slot 2 of an emboss is its sketch's normal, not a
+  direction into the material; on a top face it points out, and those engraves cut into the air. The side
+  is now where the stored result lies wholly along the normal (its points and the reach of its circles
+  and ellipses; an emboss's own height allowed); where the result lies on both sides of the sketch plane
+  the normal is kept as before. Storage-Rack A-01, BICYCLE SPANNER and LOCK GUIDE rebuild; Main Bearing
+  Cover's lettering now cuts the part and it comes to 0.07 mm3 (1.1e-4) of its stored body (amendment
+  37's "Hole1 leaves 70 mm3 too little" was this engrave); HOOK gets one feature further; the EY4180 bay
+  adapters (sketch on the floor's inner face, walls on both sides) keep the normal and stay 13.7 mm3 off.
+
+| corpus | parts | base | head |
+|---|---|---|---|
+| Inventor new (ipt-more etc.; full base run, head rerun on the 23 parts with ribs or embosses, the only features the change reaches) | 1639 | 751 | 756 (+5, none lost) |
+| Inventor old (Zenodo) | 47 | 28 | 28 |
+
+The change is in the Inventor reader only (`inventor_features.rs`, two Inventor helpers in `acis.rs`); no
+code shared with SolidWorks, Solid Edge or Fusion changed, so those corpora were not rerun.
+
+**Left (measured).** 32 bodies stop at the volume check (35 on the base; Main
+Bearing Cover's 0.07 mm3): the EY4180 bay adapters (above), the three `rev1 corners` mirrors of
+tegu-enclosure (3.28e6 against 8.26e6 mm3: the base part in the folder is not the one they were derived
+from), BEARING (164 mm3 too much after Sweep1, which takes every region of its sketch, a ball's circle among them; not measured further),
+terminal_mount_front (Extrusion4's cut leaves 68 mm3 and takes 13 mm3 too much at the mount's end), the
+gun body (19 mm3 short after Hole2), EjectionSystem (Fillet1 and the cuts before it, 13 mm3), as well as
+the near misses of amendment 37. Features not exported (delete face 8 parts first, sheet-metal bends,
+Design Accelerator gears), sheet-metal plates whose loop no sketch holds (8), derived parts with a missing
+base and imported base bodies are unchanged.
