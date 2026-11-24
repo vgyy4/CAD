@@ -938,3 +938,19 @@ such part without its unsupported features to see what the class must make up. I
 The rebuild check is unchanged. History 384 -> 389 of 1352, none lost (full run of the round's threads, deletions and stock bodies: 388; the equation-driven blends then rerun on the three parts they reach). The tree import, the sketch solver, the
 document, the evaluator and the kernel are unchanged; the importer change is in the SolidWorks-only stock handling,
 so no Inventor, Solid Edge or Fusion import can reach it.
+
+## Amendment (2026-11-24): blend edges on boss sides a later boss swallowed (round sw19)
+
+Round sw19 (L30 in `docs/formats/solidworks-feature-tree.md`) measured its own baseline (389 of 1352 on the base
+with round ipt14's evaluator change, row for row round sw18's) and took:
+
+- **Blend edges on swallowed boss sides**: an edge of a blend record whose boss side a later boss with a parallel
+  sketch holds just off the edge's computed midpoint (inside its profile, between its caps) is a superseded
+  selection: written by its faces only and optional, so the import leaves it out where the model has no such edge
+  (key_d20 and key_d25: Chamfer1's edges on Extrude1's rounded ends, covered by Extrude2's rectangle).
+
+The rest of the refusals were measured by cause (face diffs against the part's body); most single-part volume
+mismatches left are the kernel's blends or two-section lofts with a connector twist (L30). The rebuild check is
+unchanged. History 389 -> 391 of 1352, none lost (full run row for row: only the two keys changed). The change is in the SolidWorks reader alone
+(`gusset-sldprt`); the tree import, sketch solver, document, evaluator and kernel are unchanged, so no Inventor,
+Solid Edge or Fusion import can reach it.

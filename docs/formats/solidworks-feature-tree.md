@@ -1834,3 +1834,47 @@ Internal Gear 66 Teeths (parts inserted first), ballscrew_face_plate_gantry (equ
 Refusals after the round: STEP-style 550, unsupported 129, volume mismatches 70 (three threads now rebuild short; the cup's does not build),
 stock-only and the like 55, blends that do not build 40, other features that do not build 39, unresolved references
 34, blend edges not read 27.
+
+## L30. Round 24 (sw19: blend edges on boss sides a later boss swallowed; refusals measured)
+Measured from this round's own baseline (389 of 1352 on the base with round ipt14's evaluator change, row for row
+round sw18's final log).
+
+* **Blend edges on swallowed boss sides.** A blend keeps the edges it was first made on. key_d20's Chamfer1 (and
+  key_d25's) names eight edges: the four long edges of the key and the four where Extrude1's rounded ends meet its
+  caps. Extrude2's rectangle, drawn over the rounded slot, has since covered those ends; the midpoints the reader
+  computes for them (the arcs' midpoints on the caps) land on the rectangle's end faces, which then got chamfered
+  as well (476.79 against 477.5 mm3). The reader now tests such an edge's boss side just off its midpoint (at 0.45
+  and 0.55 along the curve, 0.01 mm in from the cap and 0.01 mm out of the wall): where a later boss with a
+  parallel sketch holds both points inside its profile (even-odd over its drawn curves) and strictly between its
+  caps, the side is buried there and the edge is a superseded selection, written by its faces only and optional.
+  The arcs touch the rectangle at the very midpoints, so the midpoint itself does not tell.
+* **Measured, not done** (each a part or a pair; causes from face diffs against the part's body):
+  - Volume mismatches that are the kernel's blends: the GT3 pulleys' 0.2 mm chamfers where the set-screw holes
+    meet the hub (SolidWorks' faces 2.21 mm2, OCCT's 2.69), BK12_block and BK12_block_gantry's Fillet2 (R5 on an
+    edge 1 mm long, which SolidWorks blends into the next faces), the Spacer triangles' Fillet4, coupler_insert's
+    corner tori, y_tram, the Lego torso's sphere corners against OCCT's B-spline ones.
+  - output_shaft_stage_4 and Part3: two-section lofts between circles come out 3e-5 and 6e-5 off; the sections'
+    connector points twist by 2.7 degrees where SolidWorks made an exact cone (ruled or not changes nothing).
+  - Split-body parts (`moSplitBody_c` first, 16): read as a part inserted first, 14 keep no `StockBodies`
+    stream; the Key Fob covers keep one and stop at later features.
+  - coupler_insert's pins (`moICE_c`, offset from surface, end-spec byte 12 set) run 1 mm past the face on both
+    sides: offset +1 and the sketch plane 1 mm up give the part's box, but the fillets' corners stay 2e-4 off.
+  - Text cuts (OeMga bottom/top, Servo Calibration Tool, the pencil) have empty sketches; the toolbox socket screws
+    keep only the socket features (the head and shank are not in the configuration's stream); NEMA23_mount's
+    Fillet2/3 are face-set blends (three face groups, no radius: full rounds); hinge's and HGW20CC's face sketches
+    write their frame only as `01 00 00 00 01 <R> <t> 1.0` at the end of the span (taking it rebuilds hinge's
+    Cut-Extrude1 but Fillet1 then fails); GPIO_cover ends up to a vertex of another part in an assembly context;
+    robotCasterWheel's dome (883.5 mm3, a hemisphere of 7.5) sits on a drafted cap whose radius the reader gives
+    as 7.525.
+
+**Coverage after the round** (rebuild check unchanged; the round's own baseline on its base):
+
+| corpus | baseline | round sw19 |
+|---|---|---|
+| slip-pad | 25 / 35 | 25 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 2 / 14 | 2 / 14 |
+| sw-more | 347 / 1253 | **349** / 1253 |
+| all | 389 / 1352 | **391** / 1352 |
+
+Gained (2): key_d20 and key_d25 (blend edges on swallowed boss sides). None lost; no other row changed.
