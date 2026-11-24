@@ -6643,9 +6643,15 @@ fn seed_node(index: &HashMap<u32, usize>, p: u32, at: usize, is_feature: impl Fn
     }
     let lo = index.iter().filter(|&(&q, &k)| q < p && k < at).map(|(_, &k)| k).max()?;
     let hi = index.iter().filter(|&(&q, &k)| q > p && k > lo).map(|(_, &k)| k).min().unwrap_or(at).min(at);
-    let mut found = (lo + 1..hi).filter(|&k| is_feature(k));
-    let one = found.next()?;
-    found.next().is_none().then_some(one)
+    let only = |hi: usize| {
+        let mut found = (lo + 1..hi).filter(|&k| is_feature(k));
+        let one = found.next()?;
+        found.next().is_none().then_some(one)
+    };
+    // A node right after `lo` can carry an index far out of order (Quick Release Housing's
+    // Sketch5, read as 7670 between 563 and 775): where nothing lies before it, the one feature
+    // up to `at` (round rib1: the rib its Mirror1 names).
+    only(hi).or_else(|| ((lo + 1..hi).all(|k| !is_feature(k)) && hi < at).then(|| only(at)).flatten())
 }
 
 /// The plane of the first frame block in `[a, b)`: `01 <R 3x3> <t> 1.0`, the plane through `t`
