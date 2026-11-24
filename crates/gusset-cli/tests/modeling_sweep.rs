@@ -737,3 +737,54 @@ sweep T (profile: S, path: helix(axis: Z, pitch: p, height: 5 * p), orientation:
     let r = ev.evaluate(&on_axis, None, &());
     assert!(!r.errors().is_empty());
 }
+
+/// A ring with a thread tooth coiled up its bore and out past its top, the coil's top then cut
+/// off by a disc of the ring's own radius (the CRS-METEO bearing clamp of ADR 0046 amendment
+/// 43). OCCT's cut missed the coil's B-spline faces in memory and came back unchanged; the
+/// kernel retries such a cut with a fuzzy value, and the coil now ends at the ring's top.
+#[test]
+fn a_cut_across_a_coils_top_takes_it_off() {
+    let base = "gusset 1
+units mm
+
+sketch Ring (plane: XZ, next_id: 4) {
+  p1 = point(0, 0)
+  c2 = circle(p1, 6.1)
+  c3 = circle(p1, 4)
+}
+
+extrude Body (profile: Ring.regions(c2), distance: -3 mm, op: new)
+
+sketch Tooth (plane: YZ, next_id: 10) {
+  p1 = point(0, 4)
+  p2 = point(0.6, 2.9)
+  p3 = point(0.8, 2.9)
+  p4 = point(1.4, 4)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+sweep Coil (profile: Tooth, path: helix(axis: Y, pitch: 1.8 mm, height: 4.32 mm), orientation: frenet, op: add, body: Body)
+";
+    let trim = "plane Top (base: XZ, offset: -3 mm)
+
+sketch Disc (plane: Top, next_id: 3) {
+  p1 = point(0, 0)
+  c2 = circle(p1, 6.1)
+}
+
+extrude Trim (profile: Disc.regions(c2), distance: -10 mm, op: cut, body: Body)";
+    let (ev, whole) = eval(base, "");
+    ok(&whole);
+    let (ev2, cut) = eval(base, trim);
+    ok(&cut);
+    let before = volume(&ev, &whole, "Body");
+    let after = volume(&ev2, &cut, "Body");
+    // The coil reaches 5.72 mm up; above the ring's 3 mm it holds 22.26 mm3.
+    assert!(before - after > 20.0, "the cut took {} mm3", before - after);
+    assert!(rel(after, 225.245, 1e-5), "{after}");
+    let bb = ev2.kernel().bbox(&cut.body("Body").unwrap().shape).unwrap();
+    assert!(rel(bb.max[1] - bb.min[1], 3.0, 1e-6), "{bb:?}");
+}
