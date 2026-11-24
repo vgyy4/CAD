@@ -1027,3 +1027,22 @@ Round sw22 (L34 in `docs/formats/solidworks-feature-tree.md`):
 The rebuild check is unchanged. History 401 -> 402 of 1352, none lost (full run row for row against the round's base).
 Only the SolidWorks reader changed (`gusset-sldprt`): the tree import, document, evaluator and kernel are
 untouched, so the Inventor and Solid Edge corpora were not rerun.
+
+## Amendment (2026-11-24): blend corners cut as they are (round fil1)
+
+Round fil1 changed only the OCCT kernel's blend fallbacks (ADR 0004 amendment 2026-11-24): corners cut
+as they are where their oversized tools take more than the corner, and corner checks measured on the
+pieces the booleans took. Of the 22 SolidWorks parts whose first failure is a blend OCCT does not build,
+Part2 (5 mm rounds of a 5 mm tab beside a 5 mm round) and Grip_tip_triangular_base (a full round of a
+2 mm plate edge) now build that blend and stop at a later fillet whose edge is not found (the stored
+edge lies 5 mm and 1.7 mm from the nearest), and the two V-Slot Actuator End Mounts build one more
+feature. First failing blend per part, by OCCT's own result: no start for the walk (a ball wider than
+a face beside it: BK12_block and _gantry on a 0.09 mm sliver, Back_sup_low on a face of zero width,
+Bluebird, Holder, GRIPPER BASE, 126p_bumper_slider, dzwignia L/R, z_motor_mount) 11; invalid solids
+(Cablechain, Leadscrew Nut Mount, the two triangular spacers) 4; faulty corner vertices (EndStop
+edges 22's end at a rib's slope, Cast 90 Degree Corner Bracket's 0.07 mm cylinder) 3; walking failures 2;
+Motor's 20 and 40 mm chamfers 1; a stripe failing with no status 1 (Mount_split_middle_mirror,
+whose retries on fewer edges crash OCCT).
+
+The rebuild check is unchanged. History 402 -> 402 of 1352, none gained, none lost (full runs row for
+row against the round's base).

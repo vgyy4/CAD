@@ -1728,3 +1728,29 @@ the largest volume any such pairing gives; Inventor's pairing is not found), and
 own name, 32 with the Design Accelerator gears) hold no features of their own. The sheet-metal parts whose
 second face no sketch holds also bend, hem and corner (not read). Delete face (8 first failures) stays
 unread: no tree type takes it, and four of the eight have further failures behind it.
+
+## Amendment (2026-11-24, 44): round fil1 - blend corners cut as they are
+
+Round fil1 changed only the OCCT kernel's blend fallbacks (ADR 0004 amendment 2026-11-24; ADR 0043
+amendment of the same day). Full runs of both corpora against the round's base:
+
+| corpus | parts | base | head |
+|---|---|---|---|
+| Solid Edge ordered | 180 | 103 | 103 |
+| Inventor new + old | 1686 | 789 | 789 |
+
+None gained, none lost. Solid Edge 109's 12.7 mm chamfer of a whole circle on a face exactly as wide
+now builds (its next round's edge is not found; in the loaded full run it timed out first). First
+failing blend per part, by OCCT's own result: Solid Edge (26 parts with a failing blend call) no start
+for the walk 7 (016, 044, 061, 101, 107, 041's 254 mm round, 010's 1.5 mm rim), corner vertices 6
+(023, 043, 133, 135; 058 and 059's 1.27 mm rounds of a 2.54 mm pin whose sides are 0.08 mm tall),
+invalid solids 4 (019, 063, 083, 115), twisted or erroneous stripes 2 (031, 045), walking failures 2,
+chamfers OCCT does not build 2 (007, 109), an exception in OCCT 1 (064; 012 and 064 crash the test
+kernel as before); Inventor (17 parts) no start for the walk 5 (box-mount Fillet6: a 3 mm round on a
+2.74 mm drafted wall; BigBattery; the CU Hohlleiter washers), chamfers OCCT does not build 5 (edges
+between a plane and a cylinder along them: NeedleValveCAD, Lead Screw Arm Brace), invalid solids 2,
+corner vertices 1, HOOK's crash 1.
+
+**Measured, not kept.** A concave corner's filling tool reaches 0.25 r into the material beside it,
+checked only at the edge's middle; at Grip_tip's wall ends a notch lets it add 0.029 mm3 per corner.
+Filling the corners as they are there would build its Fillet3 too, but the part stops later anyway.

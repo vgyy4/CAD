@@ -426,3 +426,33 @@ samples, then a golden-section search), the peak's angle follows from the axis, 
 is added only when the face classifies it as on it, so the box never grows past the face.
 Test: a cup whose spun Bezier side bulges past its rim, with a boss on its seam: its box is the
 side's widest radius all round.
+
+## Amendment (2026-11-24): blend corners cut as they are, measured as pieces
+Round fil1 (ADR 0043 amendment, ADR 0046 amendment 44). Where OCCT's fillet fails, the corner
+booleans of `blend_by_corners` (amendment 2026-11-19) now also try:
+
+- *Corners as they are.* Each corner's tool reaches out past the faces beside its edge so the
+  boolean meets no coincident faces. Where the body goes on out there, the cut took more than the
+  corners and was refused: a face exactly as wide as the blend's touching line whose far edge is
+  where an earlier round of the body next to it begins (SolidWorks Part2: 5 mm rounds of a 5 mm
+  tab beside a 5 mm round). When a cut takes more than the corners, the corners alone are cut (or
+  filled) instead; accepted only where the material changed is exactly their volume and every face
+  of the result has an origin (their blend faces keep the edges' origins).
+- *Measured as pieces.* The body's volume integrated over a blend face that joins an earlier round
+  on its surface (a full round of a plate's edge, SolidWorks Grip_tip_triangular_base) is some
+  1e-3 mm3 off, more than the check's 1e-7 of the body, while the corner itself is exact. Where the
+  plain check fails, the material the booleans took and added is measured again as solids of their
+  own (`changed_volumes`): the corners' volume must be taken (added) and nothing else changed, and
+  no face may be left without an origin.
+
+The rule stays: a fallback gives the intended geometry or nothing. Golden test: a 5 mm tab beside a
+block rounded by 5 mm, its top edge rounded by 5 mm takes exactly the corner (20 (25 - 25 pi / 4)
+mm3), its blend face named after the edge.
+
+Failure modes of the blends that still fail (first failing call per part, OCCT's own fillet on the
+same input; SolidWorks 22 parts, Inventor 17, Solid Edge 26): no start for the walk
+(`ChFiDS_StartsolFailure`, a ball wider than a face beside it: cliff edges whose far side is
+several edges or curved, slivers, both faces narrow) 23; a faulty corner vertex 10; an invalid
+solid ShapeFix does not mend 10; chamfers OCCT does not build (plane beside a cylinder along it,
+huge distances) 8; walking failures 4; stripes failing with no status 3; twisted or erroneous
+stripes 2; a crash or exception 2.
