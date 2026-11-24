@@ -98,6 +98,10 @@ pub(super) struct HoleF {
     csink_angle: Option<f64>,
     #[serde(default)]
     point_angle: Option<f64>,
+    /// The body the hole cuts, where no face holds its point (a position in a hole an earlier
+    /// cut made): the hole is then cut as a revolve of its outline.
+    #[serde(default)]
+    target: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -703,7 +707,25 @@ pub(super) fn hole(g: &mut Gen, s: &Session, d: &HoleF) -> Result<(), String> {
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     let fp = finite3(d.face.point, "the face point")?;
     let mut meshes: Meshes = Vec::new();
-    let face = find_face(s.kernel().as_ref(), &ev, &mut meshes, fp, d.face.normal)?;
+    let face = match find_face(s.kernel().as_ref(), &ev, &mut meshes, fp, d.face.normal) {
+        Ok(f) => f,
+        // No face holds the point (Top_mainplate_v1's fifth countersink, at the centre of a
+        // bore): the hole is cut as revolves into its target.
+        Err(why) if why.starts_with("no planar or cylindrical face") => {
+            let (Some(t), Some(n)) = (&d.target, d.face.normal) else { return Err(why) };
+            let body = g.body_named(t, "target")?;
+            let n = unit(finite3(n, "the face normal")?).ok_or("the face normal has no direction")?;
+            let fx = face_x(n).ok_or("the face has no usable frame")?;
+            for (i, p) in d.positions.iter().enumerate() {
+                let p = finite3(*p, "a hole position")?;
+                hole_revolve(g, s, d, (n, &body), p, (fx, i)).map_err(|e| format!("{why}; cut as a revolve: {e}"))?;
+            }
+            let last = g.made.last().cloned().ok_or("nothing was made")?;
+            g.features.insert(d.name.clone(), last);
+            return Ok(());
+        }
+        Err(why) => return Err(why),
+    };
     warn_fallback(g, &face, fp);
     if !face.planar {
         return Err("a hole goes into a planar face".into());
@@ -729,11 +751,7 @@ pub(super) fn hole(g: &mut Gen, s: &Session, d: &HoleF) -> Result<(), String> {
         // world origin projected onto the plane, x the world X projected (world Y when X is
         // nearly the normal), y = normal x x.
         let n = face.normal;
-        let project = |v: V3| sub(v, n.map(|c| c * dot(v, n)));
-        let fx = unit(project([1.0, 0.0, 0.0]))
-            .filter(|x| dot(*x, [1.0, 0.0, 0.0]).abs() > 1e-3)
-            .or_else(|| unit(project([0.0, 1.0, 0.0])))
-            .ok_or("the face has no usable frame")?;
+        let fx = face_x(n).ok_or("the face has no usable frame")?;
         let fy = cross(n, fx);
         let origin = n.map(|c| c * dot(face.centroid, n));
         let sites: Vec<String> = ps
@@ -757,7 +775,8 @@ pub(super) fn hole(g: &mut Gen, s: &Session, d: &HoleF) -> Result<(), String> {
                 g.text.truncate(text_len);
                 g.made.truncate(made_len);
                 for (i, p) in ps.iter().enumerate() {
-                    hole_revolve(g, s, d, face, *p, (fx, i)).map_err(|e| format!("{why}; cut as a revolve: {e}"))?;
+                    hole_revolve(g, s, d, (face.normal, &face.body), *p, (fx, i))
+                        .map_err(|e| format!("{why}; cut as a revolve: {e}"))?;
                 }
             }
             Err(why) => return Err(why),
@@ -769,17 +788,26 @@ pub(super) fn hole(g: &mut Gen, s: &Session, d: &HoleF) -> Result<(), String> {
     Ok(())
 }
 
-/// A hole at `p` on `face` cut as a revolve of its outline (as Gusset's hole tool draws it) in a
-/// sketch through the hole's axis, `fx` (a direction in the face) its x axis.
+/// The x axis of Gusset's frame on a planar face with normal `n`: the world X projected (world Y
+/// when X is nearly the normal).
+fn face_x(n: V3) -> Option<V3> {
+    let project = |v: V3| sub(v, n.map(|c| c * dot(v, n)));
+    unit(project([1.0, 0.0, 0.0]))
+        .filter(|x| dot(*x, [1.0, 0.0, 0.0]).abs() > 1e-3)
+        .or_else(|| unit(project([0.0, 1.0, 0.0])))
+}
+
+/// A hole at `p` cut into `body` as a revolve of its outline (as Gusset's hole tool draws it) in
+/// a sketch through the hole's axis (`n` the face's outward normal), `fx` (a direction in the
+/// face) its x axis.
 fn hole_revolve(
     g: &mut Gen,
     s: &Session,
     d: &HoleF,
-    face: &FaceHit,
+    (n, body): (V3, &str),
     p: V3,
     (fx, i): (V3, usize),
 ) -> Result<(), String> {
-    let n = face.normal;
     let r = d.diameter / 2.0;
     let mut pts: Vec<[f64; 2]> = vec![[0.0, 0.0]];
     match d.variant.as_deref().unwrap_or("simple") {
@@ -833,11 +861,8 @@ fn hole_revolve(
     let line = sm.ids.get(&format!("c{}", pts.len() - 1)).ok_or("its axis line was not made")?;
     let (profile, axis) = (sm.name.clone(), format!("{}.{line}", sm.name));
     let name = g.fresh(&format!("{}_{}", d.name, i + 1), "Hole");
-    let _ = writeln!(
-        g.text,
-        "\nrevolve {name} (profile: {profile}, axis: {axis}, angle: 360 deg, op: cut, body: {})",
-        face.body
-    );
+    let _ =
+        writeln!(g.text, "\nrevolve {name} (profile: {profile}, axis: {axis}, angle: 360 deg, op: cut, body: {body})");
     builds(g, s, &name)?;
     g.made.push(name);
     Ok(())
