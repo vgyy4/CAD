@@ -2620,6 +2620,35 @@ fn edge_with_midpoint(r: &OpResult, m: [f64; 3]) -> u32 {
     t.edges.iter().position(|e| (0..3).all(|i| (e.midpoint[i] - m[i]).abs() < 1e-9)).unwrap() as u32
 }
 
+/// A box from `lo` to `hi`.
+fn box_between(lo: [f64; 3], hi: [f64; 3]) -> OpResult {
+    let b = plain_box(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+    k().transform(&b.shape, &Transform::Translate(lo)).unwrap()
+}
+
+#[test]
+fn a_round_beside_an_earlier_round_takes_only_its_corner() {
+    // A 5 mm tab beside a block whose edge is rounded by 5 mm, both standing on a wall: the
+    // tab's side face ends where the block's round begins, and a 5 mm round of the tab's top
+    // edge takes that face whole (OCCT's fillet is not given it: its touching line runs along
+    // the face's far edge). The corner's oversized tool would reach into the block's round;
+    // the corner alone is cut (SolidWorks Part2's 5 mm tab).
+    let a = box_between([0.0, 0.0, 0.0], [20.0, 25.0, 60.0]);
+    let ea = edge_with_midpoint(&a, [10.0, 25.0, 60.0]);
+    let a = k().fillet(&a.shape, &[ea], 5.0).unwrap();
+    let wall = box_between([-10.0, 0.0, 0.0], [0.0, 45.0, 60.0]);
+    let tab = box_between([0.0, 25.0, 55.0], [20.0, 45.0, 60.0]);
+    let b = k().boolean(BoolOp::Union, &wall.shape, &a.shape).unwrap();
+    let b = k().boolean(BoolOp::Union, &b.shape, &tab.shape).unwrap();
+    let e = edge_with_midpoint(&b, [10.0, 25.0, 60.0]);
+    let f = k().fillet(&b.shape, &[e], 5.0).unwrap();
+    let before = k().mass_properties(&b.shape).unwrap().volume;
+    let after = k().mass_properties(&f.shape).unwrap().volume;
+    let corner = 20.0 * (25.0 - 25.0 * std::f64::consts::PI / 4.0);
+    assert!(close(before - after, corner, 1e-7), "{}", before - after);
+    assert!(f.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+}
+
 #[test]
 fn a_round_wider_than_its_side_face_takes_it_whole() {
     // A 30 x 10 x 1 plate: a 3 mm round of its top front edge is wider than the 1 mm front face.
