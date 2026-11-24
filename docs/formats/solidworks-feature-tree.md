@@ -2035,7 +2035,8 @@ Gained (5): Link_5 and Link_1v2 (simple holes end flat), 10-32 Nylock Nut (a sim
 SlotMount-Attachment (above).
 
 ## L34. Round 28 (sw22: bodies made apart, patterns of bodies, choosers by class word)
-Measured from this round's own baseline (401 of 1352 on the round's base, row for row the same as round sw21's final log).
+Measured from this round's own baseline (401 of 1352 on the round's base, row for row the same as round sw21's final
+log).
 
 * **Body lists** (the Ahm3d0x parts: ten files, all from one SolidWorks build). Every node writes, after its common
   header block (`00 00 80 bf`, zeros with one `01`, `ff ff ff ff`, an 8-byte stamp, `02 00`, a 3-byte build word
@@ -2076,10 +2077,10 @@ Measured from this round's own baseline (401 of 1352 on the round's base, row fo
   - The gears (the gear 2, the gear 3, the mian gear) still differ: their middle layer (Boss-Extrude10) has in the
     part a bore of the pin's radius (r 4.5, 4.5 and 3.5) that its sketch does not draw (Sketch17: the root circle
     twice, one of them converted, the teeth; no point at the bore's radius) and whose chooser does not name (a disk
-    of r 8.25 and the teeth, older than the sketch). The cut that removes the pin (lists: the pin in, nothing out) gives exactly the gear 2 when it also cuts the
-    gear the other way (9826.608 mm3, its last feature); the mian gear only with a cut through the whole part along
-    the axis (5200.888 mm3), and there the cut comes before Boss-Extrude10 in the stream: not taken. The gear 3 also lacks
-    one tooth (20.75 mm3) once the bore is made.
+    of r 8.25 and the teeth, older than the sketch). The cut that removes the pin (lists: the pin in, nothing out)
+    gives exactly the gear 2 when it also cuts the gear the other way (9826.608 mm3, its last feature); the mian
+    gear only with a cut through the whole part along the axis (5200.888 mm3), and there the cut comes before
+    Boss-Extrude10 in the stream: not taken. The gear 3 also lacks one tooth (20.75 mm3) once the bore is made.
   - wheel axV2 (two copies) now stops at Loft2, a loft from a cap with holes (the evaluator lofts no profile with
     holes).
   - base v2 mirrors bodies (Mirror1 makes four tags from nothing); body mirrors with lists are not read.
