@@ -180,3 +180,83 @@ fn bad_data_is_refused_with_a_reason() {
     assert!(arrange(&t, TOL).is_err(), "{b}");
     let _ = same;
 }
+
+#[test]
+fn splines_that_meet_tangent_close_a_region_wherever_they_lie() {
+    // The outer loop of an "O" glyph of sketch text: four quadratics, each meeting the next
+    // tangent. Near such a joint the two curves meet again within about sqrt(2·r·tol); that
+    // hit must snap to the joint, not cut a piece of no length off one of them.
+    let loops: [(&[[f64; 2]], &[f64]); 4] = [
+        (
+            &[
+                [-9.84696233, 4.19070425],
+                [-9.84696233, 4.11557749],
+                [-9.87438956, 3.92954931],
+                [-9.93878393, 3.7375587],
+                [-10.04491539, 3.55630048],
+                [-10.20113136, 3.41677935],
+                [-10.41577925, 3.33092019],
+                [-10.55530039, 3.33092019],
+            ],
+            &[0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 6.0],
+        ),
+        (
+            &[
+                [-10.55530039, 3.33092019],
+                [-10.6662018, 3.33092019],
+                [-10.83434265, 3.38696714],
+                [-10.94643655, 3.49667606],
+                [-11.00367599, 3.65885447],
+                [-11.00367599, 3.76617842],
+            ],
+            &[0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0],
+        ),
+        (
+            &[
+                [-11.00367599, 3.76617842],
+                [-11.00367599, 3.8496526],
+                [-10.97386378, 4.04402819],
+                [-10.90708443, 4.23601881],
+                [-10.798568, 4.41369956],
+                [-10.64115954, 4.55202821],
+                [-10.43008911, 4.63311741],
+                [-10.29295296, 4.63311741],
+            ],
+            &[0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 6.0],
+        ),
+        (
+            &[
+                [-10.29295296, 4.63311741],
+                [-10.18205155, 4.63311741],
+                [-10.01629567, 4.57587797],
+                [-9.90300928, 4.46259159],
+                [-9.84696233, 4.2980282],
+                [-9.84696233, 4.19070425],
+            ],
+            &[0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0],
+        ),
+    ];
+    for dx in [0.0, 8.0, -20.0] {
+        let mut s = Sketch::new();
+        let mut made: Vec<([f64; 2], EntityId)> = Vec::new();
+        for (poles, knots) in loops {
+            let mut ids = Vec::new();
+            for p in poles {
+                let q = [p[0] + dx, p[1]];
+                let id = match made.iter().find(|(m, _)| *m == q) {
+                    Some(&(_, id)) => id,
+                    None => {
+                        let id = s.add_point(q).unwrap();
+                        made.push((q, id));
+                        id
+                    }
+                };
+                ids.push(id);
+            }
+            s.add_bspline(2, &ids, knots, &vec![1.0; ids.len()], false).unwrap();
+        }
+        let a = arrange(&s, TOL).unwrap_or_else(|e| panic!("at dx {dx}: {e}"));
+        assert_eq!(a.profiles.len(), 1, "at dx {dx}");
+        assert!(a.profiles[0].area > 1.0 && a.profiles[0].area < 1.3, "{}", a.profiles[0].area);
+    }
+}
