@@ -1665,8 +1665,8 @@ timed out under load on the base and gave its usual reason on the head).
 The change is in the Inventor reader only (`inventor_features.rs`, two Inventor helpers in `acis.rs`); no
 code shared with SolidWorks, Solid Edge or Fusion changed, so those corpora were not rerun.
 
-**Left (measured).** 32 bodies stop at the volume check (35 on the base; Main
-Bearing Cover's 0.07 mm3): the EY4180 bay adapters (above), the three `rev1 corners` mirrors of
+**Left (measured).** 32 bodies stop at the volume check (35 on the base), Main
+Bearing Cover among them at 0.07 mm3: the EY4180 bay adapters (above), the three `rev1 corners` mirrors of
 tegu-enclosure (3.28e6 against 8.26e6 mm3: the base part in the folder is not the one they were derived
 from), BEARING (164 mm3 too much after Sweep1, which takes every region of its sketch, a ball's circle among them; not measured further),
 terminal_mount_front (Extrusion4's cut leaves 68 mm3 and takes 13 mm3 too much at the mount's end), the
