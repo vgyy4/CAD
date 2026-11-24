@@ -830,6 +830,31 @@ fn a_hole_wizard_becomes_a_hole_at_its_placement_points() {
 }
 
 #[test]
+fn a_simple_hole_ends_flat_and_keeps_its_counterbore() {
+    let plane = comp_plane(2, -0.005);
+    let mut v = feature_node("moHoleWzd_c", "Hole1", 11);
+    v.extend(point_sketch("Sketch2", 12, &plane, &[(0.002, 0.003, 1)]));
+    v.extend(feature_node("moProfileFeature_c", "Sketch3", 13));
+    v.extend(&plane);
+    v.extend([0u8; 40]);
+    v.extend(parameter("Diameter", 0.002));
+    v.extend(parameter("Depth", 0.003));
+    let simple = v.clone();
+    v.extend(parameter("C-Bore Diameter", 0.004));
+    v.extend(parameter("C-Bore Depth", 0.001));
+    for (stream, variant) in [(simple, "simple"), (v, "counterbore")] {
+        let t = history(&feature_stream(&stream)).unwrap().unwrap();
+        let hole = t["features"].as_array().unwrap().iter().find(|x| x["type"] == "hole").unwrap().clone();
+        assert_eq!((hole["diameter"].as_f64(), hole["depth"].as_f64()), (Some(2.0), Some(3.0)), "{hole}");
+        assert_eq!(hole["point_angle"].as_f64(), Some(180.0), "{hole}");
+        assert_eq!(hole["variant"], variant, "{hole}");
+        if variant == "counterbore" {
+            assert_eq!((hole["cbore_diameter"].as_f64(), hole["cbore_depth"].as_f64()), (Some(4.0), Some(1.0)));
+        }
+    }
+}
+
+#[test]
 fn a_head_clearance_becomes_a_pocket_and_a_hole_per_position() {
     let t = history(&feature_stream(&hole_wizard(true))).unwrap().unwrap();
     let f = t["features"].as_array().unwrap();

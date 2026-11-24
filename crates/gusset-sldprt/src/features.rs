@@ -3983,8 +3983,8 @@ fn finish_hole(mut h: HoleState) -> Value {
         }
     }
     let (dia, dep) = (nonzero(dia), nonzero(dep));
-    let cs_d = nonzero(get(&["C'Sink Dia.", "Near C'Sink Dia."]));
-    let cs_a = nonzero(get(&["C'Sink Angle", "Near C'Sink Angle"]));
+    let cs_d = nonzero(get(&["C'Sink Dia.", "Near C'Sink Dia.", "C-Sink Diameter"]));
+    let cs_a = nonzero(get(&["C'Sink Angle", "Near C'Sink Angle", "C-Sink Angle"]));
     let clearance = nonzero(get(&["Head Clearance"]));
     let mut o = Map::new();
     o.insert("type".into(), json!("hole"));
@@ -4000,13 +4000,22 @@ fn finish_hole(mut h: HoleState) -> Value {
         o.insert("depth".into(), json!(mm(d)));
         // The drill point: `Drill Angle` where the hole writes one (180 degrees is a flat
         // bottom: GripperbaseNEW's 2 mm holes), else the usual 118 degrees.
+        // The simple hole (`Diameter` and `Depth`, no wizard names) ends flat: Link_5's Hole1,
+        // 50 mm across and 10 deep, leaves no drill point in the part (9831 mm3 less with one).
+        let simple = ps.contains_key("Diameter") && ps.contains_key("Depth");
         let tip = get(&["Drill Angle"])
             .map(f64::to_degrees)
             .filter(|a| (30.0..=180.0 + 1e-9).contains(a))
-            .map_or(118.0, |a| round_to(a.min(180.0), 9));
+            .map_or(if simple { 180.0 } else { 118.0 }, |a| round_to(a.min(180.0), 9));
         o.insert("point_angle".into(), json!(tip));
     }
-    if let Some(d) = cs_d {
+    // The simple hole's own counterbore (10-32 Nylock Nut's Hole1).
+    let cb = (nonzero(get(&["C-Bore Diameter"])), nonzero(get(&["C-Bore Depth"])));
+    if let (Some(d), Some(depth), None) = (cb.0, cb.1, cs_d) {
+        o.insert("variant".into(), json!("counterbore"));
+        o.insert("cbore_diameter".into(), json!(mm(d)));
+        o.insert("cbore_depth".into(), json!(mm(depth)));
+    } else if let Some(d) = cs_d {
         o.insert("variant".into(), json!("countersink"));
         o.insert("csink_diameter".into(), json!(mm(d)));
         o.insert("csink_angle".into(), json!(cs_a.map_or(90.0, |a| round_to(a.to_degrees(), 9))));
