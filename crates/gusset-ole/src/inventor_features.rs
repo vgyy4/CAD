@@ -969,9 +969,32 @@ impl Reader<'_> {
         for (e, spl) in loops.iter().flatten() {
             let (&a, &b) = (e.first()?, e.last()?);
             let n = curves.len();
+            let d2 = |p: P2, q: P2| libm::hypot(p.0 - q.0, p.1 - q.1);
+            // A glyph edge of no length is left out; a B-spline with a span of no length (its
+            // poles at one place: the sketch refuses it) is written as its samples.
+            if e.windows(2).all(|w| matches!(w, [p, q] if d2(*p, *q) < 1e-6)) {
+                continue;
+            }
+            let whole = spl.as_ref();
+            let spl = whole.filter(|sp| {
+                let q: Vec<P2> = sp.poles.iter().map(|&p| to2(p)).collect();
+                !q.windows(sp.degree + 1)
+                    .any(|w| w.windows(2).map(|x| if let [a, b] = x { d2(*a, *b) } else { 0.0 }).sum::<f64>() < 1e-6)
+            });
+            if spl.is_none() && whole.is_some() {
+                for w in e.windows(2) {
+                    if let [p, q] = w
+                        && d2(*p, *q) >= 1e-6
+                    {
+                        let n = curves.len();
+                        curves.push(json!({"id": format!("tl{n}"), "type": "line", "start": id(*p, &mut pts), "end": id(*q, &mut pts)}));
+                        shapes.push(Poly::Line(*p, *q));
+                    }
+                }
+                continue;
+            }
             if let Some(sp) = spl {
                 let last = sp.poles.len().saturating_sub(1);
-                let d2 = |p: P2, q: P2| libm::hypot(p.0 - q.0, p.1 - q.1);
                 let poles: Vec<String> = sp
                     .poles
                     .iter()
