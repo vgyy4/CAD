@@ -713,8 +713,10 @@ mod sab {
         Vec([f64; 3]),
         /// A string token (0x07): the name of a custom attribute.
         S(&'static str),
+        /// A flag token: 0x0a (`reversed` as a face's first flag) or 0x0b.
+        F(u8),
     }
-    use It::{D, I, P, Pos, S, Vec as V};
+    use It::{D, F, I, P, Pos, S, Vec as V};
 
     fn blob(recs: &[(&[&str], Vec<It>)]) -> Vec<u8> {
         let mut b = b"ASM BinaryFile4\0\0\0\0".to_vec();
@@ -738,6 +740,7 @@ mod sab {
                         b.push(0x06);
                         b.extend(v.to_le_bytes());
                     }
+                    It::F(t) => b.push(*t),
                     It::S(t) => {
                         b.push(0x07);
                         b.push(t.len() as u8);
@@ -833,6 +836,24 @@ mod sab {
         let mut r = r;
         r.extend(more);
         blob(&r)
+    }
+
+    /// A planar face's outward normal is its surface's, turned round when the face is reversed
+    /// (its first flag 0x0a).
+    #[test]
+    fn a_reversed_face_faces_against_its_plane() {
+        let plane = || (&["plane", "surface"][..], vec![Pos([0.0, 0.0, 1.0]), V([0.0, 0.0, 1.0])]);
+        for (flag, want) in [(0x0a, -1.0), (0x0b, 1.0)] {
+            let a = Acis::parse(&blob(&[
+                (&["body"], vec![I(1), P(2)]),
+                (&["face"], vec![P(-1), P(-1), P(3), F(flag), F(0x0b)]),
+                plane(),
+            ]))
+            .unwrap();
+            let (p, n) = a.outward_plane(2).unwrap();
+            assert_eq!((p, n), ([0.0, 0.0, 1.0], [0.0, 0.0, want]));
+            assert!(a.outward_plane(3).is_none());
+        }
     }
 
     #[test]
@@ -2269,4 +2290,49 @@ fn a_draft_turns_a_face_about_its_line_on_the_neutral_plane() {
     // Another angle, or a line along the pull, is refused.
     assert!(hinge_height(before, after, [0.0, 1.0, 0.0], 2.0 * a).is_err());
     assert!(hinge_height(before, after, [1.0, 0.0, 0.0], a).is_err());
+}
+
+/// A rib (`d968d1e0`, note AZ): its sketch is the one the `d61732c1` record beside its profile
+/// list names; a normal or finite rib (slot 6 active) and drafted sides (slot 11) are refused,
+/// and a parallel one is read against the result body (none here).
+#[test]
+fn a_rib_finds_its_sketch_and_refuses_what_gussets_rib_does_not_take() {
+    let mut classes = CLASSES.to_vec();
+    classes.push(0xd617_32c1); // 13
+    let mut r = base_records();
+    let unused = |v: f64| {
+        let mut p = param("d10", v);
+        p[13] = 0x08;
+        p
+    };
+    r.push((NAME, name_rec("Rib1", Some(0xd968_d1e0)))); // 19
+    r.push((OTHER, {
+        let mut l = hdr(0, 0, 0);
+        l.extend(list(&[]));
+        l
+    })); // 20 the profile list
+    r.push((13, {
+        let mut b = hdr(0, 0, 0);
+        b.extend(rf(20).to_le_bytes());
+        b.extend(rf(7).to_le_bytes());
+        b
+    })); // 21
+    r.push((PARAM, param("d11", 0.2))); // 22 thickness
+    r.push((PARAM, unused(0.1))); // 23 extent, not used
+    r.push((PARAM, param("d12", 0.0))); // 24 draft
+    let slots = [rf(20), 0, 0, rf(22), 0, 0, rf(23), 0, 0, 0, 0, rf(24)];
+    r.push((FEATURE, feature(19, 0, 6, &slots))); // 25
+    let rib = |r: &[(usize, Vec<u8>)]| {
+        let t = feature_tree(&inventor_dc_part(&classes, r, &[]), "dir/part.ipt", &Limits::default()).unwrap();
+        let f = t["features"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(f["name"], "Rib1", "{t}");
+        f["reason"].as_str().unwrap_or_default().to_string()
+    };
+    assert_eq!(rib(&r), "the result body is not readable");
+    r[24].1 = param("d12", 0.02);
+    assert_eq!(rib(&r), "a rib with drafted sides is not supported");
+    r[23].1 = param("d10", 0.1);
+    assert_eq!(rib(&r), "a rib normal to its sketch or of a finite extent is not read");
+    r[21].1.truncate(22);
+    assert_eq!(rib(&r), "no sketch found");
 }

@@ -2879,6 +2879,93 @@ fn emboss(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Str
     Ok(())
 }
 
+/// A rib (`d968d1e0`, note AZ) parallel to its sketch and up to the next face. Slot 0 lists the
+/// profile (its sketch is the one the `d61732c1` record beside the list names), slot 3 is the
+/// thickness, slot 6 the in-plane extent of a finite or normal rib (inactive here: bit 3 of
+/// header byte 13), slot 11 the draft of the sides. The side the rib grows toward is read from
+/// the result: the rib's face through its first line faces away from the rib. Slot 9's first
+/// item holds the thickness arrow (two points, cm, at +22 and +46): from the sketch plane to a
+/// thickness off it is a rib to that side, half a thickness each way a centred one.
+fn rib(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    let s = r.slots(f)?;
+    let lst = s.need(0)?;
+    let sk = r
+        .back()
+        .get(lst)
+        .into_iter()
+        .flatten()
+        .filter(|&&j| r.dc.class(j) == 0xd617_32c1)
+        .flat_map(|&j| r.dc.refs(j))
+        .map(|x| x.1)
+        .find(|&x| r.dc.role(x) == Role::Sketch)
+        .ok_or("no sketch found")?;
+    let sketch = r.sketch(sk)?;
+    if s.get(6).is_none_or(|i| r.dc.r(i).get(13).is_none_or(|b| b & 0x08 == 0)) {
+        return Err("a rib normal to its sketch or of a finite extent is not read".into());
+    }
+    if r.pval(&s, 11).is_ok_and(|d| d.abs() > 1e-12) {
+        return Err("a rib with drafted sides is not supported".into());
+    }
+    let t = r.param(&s, 3)? * CM;
+    if !(t.is_finite() && t > 1e-9) {
+        return Err("the rib's thickness is not readable".into());
+    }
+    let at = |k: usize| sketch.points.iter().find(|p| p.0 == k).map(|p| (p.1, p.2));
+    let mut lines = Vec::new();
+    for c in &sketch.curves {
+        match *c {
+            Curve::Line { con: true, .. }
+            | Curve::Arc { con: true, .. }
+            | Curve::Circle { con: true, .. }
+            | Curve::Ellipse { con: true, .. }
+            | Curve::Spline { con: true, .. } => {}
+            Curve::Line { id, a, b, .. } => {
+                lines.push((id, at(a).ok_or("a rib line's point")?, at(b).ok_or("a rib line's point")?))
+            }
+            _ => return Err("a rib drawn with curves is not supported".into()),
+        }
+    }
+    let &(_, a0, b0) = lines.first().ok_or("the rib's sketch has no lines")?;
+    let (o, x, y) = frame(&sketch.m);
+    let n = unit3(cross(x, y));
+    let model = |p: P2| add3(o, add3(x.map(|c| c * p.0), y.map(|c| c * p.1)));
+    let (pa, pb) = (model(a0), model(b0));
+    let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
+    let res = r.result().ok_or("the result body is not readable")?;
+    let mut toward = None;
+    for g in res.sweep_faces(fid) {
+        let Some((p, m)) = res.outward_plane(g) else { continue };
+        let on = |q: V3| dot(sub3(q.map(|c| c / CM), p), m).abs() < 1e-6;
+        if dot(m, n).abs() < 1e-6 && on(pa) && on(pb) {
+            toward = Some(m.map(|c| -c));
+        }
+    }
+    let toward = toward.ok_or("the rib's face along its line is not in the result")?;
+    let arrow = s.get(9).and_then(|i| r.dc.slots(i)).and_then(|l| l.first().copied().flatten());
+    let pts = arrow.and_then(|i| {
+        let d = r.dc.r(i);
+        let v = |k: usize| Some([f64_at(d, k)?, f64_at(d, k + 8)?, f64_at(d, k + 16)?].map(|c| c * CM));
+        Some((v(22)?, v(46)?))
+    });
+    let (q0, q1) = pts.ok_or("the rib's thickness arrow is not readable")?;
+    let (d0, d1) = (dot(sub3(q0, o), n), dot(sub3(q1, o), n));
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6 * CM;
+    let mut j = json!({"type": "rib", "name": name, "sketch": sketch.name,
+                       "curves": lines.iter().map(|l| format!("l{}", l.0)).collect::<Vec<_>>(),
+                       "thickness": rnd(t), "toward": arr(toward), "target": changed_bodies(r, st, f, false)?});
+    if near(d0, 0.0) && near(d1.abs(), t) {
+        put(&mut j, "side", arr(n.map(|c| c * d1.signum())));
+    } else if !(near(d0, -d1) && near((d1 - d0).abs(), t)) {
+        return Err("the rib's thickness side is not read".into());
+    }
+    if !st.done.contains_key(&sk) {
+        st.out.push(sketch.json());
+        st.done.insert(sk, ());
+    }
+    st.out.push(j);
+    Ok(())
+}
+
 /// A whole-body transform (note AQ): Move Bodies (`2b839fe9`), or a direct edit Move
 /// (`8fa6a6de`) or Scale (`5bcb6fff`) of bodies. Slot 0 lists the bodies (`0e6870ae`), slot 1
 /// (`0800fe29`) points at the matrix (cm) of the move or scale ([`transform_steps`]).
@@ -4150,6 +4237,7 @@ pub fn feature_tree_with(
             FeatType::Other(0x2f54_efe0) => loft(&r, &mut st, f, &name),
             FeatType::Other(0x4c37_ffe8) => fold(&r, &mut st, f, &name),
             FeatType::Other(0xf4fa_0900) => face_draft(&r, &mut st, f, &name),
+            FeatType::Other(0xd968_d1e0) => rib(&r, &mut st, f, &name),
             // Move Bodies, and the direct edits Move and Scale of whole bodies (note AQ).
             FeatType::Other(0x2b83_9fe9 | 0x8fa6_a6de | 0x5bcb_6fff) => body_transform(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.

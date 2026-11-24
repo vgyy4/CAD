@@ -909,6 +909,14 @@ impl Acis {
         })
     }
 
+    /// Planar face `f`'s point and outward unit normal (file units): the surface's normal, turned
+    /// round for a reversed face (first flag).
+    pub(crate) fn outward_plane(&self, f: i64) -> Option<(V3, V3)> {
+        let Surf::Plane { p, n } = self.kind(f) else { return None };
+        let reversed = self.rec(f)?.flags.first() == Some(&0x0a);
+        Some((p, if reversed { n.map(|c| -c) } else { n }))
+    }
+
     /// The planar faces (point, unit normal; file units) tagged `NMx_Brep_Feature_tag` by
     /// the feature with id `fid`: what a thicken made.
     pub(crate) fn feature_planes(&self, fid: i64) -> Vec<(V3, V3)> {
