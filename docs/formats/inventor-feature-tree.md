@@ -1074,3 +1074,33 @@ not committed). Every rule below is a candidate the whole-part rebuild check dec
   24.97 mm on the far side of its normal (from its sketch plane at x 41.43 mm to the plane at 66.4 mm).
   Turned round it builds, and the i-rings then stop at a chamfer on rounded faces (cone blend corner);
   with no rebuild to confirm it the hole is still refused.
+
+
+## AY. B-spline glyph and profile edges (round ipt15)
+- **Exact B-spline curves.** An `intcurve` edge's curve is a subtype `{ exact_int_cur 23100 <flag>
+  nubs|nurbs <degree> <flag> <n> (<knot> <multiplicity>)*n <points> ... }`: the end knots carry
+  multiplicity `degree` (one less than the full vector), the control points are three doubles each
+  (four with the weight for `nurbs`, the point not multiplied by it). Subtypes are numbered in the order
+  they are written across the whole file, nested ones included (a `cyl_spl_sur` and the
+  `exact_int_cur` inside it take two numbers); `{ ref n }` stands for subtype `n` and is not numbered
+  itself. Checked on the LEGO bricks' history blob: every `intcurve` record's `ref` names an
+  `exact_int_cur`, every `pcurve`'s a `cyl_spl_sur` or a curve. The edge's two doubles are its
+  parameter range on the curve; the glyph edges run the whole knot range, forward.
+- **Glyphs.** Sketch text keeps its glyph outlines as wire bodies in the history blob (note AX); the
+  curved edges of a TrueType font are quadratic `nubs` (the LEGO logo's letters: 4 to 8 poles each).
+  They were read as chords between their ends (the parameters are doubles, not the `ellipse-curve`
+  layout the reader knew), so the studs' letters came out 0.15 mm3 thin (an O of chords: a quadrilateral).
+  The text sketch now writes each whole B-spline edge as a sketch `bspline` with its poles (end poles
+  on the neighbouring edges' points); an edge of no length is left out, and a B-spline with a span of
+  no length is written as its samples.
+- **Profile loops.** The loops of a profile's region bodies (the picks' parity rule) sample a B-spline
+  edge along its curve instead of from end to end (the Sports Team Keychain's lettering and the MIT
+  Intramurals Banner: chords cut the regions between the letters' curves and the outline wrongly).
+- **Tangent spline joints (gusset-sketch).** Two glyph splines meeting tangent at a shared end cross
+  again within about `sqrt(2 r tol)` of the joint; the region arrangement snapped such hits only for
+  arcs and ellipses, so for splines the hit became a vertex and cut a piece of no length off one of
+  them (LEGO 2x4: the O's outer loop refused at x -12 mm, accepted 8 mm further along). A spline's
+  radius is now bounded by its size for that allowance.
+- **Engraves into the air (not changed).** The EY4180 bay adapters' engraves, turned round, cut 7.3
+  mm3 each but in the wrong place: the stored body has its arrows on the opposite face (cells 19 mm
+  wide: 3.2 mm3 left there, 3.3 mm3 cut too much on our side), so the direction alone is not the cause.

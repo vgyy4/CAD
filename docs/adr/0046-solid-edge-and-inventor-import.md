@@ -1568,6 +1568,56 @@ under a machine load near 18 in the base run came in as bodies on the head). Fus
 - Others as after se11 (thin walls 111, 145, 023; kernel rounds; 054, 056, 060; lofts to a point;
   part copies; simplified base features).
 
+## Amendment (2026-11-24, 37): Inventor round ipt15 - B-spline glyphs and profile loops, tangent spline joints
+
+Measured first: all 1686 parts on this round's base (772 as history, as after ipt14). Of the 42
+bodies that build every feature and stop at the volume check, the sketch text family was taken first:
+its glyph outlines (wire bodies of the history blob) and the loops of picked regions had their curved
+edges read as chords.
+
+| cause (measured) | rule (format notes AY) | parts gained |
+|---|---|---|
+| a glyph's curved edges are `exact_int_cur` B-splines (TrueType quadratics); their parameters are doubles the reader did not take for a curve, so each edge was its chord (the LEGO logo's O a quadrilateral, the studs 0.15 mm3 thin) | the reader keeps every `exact_int_cur` subtype's B-spline by subtype number (`{ ref n }` resolved); a text sketch writes a whole B-spline edge as a sketch `bspline` | LEGO 2x2, 2x3, 2x6 |
+| two glyph splines meeting tangent cross again next to their joint; the region arrangement snapped such hits only for arcs, so the hit cut a piece of no length off one spline, depending on where the sketch lay (gusset-sketch, shared) | a spline's radius is bounded by its size for that allowance | LEGO 2x4, 2x4 V2 |
+| the loops of picked region bodies took B-spline edges as chords, so a pick's parity next to a spline outline was wrong | profile loops sample B-spline edges along their curve | Sports Team Keychain, MIT Intramurals Banner |
+
+Tried and not kept: the EY4180 bay adapters' engraves turned round (a debug switch, not committed):
+they then cut 7.3 mm3 each but on the wrong face (the stored body's arrows lie on the opposite face;
+A-01 3.1 mm3 off), so the direction is not the whole cause.
+
+The rebuild check is unchanged (every feature builds, volume within 2e-5, box within 1e-4).
+
+| corpus | parts | history before | after | without a solid |
+|---|---|---|---|---|
+| first (Zenodo) | 47 | 28 | 28 | 0 |
+| second (57 sources) | 1639 | 744 | 751 | 46 |
+
+Checked: the full corpus on the base and on the head: 7 parts went from body to history, none the other
+way; 6 bodies changed their first failure (four stop later than before: the robot base covers, Homer
+Coin and Natural Trumpet, whose text sketches were refused before; Playmobil 3's loft section now
+finds no sketch for its loop instead of no regions; 175 T pulley ran past the import time limit under
+load and gives its base reason when run alone).
+
+**Other formats.** The B-spline reading is in the Inventor reader (`acis.rs` is Inventor's only). The
+arrangement change is shared (gusset-sketch): it only snaps a hit between two curves that share a
+joint, where one of them is a spline, within `tol + sqrt(2 tol d)` of that joint (`d` the spline's box
+diagonal).
+
+| corpus | parts | base | head |
+|---|---|---|---|
+| SolidWorks (sw-more, Slip-Pad, ARIG revisions, Zenodo; full run on base and head) | 1352 | 389 | 389 (no line changed) |
+| Solid Edge (ordered parts, one per process; full run on base and head) | 180 | 103 | 103 (no row changed; 174 ran past the import time limit under load on the head and gives its base row alone) |
+
+Fusion imports reach the arrangement change wherever a Fusion sketch has splines that share an end;
+Fusion was not rerun (the session's job).
+
+**Left (measured).** 36 bodies build every feature and stop at the volume check (42 on the base): the
+EY4180 bay adapters (engraves, above), Main Bearing Cover (Hole1 leaves 70 mm3 too little between
+z 8.1 and 9 mm, before its text), the Wago connector's silent cut, TapaE/TapaS, the jarpoole screw,
+Spool Drive Spindle, `fl_two_sets`, the CRS-METEO bearing clamps, the ISO 7046 cross recesses, as after
+ipt14; spline blend surfaces, picks with no model edge, derived parts with a missing base, imported base
+bodies and the features the plugin does not export are unchanged.
+
 ## Amendment (2026-11-24, 38): round rib1 - ribs measured in Solid Edge and Inventor
 
 Gusset gained a rib (ADR 0062: the document's `rib`, the kernel's sweep up to the next face with the

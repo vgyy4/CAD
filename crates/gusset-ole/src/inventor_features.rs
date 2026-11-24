@@ -16,7 +16,7 @@
 //! shaped as expected gives an `unsupported` feature or an error, never a panic.
 
 use crate::acis::{
-    Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, RevSeg, StepChamfer, Surf, V3, cross, dot, local_path,
+    Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, RevSeg, Spline3, StepChamfer, Surf, V3, cross, dot, local_path,
 };
 use crate::inventor_dc::{Dc, FeatType, Feature, G_BODY_LIST, G_SOLID_BODY, Role, f64_at, u16_at, u32_at};
 use crate::inventor_profile::{P2, Poly, picks, sample};
@@ -941,21 +941,24 @@ impl Reader<'_> {
             let q = sub3(p, o);
             (dot(q, x) * CM, dot(q, y) * CM)
         };
-        let mut loops: Vec<Vec<Vec<P2>>> = Vec::new();
+        // Each edge's points, with its B-spline (file units) when it is one whole.
+        let mut loops: Vec<Vec<(Vec<P2>, Option<Spline3>)>> = Vec::new();
         for t in self.loop_tags(lst)? {
-            for l in ac.loop_edges_of_body(t)? {
-                loops.push(l.into_iter().map(|e| e.into_iter().map(to2).collect()).collect());
+            for l in ac.loop_curves_of_body(t)? {
+                loops.push(l.into_iter().map(|(e, s)| (e.into_iter().map(to2).collect(), s)).collect());
             }
         }
         let polys = sk.polys();
         let off = |q: P2| polys.iter().all(|c| crate::inventor_profile::dist_to(c, q) > TEXT_OFF);
-        let corners = |l: &Vec<Vec<P2>>| l.iter().filter_map(|e| e.first().copied()).collect::<Vec<P2>>();
+        let corners =
+            |l: &Vec<(Vec<P2>, Option<Spline3>)>| l.iter().filter_map(|e| e.0.first().copied()).collect::<Vec<P2>>();
         if !loops.iter().any(|l| !l.is_empty() && corners(l).into_iter().all(off)) {
             return None;
         }
         let mut pts: Vec<P2> = Vec::new();
+        // A B-spline's end poles are its ends as evaluated: within 1e-6 mm of the vertices.
         let id = |q: P2, pts: &mut Vec<P2>| {
-            let k = pts.iter().position(|p| libm::hypot(p.0 - q.0, p.1 - q.1) < 1e-9).unwrap_or_else(|| {
+            let k = pts.iter().position(|p| libm::hypot(p.0 - q.0, p.1 - q.1) < 1e-6).unwrap_or_else(|| {
                 pts.push(q);
                 pts.len() - 1
             });
@@ -963,9 +966,54 @@ impl Reader<'_> {
         };
         let mut curves = Vec::new();
         let mut shapes: Vec<Poly> = Vec::new();
-        for e in loops.iter().flatten() {
+        for (e, spl) in loops.iter().flatten() {
             let (&a, &b) = (e.first()?, e.last()?);
             let n = curves.len();
+            let d2 = |p: P2, q: P2| libm::hypot(p.0 - q.0, p.1 - q.1);
+            // A glyph edge of no length is left out; a B-spline with a span of no length (its
+            // poles at one place: the sketch refuses it) is written as its samples.
+            if e.windows(2).all(|w| matches!(w, [p, q] if d2(*p, *q) < 1e-6)) {
+                continue;
+            }
+            let whole = spl.as_ref();
+            let spl = whole.filter(|sp| {
+                let q: Vec<P2> = sp.poles.iter().map(|&p| to2(p)).collect();
+                !q.windows(sp.degree + 1)
+                    .any(|w| w.windows(2).map(|x| if let [a, b] = x { d2(*a, *b) } else { 0.0 }).sum::<f64>() < 1e-6)
+            });
+            if spl.is_none() && whole.is_some() {
+                for w in e.windows(2) {
+                    if let [p, q] = w
+                        && d2(*p, *q) >= 1e-6
+                    {
+                        let n = curves.len();
+                        curves.push(json!({"id": format!("tl{n}"), "type": "line", "start": id(*p, &mut pts), "end": id(*q, &mut pts)}));
+                        shapes.push(Poly::Line(*p, *q));
+                    }
+                }
+                continue;
+            }
+            if let Some(sp) = spl {
+                let last = sp.poles.len().saturating_sub(1);
+                let poles: Vec<String> = sp
+                    .poles
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &q)| match k {
+                        // The ends as the loop runs (the samples may run against the poles).
+                        k if k == 0 || k == last => id(if d2(to2(q), a) < d2(to2(q), b) { a } else { b }, &mut pts),
+                        _ => id(to2(q), &mut pts),
+                    })
+                    .collect();
+                let mut j = json!({"id": format!("tb{n}"), "type": "bspline", "degree": sp.degree,
+                                   "knots": sp.knots.iter().map(|&k| rnd(k)).collect::<Vec<f64>>(), "poles": poles});
+                if !sp.weights.is_empty() {
+                    put(&mut j, "weights", json!(sp.weights.iter().map(|&w| rnd(w)).collect::<Vec<f64>>()));
+                }
+                curves.push(j);
+                shapes.push(Poly::Path(e.clone()));
+                continue;
+            }
             if e.len() == 2 {
                 curves.push(
                     json!({"id": format!("tl{n}"), "type": "line", "start": id(a, &mut pts), "end": id(b, &mut pts)}),
@@ -995,7 +1043,7 @@ impl Reader<'_> {
                 shapes.push(Poly::Arc { c, s: s0, e: s1 });
             }
         }
-        let flat: Vec<Vec<P2>> = loops.iter().map(|l| l.iter().flatten().copied().collect()).collect();
+        let flat: Vec<Vec<P2>> = loops.iter().map(|l| l.iter().flat_map(|e| e.0.iter().copied()).collect()).collect();
         let picks = picks(&shapes, &[flat])?;
         if picks.is_empty() {
             return None;

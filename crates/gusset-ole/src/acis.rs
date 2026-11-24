@@ -36,6 +36,153 @@ pub(crate) struct Rec {
     pub(crate) vec: Vec<V3>,
     /// Flag tokens (0x0a, 0x0b) in order: the senses (`forward`/`reversed`) and booleans.
     pub(crate) flags: Vec<u8>,
+    /// The first subtype the record opens or refers to (`{ ... }` or `{ ref n }`), by number.
+    pub(crate) sub: Option<usize>,
+}
+
+/// A B-spline curve of an `exact_int_cur` subtype (file units): `nubs|nurbs <degree> <closure>
+/// <n> (<knot> <multiplicity>)*n` then the control points (`x y z`, `x y z w` for `nurbs`). The
+/// end knots carry multiplicity `degree`; `knots` here is the full vector, ends repeated once more.
+#[derive(Debug, Clone)]
+pub(crate) struct Spline3 {
+    pub(crate) degree: usize,
+    pub(crate) knots: Vec<f64>,
+    pub(crate) poles: Vec<V3>,
+    /// Empty for `nubs`.
+    pub(crate) weights: Vec<f64>,
+}
+
+/// An edge of a loop: its points along the loop, and its B-spline when it runs a whole one.
+pub(crate) type LoopEdge = (Vec<V3>, Option<Spline3>);
+
+/// Highest B-spline degree read.
+const MAX_DEGREE: usize = 25;
+/// Most knots of one B-spline curve read.
+const MAX_KNOTS: usize = 100_000;
+
+/// One token of the stream: a word, a number (ints and doubles alike) or another tag.
+enum Tok<'a> {
+    Word(&'a [u8]),
+    Num(f64),
+    Other,
+}
+
+/// The token at `i` and the position after it.
+fn token(b: &[u8], i: usize, wide: bool) -> Option<(Tok<'_>, usize)> {
+    let t = *b.get(i)?;
+    let i = i + 1;
+    match t {
+        0x07 | 0x0d | 0x0e => {
+            let l = usize::from(*b.get(i)?);
+            Some((Tok::Word(b.get(i + 1..i + 1 + l)?), i + 1 + l))
+        }
+        0x04 | 0x15 | 0x0c => {
+            let n = if wide { 8 } else { 4 };
+            let v = b.get(i..i + n)?;
+            Some((Tok::Num(le_int(v) as f64), i + n))
+        }
+        0x06 | 0x16 => Some((Tok::Num(le_f64(b.get(i..i + 8)?)), i + 8)),
+        _ => Some((Tok::Other, i + size_of(t)?)),
+    }
+}
+
+/// The B-spline of an `exact_int_cur` subtype whose name token starts at `i`. `None` for any
+/// other subtype or data not shaped as expected.
+fn exact_curve(b: &[u8], mut i: usize, wide: bool) -> Option<Spline3> {
+    let mut next = || {
+        let (t, j) = token(b, i, wide)?;
+        i = j;
+        Some(t)
+    };
+    let num = |t: Option<Tok<'_>>| match t {
+        Some(Tok::Num(v)) if v.is_finite() => Some(v),
+        _ => None,
+    };
+    if !matches!(next()?, Tok::Word(w) if w == b"exact_int_cur") {
+        return None;
+    }
+    let mut rational = None;
+    for _ in 0..6 {
+        match next()? {
+            Tok::Word(b"nubs") => rational = Some(false),
+            Tok::Word(b"nurbs") => rational = Some(true),
+            Tok::Word(_) => return None,
+            _ => {}
+        }
+        if rational.is_some() {
+            break;
+        }
+    }
+    let rational = rational?;
+    let degree = num(next())?;
+    if !(1.0..=MAX_DEGREE as f64).contains(&degree) || degree.fract() != 0.0 {
+        return None;
+    }
+    let degree = degree as usize;
+    let _closure = next()?;
+    let n = num(next())?;
+    if !(2.0..=MAX_KNOTS as f64).contains(&n) {
+        return None;
+    }
+    let mut knots: Vec<f64> = Vec::new();
+    for k in 0..n as usize {
+        let t = num(next())?;
+        let m = num(next())?;
+        if !(1.0..=(degree + 1) as f64).contains(&m) || knots.last().is_some_and(|l| t <= *l) {
+            return None;
+        }
+        // The end knots once more (the full vector).
+        let extra = usize::from(k == 0 || k + 1 == n as usize);
+        knots.extend(std::iter::repeat_n(t, (m as usize + extra).min(degree + 1)));
+    }
+    let count = knots.len().checked_sub(degree + 1).filter(|&c| c > degree)?;
+    let (mut poles, mut weights) = (Vec::with_capacity(count), Vec::new());
+    for _ in 0..count {
+        poles.push([num(next())?, num(next())?, num(next())?]);
+        if rational {
+            weights.push(num(next()).filter(|w| *w > 0.0)?);
+        }
+    }
+    Some(Spline3 { degree, knots, poles, weights })
+}
+
+impl Spline3 {
+    /// The point at parameter `t` (de Boor), clamped to the knot range.
+    pub(crate) fn at(&self, t: f64) -> Option<V3> {
+        let p = self.degree;
+        let (lo, hi) = (*self.knots.get(p)?, *self.knots.get(self.poles.len())?);
+        let t = t.clamp(lo, hi);
+        // The span: knots[k] <= t < knots[k + 1], p <= k < poles.
+        let mut k = p;
+        while k + 1 < self.poles.len() && self.knots.get(k + 1).is_some_and(|&x| x <= t) {
+            k += 1;
+        }
+        let w = |j: usize| if self.weights.is_empty() { Some(1.0) } else { self.weights.get(j).copied() };
+        let mut d: Vec<[f64; 4]> = Vec::with_capacity(p + 1);
+        for j in 0..=p {
+            let q = *self.poles.get(k + j - p)?;
+            let wj = w(k + j - p)?;
+            d.push([q[0] * wj, q[1] * wj, q[2] * wj, wj]);
+        }
+        for r in 1..=p {
+            for j in (r..=p).rev() {
+                let (a, b) = (*self.knots.get(k + j - p)?, *self.knots.get(k + 1 + j - r)?);
+                let al = if b > a { (t - a) / (b - a) } else { 0.0 };
+                let (x, y) = (*d.get(j - 1)?, *d.get(j)?);
+                let v = d.get_mut(j)?;
+                for (vc, (xc, yc)) in v.iter_mut().zip(x.iter().zip(y)) {
+                    *vc = (1.0 - al) * xc + al * yc;
+                }
+            }
+        }
+        let v = d.get(p)?;
+        Some([v[0] / v[3], v[1] / v[3], v[2] / v[3]])
+    }
+
+    /// The parameter range: the first and last knots past the clamped ends.
+    pub(crate) fn range(&self) -> Option<(f64, f64)> {
+        Some((*self.knots.get(self.degree)?, *self.knots.get(self.poles.len())?))
+    }
 }
 
 fn size_of(tag: u8) -> Option<usize> {
@@ -85,7 +232,16 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Splits `b` into records.
+#[cfg(test)]
 fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
+    records_and_curves(b).map(|(r, _)| r)
+}
+
+/// [`records`], with the B-splines of the `exact_int_cur` subtypes by subtype number (subtypes
+/// are numbered in the order they are written, `{ ref n }` refers back to one).
+fn records_and_curves(b: &[u8]) -> Result<(Vec<Rec>, HashMap<usize, Spline3>), String> {
+    let mut curves: HashMap<usize, Spline3> = HashMap::new();
+    let mut nsubs = 0usize;
     let h = find(b, b"\x0d\x09asmheader").ok_or("the ShapeManager data has no header")?;
     // Files of the 64-bit layout write pointers and ints as 8 bytes.
     let wide = b.starts_with(b"ASM BinaryFile8");
@@ -116,7 +272,7 @@ fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
                 if s.starts_with(b"End-of-ASM-data")
                     || (t == 0x0d && s == b"data" && prev_name.as_deref() == Some(b"ASM"))
                 {
-                    return Ok(out);
+                    return Ok((out, curves));
                 }
                 if t != 0x07 && !s.is_empty() {
                     names.push(String::from_utf8_lossy(s).into_owned());
@@ -138,6 +294,27 @@ fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
             }
             0x0a | 0x0b => {
                 cur.flags.push(t);
+                prev_name = None;
+            }
+            0x0f => {
+                // A subtype: its number, or the number a `ref` gives.
+                match token(b, i, wide) {
+                    Some((Tok::Word(b"ref"), j)) => {
+                        if let Some((Tok::Num(n), _)) = token(b, j, wide)
+                            && (0.0..=MAX_RECORDS as f64).contains(&n)
+                        {
+                            cur.sub.get_or_insert(n as usize);
+                        }
+                    }
+                    Some((Tok::Word(_), _)) => {
+                        if let Some(c) = exact_curve(b, i, wide) {
+                            curves.insert(nsubs, c);
+                        }
+                        cur.sub.get_or_insert(nsubs);
+                        nsubs += 1;
+                    }
+                    _ => {}
+                }
                 prev_name = None;
             }
             _ => {
@@ -167,7 +344,7 @@ fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
             }
         }
     }
-    Ok(out)
+    Ok((out, curves))
 }
 
 /// Newer files (ShapeManager attribute version 44) write Inventor's naming attributes as
@@ -199,6 +376,8 @@ pub(crate) struct Acis {
     pub(crate) recs: Vec<Rec>,
     /// Body tag (first int) -> record.
     bodies: HashMap<i64, usize>,
+    /// The B-splines of `exact_int_cur` subtypes, by subtype number.
+    curves: HashMap<usize, Spline3>,
 }
 
 pub(crate) fn sub(a: V3, b: V3) -> V3 {
@@ -230,7 +409,7 @@ fn unit(a: V3) -> V3 {
 impl Acis {
     /// Parses a ShapeManager binary file (`ASM BinaryFile...`).
     pub(crate) fn parse(blob: &[u8]) -> Result<Acis, String> {
-        let recs = records(blob)?;
+        let (recs, curves) = records_and_curves(blob)?;
         let mut bodies = HashMap::new();
         for (k, r) in recs.iter().enumerate() {
             if r.last == "body"
@@ -240,7 +419,7 @@ impl Acis {
                 bodies.insert(t, k);
             }
         }
-        Ok(Acis { recs, bodies })
+        Ok(Acis { recs, bodies, curves })
     }
 
     fn rec(&self, k: i64) -> Option<&Rec> {
@@ -325,13 +504,13 @@ impl Acis {
     /// Every loop (face loop or wire) of the body with this tag, as points (file units).
     /// `None`: no such body, or an edge that cannot be sampled.
     pub(crate) fn loops_of_body(&self, tag: i64) -> Option<Vec<Vec<V3>>> {
-        let loops = self.loop_edges_of_body(tag)?;
+        let loops = self.loop_edges(tag)?;
         Some(
             loops
                 .into_iter()
                 .map(|edges| {
                     let mut pts: Vec<V3> = Vec::new();
-                    for e in edges {
+                    for (e, _) in edges {
                         let skip = usize::from(!pts.is_empty());
                         pts.extend(e.into_iter().skip(skip));
                     }
@@ -342,9 +521,46 @@ impl Acis {
     }
 
     /// Every loop of the body with this tag as its edges in loop order, each edge's points
-    /// running along the loop (a straight edge its two ends, an arc its samples); file units.
-    /// `None` as for [`Self::loops_of_body`].
-    pub(crate) fn loop_edges_of_body(&self, tag: i64) -> Option<Vec<Vec<Vec<V3>>>> {
+    /// running along the loop (a straight edge its two ends, an arc or exact B-spline
+    /// (`exact_int_cur`) its samples), with its B-spline when the edge runs the curve's whole
+    /// length (the glyphs of sketch text); file units. `None` as for [`Self::loops_of_body`].
+    pub(crate) fn loop_curves_of_body(&self, tag: i64) -> Option<Vec<Vec<LoopEdge>>> {
+        self.loop_edges(tag)
+    }
+
+    /// The sampled B-spline edge `e`, from its start vertex to its end vertex, with its curve
+    /// when it runs the curve's whole parameter range. `None` when the edge's curve is not an
+    /// exact B-spline or its ends do not lie on it.
+    fn spline_edge(&self, e: i64) -> Option<(Vec<V3>, Option<Spline3>)> {
+        /// Samples per knot span.
+        const PER_SPAN: usize = 8;
+        /// Most samples of one edge.
+        const MAX_SAMPLES: usize = 4096;
+        let r = self.rec(e)?;
+        let c = r.refs.iter().copied().find(|&x| self.rec(x).is_some_and(|q| q.ty.starts_with("intcurve")))?;
+        let sp = self.curves.get(&self.rec(c)?.sub?)?;
+        let (t0, t1) = (*r.dbls.first()?, *r.dbls.get(1)?);
+        let mut verts = r.refs.iter().filter(|&&x| self.is(x, "vertex"));
+        let p0 = self.point_of_vertex(*verts.next()?)?;
+        let p1 = match verts.next() {
+            Some(&v) => self.point_of_vertex(v)?,
+            None => p0,
+        };
+        let (lo, hi) = sp.range()?;
+        let tol = 1e-6 * 1.0_f64.max(dist(p0, p1));
+        // The curve's sense may run against its B-spline's parameter.
+        let sign = [1.0, -1.0].into_iter().find(
+            |&g| matches!((sp.at(g * t0), sp.at(g * t1)), (Some(a), Some(b)) if dist(a, p0) < tol && dist(b, p1) < tol),
+        )?;
+        let spans = sp.knots.windows(2).filter(|w| matches!(w, [a, b] if b > a)).count().max(1);
+        let n = (spans * PER_SPAN).min(MAX_SAMPLES);
+        let pts = (0..=n).map(|k| sp.at(sign * (t0 + (t1 - t0) * k as f64 / n as f64))).collect::<Option<Vec<V3>>>()?;
+        let (a, b) = if sign > 0.0 { (t0, t1) } else { (-t1, -t0) };
+        let whole = (a - lo).abs() < 1e-9 * 1.0_f64.max(hi - lo) && (b - hi).abs() < 1e-9 * 1.0_f64.max(hi - lo);
+        Some((pts, whole.then(|| sp.clone())))
+    }
+
+    fn loop_edges(&self, tag: i64) -> Option<Vec<Vec<LoopEdge>>> {
         let b = *self.bodies.get(&tag)?;
         let mut seen = vec![false; self.recs.len()];
         let mut st = vec![b];
@@ -384,27 +600,30 @@ impl Acis {
                 cur = nu;
                 order.push(cur);
             }
-            let mut edges: Vec<Vec<V3>> = Vec::new();
+            let mut edges: Vec<LoopEdge> = Vec::new();
             for ce in order {
                 let Some(edge) = self.recs.get(ce)?.refs.iter().copied().find(|&x| self.is(x, "edge")) else {
                     continue;
                 };
-                let mut sm = self.edge_samples(edge)?;
+                let (mut sm, spl) = match self.spline_edge(edge) {
+                    Some(x) => x,
+                    None => (self.edge_samples(edge)?, None),
+                };
                 let (s0, s1) = (*sm.first()?, *sm.last()?);
                 if edges.len() == 1
-                    && let Some(first) = edges.first_mut()
+                    && let Some((first, _)) = edges.first_mut()
                 {
                     let (p0, pl) = (*first.first()?, *first.last()?);
                     if dist(p0, s0).min(dist(p0, s1)) < dist(pl, s0).min(dist(pl, s1)) {
                         first.reverse();
                     }
                 }
-                if let Some(last) = edges.last().and_then(|e| e.last().copied())
+                if let Some(last) = edges.last().and_then(|e| e.0.last().copied())
                     && dist(last, s0) > dist(last, s1)
                 {
                     sm.reverse();
                 }
-                edges.push(sm);
+                edges.push((sm, spl));
             }
             loops.push(edges);
         }
@@ -1767,6 +1986,63 @@ pub(crate) fn local_path(m: V3, info: &EdgeInfo, eps: f64) -> Option<[V3; 2]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tokens of an `exact_int_cur` subtype (narrow layout): a word, ints and doubles.
+    fn exact_tokens(rational: bool, degree: i32, knots: &[(f64, i32)], poles: &[[f64; 4]]) -> Vec<u8> {
+        let word = |w: &[u8]| [&[0x0d, w.len() as u8][..], w].concat();
+        let int = |v: i32| [&[0x04][..], &v.to_le_bytes()].concat();
+        let dbl = |v: f64| [&[0x06][..], &v.to_le_bytes()].concat();
+        let mut b = word(b"exact_int_cur");
+        b.extend(int(23100));
+        b.push(0x0a);
+        b.extend(word(if rational { b"nurbs" } else { b"nubs" }));
+        b.extend(int(degree));
+        b.push(0x0a);
+        b.extend(int(knots.len() as i32));
+        for &(t, m) in knots {
+            b.extend(dbl(t));
+            b.extend(int(m));
+        }
+        for p in poles {
+            for &v in p.iter().take(if rational { 4 } else { 3 }) {
+                b.extend(dbl(v));
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn exact_b_spline_curves_are_read_and_evaluated() {
+        // A quadratic Bezier: end knots of multiplicity `degree` as written.
+        let b = exact_tokens(
+            false,
+            2,
+            &[(0.0, 2), (1.0, 2)],
+            &[[0.0, 0.0, 0.0, 0.0], [1.0, 2.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0]],
+        );
+        let c = exact_curve(&b, 0, false).unwrap();
+        assert_eq!(c.knots, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        assert_eq!(c.range(), Some((0.0, 1.0)));
+        let m = c.at(0.5).unwrap();
+        assert!(dist(m, [1.0, 1.0, 0.0]) < 1e-12);
+        assert!(dist(c.at(1.0).unwrap(), [2.0, 0.0, 0.0]) < 1e-12);
+        // A rational quarter circle (poles as points, weights apart).
+        let w = core::f64::consts::FRAC_1_SQRT_2;
+        let b = exact_tokens(
+            true,
+            2,
+            &[(0.0, 2), (1.0, 2)],
+            &[[1.0, 0.0, 0.0, 1.0], [1.0, 1.0, 0.0, w], [0.0, 1.0, 0.0, 1.0]],
+        );
+        let c = exact_curve(&b, 0, false).unwrap();
+        let m = c.at(0.5).unwrap();
+        assert!((libm::hypot(m[0], m[1]) - 1.0).abs() < 1e-12);
+        // Another subtype, or knots that do not increase, are not read.
+        assert!(exact_curve(&[&[0x0d, 3][..], b"ref"].concat(), 0, false).is_none());
+        let bad =
+            exact_tokens(false, 2, &[(1.0, 2), (0.0, 2)], &[[0.0; 4], [1.0, 2.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0]]);
+        assert!(exact_curve(&bad, 0, false).is_none());
+    }
 
     #[test]
     fn the_supports_of_a_trimmed_torus_blend_are_the_curves_it_touches() {
