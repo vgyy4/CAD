@@ -133,6 +133,8 @@
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <ElCLib.hxx>
 #include <BRep_Builder.hxx>
+#include <BRep_TEdge.hxx>
+#include <BRep_TVertex.hxx>
 #include <BRep_Tool.hxx>
 #include <BinTools.hxx>
 #include <Bnd_Box.hxx>
@@ -2730,23 +2732,60 @@ class HelicalBandDivide : public ShapeUpgrade_FaceDivide {
   }
 };
 
+// The tolerances of a shape's vertices and edges, to put back on them: `BRepLib::SameParameter`
+// on a shape made from another raises the tolerances of the sub-shapes they share in place.
+class SavedTolerances {
+ public:
+  explicit SavedTolerances(const TopoDS_Shape& s) {
+    ShapeMap vs, es;
+    TopExp::MapShapes(s, TopAbs_VERTEX, vs);
+    TopExp::MapShapes(s, TopAbs_EDGE, es);
+    for (int i = 1; i <= vs.Extent(); ++i) {
+      occ::handle<BRep_TVertex> t = occ::handle<BRep_TVertex>::DownCast(vs(i).TShape());
+      if (!t.IsNull()) vertices_.emplace_back(t, t->Tolerance());
+    }
+    for (int i = 1; i <= es.Extent(); ++i) {
+      occ::handle<BRep_TEdge> t = occ::handle<BRep_TEdge>::DownCast(es(i).TShape());
+      if (!t.IsNull()) edges_.emplace_back(t, t->Tolerance());
+    }
+  }
+  void restore() const {
+    for (const auto& [t, tol] : vertices_) t->Tolerance(tol);
+    for (const auto& [t, tol] : edges_) t->Tolerance(tol);
+  }
+
+ private:
+  std::vector<std::pair<occ::handle<BRep_TVertex>, double>> vertices_;
+  std::vector<std::pair<occ::handle<BRep_TEdge>, double>> edges_;
+};
+
 // `s` with its helical bands (`wraps_between_helices`) split into half turns, and the split's
-// history in `h`; `s` itself and a null `h` where it has none, or the split is not valid.
+// history in `h`; `s` itself and a null `h` where it has none, or the split is not valid. A
+// split that is not kept leaves `s` as it was: the same-parameter pass over the split raises
+// the tolerances of the vertices and edges it shares with `s` (the CRS-METEO bearing clamps'
+// coil, whose bore band split badly: a vertex of the stored body went from 1.3e-4 to 1.8 mm).
 TopoDS_Shape split_helical_bands(const TopoDS_Shape& s, occ::handle<BRepTools_History>& h) {
   h.Nullify();
   bool any = false;
   for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More() && !any; ex.Next())
     any = wraps_between_helices(TopoDS::Face(ex.Current()));
   if (!any) return s;
+  const SavedTolerances saved(s);
   ShapeUpgrade_ShapeDivideAngle divide(M_PI, s);
   occ::handle<HelicalBandDivide> tool = new HelicalBandDivide;
   tool->SetSplitSurfaceTool(new ShapeUpgrade_SplitSurfaceAngle(M_PI));
   tool->SetWireDivideTool(nullptr);
   divide.SetSplitFaceTool(tool);
-  if (!divide.Perform() || divide.GetContext().IsNull()) return s;
+  if (!divide.Perform() || divide.GetContext().IsNull()) {
+    saved.restore();
+    return s;
+  }
   TopoDS_Shape out = divide.Result();
   BRepLib::SameParameter(out, 1e-6, true);
-  if (!BRepCheck_Analyzer(out).IsValid()) return s;
+  if (!BRepCheck_Analyzer(out).IsValid()) {
+    saved.restore();
+    return s;
+  }
   h = divide.GetContext()->History();
   return out;
 }
