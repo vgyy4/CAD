@@ -5763,6 +5763,35 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let h = sk.and_then(|sk| helix_of(sk, helix_record(rf, a, b)?));
             helix_ids.insert(n.id, n.name.clone());
             helices.insert(n.name.clone(), h);
+        } else if cls.as_deref() == Some("moRib_c") {
+            // A rib (round rib1): its sketch is its child as an extrude's is; `D1` the thickness.
+            let base = feature_sketch(n.child, &last_sketch, &sketch_order, &sketch_seen, &sketch_used, |r| {
+                node_at_index(&mut node_index, rf, &nodes, &span, r)
+            });
+            if let (Some(r), Some(sk)) = (n.child, &base) {
+                sketch_seen.push((r, sk.clone()));
+                sketch_used.insert(sk.clone());
+            }
+            let sk = base.as_ref().and_then(|nm| {
+                feats.iter().find(|f| {
+                    f.get("type").and_then(Value::as_str) == Some("sketch")
+                        && f.get("name").and_then(Value::as_str) == Some(nm.as_str())
+                })
+            });
+            let slots = param_slots(rf, a, b, nt)?;
+            let d1 = slots.iter().find(|(nm, _)| nm == "D1").map(|(_, at)| *at);
+            let rib = match (sk, d1) {
+                (Some(sk), Some(at)) => rib_of(sk, rf, at),
+                _ => None,
+            };
+            match rib {
+                Some(mut js) if solid => {
+                    js.insert("name".into(), json!(n.name));
+                    js.insert("target".into(), json!(first_solid));
+                    feats.push(Value::Object(js));
+                }
+                _ => feats.push(json!({"type": "unsupported", "name": n.name, "original_type": cls})),
+            }
         } else if cls.as_deref() == Some("moShell_c") {
             let ps = params(rf, a, b, nt)?;
             let recs = edge_records(rf, a, b)?;
@@ -6282,6 +6311,55 @@ fn sketch_frame(sk: &Value) -> Option<(V3, V3, V3)> {
     };
     let pl = sk.get("plane")?;
     Some((v3(pl.get("origin"))?, v3(pl.get("x_axis"))?, v3(pl.get("y_axis"))?))
+}
+
+/// A rib's tree feature (round rib1) from its sketch and the `D1` slot at `at` (the thickness,
+/// m). The rib's lines are the sketch's lines that are not construction geometry (its arcs are
+/// converted edges of the part). It grows in the sketch plane, square to its first line; the
+/// side is not decoded, so the import tries the other where the first meets no face
+/// (`either`). The thickness dimension's two points follow the value (31 bytes on): one on the
+/// sketch plane and one a thickness off it is a rib to one side, two a half off it a centred
+/// one.
+fn rib_of(sk: &Value, d: &[u8], at: usize) -> Option<Map<String, Value>> {
+    let t = f64_at(d, at).filter(|v| v.is_finite() && *v > 1e-9)?;
+    let (o, x, y) = sketch_frame(sk)?;
+    let pts = sketch_points(sk)?;
+    let mut lines = Vec::new();
+    for c in sk.get("curves")?.as_array()? {
+        if c.get("type").and_then(Value::as_str) != Some("line")
+            || c.get("construction").and_then(Value::as_bool) == Some(true)
+        {
+            continue;
+        }
+        let p = |k: &str| pts.get(c.get(k)?.as_str()?).copied();
+        lines.push((c.get("id")?.as_str()?.to_string(), p("start")?, p("end")?));
+    }
+    let (_, a0, b0) = lines.first()?;
+    let (dx, dy) = (b0.0 - a0.0, b0.1 - a0.1);
+    let len = dx.hypot(dy);
+    if !(len > 1e-9) {
+        return None;
+    }
+    let toward = comb(x, -dy / len, y, dx / len).map(|v| round_to(v, 12) + 0.0);
+    let n = cross(x, y);
+    let mut js = Map::new();
+    js.insert("type".into(), json!("rib"));
+    js.insert("sketch".into(), sk.get("name")?.clone());
+    js.insert("curves".into(), json!(lines.iter().map(|l| l.0.clone()).collect::<Vec<_>>()));
+    js.insert("thickness".into(), json!(round_to(mm(t), 9)));
+    js.insert("toward".into(), json!(toward));
+    js.insert("either".into(), json!(true));
+    if let Some(p) = f64s_at::<6>(d, at + 31) {
+        let off = |q: [f64; 3]| dot(sub(q.map(mm), o), n);
+        let (d0, d1) = (off([p[0], p[1], p[2]]), off([p[3], p[4], p[5]]));
+        let tt = mm(t);
+        let one_sided = |a: f64, b: f64| a.abs() < 1e-3 && (b.abs() - tt).abs() < 1e-3;
+        if one_sided(d0, d1) || one_sided(d1, d0) {
+            let s = if d0 + d1 > 0.0 { 1.0 } else { -1.0 };
+            js.insert("side".into(), json!(n.map(|c| round_to(c * s, 12) + 0.0)));
+        }
+    }
+    Some(js)
 }
 
 /// A sketch's points by id in its tree JSON.
