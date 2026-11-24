@@ -994,3 +994,18 @@ Round sw20 (L32 in `docs/formats/solidworks-feature-tree.md`):
 The rebuild check is unchanged. History 392 -> 396 of 1352, none lost (full run row for row against the round's base).
 The mirror and hole changes are in the tree import, which every reader writes into: the Inventor and Solid Edge
 corpora were rerun in full against their own baselines (ADR 0046 amendment "round sw20").
+
+## Amendment (2026-11-24): simple holes, converted edges that close a profile (round sw21)
+
+Round sw21 (L33 in `docs/formats/solidworks-feature-tree.md`):
+
+- **Simple holes**: a hole whose parameters are `Diameter` and `Depth` (the simple Hole feature) ends flat; its
+  `C-Bore` and `C-Sink` parameters make a counterbore or a countersink.
+- **Converted edges that close a profile**: a converted model edge writes an object chain where other sketch
+  entities write their flags, and its construction flag is not found. Where a sketch closes no region and the loose
+  ends of its profile rest on converted edges, an extrude or revolve that uses it takes those edges as profile
+  lines; other users (ribs) and sketches that close a region keep the sketch as read.
+
+The rebuild check is unchanged. History 396 -> 401 of 1352, none lost (full run row for row against the round's
+base). Only the SolidWorks reader changed (`gusset-sldprt`): the tree import, document, evaluator and kernel are
+untouched, so the Inventor and Solid Edge corpora were not rerun.

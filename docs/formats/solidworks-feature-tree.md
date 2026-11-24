@@ -1974,3 +1974,62 @@ in a hole sketch), Top_mainplate_v1 (a countersink on no face), Link 6 (mirrors 
 None lost. Other rows that changed reason: Quick Release Housing, spring_base_v1, Biyel Kolu, Practice Model -
 Sharpener (one feature fewer refused), the Lego Hips, Stepper motor NEMA 23HS7430, the bearings, Link 2 and Link 4
 (above).
+
+## L33. Round 27 (sw21: simple holes, converted edges that close a profile)
+Measured from this round's own baseline (396 of 1352 on the base with rounds sw20 and ipt16, row for row the same as
+round sw20's final log).
+
+* **Simple holes.** The simple Hole feature is a `moHoleWzd_c` node too, but its parameters are `Diameter` and `Depth`
+  (no wizard names, no `Drill Angle`), and it ends flat: Link_5's and Link_1v2's Hole1 (50 mm across, 10 deep) were
+  each 9831 mm3 short with the usual 118 degree drill point, exactly the point's cone. Its options write
+  `C-Bore Diameter` and `C-Bore Depth` (10-32 Nylock Nut: 6.654 mm, 0.75 deep over a 4.039 mm hole 7.101 deep, 16.5 mm3
+  heavy without them) or `C-Sink Diameter` and `C-Sink Angle` (Link_8). Read as a flat hole with a counterbore or a
+  countersink.
+* **Converted edges.** An entity header's reference slot (`u16` at +35) is zero for ordinary entities, whose flags
+  follow at +37. A converted model edge writes an object chain there: two class words (`3c 81 3e 81` in
+  1.5Kw-Bracket, `cd 80 cf 80` in cap), the `moCompEdge_c` object with the edge's references, a record that ends in
+  the UTF-16 string `Edge` and `04 00 00` just before the 0.0/1.0 pair. Read at +37, the flags are the chain's
+  second class word, so every converted edge of a file was construction or none was, by that word's bits (0x813e:
+  construction, all of 1.5Kw-Bracket's). The word three bytes before the pair is 4 on 3694 converted segments of
+  the corpus (0 on 165, never 5 or 0xc), also on cap's converted circle, which is construction in the part: not
+  the flag. No other byte of the chain told 1.5Kw-Bracket's profile edges (Sketch3) from its construction ones
+  (Sketch4's rectangle around three circles); the construction flag of a converted edge is not found. Making every
+  converted edge a profile line lost cap, Back_sup_RT_upp and back_shoulder_LT among the first 11 parts tried.
+  Taken: where a sketch closes no region (no loop among its profile segments, no circle) and every loose end of its
+  profile rests on a converted edge (at an end, or along a line), an extrude or revolve that uses it takes those
+  edges as profile lines, and in turns the converted edges that hold the loose ends this leaves; a rib (motor
+  kapağı's rib sketch ends on converted edges) and the other users keep the sketch as read, as does a sketch that
+  closes a region already (Link 6's Sketch5: a rectangle, and an arc whose ends rest on two overlapping converted
+  lines). 1.5Kw-Bracket's Sketch3 closes its arc slot and arc band on the converted outline; GT2 Belt Clamp's
+  Sketch5 likewise. SlotMount-Attachment now builds and is 66680 against 253320 mm3: of its converted outline the
+  top line is construction (its flipped-side cut keeps the region below the T-slots' polyline), which the rule
+  cannot tell.
+* **Measured, not done.**
+  - Quick Release Housing's Cut-Extrude4: its node header holds 0.015 where the other cuts hold 0 (8 bytes after
+    the second `80 3e 00 00`), but Cut-Extrude2, through all both ways, holds 0.016. Started at z = 15 the part is
+    still 13.8 mm3 heavy: the set-screw and bore cylinders differ as well.
+  - Volume mismatches by cause (70 on the base): simple holes 3 (taken); Toolbox fasteners whose sketches hold
+    another configuration's sizes (the Hex Screw M3 ISO 4762 three, 3mm Cap Head Screw, socket set screw cone point:
+    Config-17 streams only, 7.8 mm3 against 119-345); GT3_20tooth 8 mm and 6.35 mm, both 0.133 mm3 light (the
+    0.2 mm round of the set-screw holes' edges builds other faces); the zsCAD building parts 4aq, 4bq, 5aq, 5cq, 5cd
+    (stored bodies cut by extrudes, 1.4 to 3.2 times heavy); the V-Slot extrusions (175mm, Rail
+    EXTENSION, Rail PIVOT, about twice the volume: Sketch7's 150 segments of the slot profile leave four loose ends
+    and segments that join far points, the point indices are not the header positions with or without the 168
+    dimension helpers); Quick Release Housing (above).
+  - Steel Eccentric Spacer's Cut-Revolve1: both candidate axes (y = 4.54 and x = 5.35) cross the profile as read.
+  - GT2_20tooth's face pattern, the gears' body pattern and the text cuts (bottom, top, Servo Calibration Tool:
+    `sgTextHandle` entities) as in L32.
+
+**Coverage after the round** (rebuild check unchanged; the round's own baseline on its base):
+
+| corpus | baseline | round sw21 |
+|---|---|---|
+| slip-pad | 28 / 35 | 28 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 2 / 14 | 2 / 14 |
+| sw-more | 351 / 1253 | **356** / 1253 |
+| all | 396 / 1352 | **401** / 1352 |
+
+Gained (5): Link_5 and Link_1v2 (simple holes end flat), 10-32 Nylock Nut (a simple hole's counterbore),
+1.5Kw-Bracket and GT2 Belt Clamp (converted edges close the profile). None lost. One other row changed reason:
+SlotMount-Attachment (above).
