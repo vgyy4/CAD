@@ -639,7 +639,7 @@ impl Command for Rib {
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let thickness = parse_expr("thickness", &self.thickness)?;
         let growth = match (self.toward, self.normal) {
-            (Some([x, y]), false) if x.is_finite() && y.is_finite() && x.hypot(y) > 0.0 => RibGrowth::InPlane {
+            (Some([x, y]), false) if x.is_finite() && y.is_finite() && libm::hypot(x, y) > 0.0 => RibGrowth::InPlane {
                 toward: [parse_expr("toward", &format!("{x}"))?, parse_expr("toward", &format!("{y}"))?],
             },
             (None, true) => RibGrowth::Normal { reverse: self.reverse },

@@ -6336,8 +6336,8 @@ fn rib_of(sk: &Value, d: &[u8], at: usize) -> Option<Map<String, Value>> {
     }
     let (_, a0, b0) = lines.first()?;
     let (dx, dy) = (b0.0 - a0.0, b0.1 - a0.1);
-    let len = dx.hypot(dy);
-    if !(len > 1e-9) {
+    let len = libm::hypot(dx, dy);
+    if len.is_nan() || len <= 1e-9 {
         return None;
     }
     let toward = comb(x, -dy / len, y, dx / len).map(|v| round_to(v, 12) + 0.0);

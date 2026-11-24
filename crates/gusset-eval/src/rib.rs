@@ -73,7 +73,7 @@ impl Evaluator {
             };
             let entity =
                 sv.ids.values().find(|id| gusset_naming::entity_tag(id) == Some(e.tag)).cloned().unwrap_or_default();
-            if (b[0] - a[0]).hypot(b[1] - a[1]) < 1e-9 {
+            if libm::hypot(b[0] - a[0], b[1] - a[1]) < 1e-9 {
                 continue;
             }
             lines.push(Line { a, b, entity });
@@ -86,7 +86,7 @@ impl Evaluator {
             ));
         }
         let closed = match (lines.first(), lines.last()) {
-            (Some(f), Some(l)) => lines.len() > 1 && (f.a[0] - l.b[0]).hypot(f.a[1] - l.b[1]) < 1e-6,
+            (Some(f), Some(l)) => lines.len() > 1 && libm::hypot(f.a[0] - l.b[0], f.a[1] - l.b[1]) < 1e-6,
             _ => false,
         };
         let (_, body) = ops::target_body(s, name, d.body.as_deref())?;
@@ -118,12 +118,12 @@ impl Evaluator {
                 let n = f.normal();
                 let count = lines.len();
                 for (i, l) in lines.iter().enumerate() {
-                    let len = (l.b[0] - l.a[0]).hypot(l.b[1] - l.a[1]);
+                    let len = libm::hypot(l.b[0] - l.a[0], l.b[1] - l.a[1]);
                     let u = [(l.b[0] - l.a[0]) / len, (l.b[1] - l.a[1]) / len];
                     // Left of the line in the sketch; the rib grows to the side `toward` points to.
                     let m = [-u[1], u[0]];
                     let side = m[0] * tx + m[1] * ty;
-                    if !(side.abs() > 1e-9 * tx.hypot(ty).max(1e-300)) {
+                    if side.abs() <= 1e-9 * libm::hypot(tx, ty).max(1e-300) || !side.is_finite() {
                         return Err(EvalError::new(
                             name,
                             ErrorCode::Expression,
@@ -193,7 +193,7 @@ fn outline(lines: &[Line], hl: f64, hr: f64, reach: f64, closed: bool) -> Region
     let dirs: Vec<(P2, P2)> = lines
         .iter()
         .map(|l| {
-            let len = (l.b[0] - l.a[0]).hypot(l.b[1] - l.a[1]);
+            let len = libm::hypot(l.b[0] - l.a[0], l.b[1] - l.a[1]);
             let u = [(l.b[0] - l.a[0]) / len, (l.b[1] - l.a[1]) / len];
             (u, [-u[1], u[0]])
         })

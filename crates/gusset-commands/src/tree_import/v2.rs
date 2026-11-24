@@ -2222,7 +2222,7 @@ pub(super) fn rib(g: &mut Gen, s: &Session, d: &RibF) -> Result<(), String> {
         (Some(v), None) => {
             let v = unit(v, "the rib's direction")?;
             let (u, w) = (dot(v, x), dot(v, y));
-            if u.hypot(w) < 1e-6 {
+            if libm::hypot(u, w) < 1e-6 {
                 return Err("the rib's direction is not in its sketch plane".into());
             }
             other = d.either.then(|| format!(", toward: [{}, {}]", fine(-u), fine(-w)));
