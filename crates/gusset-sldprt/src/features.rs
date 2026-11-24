@@ -1225,7 +1225,7 @@ struct Pt {
     /// The record id (`u32 -1` marks dimension helpers).
     id: u32,
     /// The u16 after the coordinates: 1 for a stand-alone point (a hole centre in a
-    /// hole-wizard placement sketch), 0 for the end of a segment.
+    /// hole-wizard placement sketch), 0 for the end of a segment or a construction point.
     alone: u16,
 }
 
@@ -1349,7 +1349,9 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
                 continue;
             }
             let [x, y] = f64s_at::<2>(d, p + 2)?;
-            let alone = u16_at(d, p + 18)?;
+            // A construction point (flag bit 0, as for segments) is no hole centre: FrameBracket_v2's
+            // M3x0.5 Tapped Hole1 places two holes, its sketch holds a third, construction point.
+            let alone = if flags & 9 != 0 { 0 } else { u16_at(d, p + 18)? };
             g.pts.push(Some(Pt { x, y, ext, id: rid, alone }));
         } else {
             let (s, e, one) = (u16_at(d, p)?, u16_at(d, p + 2)?, u16_at(d, p + 4)?);
