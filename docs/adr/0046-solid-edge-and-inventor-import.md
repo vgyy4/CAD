@@ -1588,3 +1588,12 @@ Both corpora were rerun in full on this round's base and head (one part per proc
 own binaries): Inventor 744 of 1639 and 28 of 47 as history before and after, every part's outcome
 class unchanged; Solid Edge 103 of 180 before and after, one row differing outside history (052
 timed out under load on the base and gave its usual reason on the head).
+
+## Amendment (2026-11-24): round sw20 - mirrors of mirrors and holes past their face, measured
+
+Round sw20 changed the tree import (ADR 0042 amendment: a mirror of features that lists another mirror copies its
+seeds and their copies; seeds in the tree's order; holes past their face or on none cut as revolves). Both corpora
+were rerun in full against their own baselines (the base's test binaries, same workers). Solid Edge: 103 of 180,
+every row unchanged. Inventor: 772 of 1686 history, none gained or lost; four parts get further (EY4180's A-01 and
+A-03, FPV_Chasis and Heatpad Tray now copy their mirrors of mirrors and stop at a chamfer, a fillet or a pattern of
+mirror copies), and one part that timed out under load in the base run now gives its reason.
