@@ -975,3 +975,22 @@ The rebuild check is unchanged. History 391 -> 392 of 1352, none lost (full run 
 only the six rib parts changed; motor kapağı rebuilds). The rib is new to the document, evaluator, kernel (a flag of
 the up-to-next sweep, ADR 0062) and tree import; no other feature or tree type reaches the new code, and the
 Inventor and Solid Edge corpora were rerun in full (ADR 0046 amendment 38).
+
+## Amendment (2026-11-24): mirrors of mirrors, holes past their face (round sw20)
+
+Round sw20 (L32 in `docs/formats/solidworks-feature-tree.md`):
+
+- **Mirrors of mirrors** (tree import, ADR 0042 amendment): a mirror of features that lists another mirror of features
+  copies that mirror's seeds and their copies, reflected again (Quick Release Housing's four ribs; Link 6's Mirror2);
+  seeds are copied in the tree's order (Link 6's Mirror3 lists Fillet1 before the boss it rounds).
+- **Construction points** (flag bit 0 of a sketch point's header, as for segments) are no hole centres (FrameBracket_v2's
+  tapped holes).
+- **Holes past their face** (tree import): a hole whose mouth reaches past its face's edges (the hole wizard's
+  countersinks sunk into a clearance cut at a part's edge), or that lies on no face (Top_mainplate_v1's fifth
+  countersink, in a bore), is cut as a revolve of its outline; the reader writes the hole's `target`.
+- **Pattern seed lists** with instances left out (`moCirPatternItemId_c` ids) or the bearings' second flag are read;
+  a pattern that leaves instances out is refused by that reason.
+
+The rebuild check is unchanged. History 392 -> 396 of 1352, none lost (full run row for row against the round's base).
+The mirror and hole changes are in the tree import, which every reader writes into: the Inventor and Solid Edge
+corpora were rerun in full against their own baselines (ADR 0046 amendment "round sw20").

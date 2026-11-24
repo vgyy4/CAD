@@ -409,6 +409,34 @@ fn two_mirrors_named_alike_each_reflect_their_own_copy() {
 }
 
 #[test]
+fn a_mirror_of_a_mirror_copies_its_seeds_and_their_copies() {
+    // Quick Release Housing's Mirror2 lists Mirror1 (a mirror of a rib): four ribs. Here a
+    // block, its copy across x = 0, and both across y = 0, each its own body.
+    let mut s = session();
+    let t = tree2(json!([
+        rect("S", json!({"origin": [10, 10, 0], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]}), 10.0, 10.0),
+        {"type": "extrude", "name": "E", "sketch": "S", "profiles": "all", "distance": 5},
+        {"type": "mirror", "name": "M1", "features": ["E"], "plane": {"origin": [0, 0, 0], "normal": [1, 0, 0]}},
+        {"type": "mirror", "name": "M2", "features": ["M1", "E"], "plane": {"origin": [0, 0, 0], "normal": [0, 1, 0]}}
+    ]));
+    let r = import(&mut s, "mm.gtree.json", &t).unwrap();
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    let ev = s.evaluate(&gusset_history::Actor::User).unwrap();
+    let k = s.kernel().clone();
+    let mut mins: Vec<[f64; 2]> = ev
+        .bodies
+        .iter()
+        .map(|b| {
+            let bb = k.bbox(&b.shape).unwrap();
+            [(bb.min[0] * 1e6).round() / 1e6, (bb.min[1] * 1e6).round() / 1e6]
+        })
+        .collect();
+    mins.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // E listed again after M1 is copied once.
+    assert_eq!(mins, vec![[-20.0, -20.0], [-20.0, 10.0], [10.0, -20.0], [10.0, 10.0]], "{mins:?}");
+}
+
+#[test]
 fn a_body_count_unlike_the_sources_is_warned() {
     let mut s = session();
     let t = tree(

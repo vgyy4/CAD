@@ -98,6 +98,10 @@ pub(super) struct HoleF {
     csink_angle: Option<f64>,
     #[serde(default)]
     point_angle: Option<f64>,
+    /// The body the hole cuts, where no face holds its point (a position in a hole an earlier
+    /// cut made): the hole is then cut as a revolve of its outline.
+    #[serde(default)]
+    target: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -703,7 +707,25 @@ pub(super) fn hole(g: &mut Gen, s: &Session, d: &HoleF) -> Result<(), String> {
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     let fp = finite3(d.face.point, "the face point")?;
     let mut meshes: Meshes = Vec::new();
-    let face = find_face(s.kernel().as_ref(), &ev, &mut meshes, fp, d.face.normal)?;
+    let face = match find_face(s.kernel().as_ref(), &ev, &mut meshes, fp, d.face.normal) {
+        Ok(f) => f,
+        // No face holds the point (Top_mainplate_v1's fifth countersink, at the centre of a
+        // bore): the hole is cut as revolves into its target.
+        Err(why) if why.starts_with("no planar or cylindrical face") => {
+            let (Some(t), Some(n)) = (&d.target, d.face.normal) else { return Err(why) };
+            let body = g.body_named(t, "target")?;
+            let n = unit(finite3(n, "the face normal")?).ok_or("the face normal has no direction")?;
+            let fx = face_x(n).ok_or("the face has no usable frame")?;
+            for (i, p) in d.positions.iter().enumerate() {
+                let p = finite3(*p, "a hole position")?;
+                hole_revolve(g, s, d, (n, &body), p, (fx, i)).map_err(|e| format!("{why}; cut as a revolve: {e}"))?;
+            }
+            let last = g.made.last().cloned().ok_or("nothing was made")?;
+            g.features.insert(d.name.clone(), last);
+            return Ok(());
+        }
+        Err(why) => return Err(why),
+    };
     warn_fallback(g, &face, fp);
     if !face.planar {
         return Err("a hole goes into a planar face".into());
@@ -729,11 +751,7 @@ pub(super) fn hole(g: &mut Gen, s: &Session, d: &HoleF) -> Result<(), String> {
         // world origin projected onto the plane, x the world X projected (world Y when X is
         // nearly the normal), y = normal x x.
         let n = face.normal;
-        let project = |v: V3| sub(v, n.map(|c| c * dot(v, n)));
-        let fx = unit(project([1.0, 0.0, 0.0]))
-            .filter(|x| dot(*x, [1.0, 0.0, 0.0]).abs() > 1e-3)
-            .or_else(|| unit(project([0.0, 1.0, 0.0])))
-            .ok_or("the face has no usable frame")?;
+        let fx = face_x(n).ok_or("the face has no usable frame")?;
         let fy = cross(n, fx);
         let origin = n.map(|c| c * dot(face.centroid, n));
         let sites: Vec<String> = ps
@@ -745,12 +763,108 @@ pub(super) fn hole(g: &mut Gen, s: &Session, d: &HoleF) -> Result<(), String> {
             })
             .collect();
         let name = if k == 0 { first.clone() } else { g.fresh(&format!("{first}_{}", k + 1), "Hole") };
+        let (text_len, made_len) = (g.text.len(), g.made.len());
         let _ =
             writeln!(g.text, "\nhole {name} (face: {}, at: [{}], {})", face.name, sites.join(", "), args.join(", "));
-        builds(g, s, &name)?;
-        g.made.push(name);
+        match builds(g, s, &name) {
+            Ok(()) => g.made.push(name),
+            // A mouth that reaches past the face's edges (FrameBracket_v2's countersinks, sunk
+            // into a 0.15 mm clearance cut at the part's edge): a hole of Gusset's stays inside
+            // its face, so the hole is cut as a revolve of its outline instead.
+            Err(why) if why.contains("does not fit inside face") => {
+                g.text.truncate(text_len);
+                g.made.truncate(made_len);
+                for (i, p) in ps.iter().enumerate() {
+                    hole_revolve(g, s, d, (face.normal, &face.body), *p, (fx, i))
+                        .map_err(|e| format!("{why}; cut as a revolve: {e}"))?;
+                }
+            }
+            Err(why) => return Err(why),
+        }
     }
+    // Where the first group was cut as revolves, the tree's name stands for the last made.
+    let first = if g.made.contains(&first) { first } else { g.made.last().cloned().unwrap_or(first) };
     g.features.insert(d.name.clone(), first);
+    Ok(())
+}
+
+/// The x axis of Gusset's frame on a planar face with normal `n`: the world X projected (world Y
+/// when X is nearly the normal).
+fn face_x(n: V3) -> Option<V3> {
+    let project = |v: V3| sub(v, n.map(|c| c * dot(v, n)));
+    unit(project([1.0, 0.0, 0.0]))
+        .filter(|x| dot(*x, [1.0, 0.0, 0.0]).abs() > 1e-3)
+        .or_else(|| unit(project([0.0, 1.0, 0.0])))
+}
+
+/// A hole at `p` cut into `body` as a revolve of its outline (as Gusset's hole tool draws it) in
+/// a sketch through the hole's axis (`n` the face's outward normal), `fx` (a direction in the
+/// face) its x axis.
+fn hole_revolve(
+    g: &mut Gen,
+    s: &Session,
+    d: &HoleF,
+    (n, body): (V3, &str),
+    p: V3,
+    (fx, i): (V3, usize),
+) -> Result<(), String> {
+    let r = d.diameter / 2.0;
+    let mut pts: Vec<[f64; 2]> = vec![[0.0, 0.0]];
+    match d.variant.as_deref().unwrap_or("simple") {
+        "counterbore" => {
+            let (cd, ch) = (d.cbore_diameter.unwrap_or(0.0) / 2.0, d.cbore_depth.unwrap_or(0.0));
+            pts.extend([[cd, 0.0], [cd, ch], [r, ch]]);
+        }
+        "countersink" => {
+            let cd = d.csink_diameter.unwrap_or(0.0) / 2.0;
+            let half = d.csink_angle.unwrap_or(90.0).to_radians() / 2.0;
+            pts.extend([[cd, 0.0], [r, (cd - r) / libm::tan(half)]]);
+        }
+        _ => pts.push([r, 0.0]),
+    }
+    let end = if d.through {
+        // Past every body: the evaluation's boxes give the reach.
+        let ev = g.evaluate(s).map_err(|e| e.message)?;
+        let k = s.kernel();
+        let mut reach: f64 = 1.0;
+        for b in &ev.bodies {
+            let bb = k.bbox(&b.shape).map_err(|e| e.to_string())?;
+            reach = reach.max(norm(sub(bb.max, bb.min)) + norm(sub(p, bb.min)));
+        }
+        reach
+    } else {
+        d.depth.unwrap_or(0.0)
+    };
+    pts.push([r, end]);
+    let tip = match d.point_angle.filter(|a| !d.through && *a > 0.0 && *a < 180.0) {
+        Some(a) => end + r / libm::tan(a.to_radians() / 2.0),
+        None => end,
+    };
+    pts.push([0.0, tip]);
+    if pts.iter().flatten().any(|v| !v.is_finite()) || end <= 0.0 {
+        return Err("its outline has no depth".into());
+    }
+    pts.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9);
+    let src = format!("{}\u{1}hole{}", d.name, i + 1);
+    let points: Vec<Value> =
+        pts.iter().enumerate().map(|(k, q)| json!({"id": format!("p{k}"), "x": q[0], "y": q[1]})).collect();
+    let curves: Vec<Value> = (0..pts.len())
+        .map(|k| json!({"id": format!("c{k}"), "type": "line", "start": format!("p{k}"), "end": format!("p{}", (k + 1) % pts.len())}))
+        .collect();
+    let into = n.map(|c| -c);
+    let sk = json!({"type": "sketch", "name": src, "plane": {"origin": p, "x_axis": fx, "y_axis": into},
+        "points": points, "curves": curves});
+    let sd = serde_json::from_value::<SketchF>(sk).map_err(|e| e.to_string())?;
+    sketch(g, &sd)?;
+    // About the outline's last edge, the one along the axis.
+    let sm = g.sketches.get(&src).ok_or("its sketch was not made")?;
+    let line = sm.ids.get(&format!("c{}", pts.len() - 1)).ok_or("its axis line was not made")?;
+    let (profile, axis) = (sm.name.clone(), format!("{}.{line}", sm.name));
+    let name = g.fresh(&format!("{}_{}", d.name, i + 1), "Hole");
+    let _ =
+        writeln!(g.text, "\nrevolve {name} (profile: {profile}, axis: {axis}, angle: 360 deg, op: cut, body: {body})");
+    builds(g, s, &name)?;
+    g.made.push(name);
     Ok(())
 }
 
@@ -1141,7 +1255,7 @@ pub(super) fn mirror(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value]) -> 
     // bodies, and cuts of those bodies the list holds (1119's legs: `Mirror1` of a sweep and a
     // notch cut in it, `Mirror2` of the sweep, `Mirror1` and the notch), whose effect the
     // copies of the bodies carry.
-    if let Some(bodies) = new_body_copies(g, d, feats) {
+    if let Some(bodies) = new_body_copies(g, &d.features, feats) {
         let mut last = None;
         for b in bodies {
             let copy = MirrorF { features: Vec::new(), target: Some(b), merge: Some(false), ..d.clone() };
@@ -1168,17 +1282,24 @@ pub(super) fn mirror(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value]) -> 
 /// own as a sweep, or is an imported mirror of such features, or is a cut whose targets include
 /// one of those bodies (the copy carries its effect); `None` otherwise (the features are built
 /// again, reflected).
-fn new_body_copies(g: &Gen, d: &MirrorF, feats: &[Value]) -> Option<Vec<String>> {
+fn new_body_copies(g: &Gen, list: &[String], feats: &[Value]) -> Option<Vec<String>> {
     let find = |n: &str| feats.iter().find(|f| f.get("name").and_then(Value::as_str) == Some(n));
     let kind = |f: &Value| f.get("type").and_then(Value::as_str).unwrap_or("").to_string();
     let op = |f: &Value| f.get("operation").and_then(Value::as_str).unwrap_or("").to_string();
     let mut bodies = Vec::new();
     let mut cuts = Vec::new();
-    for name in &d.features {
+    for name in list {
         let f = find(name)?;
         match (kind(f).as_str(), op(f).as_str()) {
             ("sweep", "new") => bodies.push(name.clone()),
-            ("mirror", _) if g.features.contains_key(name) && f.get("features").is_some() => bodies.push(name.clone()),
+            // A mirror that copied bodies itself; a mirror whose copies joined a body is a
+            // mirror of features (its copies are built again, see `mirror_features`).
+            ("mirror", _)
+                if g.features.contains_key(name)
+                    && seeds_of(f).is_some_and(|l| new_body_copies(g, &l, feats).is_some()) =>
+            {
+                bodies.push(name.clone())
+            }
             ("extrude", "cut") => cuts.push(f),
             _ => return None,
         }
@@ -1194,6 +1315,12 @@ fn new_body_copies(g: &Gen, d: &MirrorF, feats: &[Value]) -> Option<Vec<String>>
         }
     };
     cuts.iter().all(|c| targets(c).iter().any(|t| bodies.contains(t))).then_some(bodies)
+}
+
+/// The features a mirror of features lists (`None` for a mirror of the whole body).
+fn seeds_of(f: &Value) -> Option<Vec<String>> {
+    let l: Vec<String> = f.get("features")?.as_array()?.iter().filter_map(Value::as_str).map(str::to_string).collect();
+    (!l.is_empty()).then_some(l)
 }
 
 /// The text name of the plane through `o` with normal `n`: a base plane when it is one, else
@@ -1262,32 +1389,73 @@ fn mirror_body(g: &mut Gen, s: &Session, d: &MirrorF, o: V3, n: V3) -> Result<()
     Ok(())
 }
 
+/// A reflection across a plane (a point, a unit normal) and the tag its copies' names carry.
+type Reflection = (V3, V3, String);
+
 fn mirror_features(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value], o: V3, n: V3) -> Result<(), String> {
     // A tag of its own per mirror (two mirrors named alike must not share copies), joined
     // with a character no source name has in practice.
     let tag = g.fresh(&d.name, "Mirror");
-    let rename = |nm: &str| format!("{nm}\u{1}{tag}");
     let mut mirrored: HashSet<String> = HashSet::new();
     let mut last = None;
-    for fname in &d.features {
-        let idx = *g.index.get(fname).ok_or_else(|| format!("its feature '{}' was not imported", short(fname)))?;
+    // Each seed with the reflections that copy it, the first applied first. A listed mirror of
+    // features stands for what it made: its own seeds, and their copies across its plane, each
+    // reflected across this one (Quick Release Housing's Mirror2 of Mirror1, a mirror of a rib:
+    // four ribs).
+    // In the tree's order: a list may name a fillet before the boss it rounds (Link 6's Mirror3).
+    let mut order = d.features.clone();
+    order.sort_by_key(|f| g.index.get(f).copied().unwrap_or(usize::MAX));
+    let mut work: Vec<(String, Vec<Reflection>)> =
+        order.iter().rev().map(|f| (f.clone(), vec![(o, n, tag.clone())])).collect();
+    let mut nested = 0usize;
+    let mut copied: HashSet<String> = HashSet::new();
+    while let Some((fname, chain)) = work.pop() {
+        let idx = *g.index.get(&fname).ok_or_else(|| format!("its feature '{}' was not imported", short(&fname)))?;
         let f = feats.get(idx).ok_or("its feature is missing")?;
         let kind = f.get("type").and_then(Value::as_str).unwrap_or("");
+        if kind == "mirror" {
+            let seeds = seeds_of(f).ok_or("a mirror of the whole body cannot be mirrored as a feature")?;
+            let plane = serde_json::from_value::<MirrorPlane>(f.get("plane").cloned().unwrap_or_default())
+                .map_err(|e| e.to_string())?;
+            let pn = unit(finite3(plane.normal, "the mirror plane")?).ok_or("the mirror plane has no normal")?;
+            let po = finite3(plane.origin, "the mirror plane")?;
+            nested += 1;
+            if chain.len() > 4 || nested > MAX_PICKS {
+                return Err("its mirrors of mirrors nest too deep".into());
+            }
+            let mut inner = vec![(po, pn, format!("{tag}\u{2}{nested}"))];
+            inner.extend(chain.iter().cloned());
+            work.extend(seeds.iter().rev().map(|x| (x.clone(), inner.clone())));
+            work.extend(seeds.into_iter().rev().map(|x| (x, chain.clone())));
+            continue;
+        }
+        // A seed listed again, and copied by this chain already, is copied once.
+        let key = chain.iter().fold(fname.clone(), |a, (_, _, t)| format!("{a}\u{1}{t}"));
+        if !copied.insert(key) {
+            continue;
+        }
+        let rename = |nm: &str| chain.iter().fold(nm.to_string(), |a, (_, _, t)| format!("{a}\u{1}{t}"));
+        let reflect = |v: &Value| -> Result<Value, String> {
+            let mut v = v.clone();
+            for (co, cn, t) in &chain {
+                v = reflect_feature(&v, *co, *cn, &|nm: &str| format!("{nm}\u{1}{t}"))?;
+            }
+            Ok(v)
+        };
         if matches!(kind, "extrude" | "revolve" | "rib") {
-            // The sketch is mirrored once per mirror feature.
+            // The sketch is mirrored once per copy.
             let sk = f.get("sketch").and_then(Value::as_str).ok_or("a solid without a sketch")?;
-            if mirrored.insert(sk.to_string()) {
+            if mirrored.insert(rename(sk)) {
                 let sidx = *g.index.get(sk).ok_or_else(|| format!("its sketch '{}' was not imported", short(sk)))?;
                 let src = feats.get(sidx).ok_or("its sketch is missing")?;
-                let rf = reflect_feature(src, o, n, &rename)?;
-                let sd = serde_json::from_value::<SketchF>(rf).map_err(|e| e.to_string())?;
+                let sd = serde_json::from_value::<SketchF>(reflect(src)?).map_err(|e| e.to_string())?;
                 sketch(g, &sd)?;
             }
         }
-        let mut rf = reflect_feature(f, o, n, &rename)?;
+        let mut rf = reflect(f)?;
         // A copy's target is the copy of the target when that is copied too.
         if let Some(tg) = f.get("target").and_then(Value::as_str)
-            && d.features.iter().any(|x| x == tg)
+            && g.features.contains_key(&rename(tg))
         {
             set(&mut rf, "target", json!(rename(tg)));
         }

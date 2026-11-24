@@ -164,6 +164,46 @@ fn a_blind_hole_in_a_side_face() {
     assert!(r["features"].as_array().unwrap().iter().any(|f| f == "Side"), "{r}");
 }
 
+/// A hole whose mouth reaches past its face's edge (FrameBracket_v2's countersinks at the part's
+/// edge) is cut as a revolve of its outline.
+#[test]
+fn a_hole_past_its_faces_edge_is_cut_as_a_revolve() {
+    let pi = std::f64::consts::PI;
+    let (r, v) = import_v2(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 20.0, 20.0),
+        extrude("Block", "Sketch1", 10.0, "new"),
+        // A through hole r 1 with a countersink r 3 at 90 degrees (2 mm deep), its centre 2 mm
+        // from the x = 0 side: the mouth overhangs the side by 1 mm.
+        json!({"type": "hole", "name": "Csk", "face": {"point": [10, 10, 10], "normal": [0, 0, 1]},
+               "positions": [[2, 10, 10]], "diameter": 2, "variant": "countersink", "csink_diameter": 6,
+               "csink_angle": 90, "through": true}),
+    ]);
+    assert!(r["features"].as_array().unwrap().iter().any(|f| f == "Csk_1"), "{r}");
+    // At most the bore and the cone (r 3 to 1 over 2 mm), less the cone's part past the side;
+    // at least the bore below the cone.
+    let cone = pi * 2.0 / 3.0 * (9.0 + 3.0 + 1.0);
+    let bore = pi * 1.0 * 8.0;
+    assert!(v > 4000.0 - cone - bore && v < 4000.0 - bore, "volume {v}");
+}
+
+/// A hole whose point no face holds (Top_mainplate_v1's countersink at the centre of a bore)
+/// is cut as a revolve into its target; here it cuts nothing.
+#[test]
+fn a_hole_in_a_bore_is_cut_as_a_revolve_into_its_target() {
+    let pi = std::f64::consts::PI;
+    let (r, v) = import_v2(vec![
+        rect("Sketch1", plane_at(0.0), -10.0, -10.0, 20.0, 20.0),
+        extrude("Block", "Sketch1", 10.0, "new"),
+        disc("Sketch2", plane_at(10.0), 0.0, 0.0, 4.0),
+        extrude("Bore", "Sketch2", -10.0, "cut"),
+        json!({"type": "hole", "name": "Csk", "face": {"point": [0, 0, 10], "normal": [0, 0, 1]},
+               "positions": [[0, 0, 10]], "diameter": 2, "variant": "countersink", "csink_diameter": 6,
+               "csink_angle": 90, "through": true, "target": "Block"}),
+    ]);
+    assert!(r["features"].as_array().unwrap().iter().any(|f| f == "Csk_1"), "{r}");
+    assert_vol(v, 4000.0 - pi * 16.0 * 10.0);
+}
+
 #[test]
 fn a_linear_pattern_of_three_bosses() {
     let (_, v) = import_v2(vec![

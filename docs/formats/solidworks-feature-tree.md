@@ -1914,3 +1914,63 @@ Gusset gained a rib (ADR 0062); the reader writes `moRib_c` as one.
 | all | 391 / 1352 | **392** / 1352 |
 
 Gained (1): motor kapağı (two ribs, each mirrored). None lost; the five other rib parts changed only their reason.
+
+## L32. Round 26 (sw20: mirrors of mirrors, holes past their face, construction points, pattern lists)
+Measured from this round's own baseline (392 of 1352 on the base with round rib1, row for row its final log).
+
+* **Mirrors of mirrors.** Quick Release Housing's Mirror2 lists Mirror1 (a mirror of Rib1 across z = 0) and
+  mirrors it across x = 0; the part has four ribs, so a listed mirror of features stands for its seeds and their
+  copies (the import composes the reflections, ADR 0042 amendment). Link 6's Mirror2 lists Mirror1, its seed
+  Cut-Extrude1 and Boss-Extrude3; its Mirror3 lists Fillet1 before Boss-Extrude4, the boss it rounds (seeds are
+  copied in the tree's order). The import had taken a mirror of features as a body copy whenever another mirror
+  listed it.
+* **Construction points in hole sketches.** A sketch point's header flags (`u16` at +37, as for segments) set bit 0
+  for construction geometry. FrameBracket_v2's M3x0.5 Tapped Hole1 sketch holds two hole centres (flags 4) and a
+  third stand-alone point (9.348, 4.120) with flags 5: SolidWorks places no hole there. Such points are no hole
+  centres now.
+* **Holes past their face.** The hole wizard's countersinks with head clearance sink their mouth into a 0.15 mm
+  clearance cut; at a part's edge (FrameBracket_v2's, spring_base_v1's) the mouth reaches past the cut's floor,
+  which Gusset's hole refuses. Top_mainplate_v1's fifth countersink sits at the centre of a bore, on no face. The
+  import cuts such holes as revolves of the hole outline (ADR 0042 amendment); the reader now writes the hole's
+  `target`.
+* **Pattern seed lists.** After the seed list and the (empty) face list a pattern writes `01 00 00 00`, the
+  instances it leaves out (`00 00`, or an `suObArray` of `moCirPatternItemId_c` items: class, `u32` id,
+  `ff ff ff ff`, 9 zero bytes; Link 2's CirPattern1 of 18 leaves out ids 3-7, Link 4's ids 3 and 4), a word (1, or 2
+  in the bearings' BallsDetailed), a zero byte, then the body list. Such lists read as no seed list before; a
+  pattern that leaves instances out is refused by that reason (which instance an id is was not measured: both
+  Links stop earlier, at a loft and a mirror). GT2_20tooth's patterns are of faces (the second list holds two
+  `moSingleFaceRef_w`), not read. The bearings' ball pattern now builds and is 2.35 mm3 (3e-4) heavy: the part's
+  balls are whole spheres (140.13 mm2 each) where the rebuilt ones keep a band of the ball sketch's flat and
+  cylinder.
+* **Measured, not done.**
+  - Quick Release Housing builds every feature but is 297 mm3 heavy: Cut-Extrude4 (r 3.5 through all, sketched
+    on the Front plane) starts at z = 15 in the part (a counterbore under the r 2.5 hole), not at its sketch plane;
+    the node has no `D3` start offset, the start condition is not decoded.
+  - Rib face names (`Rib1/1`, `Rib1/2`; Pivot's `Rib8/2`, `/5`): in ArmBaseNew, `/2` meets the cap and ends at
+    `/1`, and `/1` meets the cap between Cut-Extrude7's face at z = 15 and the wall: `/1` reads as a thickness
+    side and `/2` as the face on the line, but Pivot's pairs meet the cap twice each; not mapped.
+  - A body pattern of the Ahm3d0x gears (no seed, one body): repeating the only body about the axis gives
+    9947 mm3 kept apart and a broken union merged, against 9005; not written.
+  - Domes (4 parts): most sit on 0.1 mm circular or rectangular pads (sensor pannel, Arduino Mega Board); a dome
+    on a circular face is a revolved spherical cap, not written.
+  - spring_base_v1 now stops at Fillet1 (an edge midpoint 3 mm off), Biyel Kolu at a volume mismatch (59757
+    against 38406 mm3) after its hole builds as a revolve; Stepper motor NEMA 23HS7430's pattern now reads and the
+    part stops at a fillet the kernel fails.
+  - Practice Model -Lego Hips: Mirror1 lists its six seeds out of the tree's order; copied in the tree's order
+    its copy of Hip Cavity (up to a face) no longer meets the face (before: built, 865 against 381 mm3).
+
+**Coverage after the round** (rebuild check unchanged; the round's own baseline on its base):
+
+| corpus | baseline | round sw20 |
+|---|---|---|
+| slip-pad | 25 / 35 | **28** / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 2 / 14 | 2 / 14 |
+| sw-more | 350 / 1253 | **351** / 1253 |
+| all | 392 / 1352 | **396** / 1352 |
+
+Gained (4): FrameBracket_v2 and FrameBracket_v2_loadCell_v1 (countersinks past their face, a construction point
+in a hole sketch), Top_mainplate_v1 (a countersink on no face), Link 6 (mirrors of mirrors, seeds in tree order).
+None lost. Other rows that changed reason: Quick Release Housing, spring_base_v1, Biyel Kolu, Practice Model -
+Sharpener (one feature fewer refused), the Lego Hips, Stepper motor NEMA 23HS7430, the bearings, Link 2 and Link 4
+(above).

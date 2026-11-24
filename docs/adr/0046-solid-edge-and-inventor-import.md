@@ -1674,3 +1674,12 @@ gun body (19 mm3 short after Hole2), EjectionSystem (Fillet1 and the cuts before
 the near misses of amendment 37. Features not exported (delete face 8 parts first, sheet-metal bends,
 Design Accelerator gears), sheet-metal plates whose loop no sketch holds (8), derived parts with a missing
 base and imported base bodies are unchanged.
+
+## Amendment (2026-11-24, 40): round sw20 - mirrors of mirrors and holes past their face, measured
+
+Round sw20 changed the tree import (ADR 0042 amendment: a mirror of features that lists another mirror copies its
+seeds and their copies; seeds in the tree's order; holes past their face or on none cut as revolves). Both corpora
+were rerun in full against their own baselines (the base's test binaries, same workers). Solid Edge: 103 of 180,
+every row unchanged. Inventor: 772 of 1686 history, none gained or lost; four parts get further (EY4180's A-01 and
+A-03, FPV_Chasis and Heatpad Tray now copy their mirrors of mirrors and stop at a chamfer, a fillet or a pattern of
+mirror copies), and one part that timed out under load in the base run now gives its reason.

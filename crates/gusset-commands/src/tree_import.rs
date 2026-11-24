@@ -1350,6 +1350,7 @@ pub fn apply_with(
                         | "rib"
                         | "pattern_linear"
                         | "pattern_circular"
+                        | "mirror"
                 ) {
                     g.index.insert(src_name.clone(), fi);
                 }

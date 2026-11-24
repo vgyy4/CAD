@@ -667,3 +667,16 @@ whole thickness of an in-plane rib on that side; without it the thickness is cen
 says the source does not know the side of the lines: where the rib meets no face toward `toward`, the
 import builds it toward the opposite side. `target` names the body it joins. Mirrors of features
 copy ribs (the sketch and the directions reflected).
+
+## Amendment (2026-11-24): mirrors of mirrors, holes cut as revolves
+
+- A `mirror` of features may list another mirror of features: it stands for what that mirror made,
+  its seeds and their copies across its plane, each reflected again across this mirror's plane
+  (composed reflections; Quick Release Housing's Mirror2 of Mirror1, a mirror of a rib, makes four
+  ribs). A mirror counts as copies of bodies only when its own seeds were new bodies; seeds are copied
+  in the tree's order (a list may name a fillet before the boss it rounds), and a seed listed twice
+  (a mirror and its seed) is copied once.
+- `hole` takes an optional `target` (the body it cuts). A hole whose mouth reaches past its face's
+  edges (Gusset's holes stay inside their face), or whose point no face holds and that names a
+  `target` and the face's `normal`, is cut as a revolve of its outline (counterbore or countersink,
+  bore, drill point) about its axis, one per position.
