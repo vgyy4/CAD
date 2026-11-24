@@ -52,6 +52,9 @@ pub(crate) struct Spline3 {
     pub(crate) weights: Vec<f64>,
 }
 
+/// An edge of a loop: its points along the loop, and its B-spline when it runs a whole one.
+pub(crate) type LoopEdge = (Vec<V3>, Option<Spline3>);
+
 /// Highest B-spline degree read.
 const MAX_DEGREE: usize = 25;
 /// Most knots of one B-spline curve read.
@@ -521,7 +524,7 @@ impl Acis {
     /// running along the loop (a straight edge its two ends, an arc or exact B-spline
     /// (`exact_int_cur`) its samples), with its B-spline when the edge runs the curve's whole
     /// length (the glyphs of sketch text); file units. `None` as for [`Self::loops_of_body`].
-    pub(crate) fn loop_curves_of_body(&self, tag: i64) -> Option<Vec<Vec<(Vec<V3>, Option<Spline3>)>>> {
+    pub(crate) fn loop_curves_of_body(&self, tag: i64) -> Option<Vec<Vec<LoopEdge>>> {
         self.loop_edges(tag)
     }
 
@@ -557,7 +560,7 @@ impl Acis {
         Some((pts, whole.then(|| sp.clone())))
     }
 
-    fn loop_edges(&self, tag: i64) -> Option<Vec<Vec<(Vec<V3>, Option<Spline3>)>>> {
+    fn loop_edges(&self, tag: i64) -> Option<Vec<Vec<LoopEdge>>> {
         let b = *self.bodies.get(&tag)?;
         let mut seen = vec![false; self.recs.len()];
         let mut st = vec![b];
@@ -597,7 +600,7 @@ impl Acis {
                 cur = nu;
                 order.push(cur);
             }
-            let mut edges: Vec<(Vec<V3>, Option<Spline3>)> = Vec::new();
+            let mut edges: Vec<LoopEdge> = Vec::new();
             for ce in order {
                 let Some(edge) = self.recs.get(ce)?.refs.iter().copied().find(|&x| self.is(x, "edge")) else {
                     continue;
