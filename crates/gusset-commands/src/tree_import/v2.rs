@@ -745,12 +745,101 @@ pub(super) fn hole(g: &mut Gen, s: &Session, d: &HoleF) -> Result<(), String> {
             })
             .collect();
         let name = if k == 0 { first.clone() } else { g.fresh(&format!("{first}_{}", k + 1), "Hole") };
+        let (text_len, made_len) = (g.text.len(), g.made.len());
         let _ =
             writeln!(g.text, "\nhole {name} (face: {}, at: [{}], {})", face.name, sites.join(", "), args.join(", "));
-        builds(g, s, &name)?;
-        g.made.push(name);
+        match builds(g, s, &name) {
+            Ok(()) => g.made.push(name),
+            // A mouth that reaches past the face's edges (FrameBracket_v2's countersinks, sunk
+            // into a 0.15 mm clearance cut at the part's edge): a hole of Gusset's stays inside
+            // its face, so the hole is cut as a revolve of its outline instead.
+            Err(why) if why.contains("does not fit inside face") => {
+                g.text.truncate(text_len);
+                g.made.truncate(made_len);
+                for (i, p) in ps.iter().enumerate() {
+                    hole_revolve(g, s, d, face, *p, (fx, i)).map_err(|e| format!("{why}; cut as a revolve: {e}"))?;
+                }
+            }
+            Err(why) => return Err(why),
+        }
     }
+    // Where the first group was cut as revolves, the tree's name stands for the last made.
+    let first = if g.made.contains(&first) { first } else { g.made.last().cloned().unwrap_or(first) };
     g.features.insert(d.name.clone(), first);
+    Ok(())
+}
+
+/// A hole at `p` on `face` cut as a revolve of its outline (as Gusset's hole tool draws it) in a
+/// sketch through the hole's axis, `fx` (a direction in the face) its x axis.
+fn hole_revolve(
+    g: &mut Gen,
+    s: &Session,
+    d: &HoleF,
+    face: &FaceHit,
+    p: V3,
+    (fx, i): (V3, usize),
+) -> Result<(), String> {
+    let n = face.normal;
+    let r = d.diameter / 2.0;
+    let mut pts: Vec<[f64; 2]> = vec![[0.0, 0.0]];
+    match d.variant.as_deref().unwrap_or("simple") {
+        "counterbore" => {
+            let (cd, ch) = (d.cbore_diameter.unwrap_or(0.0) / 2.0, d.cbore_depth.unwrap_or(0.0));
+            pts.extend([[cd, 0.0], [cd, ch], [r, ch]]);
+        }
+        "countersink" => {
+            let cd = d.csink_diameter.unwrap_or(0.0) / 2.0;
+            let half = d.csink_angle.unwrap_or(90.0).to_radians() / 2.0;
+            pts.extend([[cd, 0.0], [r, (cd - r) / libm::tan(half)]]);
+        }
+        _ => pts.push([r, 0.0]),
+    }
+    let end = if d.through {
+        // Past every body: the evaluation's boxes give the reach.
+        let ev = g.evaluate(s).map_err(|e| e.message)?;
+        let k = s.kernel();
+        let mut reach: f64 = 1.0;
+        for b in &ev.bodies {
+            let bb = k.bbox(&b.shape).map_err(|e| e.to_string())?;
+            reach = reach.max(norm(sub(bb.max, bb.min)) + norm(sub(p, bb.min)));
+        }
+        reach
+    } else {
+        d.depth.unwrap_or(0.0)
+    };
+    pts.push([r, end]);
+    let tip = match d.point_angle.filter(|a| !d.through && *a > 0.0 && *a < 180.0) {
+        Some(a) => end + r / libm::tan(a.to_radians() / 2.0),
+        None => end,
+    };
+    pts.push([0.0, tip]);
+    if pts.iter().flatten().any(|v| !v.is_finite()) || end <= 0.0 {
+        return Err("its outline has no depth".into());
+    }
+    pts.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9);
+    let src = format!("{}\u{1}hole{}", d.name, i + 1);
+    let points: Vec<Value> =
+        pts.iter().enumerate().map(|(k, q)| json!({"id": format!("p{k}"), "x": q[0], "y": q[1]})).collect();
+    let curves: Vec<Value> = (0..pts.len())
+        .map(|k| json!({"id": format!("c{k}"), "type": "line", "start": format!("p{k}"), "end": format!("p{}", (k + 1) % pts.len())}))
+        .collect();
+    let into = n.map(|c| -c);
+    let sk = json!({"type": "sketch", "name": src, "plane": {"origin": p, "x_axis": fx, "y_axis": into},
+        "points": points, "curves": curves});
+    let sd = serde_json::from_value::<SketchF>(sk).map_err(|e| e.to_string())?;
+    sketch(g, &sd)?;
+    // About the outline's last edge, the one along the axis.
+    let sm = g.sketches.get(&src).ok_or("its sketch was not made")?;
+    let line = sm.ids.get(&format!("c{}", pts.len() - 1)).ok_or("its axis line was not made")?;
+    let (profile, axis) = (sm.name.clone(), format!("{}.{line}", sm.name));
+    let name = g.fresh(&format!("{}_{}", d.name, i + 1), "Hole");
+    let _ = writeln!(
+        g.text,
+        "\nrevolve {name} (profile: {profile}, axis: {axis}, angle: 360 deg, op: cut, body: {})",
+        face.body
+    );
+    builds(g, s, &name)?;
+    g.made.push(name);
     Ok(())
 }
 
