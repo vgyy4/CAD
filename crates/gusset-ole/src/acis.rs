@@ -501,13 +501,13 @@ impl Acis {
     /// Every loop (face loop or wire) of the body with this tag, as points (file units).
     /// `None`: no such body, or an edge that cannot be sampled.
     pub(crate) fn loops_of_body(&self, tag: i64) -> Option<Vec<Vec<V3>>> {
-        let loops = self.loop_edges_of_body(tag)?;
+        let loops = self.loop_edges(tag)?;
         Some(
             loops
                 .into_iter()
                 .map(|edges| {
                     let mut pts: Vec<V3> = Vec::new();
-                    for e in edges {
+                    for (e, _) in edges {
                         let skip = usize::from(!pts.is_empty());
                         pts.extend(e.into_iter().skip(skip));
                     }
@@ -518,18 +518,11 @@ impl Acis {
     }
 
     /// Every loop of the body with this tag as its edges in loop order, each edge's points
-    /// running along the loop (a straight edge its two ends, an arc its samples); file units.
-    /// `None` as for [`Self::loops_of_body`].
-    pub(crate) fn loop_edges_of_body(&self, tag: i64) -> Option<Vec<Vec<Vec<V3>>>> {
-        let loops = self.loop_edges(tag, false)?;
-        Some(loops.into_iter().map(|l| l.into_iter().map(|(p, _)| p).collect()).collect())
-    }
-
-    /// As [`Self::loop_edges_of_body`], with B-spline edges (`exact_int_cur`) sampled along
-    /// their curve instead of from end to end, and given with their curve when the edge runs its
-    /// whole length (the glyphs of sketch text).
+    /// running along the loop (a straight edge its two ends, an arc or exact B-spline
+    /// (`exact_int_cur`) its samples), with its B-spline when the edge runs the curve's whole
+    /// length (the glyphs of sketch text); file units. `None` as for [`Self::loops_of_body`].
     pub(crate) fn loop_curves_of_body(&self, tag: i64) -> Option<Vec<Vec<(Vec<V3>, Option<Spline3>)>>> {
-        self.loop_edges(tag, true)
+        self.loop_edges(tag)
     }
 
     /// The sampled B-spline edge `e`, from its start vertex to its end vertex, with its curve
@@ -564,7 +557,7 @@ impl Acis {
         Some((pts, whole.then(|| sp.clone())))
     }
 
-    fn loop_edges(&self, tag: i64, splines: bool) -> Option<Vec<Vec<(Vec<V3>, Option<Spline3>)>>> {
+    fn loop_edges(&self, tag: i64) -> Option<Vec<Vec<(Vec<V3>, Option<Spline3>)>>> {
         let b = *self.bodies.get(&tag)?;
         let mut seen = vec![false; self.recs.len()];
         let mut st = vec![b];
@@ -609,7 +602,7 @@ impl Acis {
                 let Some(edge) = self.recs.get(ce)?.refs.iter().copied().find(|&x| self.is(x, "edge")) else {
                     continue;
                 };
-                let (mut sm, spl) = match splines.then(|| self.spline_edge(edge)).flatten() {
+                let (mut sm, spl) = match self.spline_edge(edge) {
                     Some(x) => x,
                     None => (self.edge_samples(edge)?, None),
                 };
