@@ -26,6 +26,8 @@ pub(super) struct Seeds {
     pub bodies: usize,
     /// The instances left out (`moCirPatternItemId_c` ids; the seed is 1).
     pub skipped: Vec<u32>,
+    /// The id of the one body a pattern of bodies repeats (round sw22), where it is read.
+    pub body_ids: Vec<u32>,
 }
 
 /// The first seed list in `[a, b)`: `T n <n pointers> T 00 00 01 00 00 00 00 00 01 00 00 00 00
@@ -80,7 +82,28 @@ fn list_at(d: &[u8], i: usize, t: u16, end: usize) -> Option<Seeds> {
     if !tail_ok || k + 9 > end {
         return None;
     }
-    Some(Seeds { ptrs, bodies: usize::from(u16_at(d, k + 7)?), skipped })
+    let bodies = usize::from(u16_at(d, k + 7)?);
+    let body_ids = if bodies == 1 { body_ref(d, k + 9, end).into_iter().collect() } else { Vec::new() };
+    Some(Seeds { ptrs, bodies, skipped, body_ids })
+}
+
+/// The id of a body reference at `i` (round sw22): its class (declared as `ff ff 01 00 11 00
+/// moCompSolidBody_c`, or its tag), a class word, `02` and six zero bytes, then the body's id
+/// twice (the Ahm3d0x gears' CirPattern3: `3c 8c 2e 80 02 00 00 00 00 00 00 94 00 00 00 94 00
+/// 00 00`, the body of Boss-Extrude12, whose own lists end with the id 0x94).
+fn body_ref(d: &[u8], i: usize, end: usize) -> Option<u32> {
+    const DECL: &[u8] = b"\xff\xff\x01\x00\x11\x00moCompSolidBody_c";
+    let j = if d.get(i..i + DECL.len()) == Some(DECL) {
+        i + DECL.len()
+    } else {
+        u16_at(d, i).filter(|t| t & 0x8000 != 0 && *t != 0xffff).map(|_| i + 2)?
+    };
+    u16_at(d, j).filter(|t| t & 0x8000 != 0 && *t != 0xffff)?;
+    if d.get(j + 2..j + 9) != Some(&[2, 0, 0, 0, 0, 0, 0][..]) || j + 17 > end {
+        return None;
+    }
+    let id = u32_at(d, j + 9)?;
+    (u32_at(d, j + 13) == Some(id) && id != 0).then_some(id)
 }
 
 /// Most instances a pattern leaves out that are read.
@@ -215,11 +238,22 @@ mod tests {
         let mut d = vec![0u8, 0, 0x6e, 0x81];
         d.extend([0x08, 0x80, 2, 0, 0x84, 0x04, 0x33, 0x06, 0x08, 0x80, 0, 0]);
         d.extend([1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0x08, 0x80, 0, 0, 0, 0]);
-        assert_eq!(seed_list(&d, 0, d.len()), Some(Seeds { ptrs: vec![0x484, 0x633], bodies: 0, skipped: vec![] }));
+        assert_eq!(
+            seed_list(&d, 0, d.len()),
+            Some(Seeds { ptrs: vec![0x484, 0x633], bodies: 0, skipped: vec![], body_ids: vec![] })
+        );
         // The gear's body pattern: no seed, one body; an index past 0x7fff is escaped.
         let mut g = vec![0x77u8, 0x80, 1, 0, 0xff, 0x7f, 0x10, 0x80, 0, 0, 0x77, 0x80, 0, 0];
         g.extend([1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0x77, 0x80, 1, 0, 0, 0]);
-        assert_eq!(seed_list(&g, 0, g.len()), Some(Seeds { ptrs: vec![0x8010], bodies: 1, skipped: vec![] }));
+        assert_eq!(
+            seed_list(&g, 0, g.len()),
+            Some(Seeds { ptrs: vec![0x8010], bodies: 1, skipped: vec![], body_ids: vec![] })
+        );
+        // With the body it repeats (round sw22: the gear's CirPattern3, Boss-Extrude12's body).
+        let mut h = g.clone();
+        h.truncate(h.len() - 2);
+        h.extend([0x3c, 0x8c, 0x2e, 0x80, 2, 0, 0, 0, 0, 0, 0, 0x94, 0, 0, 0, 0x94, 0, 0, 0, 0, 0]);
+        assert_eq!(seed_list(&h, 0, h.len()).unwrap().body_ids, vec![0x94]);
         // Without the middle words it is no seed list.
         g[16] = 9;
         assert_eq!(seed_list(&g, 0, g.len()), None);
@@ -235,11 +269,17 @@ mod tests {
         d.extend([4, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         d.extend([0x09, 0x85, 5, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         d.extend([1, 0, 0, 0, 0, 0x63, 0x80, 0, 0, 0, 0]);
-        assert_eq!(seed_list(&d, 0, d.len()), Some(Seeds { ptrs: vec![0x4d5], bodies: 0, skipped: vec![4, 5] }));
+        assert_eq!(
+            seed_list(&d, 0, d.len()),
+            Some(Seeds { ptrs: vec![0x4d5], bodies: 0, skipped: vec![4, 5], body_ids: vec![] })
+        );
         // The bearings' BallsDetailed: no instance left out, the word before the bodies 2.
         let mut b = vec![0xdcu8, 0x80, 1, 0, 0x82, 0x07, 0xdc, 0x80, 0, 0];
         b.extend([1, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0xdc, 0x80, 0, 0, 0, 0]);
-        assert_eq!(seed_list(&b, 0, b.len()), Some(Seeds { ptrs: vec![0x782], bodies: 0, skipped: vec![] }));
+        assert_eq!(
+            seed_list(&b, 0, b.len()),
+            Some(Seeds { ptrs: vec![0x782], bodies: 0, skipped: vec![], body_ids: vec![] })
+        );
     }
 
     #[test]

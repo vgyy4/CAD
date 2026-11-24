@@ -16,8 +16,9 @@
 
 use crate::{Container, Limits, cfb, chunks, detect};
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+mod bodies;
 mod patterns;
 
 /// Largest feature stream (and `Config-0` stream) read.
@@ -701,6 +702,112 @@ fn chosen_profiles(
             })
             .collect(),
     ))
+}
+
+/// The profiles of a feature from its own contours (round sw22): a feature writes a contour of
+/// its own (the contour's references name the feature's id, its box is the solid's) for each
+/// region it extrudes, naming the sketch segments around it. Where each names the segments of
+/// one region the sketch lists (as a set), that region is picked (the gears' Boss-Extrude12
+/// extrudes the tooth its Sketch21 closes against a circle, not the circle's disk); `None`
+/// where any does not match. A region of an open chain of segments closed by a circle is
+/// picked by the middle of the polygon the chain and the chord between its ends enclose (the
+/// listed boxes can be older than the sketch: the gear 3's tooth box lies at r 11.9, its
+/// tooth at 8.3 to 10.0); any other by the listed box, with its centre on the sketch.
+fn own_profiles(
+    cs: &[Contour],
+    own: u32,
+    (sketch, g, plane): (u32, &Geometry, &JsonPlane),
+    a: usize,
+    b: usize,
+) -> Option<Value> {
+    let set = |c: &Contour| c.segs.iter().copied().collect::<BTreeSet<u32>>();
+    let mm = |v: f64| round_to(v * 1000.0, 9);
+    let mut picks = Vec::new();
+    for c in cs.iter().filter(|c| c.fid == own && !c.listed && (a..b).contains(&c.at)) {
+        let want = set(c);
+        let mut boxes = cs.iter().filter(|l| l.listed && l.fid == sketch && set(l) == want).map(|l| l.bbox);
+        let first = boxes.next()?;
+        if boxes.any(|x| x.iter().zip(first).any(|(p, q)| (p - q).abs() > 1e-12)) {
+            return None;
+        }
+        if let Some((u, v)) = chain_point(g, &c.segs) {
+            picks.push(json!({"point": [mm(u), mm(v)]}));
+            continue;
+        }
+        let rel = sub([first[0] * 1000.0, first[1] * 1000.0, first[2] * 1000.0], plane.origin);
+        let uv = [round_to(dot(rel, plane.x), 9) + 0.0, round_to(dot(rel, plane.y), 9) + 0.0];
+        picks.push(json!({"bbox": [mm(first[0]), mm(first[1]), mm(first[2]), mm(first[3])], "point": uv}));
+    }
+    (!picks.is_empty()).then_some(Value::Array(picks))
+}
+
+/// The centroid of the polygon an open chain of the segments `keys` and the chord between its
+/// ends enclose, where the other segments are full circles that hold both ends (a tooth drawn
+/// on its root circle); `None` otherwise.
+fn chain_point(g: &Geometry, keys: &[u32]) -> Option<(f64, f64)> {
+    const TOL: f64 = 1e-9;
+    let near = |p: (f64, f64), q: (f64, f64)| libm::hypot(p.0 - q.0, p.1 - q.1) < TOL;
+    let mut open: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut circles: Vec<(Pt, f64)> = Vec::new();
+    let full = |s: &Seg| s.kind != SegKind::Line && s.s == s.e;
+    let circle = |s: &Seg| -> Option<(Pt, f64)> {
+        let (c, p) = (point(&g.pts, s.c)?, point(&g.pts, s.s)?);
+        Some((c, libm::hypot(p.x - c.x, p.y - c.y)))
+    };
+    let mut missing = 0usize;
+    for k in keys {
+        match g.segs.iter().find(|s| s.a == *k && !s.construction) {
+            Some(s) if full(s) => circles.push(circle(s)?),
+            Some(s) => open.push(seg_uv(g, s)?),
+            None => missing += 1,
+        }
+    }
+    // A circle drawn again since the contour was stored (the gear 3's root circle: key 1 is
+    // gone, three circles of its radius are drawn): any circle of the sketch that holds both ends.
+    if circles.is_empty() && missing == 1 {
+        circles = g.segs.iter().filter(|s| !s.construction && full(s)).filter_map(circle).collect();
+    }
+    if circles.is_empty() || open.is_empty() || missing > 1 || (missing == 1 && keys.len() < 3) {
+        return None;
+    }
+    let mut chain = open.swap_remove(0);
+    while !open.is_empty() {
+        let (Some(&head), Some(&tail)) = (chain.first(), chain.last()) else { return None };
+        let k = open.iter().position(|p| {
+            let (Some(&f), Some(&l)) = (p.first(), p.last()) else { return false };
+            near(f, tail) || near(l, tail) || near(f, head) || near(l, head)
+        })?;
+        let mut p = open.swap_remove(k);
+        let (f, l) = (*p.first()?, *p.last()?);
+        if near(f, tail) {
+            chain.extend(p.into_iter().skip(1));
+        } else if near(l, tail) {
+            p.reverse();
+            chain.extend(p.into_iter().skip(1));
+        } else {
+            if near(f, head) {
+                p.reverse();
+            }
+            p.pop();
+            p.extend(chain);
+            chain = p;
+        }
+    }
+    let (Some(&head), Some(&tail)) = (chain.first(), chain.last()) else { return None };
+    let on = |q: (f64, f64)| circles.iter().any(|(c, r)| (libm::hypot(q.0 - c.x, q.1 - c.y) - r).abs() < 1e-7);
+    if near(head, tail) || !on(head) || !on(tail) {
+        return None;
+    }
+    // Shoelace over the closed polygon.
+    let (mut area, mut cx, mut cy) = (0.0, 0.0, 0.0);
+    for (k, &(x0, y0)) in chain.iter().enumerate() {
+        let (x1, y1) = chain.get(k + 1).copied().unwrap_or(head);
+        let w = x0 * y1 - x1 * y0;
+        area += w;
+        cx += (x0 + x1) * w;
+        cy += (y0 + y1) * w;
+    }
+    (area.abs() > 1e-12).then(|| (cx / (3.0 * area), cy / (3.0 * area)))
 }
 
 /// A point inside what the polylines `segs` enclose (even-odd): the middle of the widest inside
@@ -4469,6 +4576,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     // The contours the stream lists and chooses (round sw7), and those taken by a feature.
     let all_contours = contours(rf, &nodes.iter().map(|n| n.id).collect());
     let mut used_contours: HashSet<usize> = HashSet::new();
+    // The bodies each node makes and takes in, and the profiles of its own contours (round sw22).
+    let mut body_list: HashMap<String, bodies::BodyLists> = HashMap::new();
+    let mut own_profile: HashMap<String, Value> = HashMap::new();
     // Where the stretch of the next extrude or revolve begins (the end of the previous one).
     let mut feat_lo = 0usize;
     let mut chosen = |last_sketch: &Option<String>,
@@ -4490,6 +4600,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     for (ni, n) in nodes.iter().enumerate() {
         let mut cls = n.cls.clone();
         let (a, b) = span(n);
+        if let Some(l) = bodies::body_lists(rf, a, b) {
+            body_list.insert(n.name.clone(), l);
+        }
         let sketchlike = matches!(cls.as_deref(), Some("moProfileFeature_c" | "mo3DProfileFeature_c"));
         if hole.as_ref().is_some_and(|h| !sketchlike || h.sketches >= 2)
             && let Some(h) = hole.take()
@@ -4986,6 +5099,14 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             js.insert("name".into(), json!(n.name));
             js.insert("sketch".into(), json!(last_sketch));
             js.insert("profiles".into(), chosen(last_sketch, &sketch_ids, &sketch_by_name, &sketches, &mut feat_lo, b));
+            if let Some(sk) = last_sketch.as_ref()
+                && let Some(fid) = sketch_ids.iter().find(|(_, v)| *v == sk).map(|(k, _)| *k)
+                && let Some((i, plane)) = sketch_by_name.get(sk)
+                && let Some(g) = sketches.get(*i)
+                && let Some(p) = own_profiles(&all_contours, n.id, (fid, g, plane), a, b)
+            {
+                own_profile.insert(n.name.clone(), p);
+            }
             js.insert("operation".into(), json!(if flip { "intersect" } else { op }));
             // A cut reaches every body (SolidWorks' default scope): with several imported bodies
             // it names them all (5bq's two extrudes cut all four of its bodies).
@@ -6007,7 +6128,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         "format": "gusset-feature-tree",
         "version": 2,
         "source": {"app": "solidworks", "file": file},
-        "features": expand_holes(drop_reblended(feats)),
+        "features": expand_holes(bodies::track(drop_reblended(feats), &body_list, &own_profile)),
     }))
 }
 
@@ -6852,7 +6973,13 @@ fn feature_pattern(
     let kind = if circular { "pattern_circular" } else { "pattern_linear" };
     let fail = |why: &str| vec![json!({"type": kind, "name": name, "unresolved": true, "why": why})];
     let Some(seeds) = seeds else { return fail("no seed list") };
-    if seeds.ptrs.is_empty() {
+    // A circular pattern of one body whose id is read (round sw22) is read as one with the
+    // body's id; the tree's bodies then say which body that is (`bodies::track`).
+    let body_source = match (seeds.ptrs.as_slice(), seeds.bodies, seeds.body_ids.as_slice()) {
+        ([], 1, [id]) if circular => Some(*id),
+        _ => None,
+    };
+    if seeds.ptrs.is_empty() && body_source.is_none() {
         return fail(if seeds.bodies > 0 { "a pattern of bodies" } else { "no seed feature" });
     }
     let mut names: Vec<String> = Vec::new();
@@ -6870,7 +6997,7 @@ fn feature_pattern(
             names.push(s);
         }
     }
-    if names.is_empty() {
+    if names.is_empty() && body_source.is_none() {
         return fail("no seed feature");
     }
     let all_cuts = names.iter().all(|n| {
@@ -6899,6 +7026,10 @@ fn feature_pattern(
             // Which instance each id is was not measured (Link 2's and Link 4's parts stop
             // earlier, at a loft and a mirror).
             return fail("instances left out");
+        } else if let Some(id) = body_source {
+            out.push(json!({"type": kind, "name": name, "features": names, "count": count,
+                "axis": axis, "angle": round_to(angle, 9), "body_source": id, "unresolved": true,
+                "why": "a pattern of bodies"}));
         } else if count > 1 {
             out.push(json!({"type": kind, "name": name, "features": names, "count": count,
                 "axis": axis, "angle": round_to(angle, 9)}));
@@ -7928,7 +8059,7 @@ mod pattern_tests {
     use super::*;
 
     fn seeds(ptrs: &[u32]) -> Option<patterns::Seeds> {
-        Some(patterns::Seeds { ptrs: ptrs.to_vec(), bodies: 0, skipped: vec![] })
+        Some(patterns::Seeds { ptrs: ptrs.to_vec(), bodies: 0, skipped: vec![], body_ids: vec![] })
     }
 
     #[test]
@@ -8020,7 +8151,7 @@ mod pattern_tests {
             assert_eq!(out[0]["axis"]["origin"], json!([0.0, 2.8, 0.0]));
         }
         // A pattern of bodies is not read.
-        let body = Some(patterns::Seeds { ptrs: vec![], bodies: 1, skipped: vec![] });
+        let body = Some(patterns::Seeds { ptrs: vec![], bodies: 1, skipped: vec![], body_ids: vec![] });
         let out = feature_pattern("P", true, body, &lines, (|_: &str| Some(3), |_: &str| None), names, &feats);
         assert_eq!(out[0]["why"], "a pattern of bodies");
     }
