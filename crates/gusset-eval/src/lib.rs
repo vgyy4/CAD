@@ -1108,16 +1108,19 @@ impl Evaluator {
                         })?
                     }
                     ExtrudeEnd::ToNext { reverse } => {
+                        // `op: new` keeps the stretch an add would join as a body of its own,
+                        // stopped at the most recent body (Solid Edge's ribs, trimmed before they
+                        // are joined).
                         let cut = match e.op {
-                            BodyOp::Add => false,
+                            BodyOp::Add | BodyOp::New => false,
                             BodyOp::Cut => true,
-                            _ => {
+                            BodyOp::Intersect => {
                                 return Err(EvalError::new(
                                     name,
                                     ErrorCode::Expression,
-                                    "an extrude up to the next face adds to or cuts a body",
+                                    "an extrude up to the next face adds to or cuts a body, or makes one",
                                 )
-                                .with_hint("use op: add or op: cut"));
+                                .with_hint("use op: add, op: cut or op: new"));
                             }
                         };
                         let face_body = face_body_target(s, &e.profile, e.body.as_deref(), e.op);

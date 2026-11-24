@@ -1915,8 +1915,8 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
                 if d.symmetric {
                     return Err("an extrude up to the next face cannot be symmetric".into());
                 }
-                if !matches!(op, "add" | "cut") {
-                    return Err("an extrude up to the next face adds to or cuts a body".into());
+                if !matches!(op, "add" | "cut" | "new") {
+                    return Err("an extrude up to the next face adds to or cuts a body, or makes one".into());
                 }
                 args.push("to: next".into());
                 if d.reverse != flipped {

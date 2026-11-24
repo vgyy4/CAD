@@ -328,7 +328,9 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
   `op: add` the extrude runs from the profile to the first face of the body it meets (it fails
   if the profile starts inside the material or meets no face); with `op: cut` it removes the
   first stretch of material it meets, from where it enters to where it leaves, and nothing
-  beyond (a wall of a hollow part, not the wall behind it). No offset, extend or symmetric.
+  beyond (a wall of a hollow part, not the wall behind it). With `op: new` the stretch an
+  `add` would join becomes a body of its own, stopped at the most recent body (to be trimmed
+  before a `combine` joins it). No offset, extend or symmetric.
 - `refine: false` (extrude, revolve, sweep, loft, combine; default `true`) keeps the result of an
   `add`, `cut` or `intersect` as the boolean made it: coplanar faces and collinear edges are not
   unified, so two touching boxes stay split along the seam. FreeCAD files with `Refine = false`

@@ -27,7 +27,7 @@ Phase 3 has started (see Next).
   of sketch regions (nearly collinear overlaps, nearly tangent circles, curves leaving a point tangent); ipt11 reads
   sheet-metal folds, face names, face drafts and sweep paths given as wire bodies; left: Design
   Accelerator gear teeth, surface consumers, blends whose supports were used up, ISO 7046 tapers, sketch text); Solid Edge 103
-  of 180 measured ordered parts (rounds se1-se11, xt1, op2 and ipt10, ADR 0046 amendments 11-13, 20-24, 26-28, 30, 32 and 34; op2 builds
+  of 180 measured ordered parts (rounds se1-se12, xt1, op2 and ipt10, ADR 0046 amendments 11-13, 20-24, 26-28, 30, 32, 34 and 36; op2 builds
   rounds OCCT's fillet does not from their corners, ADR 0004 amendment 2026-11-19; se5 reads fast and
   body patterns, leaves curves out and adds the end up to the next face, ADR 0061 amendment; se6 reads
   ends through all as ends to the next face, mirror copies' own seeds and drafts; se7 reads loft end
@@ -47,7 +47,10 @@ Phase 3 has started (see Next).
   measures boxes to the peaks of faces of revolution (ADR 0004 amendment 2026-11-23), gaining 015,
   020 and 163; se11 writes offsets of C0 tubes as the tubes scaled and the outer lobe of
   lemon-shaped tori as revolved arcs (ADR 0035 amendment 2026-11-23), reads round kind 17 and sweeps
-  a section inside its path both ways, gaining 140; left: 133-136's box-on-capsule round, the thin
+  a section inside its path both ways, gaining 140; se12 reads smart bosses with their holes and
+  ribs (a rib is a body up to the next face, `to: next, op: new`, ADR 0061 amendment 2026-11-23,
+  trimmed to its slope and joined) and cutouts outside a closed profile, gaining none: 012 and
+  017 stop at their thin walls, 061 at a later round; left: 133-136's box-on-capsule round, the thin
   walls of 054, 056, 060 (closed now, their stored bodies do not measure consistently), three-edge
   corners on B-spline faces, far edges not lined up with the round's ends). Sample corpora are
   openly licensed downloads kept in scratch, never committed. Two in-process import crashes fixed (an
