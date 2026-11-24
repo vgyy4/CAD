@@ -329,12 +329,15 @@ pub(crate) fn find_splits(cvs: &[Cv], verts: &mut Verts, tol: f64) -> Result<Spl
             }
             // Hits near a joint the two curves share are the joint itself. Near tangency the
             // computed points scatter by about sqrt(2·r·tol), so allow that much.
-            let rmax = [&a.shape, &b.shape]
+            // A spline's radius of curvature is bounded here by its size: two splines that
+            // meet tangent at a joint (the glyph outlines of sketch text) scatter like arcs.
+            let rmax = [a, b]
                 .iter()
-                .map(|s| match **s {
+                .map(|c| match c.shape {
                     Shape::Arc { r, .. } | Shape::Circle { r, .. } => r,
                     Shape::Ellipse { a, b, .. } | Shape::EArc { a, b, .. } => a * a / b,
-                    Shape::Line | Shape::Spline { .. } => 0.0,
+                    Shape::Spline { .. } => libm::hypot(c.bbox[2] - c.bbox[0], c.bbox[3] - c.bbox[1]),
+                    Shape::Line => 0.0,
                 })
                 .fold(0.0, f64::max);
             let near = if rmax > 0.0 { tol + (2.0 * tol * rmax).sqrt() } else { tol };
