@@ -444,6 +444,39 @@ fn a_copied_feature_made_after_its_copy_moves_before_it() {
     assert_eq!(with([0, 4, 2], false), ["Extrusion1", "Mirror1", "Thicken1"]);
 }
 
+/// Features go by their places, whatever copies them: one made later but placed earlier (dragged
+/// up in the browser) is built there.
+#[test]
+fn features_go_by_their_places() {
+    let mut r = base_records();
+    r.push((NAME, name_rec("Thicken1", Some(T_THICKEN)))); // 19
+    r.push((NAME, name_rec("Thicken2", Some(T_THICKEN)))); // 20
+    r.push((FEATURE, feature(19, 0, 8, &[]))); // 21
+    r.push((FEATURE, feature(20, 0, 9, &[]))); // 22
+    let entry = |id: u32, place: u32| {
+        let mut e = 0x8000_0003u32.to_le_bytes().to_vec();
+        e.extend(id.to_le_bytes());
+        e.extend([0x02, 0, 0, 0x30, 0x02, 0, 0, 0, 0x02, 0, 0, 0, 0x08, 0x01, 0, 0, 2, 0, 0, 0, 1]);
+        e.extend(place.to_le_bytes());
+        e.extend([0, 3, 0, 0, 0, 0]);
+        e.extend(place.to_le_bytes());
+        e.push(0);
+        e
+    };
+    let with = |places: [u32; 3]| {
+        let mut r = r.clone();
+        let mut order = hdr(0, 0, 0);
+        for (id, place) in [5u32, 8, 9].into_iter().zip(places) {
+            order.extend(entry(id, place));
+        }
+        r.push((ORDER, order));
+        let t = tree(&r).unwrap();
+        types(&t).into_iter().map(|(_, n)| n).filter(|n| n != "Sketch1").collect::<Vec<String>>()
+    };
+    assert_eq!(with([0, 2, 4]), ["Extrusion1", "Thicken1", "Thicken2"]);
+    assert_eq!(with([0, 4, 2]), ["Extrusion1", "Thicken2", "Thicken1"]);
+}
+
 #[test]
 fn a_tagging_feature_changes_no_geometry() {
     let mut r = base_records();
