@@ -2855,14 +2855,31 @@ fn emboss(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Str
         Some([f64_at(rec, k)?, f64_at(rec, k + 8)?, f64_at(rec, k + 16)?])
     });
     let dir = dir.ok_or("the emboss has no direction")?;
-    let (_, x, y) = frame(&sketch.m);
-    let along = dot(dir, unit3(cross(x, y)));
+    let (o, x, y) = frame(&sketch.m);
+    let n = unit3(cross(x, y));
+    let along = dot(dir, n);
     if (along.abs() - 1.0).abs() > 1e-9 {
         return Err("the emboss direction is not across its sketch".into());
     }
-    // The direction points into the material: an emboss rises against it, an engrave cuts
-    // along it (slot 3 does not change the side of one from the face).
-    let d = depth * along.signum() * if op == "join" { -1.0 } else { 1.0 };
+    // An emboss rises away from the material its sketch lies on, an engrave cuts into it (slot
+    // 3 does not change the side of one from the face). Slot 2 is the sketch's normal: it
+    // points into the material from a work plane under the part (`em_engrave`) but out of the
+    // face a sketch on a face lies on (BICYCLE SPANNER, Storage-Rack A-01). The side is where
+    // the result lies wholly (an emboss's own height aside); where the result lies on both
+    // sides, the direction.
+    let into = match r.result().and_then(|b| b.reach_along(o.map(|c| c / CM), n)) {
+        Some((lo, hi)) => {
+            let (lo, hi) = (lo * CM, hi * CM);
+            let tol = 1e-4 + if op == "join" { depth } else { 0.0 };
+            match (lo > -tol, hi < tol) {
+                (true, false) => 1.0,
+                (false, true) => -1.0,
+                _ => along.signum(),
+            }
+        }
+        None => along.signum(),
+    };
+    let d = depth * into * if op == "join" { -1.0 } else { 1.0 };
     let fb = st.first_body.clone().ok_or("a cut or join before any body")?;
     let mut j = json!({"type": "extrude", "name": name, "sketch": sketch.name, "profiles": r.profiles(&sketch, lst),
                    "operation": op, "target": fb, "distance": rnd(d), "symmetric": false});

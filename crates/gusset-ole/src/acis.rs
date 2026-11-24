@@ -909,6 +909,34 @@ impl Acis {
         })
     }
 
+    /// The range of `dot(p - o, n)` over the shape (file units): its points, and its circles and
+    /// ellipses as far as they reach along `n` (a circle's one vertex says little of its reach).
+    /// `None` when it has no points.
+    pub(crate) fn reach_along(&self, o: V3, n: V3) -> Option<(f64, f64)> {
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        let mut at = |p: V3, r: f64| {
+            let d = dot(sub(p, o), n);
+            lo = lo.min(d - r);
+            hi = hi.max(d + r);
+        };
+        for r in &self.recs {
+            match (r.ty.as_str(), r.pos.first()) {
+                ("point", Some(&p)) => at(p, 0.0),
+                (t, Some(&c)) if t.ends_with("ellipse-curve") => {
+                    let (Some(&a), Some(&m)) = (r.vec.first(), r.vec.get(1)) else { continue };
+                    // The farthest a circle of radius |m| about axis a gets along n (an ellipse
+                    // is no larger than its major circle).
+                    let a = unit(a);
+                    let k = dot(a, n);
+                    at(c, libm::sqrt(dot(m, m)) * libm::sqrt((1.0 - k * k).max(0.0)));
+                }
+                _ => {}
+            }
+        }
+        (lo <= hi).then_some((lo, hi))
+    }
+
     /// Planar face `f`'s point and outward unit normal (file units): the surface's normal, turned
     /// round for a reversed face (first flag).
     pub(crate) fn outward_plane(&self, f: i64) -> Option<(V3, V3)> {

@@ -856,6 +856,22 @@ mod sab {
         }
     }
 
+    /// How far a shape reaches along a direction: its points, and its circles by their radius
+    /// across the direction (a circle about z of radius 2 at z = 1 reaches x = 2, not z).
+    #[test]
+    fn a_shape_reaches_along_a_direction_by_its_points_and_circles() {
+        let a = Acis::parse(&blob(&[
+            (&["point"], vec![Pos([0.0, 0.0, -1.0])]),
+            (&["point"], vec![Pos([0.0, 0.0, 3.0])]),
+            (&["ellipse", "curve"], vec![Pos([0.0, 0.0, 1.0]), V([0.0, 0.0, 1.0]), V([2.0, 0.0, 0.0])]),
+        ]))
+        .unwrap();
+        let near = |p: (f64, f64), q: (f64, f64)| (p.0 - q.0).abs() < 1e-12 && (p.1 - q.1).abs() < 1e-12;
+        assert!(near(a.reach_along([0.0; 3], [0.0, 0.0, 1.0]).unwrap(), (-1.0, 3.0)));
+        assert!(near(a.reach_along([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]).unwrap(), (-3.0, 1.0)));
+        assert!(Acis::parse(&blob(&[])).unwrap().reach_along([0.0; 3], [1.0, 0.0, 0.0]).is_none());
+    }
+
     #[test]
     fn a_wire_body_gives_its_loop() {
         let a = Acis::parse(&square()).unwrap();
