@@ -4365,6 +4365,18 @@ struct CornerCut {
   std::vector<TopoDS_Face> ends;
 };
 
+// The material a boolean took from `in` and added to it, each measured as solids of their own.
+// A blend face that joins an earlier round on its surface (a full round of a plate's edge)
+// leaves the whole body's volume integrated some 1e-3 mm3 off, more than a corner check
+// allows, while the small pieces measure exactly. False where a piece could not be made.
+bool changed_volumes(const TopoDS_Shape& in, const TopoDS_Shape& out, double& taken, double& added) {
+  BRepAlgoAPI_Cut t(in, out), a(out, in);
+  if (!t.IsDone() || !a.IsDone()) return false;
+  taken = std::fabs(measured_volume(t.Shape(), true));
+  added = std::fabs(measured_volume(a.Shape(), true));
+  return true;
+}
+
 int mixed_corners(const GsShape* s, const std::vector<uint32_t>& idx, const ShapeList& tools, const ShapeList& cave,
                   double ideal, double ideal_cave, bool longer, CornerCut& cut, bool precise);
 template <typename Op, typename Gone>
@@ -4626,6 +4638,7 @@ TopoDS_Shape end_trimmed(const TopoDS_Shape& s, const EndTrim& t, TopoDS_Shape* 
   return one;
 }
 
+int exact_corners(const GsShape* s, const std::vector<uint32_t>& idx, bool concave, double ideal, CornerCut& cut);
 int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge>& es,
                 const std::vector<uint32_t>& idx, bool fillet, const std::vector<std::array<double, 2>>& ext,
                 CornerCut& cut, bool trim = false) {
@@ -4841,9 +4854,78 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
   const double before = std::fabs(measured_volume(s->s, trim)), after = std::fabs(measured_volume(result, trim));
   const double change = concave ? after - before : before - after;
   const double tol = 1e-7 * std::max(1.0, before);
-  if (longer ? change < ideal - tol : std::fabs(change - ideal) > tol)
-    return fail("the corners were not all material");
+  if (longer ? change < ideal - tol : std::fabs(change - ideal) > tol) {
+    double taken = 0, added = 0;
+    const bool pieces = changed_volumes(s->s, result, taken, added);
+    const double moved = concave ? added : taken, other = concave ? taken : added;
+    const bool fits = pieces && other <= tol && (longer ? moved >= ideal - tol : std::fabs(moved - ideal) <= tol);
+    if (!fits) {
+      if (longer || !pieces || moved < ideal - tol) return fail("the corners were not all material");
+      return exact_corners(s, idx, concave, ideal, cut);
+    }
+    // Accepted on the pieces: a filled corner must leave no face without an origin either.
+    const int st = corner_origins(*b, [&](const TopoDS_Shape& f) { return b->IsDeleted(f); }, s->s, result, idx, cut);
+    if (st == GS_OK && concave && !cut.orphans.empty()) return fail("a corner left a face with no origin");
+    return st;
+  }
   return corner_origins(*b, [&](const TopoDS_Shape& f) { return b->IsDeleted(f); }, s->s, result, idx, cut);
+}
+
+// The face of a corner `exact` on the surface of `face` (its cutter's blend face): the one with
+// a point inside it on that surface (the largest of several), else null.
+TopoDS_Shape exact_blend_face(const TopoDS_Shape& exact, const TopoDS_Shape& face) {
+  if (exact.IsNull() || face.IsNull() || face.ShapeType() != TopAbs_FACE) return TopoDS_Shape();
+  const Handle(Geom_Surface) target = BRep_Tool::Surface(TopoDS::Face(face));
+  const GeomAbs_SurfaceType kind = BRepAdaptor_Surface(TopoDS::Face(face), false).GetType();
+  TopoDS_Shape best;
+  double best_area = 0;
+  for (TopExp_Explorer ex(exact, TopAbs_FACE); ex.More(); ex.Next()) {
+    const TopoDS_Face f = TopoDS::Face(ex.Current());
+    if (BRepAdaptor_Surface(f, false).GetType() != kind) continue;
+    double u0, u1, v0, v1;
+    BRepTools::UVBounds(f, u0, u1, v0, v1);
+    const gp_Pnt p = BRepAdaptor_Surface(f, false).Value(0.5 * (u0 + u1), 0.5 * (v0 + v1));
+    GeomAPI_ProjectPointOnSurf pr(p, target);
+    if (!pr.IsDone() || pr.NbPoints() < 1 || pr.LowerDistance() > 1e-7) continue;
+    GProp_GProps g;
+    BRepGProp::SurfaceProperties(f, g);
+    if (g.Mass() > best_area) {
+      best_area = g.Mass();
+      best = f;
+    }
+  }
+  return best;
+}
+
+// The corners cut away (filled) as they are, not by their oversized tools: a tool reaches
+// out past the faces beside its edge for a clean boolean, and where the body goes on out there
+// (a face beside the edge exactly as wide as the blend's touching line, ending where an
+// earlier round of the body next to it begins: SolidWorks Part2's 5 mm rounds of a 5 mm tab
+// beside a 5 mm round) it took more than the corner. Each corner alone lies in the body
+// (outside it, filled) exactly when the material changed is their volume.
+int exact_corners(const GsShape* s, const std::vector<uint32_t>& idx, bool concave, double ideal, CornerCut& cut) {
+  std::vector<Corner>& cs = cut.cs;
+  ShapeList args, tools;
+  args.Append(s->s);
+  for (auto& c : cs) {
+    if (c.swept || c.exact.IsNull()) return fail("the corners were not all material");
+    c.face = exact_blend_face(c.exact, c.face);
+    if (c.face.IsNull()) return fail("the corners were not all material");
+    c.caps.clear();
+    tools.Append(c.exact);
+  }
+  auto b = run_boolean_checked(concave ? GS_BOOL_UNION : GS_BOOL_CUT, args, tools);
+  TopoDS_Shape result = b->Shape();
+  if (result.IsNull()) return fail("no result");
+  double taken = 0, added = 0;
+  if (!changed_volumes(s->s, result, taken, added)) return fail("the corners were not all material");
+  const double change = concave ? added : taken, other = concave ? taken : added;
+  const double tol = 1e-7 * std::max(1.0, std::fabs(measured_volume(s->s)));
+  if (std::fabs(change - ideal) > tol || other > tol) return fail("the corners were not all material");
+  // Every face must have an origin: these corners are not run on past their ends.
+  const int st = corner_origins(*b, [&](const TopoDS_Shape& f) { return b->IsDeleted(f); }, s->s, result, idx, cut);
+  if (st == GS_OK && !cut.orphans.empty()) return fail("a corner left a face with no origin");
+  return st;
 }
 
 // Two booleans: the convex corners cut away (`tools`), then the concave ones filled (`cave`),
@@ -4865,10 +4947,21 @@ int mixed_corners(const GsShape* s, const std::vector<uint32_t>& idx, const Shap
   const double before = std::fabs(measured_volume(s->s, precise)), between = std::fabs(measured_volume(mid, precise)),
                after = std::fabs(measured_volume(result, precise));
   const double tol = 1e-7 * std::max(1.0, before);
-  const double cut_away = before - between, filled = after - between;
-  if (longer ? cut_away < ideal - tol : std::fabs(cut_away - ideal) > tol)
-    return fail("the corners were not all material");
-  if (std::fabs(filled - ideal_cave) > tol) return fail("the concave corners were not all empty");
+  double cut_away = before - between, filled = after - between;
+  bool pieces = false;
+  auto off = [&]() {
+    return (longer ? cut_away < ideal - tol : std::fabs(cut_away - ideal) > tol) || std::fabs(filled - ideal_cave) > tol;
+  };
+  if (off()) {
+    // Measured again as the pieces taken and added (`changed_volumes`): nothing else may change.
+    double t1 = 0, a1 = 0, t2 = 0, a2 = 0;
+    if (!changed_volumes(s->s, mid, t1, a1) || !changed_volumes(mid, result, t2, a2) || a1 > tol || t2 > tol)
+      return fail("the corners were not all material");
+    cut_away = t1;
+    filled = a2;
+    if (off()) return fail("the corners were not all material");
+    pieces = true;
+  }
   ShapeList a1 = args, a2 = mids;
   for (ShapeList::Iterator it(tools); it.More(); it.Next()) a1.Append(it.Value());
   for (ShapeList::Iterator it(cave); it.More(); it.Next()) a2.Append(it.Value());
@@ -4876,7 +4969,10 @@ int mixed_corners(const GsShape* s, const std::vector<uint32_t>& idx, const Shap
   h.Merge(a2, *b2);
   // Concave corners were filled: no convex corner is cut on past its ends (`blend_by_corners`).
   cut.concave = true;
-  return corner_origins(h, [&](const TopoDS_Shape& f) { return h.IsRemoved(f); }, s->s, result, idx, cut);
+  const int st = corner_origins(h, [&](const TopoDS_Shape& f) { return h.IsRemoved(f); }, s->s, result, idx, cut);
+  // Accepted on the pieces: no face may be left without an origin.
+  if (st == GS_OK && pieces && !cut.orphans.empty()) return fail("a corner left a face with no origin");
+  return st;
 }
 
 // The origins of the faces of `result`, made from `in` by `op` (a boolean or a history; `gone`

@@ -58,6 +58,13 @@ Phase 3 has started (see Next).
   face). Some Inventor rules take a value from the part's stored result where the file's record is not
   decoded (hole centres without sketch points, pulley flange sections, the face a to-face extrude
   reaches); each rebuilt feature still has to pass the check.
+- Round fil1 (2026-11-24, kernel blend fallbacks, ADR 0004 amendment 2026-11-24): blend corners are cut
+  as they are where their oversized tools take more than the corner, and corner checks are measured on
+  the pieces the booleans took. Counts unchanged and none lost in full runs: SolidWorks 402 of 1352,
+  Solid Edge 103 of 180, Inventor 789 of 1686; Part2, Grip_tip_triangular_base and Solid Edge 109 build
+  their blend and stop at a later edge pick. Left (tally in the ADR 0043 and 0046 amendments): rounds
+  wider than a face beside them whose far side is not one edge (23 of the 65 parts), corner vertices
+  (10), invalid OCCT solids (10), chamfers OCCT does not build (8).
 - Thread, bend and face profiles as commands (2026-11-13; ADR 0012): `feature.thread`
   (title "Face thread"; cosmetic or `modeled`), `feature.bend` (sheet metal, `line: Sketch.lN`,
   `side`, `position`), and `face: <planar body face>` as the profile of `feature.extrude` and
