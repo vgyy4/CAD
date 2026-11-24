@@ -517,6 +517,46 @@ solid in place (negative thickness: the other side; `both_sides`: half to each).
 sews bodies along shared edges within the tolerance into one body, a solid when closed; the
 listed bodies are consumed. Sheet bodies report `kind: sheet` in `query.body`.
 
+## Ribs (ADR 0062)
+
+```gusset
+gusset 1
+units mm
+
+sketch Base (plane: XY, next_id: 9) {
+  p1 = point(0, 0)
+  p2 = point(40, 0)
+  p3 = point(40, 20)
+  p4 = point(0, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Plate (profile: Base, distance: 5 mm, op: new)
+
+sketch Web (plane: XZ, next_id: 4) {
+  p1 = point(10, 20)
+  p2 = point(30, 20)
+  l3 = line(p1, p2)
+}
+
+rib Rib1 (path: Web, thickness: 3 mm, toward: [0, -1])
+
+rib Rib2 (path: Web, thickness: 2 mm, normal: true, side: left, body: Plate)
+```
+
+A `rib` thickens one chain of straight sketch lines (`Web`, or `Web.curves(l3)`) and grows it up
+to the body, which it joins (`body:`, default the most recent). `toward: [x, y]` (a direction in
+the sketch's axes) grows it in the sketch plane, square to each line, on that side; its
+thickness lies across the plane: centred, or `side: front` (along the sketch normal) or `back`.
+`normal: true` grows it along the sketch normal (`reverse: true` against it); the thickness
+lies in the plane: centred, or `side: left`/`right` of the chain seen from the front, the chain
+running from its first line. The lines' free ends are extended until they meet the body, so a
+rib drawn short of the walls reaches them. Faces: `Rib1/flat(l3)`, `flat_back(l3)`,
+`start(l3)`, `end(l3)`.
+
 ## Sheet metal (ADR 0037)
 
 ```

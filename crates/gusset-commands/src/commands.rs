@@ -72,7 +72,7 @@ pub use joint::{JointCommand, QueryJoints};
 pub use kicad_cli::{PcbKicadDrc, PcbKicadExport, SchKicadErc};
 pub use lettering::Text;
 pub use measure::QueryMeasure;
-pub use ops::{DeleteFace, Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Shell};
+pub use ops::{DeleteFace, Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Rib, Shell};
 pub use pcb::{PcbExportDrill, PcbExportGerbers, PcbImport, PcbInfo};
 pub use pcb_autoroute::PcbAutoroute;
 pub use pcb_edit::{

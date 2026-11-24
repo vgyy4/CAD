@@ -6,6 +6,7 @@ use super::*;
 pub(super) fn specs() -> Vec<CommandSpec> {
     vec![
         spec::<Shell>(),
+        spec::<Rib>(),
         spec::<Draft>(),
         spec::<OffsetFace>(),
         spec::<DeleteFace>(),
@@ -100,6 +101,10 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             }
         }
         FeatureKind::Move(d) => body_of(&mut d.body),
+        FeatureKind::Rib(d) => {
+            body_of(&mut d.body);
+            sketch_of(&mut d.sketch);
+        }
         FeatureKind::Scale(d) => body_of(&mut d.body),
         FeatureKind::Remove(d) => sketch_of(&mut d.body),
         FeatureKind::CamJob(d) => sketch_of(&mut d.sketch),
@@ -592,6 +597,66 @@ impl Command for Shell {
                 rb,
                 Feature::new(name.clone(), FeatureKind::Shell(ShellDef { body, faces, thickness })),
             );
+            Ok(json!({ "feature": name }))
+        })
+    }
+}
+
+/// Thickens sketch lines into a rib that reaches the body (ADR 0062).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Rib {
+    pub sketch: String,
+    /// Lines to use (default: all).
+    #[serde(default)]
+    pub curves: Vec<String>,
+    /// `3 mm`.
+    pub thickness: String,
+    /// In-plane rib: sketch direction `[x, y]` to grow toward.
+    #[serde(default)]
+    pub toward: Option<[f64; 2]>,
+    /// Grow along the sketch normal instead.
+    #[serde(default)]
+    pub normal: bool,
+    /// Normal rib: grow against the normal.
+    #[serde(default)]
+    pub reverse: bool,
+    /// center (default), front/back (in-plane), left/right (normal).
+    #[serde(default)]
+    pub side: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for Rib {
+    const ID: &'static str = "feature.rib";
+    const TITLE: &'static str = "Rib";
+    const DESCRIPTION: &'static str = "Thicken open sketch lines into a rib grown in the sketch plane (toward) or along its normal up to the body, joined to it; line ends extend to the body. Needs OCCT.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let thickness = parse_expr("thickness", &self.thickness)?;
+        let growth = match (self.toward, self.normal) {
+            (Some([x, y]), false) if x.is_finite() && y.is_finite() && x.hypot(y) > 0.0 => RibGrowth::InPlane {
+                toward: [parse_expr("toward", &format!("{x}"))?, parse_expr("toward", &format!("{y}"))?],
+            },
+            (None, true) => RibGrowth::Normal { reverse: self.reverse },
+            _ => {
+                return Err(CommandError::args("give toward: [x, y] (a non-zero direction) or normal: true, not both"));
+            }
+        };
+        let side = match self.side.as_deref() {
+            None => RibSide::Center,
+            Some(w) => RibSide::from_keyword(w)
+                .ok_or_else(|| CommandError::args(format!("side '{w}': use center, front, back, left or right")))?,
+        };
+        edit(s, ctx, "Rib", |doc, rb| {
+            let name = feature_name(doc, self.name, "Rib")?;
+            let body = body_for(doc, rb, self.body)?;
+            let def = RibDef { sketch: self.sketch, curves: self.curves, thickness, growth, side, body };
+            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Rib(def)));
             Ok(json!({ "feature": name }))
         })
     }

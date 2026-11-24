@@ -739,6 +739,28 @@ fn print_feature(out: &mut String, f: &Feature) {
                 args.push(format!("body_name: {n}"));
             }
         }
+        FeatureKind::Rib(d) => {
+            let path = if d.curves.is_empty() {
+                d.sketch.clone()
+            } else {
+                format!("{}.curves({})", d.sketch, d.curves.join(", "))
+            };
+            args.push(format!("path: {path}"));
+            args.push(format!("thickness: {}", d.thickness));
+            match &d.growth {
+                RibGrowth::InPlane { toward } => args.push(format!("toward: [{}, {}]", toward[0], toward[1])),
+                RibGrowth::Normal { reverse } => {
+                    args.push("normal: true".into());
+                    if *reverse {
+                        args.push("reverse: true".into());
+                    }
+                }
+            }
+            if d.side != RibSide::Center {
+                args.push(format!("side: {}", d.side.keyword()));
+            }
+            push_body(&mut args, &d.body);
+        }
         FeatureKind::Shell(d) => {
             push_body(&mut args, &d.body);
             let faces: Vec<String> = d.faces.iter().map(FaceRef::to_string).collect();
@@ -1217,7 +1239,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             | "draft" | "offset_face" | "delete_face" | "move_face" | "text" | "mirror" | "split"
             | "pattern_linear" | "pattern_circular" | "plane" | "move" | "scale" | "remove" | "combine" | "hole"
             | "thread" | "joint" | "component" | "surface_extrude" | "patch" | "thicken" | "stitch"
-            | "contour_flange" | "tab" | "edge_flange" | "bend" | "cam_job" => {
+            | "contour_flange" | "tab" | "edge_flange" | "bend" | "cam_job" | "rib" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -1255,6 +1277,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     parse_sheet(kw, &mut c)?
                 } else if kw == "text" {
                     parse_text(&mut c)?
+                } else if kw == "rib" {
+                    parse_rib(&mut c)?
                 } else if kw == "cam_job" {
                     parse_cam_job(&mut c)?
                 } else {
@@ -1284,7 +1308,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             other => {
                 return Err(c.err_hint(
                     format!("unknown statement '{other}'"),
-                    "statements are: param, sketch, extrude, revolve, sweep, loft, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular, plane, move, combine, hole, joint, component, drawing",
+                    "statements are: param, sketch, extrude, revolve, sweep, loft, fillet, chamfer, import, shell, rib, mirror, pattern_linear, pattern_circular, plane, move, combine, hole, joint, component, drawing",
                 ));
             }
         }
@@ -2453,6 +2477,75 @@ pub(crate) fn parse_pair(c: &mut Cursor<'_>) -> Result<[gusset_units::expr::Expr
 }
 
 /// `text` statements (ADR 0029).
+/// `rib` statements (ADR 0062).
+fn parse_rib(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
+    const KW: &str = "rib";
+    const ALLOWED: &str = "path, thickness, toward, normal, reverse, side, body, label, group, suppressed";
+    let name = c.ident()?.to_string();
+    let (mut label, mut suppressed) = (None, false);
+    let mut group: Option<String> = None;
+    let (mut path, mut thickness, mut toward, mut normal, mut reverse) = (None, None, None, false, false);
+    let (mut side, mut body) = (RibSide::Center, None);
+    parse_args(c, |key, c| {
+        match key {
+            "label" => label = Some(c.string()?),
+            "group" => group = Some(c.string()?),
+            "suppressed" => suppressed = parse_bool(c)?,
+            "path" => {
+                path = Some(match parse_path(c)? {
+                    PathRef::Sketch { sketch, curves } => (sketch, curves),
+                    _ => return Err(c.err_hint("a rib's path is sketch lines", "e.g. path: Sketch2")),
+                });
+            }
+            "thickness" => thickness = Some(c.expr()?),
+            "toward" => {
+                c.expect('[')?;
+                let x = c.expr()?;
+                c.expect(',')?;
+                let y = c.expr()?;
+                c.expect(']')?;
+                toward = Some([x, y]);
+            }
+            "normal" => normal = parse_bool(c)?,
+            "reverse" => reverse = parse_bool(c)?,
+            "side" => {
+                let w = c.ident()?;
+                side = RibSide::from_keyword(w).ok_or_else(|| {
+                    c.err_hint(format!("unknown rib side '{w}'"), "use center, front, back, left or right")
+                })?;
+            }
+            "body" => body = Some(c.ident()?.to_string()),
+            key => return Err(unknown_arg(c, KW, key, ALLOWED)),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    let (sketch, curves) = path.ok_or_else(|| missing(c, KW, "path"))?;
+    let growth = match (toward, normal) {
+        (Some(_), true) => {
+            return Err(
+                c.err_hint("a rib grows either in its plane (toward) or along the normal", "drop toward or normal")
+            );
+        }
+        (Some(toward), false) => RibGrowth::InPlane { toward },
+        (None, true) => RibGrowth::Normal { reverse },
+        (None, false) => {
+            return Err(c.err_hint(
+                "a rib needs 'toward: [x, y]' (it grows in the sketch plane) or 'normal: true'",
+                "e.g. toward: [0, -1]",
+            ));
+        }
+    };
+    if reverse && !normal {
+        return Err(c.err_hint("reverse is for a rib along the normal", "use toward to pick the side in the plane"));
+    }
+    let def =
+        RibDef { sketch, curves, thickness: thickness.ok_or_else(|| missing(c, KW, "thickness"))?, growth, side, body };
+    Ok(Feature { name, label, note: None, group, suppressed, kind: FeatureKind::Rib(def) })
+}
+
 fn parse_text(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     const KW: &str = "text";
     const ALLOWED: &str =

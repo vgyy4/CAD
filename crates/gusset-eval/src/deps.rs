@@ -66,6 +66,7 @@ fn access(kind: &FeatureKind) -> Access {
             Access { bodies: Vec::new(), dynamic: true }
         }
         FeatureKind::Shell(d) => target(d.body.as_ref()),
+        FeatureKind::Rib(d) => target(d.body.as_ref()),
         FeatureKind::Draft(d) => target(d.body.as_ref()),
         FeatureKind::OffsetFace(d) => target(d.body.as_ref()),
         FeatureKind::DeleteFace(d) => target(d.body.as_ref()),

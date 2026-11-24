@@ -27,6 +27,7 @@ mod joint;
 mod merge;
 mod ops;
 mod pattern;
+mod rib;
 pub mod sheet;
 pub mod sketch;
 mod surface;
@@ -1221,6 +1222,7 @@ impl Evaluator {
                 Ok(())
             }
             FeatureKind::Shell(d) => self.run_shell(s, name, d, units, params),
+            FeatureKind::Rib(d) => self.run_rib(s, name, d, units, params),
             FeatureKind::Draft(d) => self.run_draft(s, name, d, units, params),
             FeatureKind::OffsetFace(d) => self.run_offset_face(s, name, d, units, params),
             FeatureKind::DeleteFace(d) => self.run_delete_face(s, name, d),

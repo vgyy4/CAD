@@ -216,6 +216,8 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             "hole",
             "point_angle",
             "thread_depth",
+            "rib",
+            "toward",
         ] {
             assert!(TEXT_GRAMMAR.contains(kw), "{kw}");
         }
@@ -259,6 +261,36 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     }
 
     const HOLE_BASE: &str = "gusset 1\nunits mm\n\nparam d = 6.6 mm\nparam deep = 12 mm\n\nsketch P (plane: XY, next_id: 6) {\n  p1 = point(0, 0)\n  p2 = point(30, 0)\n  p3 = point(30, 20)\n  l4 = line(p1, p2)\n  l5 = line(p2, p3)\n}\n\nextrude E (profile: P, distance: deep, op: new)\n\nsketch S (plane: E/cap(end), next_id: 3) {\n  p1 = point(5, 5)\n  c2 = circle(p1, 2)\n}\n\n";
+
+    #[test]
+    fn ribs_round_trip_and_are_validated() {
+        let ok = format!(
+            "{HOLE_BASE}rib R1 (path: P, thickness: d / 2, toward: [0, 1], side: front, body: E)\n\nrib R2 (path: P.curves(l5), thickness: 3 mm, normal: true, reverse: true)\n"
+        );
+        let doc = Document::from_text(&ok).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Rib(r) = &doc.feature("R1").unwrap().kind else { panic!() };
+        assert!(matches!(r.growth, RibGrowth::InPlane { .. }) && r.side == RibSide::Front);
+        assert_eq!(doc.feature("R1").unwrap().kind.dependencies(), ["P", "E"]);
+        let FeatureKind::Rib(r) = &doc.feature("R2").unwrap().kind else { panic!() };
+        assert_eq!((r.growth.clone(), r.curves.clone()), (RibGrowth::Normal { reverse: true }, vec!["l5".to_string()]));
+        for (bad, why) in [
+            ("path: P, thickness: 3 mm", "toward: [x, y]"),
+            ("path: P, thickness: 3 mm, toward: [0, 1], normal: true", "either in its plane"),
+            ("path: P, thickness: 3 mm, toward: [0, 1], reverse: true", "reverse is for"),
+            ("path: P, toward: [0, 1]", "thickness"),
+            ("path: P, thickness: 3 mm, toward: [0, 1], side: up", "unknown rib side"),
+            ("path: P, thickness: 3 mm, toward: [0, 1], side: left", "does not fit"),
+            ("path: P, thickness: 3 mm, normal: true, side: back", "does not fit"),
+            ("path: Nope, thickness: 3 mm, normal: true", "unknown sketch"),
+            ("path: E, thickness: 3 mm, normal: true", "not a sketch"),
+            ("path: P.curves(l9), thickness: 3 mm, normal: true", "l9"),
+        ] {
+            let text = format!("{HOLE_BASE}rib R1 ({bad})\n");
+            let e = Document::from_text(&text).unwrap_err().to_string();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
+    }
 
     #[test]
     fn thread_round_trips_and_is_validated() {

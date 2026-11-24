@@ -336,6 +336,40 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
             FeatureKind::Shell(d) => {
                 check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
             }
+            FeatureKind::Rib(d) => {
+                match seen.get(d.sketch.as_str()) {
+                    Some(g) if !matches!(g.kind, FeatureKind::Sketch(_)) => {
+                        out.push(issue(n, format!("'{}' is not a sketch", d.sketch)));
+                    }
+                    None => out.push(issue(n, format!("unknown sketch '{}'", d.sketch))),
+                    _ => {}
+                }
+                let mut listed = BTreeSet::new();
+                for c in &d.curves {
+                    check_sketch_entity(n, &d.sketch, c, None, &seen, &mut out);
+                    if !listed.insert(c.as_str()) {
+                        out.push(issue(n, format!("curve '{c}' is listed twice")));
+                    }
+                }
+                let normal = matches!(d.growth, RibGrowth::Normal { .. });
+                let across = matches!(d.side, RibSide::Left | RibSide::Right);
+                if d.side != RibSide::Center && normal != across {
+                    out.push(issue_h(
+                        n,
+                        format!(
+                            "side {} does not fit a rib {}",
+                            d.side.keyword(),
+                            if normal { "along the normal" } else { "in the sketch plane" }
+                        ),
+                        if normal {
+                            "a rib along the normal takes side center, left or right"
+                        } else {
+                            "a rib in the plane takes side center, front or back"
+                        },
+                    ));
+                }
+                check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
+            }
             FeatureKind::DeleteFace(d) => {
                 if d.faces.is_empty() {
                     out.push(issue_h(n, "no faces selected", "select the faces to delete"));

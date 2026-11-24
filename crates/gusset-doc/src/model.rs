@@ -239,6 +239,8 @@ pub enum FeatureKind {
     Surface(SurfaceDef),
     /// Sheet metal (ADR 0037): contour flanges and tabs with a flat pattern.
     Sheet(SheetDef),
+    /// A rib (ADR 0062): sketch lines thickened and extended up to the body, joined to it.
+    Rib(RibDef),
 }
 
 impl FeatureKind {
@@ -274,6 +276,7 @@ impl FeatureKind {
             FeatureKind::Thread(_) => "thread",
             FeatureKind::Joint(_) => "joint",
             FeatureKind::Component(_) => "component",
+            FeatureKind::Rib(_) => "rib",
         }
     }
 
@@ -328,6 +331,10 @@ impl FeatureKind {
                 }
             }
             FeatureKind::Import(_) => {}
+            FeatureKind::Rib(d) => {
+                add(&d.sketch);
+                add_body(&mut add, &d.body);
+            }
             FeatureKind::Shell(d) => {
                 add_body(&mut add, &d.body);
                 for f in &d.faces {
@@ -478,6 +485,12 @@ impl FeatureKind {
             }
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => take(&d.thickness),
+            FeatureKind::Rib(d) => {
+                take(&d.thickness);
+                if let RibGrowth::InPlane { toward } = &d.growth {
+                    toward.iter().for_each(&mut take);
+                }
+            }
             FeatureKind::Surface(d) => match &d.op {
                 SurfaceOp::Extrude { distance, .. } => take(distance),
                 SurfaceOp::Patch { .. } => {}
@@ -586,6 +599,12 @@ impl FeatureKind {
             }
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => out.push(&mut d.thickness),
+            FeatureKind::Rib(d) => {
+                out.push(&mut d.thickness);
+                if let RibGrowth::InPlane { toward } = &mut d.growth {
+                    out.extend(toward.iter_mut());
+                }
+            }
             FeatureKind::Surface(d) => match &mut d.op {
                 SurfaceOp::Extrude { distance, .. } => out.push(distance),
                 SurfaceOp::Patch { .. } => {}
@@ -1517,6 +1536,63 @@ impl SheetOp {
 pub const MAX_CONTOUR_LINES: usize = 64;
 
 // ------------------------------------------------------------------ shell, mirror, patterns
+
+/// A rib (ADR 0062): straight lines of a sketch, one chain, thickened by `thickness` and
+/// extended up to the body, which it joins. The lines' free ends are extended too, so a rib
+/// drawn short of the walls still reaches them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RibDef {
+    pub sketch: String,
+    /// The lines to use; empty = every line of the sketch that is not construction geometry.
+    pub curves: Vec<String>,
+    pub thickness: Expr,
+    pub growth: RibGrowth,
+    pub side: RibSide,
+    /// Target body; `None` = the most recent body.
+    pub body: Option<String>,
+}
+
+/// Which way a rib grows from its lines up to the body (ADR 0062).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RibGrowth {
+    /// In the sketch plane, away from each line on the side the sketch direction `toward`
+    /// (x, y in the sketch's axes) points to; the thickness lies across the plane.
+    InPlane { toward: [Expr; 2] },
+    /// Along the sketch normal (against it with `reverse`); the thickness lies across the
+    /// lines, in the plane.
+    Normal { reverse: bool },
+}
+
+/// Where a rib's thickness lies against its lines (ADR 0062): centred on them, or all to
+/// one side: `front`/`back` along/against the sketch normal (a rib in the plane), `left`/
+/// `right` of the chain seen from the front, the chain running from its first line (a rib
+/// along the normal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RibSide {
+    Center,
+    Front,
+    Back,
+    Left,
+    Right,
+}
+
+impl RibSide {
+    pub const ALL: [RibSide; 5] = [RibSide::Center, RibSide::Front, RibSide::Back, RibSide::Left, RibSide::Right];
+
+    pub fn keyword(self) -> &'static str {
+        match self {
+            RibSide::Center => "center",
+            RibSide::Front => "front",
+            RibSide::Back => "back",
+            RibSide::Left => "left",
+            RibSide::Right => "right",
+        }
+    }
+
+    pub fn from_keyword(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.keyword() == s)
+    }
+}
 
 /// Hollows a body: removes `faces` and leaves walls of `thickness` (positive = inward,
 /// negative = outward).
