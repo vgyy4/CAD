@@ -4777,6 +4777,10 @@ int cut_corners(const GsShape* s, const AncMap& anc, const std::vector<BlendEdge
       if (longer || !pieces || moved < ideal - tol) return fail("the corners were not all material");
       return exact_corners(s, idx, concave, ideal, cut);
     }
+    // Accepted on the pieces: a filled corner must leave no face without an origin either.
+    const int st = corner_origins(*b, [&](const TopoDS_Shape& f) { return b->IsDeleted(f); }, s->s, result, idx, cut);
+    if (st == GS_OK && concave && !cut.orphans.empty()) return fail("a corner left a face with no origin");
+    return st;
   }
   return corner_origins(*b, [&](const TopoDS_Shape& f) { return b->IsDeleted(f); }, s->s, result, idx, cut);
 }
@@ -4832,7 +4836,10 @@ int exact_corners(const GsShape* s, const std::vector<uint32_t>& idx, bool conca
   const double change = concave ? added : taken, other = concave ? taken : added;
   const double tol = 1e-7 * std::max(1.0, std::fabs(measured_volume(s->s)));
   if (std::fabs(change - ideal) > tol || other > tol) return fail("the corners were not all material");
-  return corner_origins(*b, [&](const TopoDS_Shape& f) { return b->IsDeleted(f); }, s->s, result, idx, cut);
+  // Every face must have an origin: these corners are not run on past their ends.
+  const int st = corner_origins(*b, [&](const TopoDS_Shape& f) { return b->IsDeleted(f); }, s->s, result, idx, cut);
+  if (st == GS_OK && !cut.orphans.empty()) return fail("a corner left a face with no origin");
+  return st;
 }
 
 // Two booleans: the convex corners cut away (`tools`), then the concave ones filled (`cave`),
@@ -4855,6 +4862,7 @@ int mixed_corners(const GsShape* s, const std::vector<uint32_t>& idx, const Shap
                after = std::fabs(measured_volume(result, precise));
   const double tol = 1e-7 * std::max(1.0, before);
   double cut_away = before - between, filled = after - between;
+  bool pieces = false;
   auto off = [&]() {
     return (longer ? cut_away < ideal - tol : std::fabs(cut_away - ideal) > tol) || std::fabs(filled - ideal_cave) > tol;
   };
@@ -4866,6 +4874,7 @@ int mixed_corners(const GsShape* s, const std::vector<uint32_t>& idx, const Shap
     cut_away = t1;
     filled = a2;
     if (off()) return fail("the corners were not all material");
+    pieces = true;
   }
   ShapeList a1 = args, a2 = mids;
   for (ShapeList::Iterator it(tools); it.More(); it.Next()) a1.Append(it.Value());
@@ -4874,7 +4883,10 @@ int mixed_corners(const GsShape* s, const std::vector<uint32_t>& idx, const Shap
   h.Merge(a2, *b2);
   // Concave corners were filled: no convex corner is cut on past its ends (`blend_by_corners`).
   cut.concave = true;
-  return corner_origins(h, [&](const TopoDS_Shape& f) { return h.IsRemoved(f); }, s->s, result, idx, cut);
+  const int st = corner_origins(h, [&](const TopoDS_Shape& f) { return h.IsRemoved(f); }, s->s, result, idx, cut);
+  // Accepted on the pieces: no face may be left without an origin.
+  if (st == GS_OK && pieces && !cut.orphans.empty()) return fail("a corner left a face with no origin");
+  return st;
 }
 
 // The origins of the faces of `result`, made from `in` by `op` (a boolean or a history; `gone`
