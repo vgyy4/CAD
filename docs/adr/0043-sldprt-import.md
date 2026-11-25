@@ -1046,3 +1046,24 @@ whose retries on fewer edges crash OCCT).
 
 The rebuild check is unchanged. History 402 -> 402 of 1352, none gained, none lost (full runs row for
 row against the round's base).
+
+## Amendment (2026-11-25): blend edges and references the reader did not resolve (round sw23)
+
+Round sw23 (L35 in `docs/formats/solidworks-feature-tree.md`) broke the two first-failure buckets down by cause
+(blend edges not read 30: faces of lofts, stored bodies, ribs, blends, deleted features, closed edges; references
+not resolved 26: patterns, lofts, sketch planes, mirrors, tooth sweeps, shells) and reads:
+
+- circular patterns that leave instances out (an item id is the copy's number, the seed 0), one pattern of two
+  per kept copy;
+- the hole wizard's counterbore (`C'Bore Dia.`, `C'Bore Depth`, the French names) and through tapped holes;
+- closed blend edges on a revolve's start circle and on a loft's first rim, written with the circle as path;
+  the sides of extrudes up to a face; arcs of one circle as one face key;
+- a hole wizard's class from the children it writes right after itself, where the class signature ties;
+- mirror planes from face lists the edge reader skips (a flat face of a revolve or extrusion);
+- sketches whose plane was not found and that nothing uses are left out; blend edges on faces of features the tree
+  lacks are stale.
+
+The rebuild check is unchanged. History 402 -> 405 of 1352, none lost (full run row for row against the round's
+base); blend edges not read 30 -> 24, references not resolved 26 -> 21. Only the SolidWorks reader changed
+(`gusset-sldprt`): the tree import, document, evaluator and kernel are untouched, so the Inventor and Solid Edge
+corpora were not rerun.
