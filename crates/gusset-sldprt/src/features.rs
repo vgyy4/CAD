@@ -3901,6 +3901,24 @@ fn side_out(f: &Swept, g: &Geometry, s: &Seg, at: V3) -> Option<V3> {
     Some([0, 1, 2].map(|i| sign * (n2.0 * x.get(i).copied().unwrap_or(0.0) + n2.1 * y.get(i).copied().unwrap_or(0.0))))
 }
 
+/// The other arcs of a sketch on the circle an arc lies on (same centre and radius, to 1e-9 m).
+fn same_circle<'a>(g: &'a Geometry, s: &'a Seg) -> impl Iterator<Item = &'a Seg> {
+    let circle = |q: &Seg| -> Option<(f64, f64, f64)> {
+        if q.kind != SegKind::Arc || q.construction || q.s == q.e {
+            return None;
+        }
+        let (c, p) = (point(&g.pts, q.c)?, point(&g.pts, q.s)?);
+        Some((c.x, c.y, libm::hypot(p.x - c.x, p.y - c.y)))
+    };
+    let me = circle(s);
+    g.segs.iter().filter(move |q| {
+        q.id != s.id
+            && me
+                .zip(circle(q))
+                .is_some_and(|(a, b)| (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9 && (a.2 - b.2).abs() < 1e-9)
+    })
+}
+
 fn midpoint_sketch(
     reps: &[Rep],
     swept: &HashMap<u32, Swept>,
@@ -3966,6 +3984,17 @@ fn midpoint_sketch(
             let (Some(gf), Some(gg)) = (geo(f), geo(g)) else { return Ok(None) };
             let mut cands: Vec<V3> = if ida == idb {
                 let mut common: Vec<usize> = [sa.s, sa.e].into_iter().filter(|v| *v == sb.s || *v == sb.e).collect();
+                if common.is_empty() {
+                    // Arcs of one circle are named by one key (round sw23: housing's Fillet2
+                    // names its rim arc c15 where c4 meets c7, an arc of the same circle).
+                    let ends = |s: &Seg| -> Vec<usize> {
+                        let mut v = vec![s.s, s.e];
+                        v.extend(same_circle(gf, s).flat_map(|o| [o.s, o.e]));
+                        v
+                    };
+                    let eb = ends(sb);
+                    common = ends(sa).into_iter().filter(|v| eb.contains(v)).collect();
+                }
                 common.sort_unstable();
                 common.dedup();
                 common
