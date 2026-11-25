@@ -4219,8 +4219,13 @@ fn finish_hole(mut h: HoleState) -> Value {
             .map_or(if simple { 180.0 } else { 118.0 }, |a| round_to(a.min(180.0), 9));
         o.insert("point_angle".into(), json!(tip));
     }
-    // The simple hole's own counterbore (10-32 Nylock Nut's Hole1).
-    let cb = (nonzero(get(&["C-Bore Diameter"])), nonzero(get(&["C-Bore Depth"])));
+    // The simple hole's own counterbore (10-32 Nylock Nut's Hole1), or the wizard's (round sw23:
+    // EX +2.4's `CBORE for M5 Hex Head Bolt1`, `C'Bore Dia.` 6 mm and `C'Bore Depth` 1 mm over a
+    // 3 mm hole).
+    let cb = (
+        nonzero(get(&["C-Bore Diameter", "C'Bore Dia."])),
+        nonzero(get(&["C-Bore Depth", "C'Bore Depth"])),
+    );
     if let (Some(d), Some(depth), None) = (cb.0, cb.1, cs_d) {
         o.insert("variant".into(), json!("counterbore"));
         o.insert("cbore_diameter".into(), json!(mm(d)));
