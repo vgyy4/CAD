@@ -3631,6 +3631,8 @@ struct Model<'a> {
     swept: &'a HashMap<u32, Swept>,
     rounds: &'a HashMap<u32, Vec<Option<Round>>>,
     revolved: &'a HashMap<u32, Revolved>,
+    /// Revolves of less than a full turn (round sw23: only their start circles are read).
+    partial: &'a HashMap<u32, Revolved>,
     sketches: &'a [Geometry],
     cap_tags: &'a HashSet<u16>,
 }
@@ -3715,6 +3717,43 @@ fn closed_edge(reps: &[Rep], m: &Model, work: &mut u64) -> Result<Option<V3>, St
         return Ok(Some(round3(snap(p, f, g, &s))));
     }
     Ok(None)
+}
+
+/// A closed edge where a revolve's face swept from a full circle of its profile meets the
+/// plane of its sketch (round sw23: EX +2.4's Fillet2 rounds the rim where Revolve2, an annulus
+/// turned 90 degrees, starts on the Front plane, which Boss-Extrude3's cap lies on): the profile
+/// circle itself, as a record `[A, B, B, B]` names a closed edge ([`closed_edge`]). A point on
+/// it, off the circle's centre along the sketch's x axis, and the circle as a path (the model
+/// may keep it as two halves).
+fn revolve_start_circle(reps: &[Rep], m: &Model) -> Option<(V3, Vec<V3>)> {
+    let same = |a: &Rep, b: &Rep| (a.tag, a.fid, a.idx, a.via) == (b.tag, b.fid, b.idx, b.via);
+    let [r0, r1, r2, r3] = reps else { return None };
+    if !same(r1, r2) || !same(r1, r3) || same(r0, r1) {
+        return None;
+    }
+    for (wall, across) in [(r0, r1), (r1, r0)] {
+        let Some(rv) = m.revolved.get(&wall.fid).or_else(|| m.partial.get(&wall.fid)) else { continue };
+        let Some((o, n)) = loop_plane(across, m) else { continue };
+        let Some(g) = m.sketches.get(rv.on.sketch) else { continue };
+        let mut it = g.segs.iter().filter(|s| s.a == wall.idx && !s.construction && !s.centerline);
+        let (Some(s), None) = (it.next(), it.next()) else { continue };
+        if s.kind != SegKind::Arc || s.s != s.e {
+            continue;
+        }
+        let (Some(c), Some(p)) = (point(&g.pts, s.c), point(&g.pts, s.s)) else { continue };
+        let r = libm::hypot(p.x - c.x, p.y - c.y) * 1000.0;
+        let c3 = lift(&rv.on, c.x * 1000.0, c.y * 1000.0, 0.0);
+        let on_plane = (libm::fabs(dot(normal(&rv.on), n)) - 1.0).abs() < 1e-6 && dot(sub(c3, o), n).abs() < 1e-6;
+        if !on_plane || r < 1e-6 {
+            continue;
+        }
+        let (x, y) = (rv.on.plane.x, rv.on.plane.y);
+        let at =
+            |t: f64| comb(comb(c3, 1.0, x, r * libm::cos(t)), 1.0, y, r * libm::sin(t)).map(|v| round_to(v, 6) + 0.0);
+        let path = (0..=200u32).map(|k| at(TAU * f64::from(k) / 200.0)).collect();
+        return Some((at(0.0), path));
+    }
+    None
 }
 
 /// A point `(u, v)` of a sketch (m) on the segment `s`, to 1e-7 m: on a line, or at the arc's
@@ -4222,10 +4261,7 @@ fn finish_hole(mut h: HoleState) -> Value {
     // The simple hole's own counterbore (10-32 Nylock Nut's Hole1), or the wizard's (round sw23:
     // EX +2.4's `CBORE for M5 Hex Head Bolt1`, `C'Bore Dia.` 6 mm and `C'Bore Depth` 1 mm over a
     // 3 mm hole).
-    let cb = (
-        nonzero(get(&["C-Bore Diameter", "C'Bore Dia."])),
-        nonzero(get(&["C-Bore Depth", "C'Bore Depth"])),
-    );
+    let cb = (nonzero(get(&["C-Bore Diameter", "C'Bore Dia."])), nonzero(get(&["C-Bore Depth", "C'Bore Depth"])));
     if let (Some(d), Some(depth), None) = (cb.0, cb.1, cs_d) {
         o.insert("variant".into(), json!("counterbore"));
         o.insert("cbore_diameter".into(), json!(mm(d)));
@@ -4512,6 +4548,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut swept: HashMap<u32, Swept> = HashMap::new();
     let mut rounds: HashMap<u32, Vec<Option<Round>>> = HashMap::new();
     let mut revolved: HashMap<u32, Revolved> = HashMap::new();
+    let mut partial: HashMap<u32, Revolved> = HashMap::new();
     // Fillets and chamfers written as such: later edge records name their faces (`face_sel`).
     let mut blend_ids: HashSet<u32> = HashSet::new();
     let mut hole: Option<HoleState> = None;
@@ -5463,10 +5500,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         js.insert("axis".into(), axis_json);
                     }
                 }
-                // A full revolve's circles can be named by edge records.
-                if let Some(&(_, plane)) = last_sketch.as_ref().and_then(|s| sketch_by_name.get(s))
-                    && ang.is_none_or(|v| (v.abs() - TAU).abs() < 1e-9)
-                {
+                // A full revolve's circles can be named by edge records (a partial one's start
+                // circles too).
+                let full = ang.is_none_or(|v| (v.abs() - TAU).abs() < 1e-9);
+                if let Some(&(_, plane)) = last_sketch.as_ref().and_then(|s| sketch_by_name.get(s)) {
                     // The axis in sketch coordinates (m): its line, or the named line taken
                     // onto the sketch plane.
                     let in_sketch = |p: V3| -> Pt {
@@ -5621,7 +5658,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 let names: Vec<String> = reps
                     .iter()
                     .map(|r| {
-                        let nm = nodes.iter().find(|q| q.id == r.fid).map_or("?", |q| q.name.as_str());
+                        let nm = nodes
+                            .iter()
+                            .find(|q| q.id == r.fid)
+                            .map_or_else(|| format!("?{:x}", r.fid), |q| q.name.clone());
                         format!("{nm}/{}{}", r.idx, if cap_tags.contains(&r.tag) { "c" } else { "" })
                     })
                     .collect();
@@ -5654,7 +5694,17 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     }
                     _ => None,
                 };
-                if let Some((m, path)) = revolve_circle(reps, &revolved, &sketches, ends) {
+                let model = Model {
+                    swept: &swept,
+                    rounds: &rounds,
+                    revolved: &revolved,
+                    partial: &partial,
+                    sketches: &sketches,
+                    cap_tags: &cap_tags,
+                };
+                if let Some((m, path)) =
+                    revolve_circle(reps, &revolved, &sketches, ends).or_else(|| revolve_start_circle(reps, &model))
+                {
                     mids.push(Some(m));
                     made.push(None);
                     edges.push(json!({"midpoint": m, "path": path, "selection": number}));
@@ -5683,6 +5733,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                                     swept: &swept,
                                     rounds: &rounds,
                                     revolved: &revolved,
+                                    partial: &partial,
                                     sketches: &sketches,
                                     cap_tags: &cap_tags,
                                 };
@@ -5702,6 +5753,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                                 swept: &swept,
                                 rounds: &rounds,
                                 revolved: &revolved,
+                                partial: &partial,
                                 sketches: &sketches,
                                 cap_tags: &cap_tags,
                             };
@@ -7636,7 +7688,15 @@ mod end_face_tests {
         )]);
         let cap_tags = HashSet::from([9u16]);
         let rounds = HashMap::new();
-        let m = Model { swept: &swept, rounds: &rounds, revolved: &revolved, sketches: &sketches, cap_tags: &cap_tags };
+        let partial = HashMap::new();
+        let m = Model {
+            swept: &swept,
+            rounds: &rounds,
+            revolved: &revolved,
+            partial: &partial,
+            sketches: &sketches,
+            cap_tags: &cap_tags,
+        };
         let rep = |tag, fid, idx| Rep { tag, fid, idx, ext: false, ext2: false, via: None, copy: 0 };
         let mut work = 0;
         // `[hole, wall, wall, wall]`: the rim, opposite the circle's start.
@@ -8183,7 +8243,9 @@ mod pattern_tests {
         let out = feature_pattern("P", true, Some(s), &lines, (ints, reals), names, &feats);
         let got: Vec<(String, f64, u64)> = out
             .iter()
-            .map(|f| (f["name"].as_str().unwrap().to_string(), f["angle"].as_f64().unwrap(), f["count"].as_u64().unwrap()))
+            .map(|f| {
+                (f["name"].as_str().unwrap().to_string(), f["angle"].as_f64().unwrap(), f["count"].as_u64().unwrap())
+            })
             .collect();
         let step = 360.0 / 7.0;
         let want = [("P", 1.0), ("P_2", 2.0), ("P_5", 5.0), ("P_6", 6.0)];
