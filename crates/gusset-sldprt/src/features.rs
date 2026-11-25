@@ -5951,8 +5951,13 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         }
                         edges.push(p);
                     }
-                    // References to faces the sketch no longer has are superseded selections.
-                    None if superseded => {
+                    // References to faces the sketch no longer has are superseded selections; so
+                    // is an edge on a face of a feature the tree no longer has (round sw23:
+                    // combined_mount's Fillet4 names a face of 0x4a2, which no node of the part
+                    // is; Spacer_long_base's Fillet3 four edges on faces of 0x1d2).
+                    None if superseded
+                        || reps.iter().take(2).any(|r| r.via.is_none() && nodes.iter().all(|q| q.id != r.fid)) =>
+                    {
                         stale += 1;
                         if missed.len() < 8 {
                             missed.push(format!("stale: {}", describe(reps)));
