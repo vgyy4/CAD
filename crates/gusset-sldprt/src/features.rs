@@ -3768,6 +3768,45 @@ fn revolve_start_circle(reps: &[Rep], m: &Model) -> Option<(V3, Vec<V3>)> {
     None
 }
 
+/// A loft's rim on its first section, where the record `[L/1, L/0, L/0, L/0]` (or `L/0` then
+/// `L/1` three times) names the closed edge between the loft's first cap (face 0) and its side
+/// (face 1) (round sw23: 126p-window-handle-plug's Zaokrąglenie1 on inside-cutout, from the
+/// circle of inside-top, and Zaokrąglenie2 on outside, from top). Only a section that is one
+/// circle (whole, or arcs of it) is read: a point on it and the circle as a path.
+fn loft_start_rim(
+    reps: &[Rep],
+    starts: &HashMap<u32, (usize, JsonPlane)>,
+    sketches: &[Geometry],
+) -> Option<(V3, Vec<V3>)> {
+    let [r0, r1, r2, r3] = reps else { return None };
+    let same = |a: &Rep, b: &Rep| (a.tag, a.fid, a.idx, a.via) == (b.tag, b.fid, b.idx, b.via);
+    if r0.fid != r1.fid || !same(r1, r2) || !same(r1, r3) || ![(0, 1), (1, 0)].contains(&(r0.idx, r1.idx)) {
+        return None;
+    }
+    let &(i, plane) = starts.get(&r0.fid)?;
+    let g = sketches.get(i)?;
+    let mut circle: Option<(f64, f64, f64)> = None;
+    for s in g.segs.iter().filter(|s| !s.construction && !s.centerline) {
+        if s.kind != SegKind::Arc {
+            return None;
+        }
+        let (c, p) = (point(&g.pts, s.c)?, point(&g.pts, s.s)?);
+        let here = (c.x, c.y, libm::hypot(p.x - c.x, p.y - c.y));
+        match circle {
+            None => circle = Some(here),
+            Some(o) if (o.0 - here.0).abs() < 1e-9 && (o.1 - here.1).abs() < 1e-9 && (o.2 - here.2).abs() < 1e-9 => {}
+            Some(_) => return None,
+        }
+    }
+    let (cx, cy, r) = circle?;
+    let on = Swept { sketch: i, plane, distance: 0.0, start: 0.0, symmetric: false, through: false, cut: false };
+    let at = |t: f64| {
+        lift(&on, (cx + r * libm::cos(t)) * 1000.0, (cy + r * libm::sin(t)) * 1000.0, 0.0).map(|v| round_to(v, 6) + 0.0)
+    };
+    let path = (0..=200u32).map(|k| at(TAU * f64::from(k) / 200.0)).collect();
+    (r > 1e-9).then(|| (at(0.0), path))
+}
+
 /// A point `(u, v)` of a sketch (m) on the segment `s`, to 1e-7 m: on a line, or at the arc's
 /// radius within its sweep.
 fn on_seg(g: &Geometry, s: &Seg, u: f64, v: f64) -> bool {
@@ -4590,6 +4629,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut rounds: HashMap<u32, Vec<Option<Round>>> = HashMap::new();
     let mut revolved: HashMap<u32, Revolved> = HashMap::new();
     let mut partial: HashMap<u32, Revolved> = HashMap::new();
+    // Loft id -> its first section's sketch (index, plane).
+    let mut loft_starts: HashMap<u32, (usize, JsonPlane)> = HashMap::new();
     // Fillets and chamfers written as such: later edge records name their faces (`face_sel`).
     let mut blend_ids: HashSet<u32> = HashSet::new();
     let mut hole: Option<HoleState> = None;
@@ -5766,8 +5807,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     sketches: &sketches,
                     cap_tags: &cap_tags,
                 };
-                if let Some((m, path)) =
-                    revolve_circle(reps, &revolved, &sketches, ends).or_else(|| revolve_start_circle(reps, &model))
+                if let Some((m, path)) = revolve_circle(reps, &revolved, &sketches, ends)
+                    .or_else(|| revolve_start_circle(reps, &model))
+                    .or_else(|| loft_start_rim(reps, &loft_starts, &sketches))
                 {
                     mids.push(Some(m));
                     made.push(None);
@@ -5997,6 +6039,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         } else if matches!(cls.as_deref(), Some("moBlend_c" | "moBlendCut_c")) {
             // A loft: its sections are profile components naming their sketches by node id.
             let sections = named_sketches(rf, a, b, &sketch_ids);
+            if let Some(first) = sections.first().and_then(|nm| sketch_by_name.get(nm)) {
+                loft_starts.insert(n.id, *first);
+            }
             // One sketch and a face reference: a loft from (or to) a planar cap of an earlier
             // extrusion (round sw15, Dremel Tip's Loft1 from Boss-Extrude1's top). The face goes
             // first when its reference comes before the sketch's.
