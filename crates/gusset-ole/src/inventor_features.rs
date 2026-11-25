@@ -1076,18 +1076,37 @@ impl Reader<'_> {
         let (o, x, y) = frame(&sk.m);
         let n = unit3(cross(x, y));
         let (mut lo, mut hi) = (0.0f64, 0.0f64);
-        for f in faces {
+        let at = |v: V3| dot(sub3([v[0] * CM, v[1] * CM, v[2] * CM], o), n);
+        for &f in &faces {
             for v in b.verts(f) {
-                let t = dot(sub3([v[0] * CM, v[1] * CM, v[2] * CM], o), n);
-                lo = lo.min(t);
-                hi = hi.max(t);
+                lo = lo.min(at(v));
+                hi = hi.max(at(v));
             }
         }
+        // A later fillet that rounds the far end trims the feature's faces short of it: a round
+        // (a cylinder or torus) along their far rim reaches the face it ran to, at most its radius
+        // further (note BC).
+        let beside = |end: f64| {
+            let mut reach = end;
+            for g in b.blends_beside(&faces, |v| (at(v) - end).abs() <= 1e-6) {
+                let r = match b.kind(g) {
+                    Surf::Cyl { r, .. } => r * CM,
+                    Surf::Torus { minor, .. } => minor * CM,
+                    _ => continue,
+                };
+                for t in b.verts(g).into_iter().map(at) {
+                    if (t - end).abs() <= r + 1e-6 && (t - end).abs() > (reach - end).abs() {
+                        reach = t;
+                    }
+                }
+            }
+            reach
+        };
         match (lo < -1e-6, hi > 1e-6) {
             (true, true) => Err("the feature's faces lie on both sides of its sketch".into()),
             (false, false) => Err("the feature's faces lie in its sketch plane".into()),
-            (true, false) => Ok(lo),
-            (false, true) => Ok(hi),
+            (true, false) => Ok(beside(lo).min(lo)),
+            (false, true) => Ok(beside(hi).max(hi)),
         }
     }
 

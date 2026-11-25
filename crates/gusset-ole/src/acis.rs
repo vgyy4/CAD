@@ -1376,6 +1376,30 @@ impl Acis {
 
     /// Faces that carry an `NMx_blend_tag` (or `NMx_edge_blend_tag`, which the chamfers of
     /// some circle edges use) attribute whose 4th int is `fid`.
+    /// The faces a fillet or chamfer made (any `NMx_blend_tag` or `NMx_edge_blend_tag`) next to
+    /// any of `faces` across an edge whose vertices all satisfy `rim`, and not among them.
+    pub(crate) fn blends_beside(&self, faces: &[i64], rim: impl Fn(V3) -> bool) -> Vec<i64> {
+        let tagged: std::collections::HashSet<i64> = self
+            .recs
+            .iter()
+            .filter(|r| r.ty.starts_with("NMx_blend_tag") || r.ty.starts_with("NMx_edge_blend_tag"))
+            .filter_map(|r| r.refs.iter().copied().find(|&y| self.is(y, "face")))
+            .collect();
+        let mut out: Vec<i64> = Vec::new();
+        for &f in faces {
+            for (g, e) in self.neighbours(f) {
+                let on_rim = e.is_some_and(|e| {
+                    let ps = self.edge_points(e);
+                    !ps.is_empty() && ps.into_iter().all(&rim)
+                });
+                if on_rim && tagged.contains(&g) && !faces.contains(&g) && !out.contains(&g) {
+                    out.push(g);
+                }
+            }
+        }
+        out
+    }
+
     pub(crate) fn blend_faces(&self, fid: i64) -> Vec<i64> {
         let mut out = Vec::new();
         for r in &self.recs {
