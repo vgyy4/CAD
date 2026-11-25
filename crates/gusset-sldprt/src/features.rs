@@ -2368,6 +2368,29 @@ fn removed_faces(d: &[u8], a: usize, b: usize) -> Vec<Rep> {
     out
 }
 
+/// The first reference after the last sentinel pair in `[a, b)` that reads as one (`<tag> 00 00
+/// <u32> <u32 feature id> <u32 stamp> <u32 face number>`, the tag's high bit set).
+fn last_listed_face(d: &[u8], a: usize, b: usize) -> Option<Rep> {
+    let mut pair = SENTINEL.to_vec();
+    pair.extend(SENTINEL);
+    pair.extend([0, 0]);
+    let mut from = a;
+    let mut out = None;
+    while let Some(i) = find(d, &pair, from, b) {
+        from = i + 1;
+        let p = i + pair.len();
+        if let (Some(t), Some(0), Some(fid), Some(idx)) =
+            (u16_at(d, p), u16_at(d, p + 2), u32_at(d, p + 8), u32_at(d, p + 16))
+            && t & 0x8000 != 0
+            && t != 0xffff
+            && p + 20 <= b
+        {
+            out = Some(Rep { tag: t & 0x7fff, fid, idx, ext: false, ext2: false, via: None, copy: 0 });
+        }
+    }
+    out
+}
+
 /// Edge records in `[a, b)` (`edges.edge_records`). Each reference is a 20-byte core followed
 /// by 0 to 2 extra words, depending on its class.
 fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, String> {
@@ -5692,6 +5715,23 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         }
                     }
                 }
+            }
+            // A face list whose header the edge reader does not take (round sw23: BF12's Mirror2
+            // mirrors the body about Revolve1's face 9, `01 00*7 05`, seven zero bytes and a
+            // word before the sentinels): the first reference after the last sentinel pair that
+            // reads as one; a flat face of a revolve or an extrusion gives the plane.
+            if plane.is_none()
+                && let Some(r) = last_listed_face(rf, a, b)
+            {
+                let model = Model {
+                    swept: &swept,
+                    rounds: &rounds,
+                    revolved: &revolved,
+                    partial: &partial,
+                    sketches: &sketches,
+                    cap_tags: &cap_tags,
+                };
+                plane = loop_plane(&r, &model);
             }
             // A mirror of features (`moMirrorPattern_c`) names them in a seed list as patterns
             // do (all 54 in the corpora have one); a mirror of the body (`moMirrorSolid_c`) has none.
