@@ -1242,7 +1242,7 @@ not committed). Every rule below is a candidate the whole-part rebuild check dec
   are as Inventor built them, so the faces need no name: a sweep's side, an earlier fillet's face and a
   join's face alike. Leg Shelf (tubes crossing, a cylinder across a 45 degree plane), the iot light
   switch case (an extruded arc against an earlier 10 mm corner round, with the reach below) and the
-  LightSaber's InventorNativeCentralControl (a chamfer where a 8.89 mm bore crosses a 19.05 mm tube,
+  LightSaber's InventorNativeCentralControl (a chamfer where an 8.89 mm bore crosses a 19.05 mm tube,
   whose `srf_srf_v_bl_spl_sur` faces were taken for corner patches) rebuild.
 - **The case's reach.** The case's `Extrusion10` ends on a face (extent 4 or 7) whose side faces a
   later 2 mm round trims at both ends; the reach measured from those faces was 72 mm where the part is
