@@ -5237,7 +5237,30 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let sw: Vec<Value> =
                 cands.iter().take(3).map(|c| json!({"X": c.x, "type": c.kind, "flag": c.flag, "b12": c.b12})).collect();
             js.insert("sw_end".into(), json!(sw));
-            if let (Some(sk), Some(dist)) = (last_sketch.as_ref(), end_s.or(distance))
+            // An extrude up to a plane face (round sw23: housing's Boss-Extrude4, a cylinder up
+            // to a slanted side of Boss-Extrude2, whose rim Fillet1 rounds) keeps its sides for
+            // edges as a through extrude does, the way it runs where the face's plane cuts the
+            // sketch normal through the sketch origin; its end is no cap.
+            let v3 = |v: Option<&Value>| -> Option<V3> {
+                let a = v?.as_array()?;
+                Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+            };
+            let up_to = match (
+                end_s.or(distance),
+                js.get("face"),
+                last_sketch.as_ref().and_then(|sk| sketch_by_name.get(sk)),
+            ) {
+                (None, Some(face), Some(&(_, plane))) => {
+                    v3(face.get("point")).zip(v3(face.get("normal"))).and_then(|(p, nf)| {
+                        let n = cross(plane.x, plane.y);
+                        let den = dot(n, nf);
+                        let t = dot(sub(p, plane.origin), nf) / den;
+                        (den.abs() > 1e-6 && t.abs() > 1e-6).then_some(t)
+                    })
+                }
+                _ => None,
+            };
+            if let (Some(sk), Some(dist)) = (last_sketch.as_ref(), end_s.or(distance).or(up_to))
                 && let Some(&(i, plane)) = sketch_by_name.get(sk)
             {
                 swept.insert(
@@ -5251,7 +5274,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         // other; Fillet1 rounds its start cap at 2 mm, not the sketch plane).
                         start: js.get("distance2").and_then(Value::as_f64).unwrap_or(0.0),
                         symmetric,
-                        through: through_all,
+                        through: through_all || up_to.is_some(),
                         cut: op == "cut" && !flip,
                     },
                 );
