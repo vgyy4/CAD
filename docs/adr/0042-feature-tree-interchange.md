@@ -680,3 +680,17 @@ copy ribs (the sketch and the directions reflected).
   edges (Gusset's holes stay inside their face), or whose point no face holds and that names a
   `target` and the face's `normal`, is cut as a revolve of its outline (counterbore or countersink,
   bore, drill point) about its axis, one per position.
+
+## Amendment (2026-11-25): faces named by their surfaces, a point among several edges
+
+For Inventor's rolling-ball blends and chamfers (ADR 0046 amendment 45), whose files keep the two
+supports of a blend as surfaces, not as names:
+
+- A face of `faces` or `ends` may be `{"kind": "surface", "point", "normal"}` (any flat face of the
+  model on that plane), `{"kind": "surface", "point", "axis", "radius"}` (any cylindrical face about
+  that axis line with its vertices at the radius) or the same with `"slope"` (a circular cone whose
+  radius at `point` is `radius` and grows by `slope` per mm along the axis, one way or the other); within
+  1e-3 mm. `feature` is not needed for these.
+- `near` (a point, mm): where several edges lie between the two faces and the end faces do not tell
+  them apart, the one with a vertex or midpoint nearest the point is taken.
+- Picks that resolve to the same edge add it once.

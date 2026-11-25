@@ -1795,3 +1795,40 @@ corner vertices 1, HOOK's crash 1.
 **Measured, not kept.** A concave corner's filling tool reaches 0.25 r into the material beside it,
 checked only at the edge's middle; at Grip_tip's wall ends a notch lets it add 0.029 mm3 per corner.
 Filling the corners as they are there would build its Fillet3 too, but the part stops later anyway.
+
+## Amendment (2026-11-25, 45): Inventor round ipt19 - blends picked by their supports
+
+- **Rolling-ball blends and chamfers along edges that are neither lines nor circles** (format notes
+  BC). The blend surface (`rb_blend_spl_sur`, a chamfer's `srf_srf_v_bl_spl_sur`, in place or by
+  `{ ref n }`) names its two supports as surfaces. Where both are planes, cylinders or cones, the
+  fillet or equal chamfer picks the edge between a face of the model on each, with a point of the
+  blend face to choose among several (ADR 0042 amendment of this date). No face name is needed, so a
+  sweep's side, an earlier round's face and a join's face are named alike.
+- **An extrude's reach past a round** of its far end: a cylinder or torus blend along the far rim of an
+  extrude that ends on a face carries the measured reach on, at most its radius.
+- Blends whose supports cannot be picked say what they are (a spline, a torus, a curve the ball runs
+  along) in the reason.
+
+| corpus | parts | base | head |
+|---|---|---|---|
+| Inventor new (ipt-more etc.; full base and head runs) | 1639 | 763 | 766 (+3, none lost) |
+| Inventor old (Zenodo) | 47 | 28 | 29 (+1) |
+| SolidWorks (all 1352; base: round fil1's final run) | 1352 | 402 | 402 (no row changed) |
+| Solid Edge (180; base: round fil1's final run) | 180 | 103 | 103 (none gained or lost) |
+
+Gained: Leg Shelf, the iot light switch's case and cover, the LightSaber's InventorNativeCentralControl.
+None lost; the base run's one crash (HOOK, on the session's OCCT install without patch 0007) and two
+timeouts are the head's too. Solid Edge 174, a body both ways, ran into the import's time limit in the
+loaded head run instead of its volume.
+
+**Measured, not kept.** Tambourine's 1 mm chamfer of the bores across its ring builds 39.6 mm3
+(2.6e-5) short: Inventor puts a chamfer's contact line the distance from the other face (on a bore,
+1 mm in radius inside the ring, 1.0365 mm along the bore's side), OCCT the distance as the chord in the
+section plane; they agree where the faces meet square along straight sections. The InventorNativeEmitter
+pair's chamfered slot and its circular pattern rebuild to no volume.
+
+**Left (measured).** Of the 25 first failures in this bucket, by the supports of the first failing
+blend: a curve (the ball runs along the edge of a face narrower than it; 9 parts, the round wider than a
+face of round fil1's tally), a spline (an earlier blend's or a loft's face; 5), a torus (3); Tilting unit
+stops at a fillet with an empty edge set (slot 0), Robot arm part 01 at a chamfer with no support pair,
+the Drag Adjustment Handle at another pick of its fillet 2.5 mm from every edge.

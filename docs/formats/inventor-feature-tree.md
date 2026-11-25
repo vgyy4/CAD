@@ -1224,3 +1224,42 @@ not committed). Every rule below is a candidate the whole-part rebuild check dec
   blends whose subtype names its two supports: of 168 such faces in nine of those parts, 90 run between
   two cylinders, the rest between planes, cylinders, tori and earlier blends at a slant; their edges are
   neither lines nor circles, which a pick's midpoint and path must be.
+
+## BC. Blends picked by their supports, chamfer distances, reaches past a round (round ipt19)
+- **Rolling-ball blends name their supports.** An `rb_blend_spl_sur` subtype is the word, an int
+  (version), then twice the string `blend_support_surface` and that support's surface written in place
+  (`plane <point> <normal> ...`, `cone <centre> <axis> <major axis> <ratio> <flags> <sin> <cos> ...`, a
+  `spline` subtype, a `torus`), then the ball centre's path (the supports offset by the radius and met:
+  an `ellipse` for a cylinder across a 45 degree plane, an `off_int_cur` otherwise) and the signed
+  radius twice. A face whose surface is `{ ref n }` refers to the n-th subtype written in the file
+  (nested ones counted). Where the ball rides along an edge of a face narrower than it, a support is
+  `blend_support_curve` and the curve (a `straight`, an `ellipse`) instead. A chamfer's faces along
+  such an edge are `srf_srf_v_bl_spl_sur` and name their supports the same way.
+- **Picks by surfaces.** When both supports are planes, cylinders or cones, a fillet or an equal
+  chamfer picks the edge as the one between a face of the model on each surface (the tree import's
+  face kind `surface`, ADR 0042 amendment of this date), with a point of the blend face to choose among
+  several such edges (a bore through both walls of a ring meets the ring's side twice). The supports
+  are as Inventor built them, so the faces need no name: a sweep's side, an earlier fillet's face and a
+  join's face alike. Leg Shelf (tubes crossing, a cylinder across a 45 degree plane), the iot light
+  switch case (an extruded arc against an earlier 10 mm corner round, with the reach below) and the
+  LightSaber's InventorNativeCentralControl (a chamfer where a 8.89 mm bore crosses a 19.05 mm tube,
+  whose `srf_srf_v_bl_spl_sur` faces were taken for corner patches) rebuild.
+- **The case's reach.** The case's `Extrusion10` ends on a face (extent 4 or 7) whose side faces a
+  later 2 mm round trims at both ends; the reach measured from those faces was 72 mm where the part is
+  74 deep. A round (a cylinder or torus blend) along the feature's far rim now carries the reach on, at
+  most its radius (a 45 degree chamfer beside `Extrusion27`'s far rim is no round: it stays 4.59 mm).
+  The switch's cover, whose fillet pick lay 2.5 mm past the model's edge for the same reason, rebuilds.
+- **Chamfer distances.** Tambourine's `Chamfer3` (1 mm, 26 edges between its 200 mm ring, its top
+  plane and the 15 mm bores across it) now picks every edge and builds 39.6 mm3 (2.6e-5) short of the
+  stored body. Inventor's contact lines lie the distance from the other support: on a bore 1 mm in
+  radius inside the ring (1.0365 mm along the bore's side), on the ring 16 mm from the bore's axis.
+  OCCT's chamfer takes the distance as the chord from the edge in the section plane; the two agree only
+  where the faces meet square along straight sections (the ring's top rim). Kept a body.
+- **Left (the bucket's 25 first failures, by the supports of the first failing blend).** A support that
+  is a curve (the ball along an edge, 9 parts: the CRS-METEO radiators, connector-main, direction-vane,
+  reviii Fixture Body), a spline (an earlier blend's or a loft's face, 5: Playmobil, Economy Seat,
+  speed-rotor, Glass Liquid Cell), a torus (3: Handle Side Cover, Electronics Housing, top cover 2's
+  chamfer); Tilting unit now stops at a fillet whose edge sets are empty (slot 0), Robot arm part 01 at
+  a chamfer with no support pair, the Drag Adjustment Handle at another pick of its fillet, 2.5 mm from
+  every edge of the model (its fillet precedes a circular pattern), the InventorNativeEmitter pair rebuilds to no volume
+  after its chamfered slot's pattern.
