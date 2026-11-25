@@ -1086,6 +1086,16 @@ fn classify(d: &[u8], nodes: &mut [Node], outer: (&HashMap<usize, String>, usize
         }
     }
     let decl: Vec<usize> = (0..nodes.len()).filter(|&i| nodes.get(i).is_some_and(|n| n.cls.is_some())).collect();
+    // The nodes right after a node that have lower ids: the children a hole wizard writes after
+    // itself (round sw23: housing's CBORE for M24 Hex Head Bolt1, id 0x57, then 3DSketch1 0x55
+    // and Sketch6 0x56; its Ø5.0mm Dowel Hole1 refers to the class and had passed for a 3D
+    // sketch, which every candidate matched as well by signature).
+    let mut order: Vec<(usize, u32)> = nodes.iter().map(|n| (n.start, n.id)).collect();
+    order.sort_unstable();
+    let kids = |n: &Node| -> usize {
+        let i = order.partition_point(|&(s, _)| s <= n.start);
+        order.get(i..).unwrap_or_default().iter().take_while(|(_, id)| *id < n.id).count()
+    };
     let mut mapping: HashMap<u16, Option<String>> = HashMap::new();
     for (t, xs) in &tags {
         // Only for sketches: a count that drifts by an object named a folder note as a colour
@@ -1113,7 +1123,9 @@ fn classify(d: &[u8], nodes: &mut [Node], outer: (&HashMap<usize, String>, usize
                 .iter()
                 .map(|x| {
                     let same = sig(c).iter().zip(sig(x)).filter(|(a, b)| a == b).count();
-                    same + if cname == strip(&x.name) { 8 } else { 0 } + if c.head_len == x.head_len { 4 } else { 0 }
+                    same + if cname == strip(&x.name) { 8 } else { 0 }
+                        + if c.head_len == x.head_len { 4 } else { 0 }
+                        + if kids(c) > 0 && kids(x) > 0 { 8 } else { 0 }
                 })
                 .max()
                 .unwrap_or(0);
