@@ -4314,8 +4314,8 @@ fn finish_hole(mut h: HoleState) -> Value {
     let get = |names: &[&str]| names.iter().find_map(|k| ps.get(k).copied());
     let nonzero = |v: Option<f64>| v.filter(|x| *x != 0.0);
     let (mut dia, mut dep) = (
-        get(&["Hole Dia.", "Thru Hole Dia.", "Tap Drill Dia."]),
-        get(&["Hole Depth", "Thru Hole Depth", "Tap Drill Depth"]),
+        get(&["Hole Dia.", "Thru Hole Dia.", "Tap Drill Dia.", "Thru Tap Drill Dia."]),
+        get(&["Hole Depth", "Thru Hole Depth", "Tap Drill Depth", "Thru Tap Drill Depth"]),
     );
     if dia.is_none() {
         // A localised file ("Diamètre du perçage", "Profondeur du perçage", "Angle de pointe"): the
@@ -4364,8 +4364,11 @@ fn finish_hole(mut h: HoleState) -> Value {
     }
     // The simple hole's own counterbore (10-32 Nylock Nut's Hole1), or the wizard's (round sw23:
     // EX +2.4's `CBORE for M5 Hex Head Bolt1`, `C'Bore Dia.` 6 mm and `C'Bore Depth` 1 mm over a
-    // 3 mm hole).
-    let cb = (nonzero(get(&["C-Bore Diameter", "C'Bore Dia."])), nonzero(get(&["C-Bore Depth", "C'Bore Depth"])));
+    // 3 mm hole; `Diamètre du chambrage` and `Profondeur du chambrage` in a French file).
+    let cb = (
+        nonzero(get(&["C-Bore Diameter", "C'Bore Dia.", "Diamètre du chambrage"])),
+        nonzero(get(&["C-Bore Depth", "C'Bore Depth", "Profondeur du chambrage"])),
+    );
     if let (Some(d), Some(depth), None) = (cb.0, cb.1, cs_d) {
         o.insert("variant".into(), json!("counterbore"));
         o.insert("cbore_diameter".into(), json!(mm(d)));
