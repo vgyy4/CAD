@@ -5488,7 +5488,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                             through: false,
                             cut: false,
                         };
-                        revolved.insert(n.id, Revolved { on, axis: [p, q] });
+                        if full { &mut revolved } else { &mut partial }.insert(n.id, Revolved { on, axis: [p, q] });
                     }
                 }
             }
