@@ -13,6 +13,8 @@ use serde::Deserialize;
 /// (1-based) edge of its selection. A flat side or cap may give its plane (`point`, `normal`).
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct FaceSel {
+    /// Empty for a face named by its surface alone.
+    #[serde(default)]
     feature: String,
     kind: String,
     #[serde(default)]
@@ -35,6 +37,13 @@ pub(super) struct FaceSel {
     /// face the wall was offset from.
     #[serde(default)]
     shell: Option<String>,
+    /// `kind: "surface"`: any face of the model on a plane (`point`, `normal`) or on a
+    /// circular cylinder (`point` on its axis, `axis`, `radius`), whichever feature made it.
+    /// Inventor names the two supports of a rolling-ball blend by their surfaces alone.
+    #[serde(default)]
+    axis: Option<V3>,
+    #[serde(default)]
+    radius: Option<f64>,
 }
 
 /// What a [`FaceSel`] stands for in the document's names.
@@ -65,12 +74,30 @@ enum Want {
         shell: String,
         face: Box<Want>,
     },
+    /// Any face on a plane (a point, a unit normal) or a cylinder (a point on the axis, the unit
+    /// axis, the radius).
+    Surface {
+        plane: Option<(V3, V3)>,
+        cyl: Option<(V3, V3, f64)>,
+    },
 }
 
 /// Most source curves one side face may name.
 const MAX_CURVES: usize = 64;
 
 fn want(g: &Gen, f: &FaceSel) -> Option<Want> {
+    if f.kind == "surface" {
+        let finite = |v: &V3| v.iter().all(|c| c.is_finite());
+        let unit = |n: V3| (finite(&n) && norm(n) > 1e-9).then(|| n.map(|v| v / norm(n)));
+        let p = f.point.filter(finite)?;
+        return match (f.normal, f.axis, f.radius) {
+            (Some(n), None, None) => Some(Want::Surface { plane: Some((p, unit(n)?)), cyl: None }),
+            (None, Some(a), Some(r)) if r.is_finite() && r > 0.0 => {
+                Some(Want::Surface { plane: None, cyl: Some((p, unit(a)?, r)) })
+            }
+            _ => None,
+        };
+    }
     if let Some(sh) = &f.shell {
         let shell = g.features.get(sh)?.clone();
         let seed = FaceSel { shell: None, ..f.clone() };
@@ -144,6 +171,8 @@ fn holds<'a>(
             FaceKey::Inner(inner) => r.feature == *shell && holds(face, inner, orig(inner), false, orig),
             _ => false,
         },
+        // Matched by its geometry (`on_surface`), not by its name.
+        Want::Surface { .. } => false,
         Want::Blend { fillet } => match &r.key {
             FaceKey::Blend(e) => {
                 let e = e.to_string();
@@ -185,6 +214,9 @@ fn edge_between(
         let t = &body.topology;
         let orig = |fr: &FaceRef| body.names.faces.iter().position(|x| x == fr).and_then(|i| t.faces.get(i));
         let named = |w: &Want, f: u32| {
+            if let Want::Surface { plane, cyl } = w {
+                return on_surface(t, f, *plane, *cyl);
+            }
             body.names.faces.get(f as usize).is_some_and(|r| holds(w, r, t.faces.get(f as usize), loose, &orig))
         };
         // Loose: a cylindrical face named is also every face that continues its cylinder
@@ -274,6 +306,29 @@ fn edge_between(
         }
     }
     found
+}
+
+/// Whether face `f` of the model lies on the plane or the cylinder (its axis line, and its
+/// vertices at the radius from it; within 1e-3 mm).
+fn on_surface(t: &gusset_kernel::Topology, f: u32, plane: Option<(V3, V3)>, cyl: Option<(V3, V3, f64)>) -> bool {
+    let info = t.faces.get(f as usize);
+    if let Some(pl) = plane {
+        return on_plane(info, pl);
+    }
+    let Some((c, ax, r)) = cyl else { return false };
+    let Some(a) = info.filter(|fi| fi.kind == SurfaceKind::Cylinder).and_then(|fi| fi.axis) else { return false };
+    if norm(cross(a.dir, ax)) > 1e-6 || norm(cross(sub(a.origin, c), ax)) > 1e-3 {
+        return false;
+    }
+    let mut at_r = t
+        .edges
+        .iter()
+        .filter(|e| e.faces.contains(&f))
+        .flat_map(|e| e.vertices.iter())
+        .filter_map(|v| t.vertices.get(*v as usize))
+        .map(|v| (norm(cross(sub(v.point, c), ax)) - r).abs() <= 1e-3)
+        .peekable();
+    at_r.peek().is_some() && at_r.all(|ok| ok)
 }
 
 /// The faces that continue the cylinders of the faces `seed` holds: reached across edges

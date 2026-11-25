@@ -534,6 +534,28 @@ fn edges_named_by_their_faces_resolve() {
     assert!(skipped(&r).iter().any(|(n, why)| n == "Fillet1" && why.contains("between the faces")), "{r}");
 }
 
+/// An edge named by the surfaces of its two faces (Inventor's rolling-ball blends): the one
+/// edge between a face on each surface, whichever feature made them (a cylinder is matched by
+/// its axis and the radius of its vertices; the mock kernel has none, so planes here); a
+/// surface no face lies on names nothing.
+#[test]
+fn edges_named_by_their_surfaces_resolve() {
+    let plane = |p: [f64; 3], n: [f64; 3]| json!({"kind": "surface", "point": p, "normal": n});
+    let fs = |a: Value, b: Value| {
+        let mut f = box_features(20.0, 10.0, 5.0);
+        f.push(json!({"type": "fillet", "name": "Fillet1", "radius": 0.5, "edges": [{"faces": [a, b]}]}));
+        json!(f)
+    };
+    let mut s = session();
+    let t = tree2(fs(plane([0.0, 0.0, 5.0], [0.0, 0.0, -1.0]), plane([20.0, 3.0, 0.0], [1.0, 0.0, 0.0])));
+    let r = import(&mut s, "surf.gtree.json", &t).unwrap();
+    assert!(skipped(&r).iter().any(|(n, why)| n == "Fillet1" && why.contains("mock kernel")), "{r}");
+    let mut s = session();
+    let t = tree2(fs(plane([0.0, 0.0, 5.0], [0.0, 0.0, 1.0]), plane([21.0, 0.0, 0.0], [1.0, 0.0, 0.0])));
+    let r = import(&mut s, "surf.gtree.json", &t).unwrap();
+    assert!(skipped(&r).iter().any(|(n, why)| n == "Fillet1" && why.contains("between the faces")), "{r}");
+}
+
 /// A source edge the model holds as two edges meeting at its midpoint (a revolved face's seam
 /// splits an arc that crosses it in Gusset's model; here a side drawn as two lines): a pick at
 /// that vertex, with a path either way along it, takes both halves.
