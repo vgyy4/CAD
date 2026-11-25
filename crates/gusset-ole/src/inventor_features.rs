@@ -3880,7 +3880,19 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                     by_faces.push(p);
                 }
             }
-            Err(w) => why.push(w),
+            // Say what the supports are where they are not planes, cylinders or cones.
+            Err(w) => match b.blend_supports(face) {
+                Some([a, c]) => {
+                    let word = |s: &Support| match s {
+                        Support::Plane { .. } => "plane".to_string(),
+                        Support::Cyl { .. } => "cylinder".to_string(),
+                        Support::Cone { .. } => "cone".to_string(),
+                        Support::Other(k) => k.clone(),
+                    };
+                    why.push(format!("a blend between a {} and a {}", word(a), word(c)));
+                }
+                None => why.push(w),
+            },
             Ok((m, info)) => {
                 // A chamfer face lies within a few distances of the edge it replaced. A planar
                 // face with the tag whose "edge" is further away is a leftover (an original
@@ -4108,7 +4120,7 @@ fn support_pick(sup: &[Support; 2]) -> Option<Value> {
         Support::Cone { c, ax, r, slope } => Some(
             json!({"kind": "surface", "point": mm(c), "axis": dir(ax), "radius": rnd(r * CM), "slope": rnd(slope)}),
         ),
-        Support::Other => None,
+        Support::Other(_) => None,
     };
     let [s0, s1] = sup;
     let (a, b) = (one(s0)?, one(s1)?);

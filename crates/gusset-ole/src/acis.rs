@@ -259,7 +259,9 @@ pub(crate) enum Support {
         r: f64,
         slope: f64,
     },
-    Other,
+    /// Another surface (its type word: `spline`, `torus`, ...), or `curve` where the ball runs
+    /// along an edge.
+    Other(String),
 }
 
 /// Most tokens of a rolling-ball blend subtype looked at for its two supports.
@@ -319,10 +321,17 @@ fn blend_supports(b: &[u8], mut i: usize, wide: bool) -> Option<[Support; 2]> {
             toks.iter().skip(at + 2).take(3).filter_map(|t| if let T::Vec(v) = t { Some(*v) } else { None }).collect();
         let nums: Vec<f64> =
             toks.iter().skip(at + 5).take(6).filter_map(|t| if let T::Num(v) = t { Some(*v) } else { None }).collect();
+        let other = || {
+            Support::Other(match (w == b"blend_support_surface", toks.get(at + 1)) {
+                (true, Some(T::Word(k))) => String::from_utf8_lossy(k).into_owned(),
+                (true, _) => "surface".into(),
+                (false, _) => "curve".into(),
+            })
+        };
         let sup = match (w == b"blend_support_surface", toks.get(at + 1)) {
             (true, Some(T::Word(b"plane"))) => match vecs.as_slice() {
                 [p, n, ..] if dot(*n, *n) > 0.0 => Support::Plane { p: *p, n: unit(*n) },
-                _ => Support::Other,
+                _ => other(),
             },
             (true, Some(T::Word(b"cone"))) => match (vecs.as_slice(), nums.as_slice()) {
                 ([c, a, m], [ratio, sin, ..])
@@ -335,9 +344,9 @@ fn blend_supports(b: &[u8], mut i: usize, wide: bool) -> Option<[Support; 2]> {
                 {
                     Support::Cone { c: *c, ax: unit(*a), r: libm::sqrt(dot(*m, *m)), slope: (sin / cos).abs() }
                 }
-                _ => Support::Other,
+                _ => other(),
             },
-            _ => Support::Other,
+            _ => other(),
         };
         out.push(sup);
     }
@@ -2303,7 +2312,7 @@ mod tests {
         assert!(dist(p, [-0.45, 0.0, 0.0]) < 1e-12 && dist(n, [-h, 0.0, h]) < 1e-12);
         // A support curve (the ball runs along an edge) is not a face.
         let s = blend_supports(&rb(b"blend_support_curve"), 0, false).unwrap();
-        assert_eq!(s[1], Support::Other);
+        assert_eq!(s[1], Support::Other("curve".into()));
         // A chamfer's surface names its supports the same way; a cone's slope is its tangent.
         let s = blend_supports(&blend(b"srf_srf_v_bl_spl_sur", b"blend_support_surface", 0.6), 0, false).unwrap();
         let Support::Cone { r, slope, .. } = s[0] else { panic!("{:?}", s[0]) };
