@@ -4124,7 +4124,8 @@ fn support_pick(sup: &[Support; 2]) -> Option<Value> {
     };
     let [s0, s1] = sup;
     let (a, b) = (one(s0)?, one(s1)?);
-    let (a, b) = if a.to_string() <= b.to_string() { (a, b) } else { (b, a) };
+    let key = |v: &Value| serde_json::to_string(v).unwrap_or_default();
+    let (a, b) = if key(&a) <= key(&b) { (a, b) } else { (b, a) };
     Some(json!({"faces": [a, b]}))
 }
 
