@@ -16,7 +16,8 @@
 //! shaped as expected gives an `unsupported` feature or an error, never a panic.
 
 use crate::acis::{
-    Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, RevSeg, Spline3, StepChamfer, Surf, V3, cross, dot, local_path,
+    Acis, BridgedRound, EdgeInfo, EndSurface, FullRound, RevSeg, Spline3, StepChamfer, Support, Surf, V3, cross, dot,
+    local_path,
 };
 use crate::inventor_dc::{Dc, FeatType, Feature, G_BODY_LIST, G_SOLID_BODY, Role, f64_at, u16_at, u32_at};
 use crate::inventor_profile::{P2, Poly, picks, sample};
@@ -3786,6 +3787,8 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let mut infos: Vec<(V3, EdgeInfo)> = Vec::new();
     let mut bridged: Vec<BridgedRound> = Vec::new();
     let mut steps: Vec<StepChamfer> = Vec::new();
+    // Picks of edges by their two support faces (rolling-ball blends), one per pair.
+    let mut by_faces: Vec<Value> = Vec::new();
     let chamfer_d = (typ == FeatType::Chamfer).then(|| r.pval(&s, 2).ok()).flatten();
     let mm = |v: V3| [rnd_to(v[0] * CM, 1e6), rnd_to(v[1] * CM, 1e6), rnd_to(v[2] * CM, 1e6)];
     for &face in &faces {
@@ -3837,6 +3840,17 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
             continue;
         }
         match b.edge_mid(face) {
+            // A rolling-ball blend along an edge that is neither a line nor a circle (two
+            // cylinders that cross, a cylinder across a plane): the edge between its two
+            // supports (note BC).
+            Err(_)
+                if typ == FeatType::Fillet
+                    && let Some(p) = b.blend_supports(face).and_then(support_pick) =>
+            {
+                if !by_faces.contains(&p) {
+                    by_faces.push(p);
+                }
+            }
             Err(w) => why.push(w),
             Ok((m, info)) => {
                 // A chamfer face lies within a few distances of the edge it replaced. A planar
@@ -3930,7 +3944,7 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
             uniq.push((m, p, q));
         }
     }
-    if uniq.is_empty() {
+    if uniq.is_empty() && by_faces.is_empty() {
         st.out.push(unsupported(name, &label, Some("no edge of the blend faces".into())));
         return Ok(());
     }
@@ -3939,6 +3953,7 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         None => json!({"midpoint": m}),
     };
     let mut edges: Vec<Value> = uniq.iter().map(pick).collect();
+    edges.extend(by_faces.iter().cloned());
     // A chamfer on one edge: its reference lines start on that edge (note AS).
     if typ == FeatType::Chamfer
         && !r.dc.has_row()
@@ -3985,6 +4000,10 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                     set_radii.push(v);
                 }
             }
+            if !by_faces.is_empty() {
+                st.out.push(unsupported(name, "fillet with several radii", Some("an edge picked by its faces".into())));
+                return Ok(());
+            }
             let face_radii: Vec<Option<f64>> = uniq.iter().map(|u| u.2).collect();
             let Some(groups) = radius_groups(&set_radii, &face_radii) else {
                 st.out.push(unsupported(name, "fillet with several radii", None));
@@ -4019,6 +4038,41 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         st.out.push(ch);
     }
     Ok(())
+}
+
+/// A pick of the edge a rolling-ball blend replaced by its two supports, when both are planes
+/// or cylinders: each a face of the model on that surface (mm), `{"kind": "surface", "point",
+/// "normal"}` or `{"kind": "surface", "point", "axis", "radius"}`. The pair is written in a
+/// fixed order, so the faces of one edge give one pick.
+fn support_pick(sup: &[Support; 2]) -> Option<Value> {
+    let mm = |v: V3| [rnd(v[0] * CM), rnd(v[1] * CM), rnd(v[2] * CM)];
+    let dir = |v: V3| [rnd(v[0]), rnd(v[1]), rnd(v[2])];
+    let one = |s: &Support| match *s {
+        Support::Plane { p, n } => {
+            // The plane's point nearest the origin and its normal pointing to positive
+            // coordinates first, so one plane is written one way.
+            let n =
+                if n.iter().find(|v| v.abs() > 1e-9).is_some_and(|v| *v < 0.0) { crate::acis::mul(n, -1.0) } else { n };
+            let p = crate::acis::mul(n, crate::acis::dot(p, n));
+            Some(json!({"kind": "surface", "point": mm(p), "normal": dir(n)}))
+        }
+        Support::Cyl { c, ax, r } => {
+            // The axis's point nearest the origin, so one cylinder is written one way.
+            let c = crate::acis::sub(c, crate::acis::mul(ax, crate::acis::dot(c, ax)));
+            // The axis pointing to positive coordinates first.
+            let ax = if ax.iter().find(|v| v.abs() > 1e-9).is_some_and(|v| *v < 0.0) {
+                crate::acis::mul(ax, -1.0)
+            } else {
+                ax
+            };
+            Some(json!({"kind": "surface", "point": mm(c), "axis": dir(ax), "radius": rnd(r * CM)}))
+        }
+        Support::Other => None,
+    };
+    let [s0, s1] = sup;
+    let (a, b) = (one(s0)?, one(s1)?);
+    let (a, b) = if a.to_string() <= b.to_string() { (a, b) } else { (b, a) };
+    Some(json!({"faces": [a, b]}))
 }
 
 /// The edges of a fillet with several edge sets, by radius: for each set radius (mm, in set

@@ -234,13 +234,102 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// Splits `b` into records.
 #[cfg(test)]
 fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
-    records_and_curves(b).map(|(r, _)| r)
+    records_and_curves(b).map(|(r, _, _)| r)
+}
+
+/// A support of a rolling-ball blend (`rb_blend_spl_sur`) as far as an edge pick needs it: a
+/// plane (a point, the unit normal), a circular cylinder (a point on the axis, the unit axis,
+/// the radius; file units), or anything else (a cone, a spline, a support curve).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Support {
+    Plane { p: V3, n: V3 },
+    Cyl { c: V3, ax: V3, r: f64 },
+    Other,
+}
+
+/// Most tokens of a rolling-ball blend subtype looked at for its two supports.
+const MAX_SUPPORT_TOKENS: usize = 400;
+
+/// The two supports of an `rb_blend_spl_sur` subtype whose name token starts at `i`: each is a
+/// string `blend_support_surface` (or `blend_support_curve`) then the support's own data, a
+/// plane as `plane <point> <normal> ...`, a cone as `cone <centre> <axis> <major axis> <ratio>
+/// <flags> <sin> <cos> ...` (a cylinder when the sine is 0 and the ratio 1). `None` for any
+/// other subtype.
+fn blend_supports(b: &[u8], mut i: usize, wide: bool) -> Option<[Support; 2]> {
+    let (first, j) = token(b, i, wide)?;
+    if !matches!(first, Tok::Word(w) if w == b"rb_blend_spl_sur") {
+        return None;
+    }
+    i = j;
+    // The tokens: words, numbers and the vectors (0x13, 0x14) in order.
+    enum T<'a> {
+        Word(&'a [u8]),
+        Text(&'a [u8]),
+        Num(f64),
+        Vec(V3),
+        Other,
+    }
+    let mut toks: Vec<T<'_>> = Vec::new();
+    while toks.len() < MAX_SUPPORT_TOKENS {
+        let Some(&t) = b.get(i) else { break };
+        if matches!(t, 0x13 | 0x14) {
+            let Some(v) = b.get(i + 1..i + 25) else { break };
+            toks.push(T::Vec(vec3(v)));
+            i += 25;
+            continue;
+        }
+        if t == 0x11 {
+            break;
+        }
+        let Some((k, j)) = token(b, i, wide) else { break };
+        toks.push(match k {
+            Tok::Word(w) if t == 0x07 => T::Text(w),
+            Tok::Word(w) => T::Word(w),
+            Tok::Num(v) => T::Num(v),
+            Tok::Other => T::Other,
+        });
+        i = j;
+    }
+    let mut out: Vec<Support> = Vec::new();
+    let mut k = 0usize;
+    while out.len() < 2 && k < toks.len() {
+        let at = k;
+        k += 1;
+        let Some(T::Text(w)) = toks.get(at) else { continue };
+        if !w.starts_with(b"blend_support_") {
+            continue;
+        }
+        let vecs: Vec<V3> =
+            toks.iter().skip(at + 2).take(3).filter_map(|t| if let T::Vec(v) = t { Some(*v) } else { None }).collect();
+        let nums: Vec<f64> =
+            toks.iter().skip(at + 5).take(6).filter_map(|t| if let T::Num(v) = t { Some(*v) } else { None }).collect();
+        let sup = match (w == b"blend_support_surface", toks.get(at + 1)) {
+            (true, Some(T::Word(b"plane"))) => match vecs.as_slice() {
+                [p, n, ..] if dot(*n, *n) > 0.0 => Support::Plane { p: *p, n: unit(*n) },
+                _ => Support::Other,
+            },
+            (true, Some(T::Word(b"cone"))) => match (vecs.as_slice(), nums.as_slice()) {
+                ([c, a, m], [ratio, sin, ..])
+                    if (ratio - 1.0).abs() < 1e-12 && sin.abs() < 1e-12 && dot(*a, *a) > 0.0 && dot(*m, *m) > 0.0 =>
+                {
+                    Support::Cyl { c: *c, ax: unit(*a), r: libm::sqrt(dot(*m, *m)) }
+                }
+                _ => Support::Other,
+            },
+            _ => Support::Other,
+        };
+        out.push(sup);
+    }
+    let [a, b] = <[Support; 2]>::try_from(out).ok()?;
+    Some([a, b])
 }
 
 /// [`records`], with the B-splines of the `exact_int_cur` subtypes by subtype number (subtypes
 /// are numbered in the order they are written, `{ ref n }` refers back to one).
-fn records_and_curves(b: &[u8]) -> Result<(Vec<Rec>, HashMap<usize, Spline3>), String> {
+#[allow(clippy::type_complexity)]
+fn records_and_curves(b: &[u8]) -> Result<(Vec<Rec>, HashMap<usize, Spline3>, HashMap<usize, [Support; 2]>), String> {
     let mut curves: HashMap<usize, Spline3> = HashMap::new();
+    let mut supports: HashMap<usize, [Support; 2]> = HashMap::new();
     let mut nsubs = 0usize;
     let h = find(b, b"\x0d\x09asmheader").ok_or("the ShapeManager data has no header")?;
     // Files of the 64-bit layout write pointers and ints as 8 bytes.
@@ -272,7 +361,7 @@ fn records_and_curves(b: &[u8]) -> Result<(Vec<Rec>, HashMap<usize, Spline3>), S
                 if s.starts_with(b"End-of-ASM-data")
                     || (t == 0x0d && s == b"data" && prev_name.as_deref() == Some(b"ASM"))
                 {
-                    return Ok((out, curves));
+                    return Ok((out, curves, supports));
                 }
                 if t != 0x07 && !s.is_empty() {
                     names.push(String::from_utf8_lossy(s).into_owned());
@@ -310,6 +399,9 @@ fn records_and_curves(b: &[u8]) -> Result<(Vec<Rec>, HashMap<usize, Spline3>), S
                         if let Some(c) = exact_curve(b, i, wide) {
                             curves.insert(nsubs, c);
                         }
+                        if let Some(c) = blend_supports(b, i, wide) {
+                            supports.insert(nsubs, c);
+                        }
                         cur.sub.get_or_insert(nsubs);
                         nsubs += 1;
                     }
@@ -344,7 +436,7 @@ fn records_and_curves(b: &[u8]) -> Result<(Vec<Rec>, HashMap<usize, Spline3>), S
             }
         }
     }
-    Ok((out, curves))
+    Ok((out, curves, supports))
 }
 
 /// Newer files (ShapeManager attribute version 44) write Inventor's naming attributes as
@@ -378,6 +470,8 @@ pub(crate) struct Acis {
     bodies: HashMap<i64, usize>,
     /// The B-splines of `exact_int_cur` subtypes, by subtype number.
     curves: HashMap<usize, Spline3>,
+    /// The supports of `rb_blend_spl_sur` subtypes, by subtype number.
+    supports: HashMap<usize, [Support; 2]>,
 }
 
 pub(crate) fn sub(a: V3, b: V3) -> V3 {
@@ -409,7 +503,7 @@ fn unit(a: V3) -> V3 {
 impl Acis {
     /// Parses a ShapeManager binary file (`ASM BinaryFile...`).
     pub(crate) fn parse(blob: &[u8]) -> Result<Acis, String> {
-        let (recs, curves) = records_and_curves(blob)?;
+        let (recs, curves, supports) = records_and_curves(blob)?;
         let mut bodies = HashMap::new();
         for (k, r) in recs.iter().enumerate() {
             if r.last == "body"
@@ -419,7 +513,7 @@ impl Acis {
                 bodies.insert(t, k);
             }
         }
-        Ok(Acis { recs, bodies, curves })
+        Ok(Acis { recs, bodies, curves, supports })
     }
 
     fn rec(&self, k: i64) -> Option<&Rec> {
@@ -720,6 +814,17 @@ impl Acis {
     /// (`spline-surface-rb_blend_spl_sur-cone-...`), so it does not end in `surface`.
     fn is_spline_surface(&self, k: i64) -> bool {
         self.rec(k).is_some_and(|r| r.ty.starts_with("spline-surface-"))
+    }
+
+    /// The two supports of a rolling-ball blend face (`rb_blend_spl_sur`, written in place or
+    /// by `{ ref n }`), or `None`.
+    pub(crate) fn blend_supports(&self, f: i64) -> Option<&[Support; 2]> {
+        let r = self.recs.get(self.surf_rec(f)?)?;
+        if let Some(x) = r.sub.and_then(|k| self.supports.get(&k)) {
+            return Some(x);
+        }
+        let q = r.refs.iter().filter_map(|&y| self.rec(y)).find(|q| q.ty.starts_with("spline-surface-"))?;
+        self.supports.get(&q.sub?)
     }
 
     pub(crate) fn kind(&self, f: i64) -> Surf {
@@ -2110,6 +2215,51 @@ mod tests {
         // Two supports stay as they are; without a torus nothing is judged.
         assert_eq!(supports(vec![(1, cone), (4, floor)], Some(((0.04, 0.0), 0.09))).len(), 2);
         assert_eq!(supports(vec![(1, cone), (2, dome), (4, floor)], None).len(), 3);
+    }
+
+    #[test]
+    fn the_supports_of_a_rolling_ball_blend_are_read() {
+        let tok = |t: u8, v: &[u8]| {
+            let mut x = vec![t];
+            if matches!(t, 0x07 | 0x0d | 0x0e) {
+                x.push(v.len() as u8);
+            }
+            x.extend(v);
+            x
+        };
+        let dbl = |v: f64| tok(0x06, &v.to_le_bytes());
+        let v3 = |t: u8, v: V3| tok(t, &v.iter().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>());
+        let rb = |second: &[u8]| {
+            let mut b = tok(0x0d, b"rb_blend_spl_sur");
+            b.extend(tok(0x04, &22502i32.to_le_bytes()));
+            // A cylinder of radius 0.16 along -x, through (0.15, 1.1, 0).
+            b.extend(tok(0x07, b"blend_support_surface"));
+            b.extend(tok(0x0d, b"cone"));
+            b.extend(v3(0x13, [0.15, 1.1, 0.0]));
+            b.extend(v3(0x14, [-1.0, 0.0, 0.0]));
+            b.extend(v3(0x14, [0.0, 0.0, -0.16]));
+            b.extend(dbl(1.0));
+            b.extend([0x0b, 0x0b]);
+            b.extend(dbl(-0.0));
+            b.extend(dbl(-1.0));
+            b.extend(dbl(0.16));
+            b.extend(tok(0x07, second));
+            b.extend(tok(0x0d, b"plane"));
+            b.extend(v3(0x13, [-0.45, 0.0, 0.0]));
+            b.extend(v3(0x14, [-2.0, 0.0, 2.0]));
+            b.push(0x11);
+            b
+        };
+        let s = blend_supports(&rb(b"blend_support_surface"), 0, false).unwrap();
+        assert_eq!(s[0], Support::Cyl { c: [0.15, 1.1, 0.0], ax: [-1.0, 0.0, 0.0], r: 0.16 });
+        let h = core::f64::consts::FRAC_1_SQRT_2;
+        let Support::Plane { p, n } = s[1] else { panic!("{:?}", s[1]) };
+        assert!(dist(p, [-0.45, 0.0, 0.0]) < 1e-12 && dist(n, [-h, 0.0, h]) < 1e-12);
+        // A support curve (the ball runs along an edge) is not a face.
+        let s = blend_supports(&rb(b"blend_support_curve"), 0, false).unwrap();
+        assert_eq!(s[1], Support::Other);
+        // Another subtype is not read.
+        assert!(blend_supports(&tok(0x0d, b"off_int_cur"), 0, false).is_none());
     }
 
     #[test]
