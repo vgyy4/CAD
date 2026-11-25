@@ -6249,8 +6249,31 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         "format": "gusset-feature-tree",
         "version": 2,
         "source": {"app": "solidworks", "file": file},
-        "features": expand_holes(bodies::track(drop_reblended(feats), &body_list, &own_profile)),
+        "features": expand_holes(bodies::track(drop_unplaced_sketches(drop_reblended(feats)), &body_list, &own_profile)),
     }))
+}
+
+/// Round sw23: a sketch whose plane was not found and that no feature read uses is left out
+/// (8mm TR8_8 Leadscrew: Sketch2 to Sketch6 lie on planes of suppressed helices; the part
+/// is the one extrude).
+fn drop_unplaced_sketches(feats: Vec<Value>) -> Vec<Value> {
+    fn names(v: &Value, name: &str, depth: usize) -> bool {
+        match v {
+            Value::String(s) => s == name,
+            Value::Array(a) if depth < 8 => a.iter().any(|x| names(x, name, depth + 1)),
+            Value::Object(o) if depth < 8 => o.values().any(|x| names(x, name, depth + 1)),
+            _ => false,
+        }
+    }
+    let is_sketch = |f: &Value| f.get("type").and_then(Value::as_str) == Some("sketch");
+    let unused = |f: &Value| {
+        let Some(name) = f.get("name").and_then(Value::as_str) else { return false };
+        is_sketch(f)
+            && f.pointer("/plane/unresolved").is_some()
+            && !feats.iter().filter(|g| !is_sketch(g)).any(|g| names(g, name, 0))
+    };
+    let keep: Vec<bool> = feats.iter().map(|f| !unused(f)).collect();
+    feats.into_iter().zip(keep).filter_map(|(f, k)| k.then_some(f)).collect()
 }
 
 /// Round sw15: an edge record of a fillet or chamfer that a later blend names again (the same
@@ -8292,6 +8315,28 @@ mod pattern_tests {
         let body = Some(patterns::Seeds { ptrs: vec![], bodies: 1, skipped: vec![], body_ids: vec![] });
         let out = feature_pattern("P", true, body, &lines, (|_: &str| Some(3), |_: &str| None), names, &feats);
         assert_eq!(out[0]["why"], "a pattern of bodies");
+    }
+
+    #[test]
+    fn an_unplaced_sketch_no_feature_uses_is_left_out() {
+        let sk = |name: &str, unresolved: bool| {
+            let mut plane = json!({"origin": [0.0, 0.0, 0.0]});
+            if unresolved {
+                plane["unresolved"] = json!(true);
+            }
+            json!({"type": "sketch", "name": name, "plane": plane})
+        };
+        let feats = vec![
+            sk("A", false),
+            json!({"type": "extrude", "name": "E", "sketch": "A"}),
+            sk("B", true),
+            sk("C", true),
+            json!({"type": "loft", "name": "L", "sketches": ["C"]}),
+            sk("D", false),
+        ];
+        let out = drop_unplaced_sketches(feats);
+        let names: Vec<&str> = out.iter().map(|f| f["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["A", "E", "C", "L", "D"]);
     }
 
     #[test]
