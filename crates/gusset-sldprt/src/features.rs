@@ -7022,9 +7022,18 @@ fn feature_pattern(
             (None, None) => 360.0,
         };
         let axis = json!({"origin": json_v3(*origin), "direction": json_v3(*dir)});
-        if !seeds.skipped.is_empty() {
-            // Which instance each id is was not measured (Link 2's and Link 4's parts stop
-            // earlier, at a loft and a mirror).
+        if !seeds.skipped.is_empty() && body_source.is_none() {
+            // Instances left out (round sw23): an id is the copy's number, the seed 0 (Link 4's
+            // CirPattern1 of 7 leaves out 3 and 4, the part has the copies 1, 2, 5 and 6 steps
+            // round). Each kept copy is a pattern of its own of two instances.
+            let full = (angle - 360.0).abs() < 1e-9;
+            let step = if full { angle / f64::from(count) } else { angle / f64::from(count.saturating_sub(1).max(1)) };
+            for k in (1..count).filter(|k| !seeds.skipped.contains(k)) {
+                let nm = if out.is_empty() { name.to_string() } else { format!("{name}_{k}") };
+                out.push(json!({"type": kind, "name": nm, "features": names, "count": 2,
+                    "axis": axis, "angle": round_to(step * f64::from(k), 9)}));
+            }
+        } else if !seeds.skipped.is_empty() {
             return fail("instances left out");
         } else if let Some(id) = body_source {
             out.push(json!({"type": kind, "name": name, "features": names, "count": count,
@@ -8154,6 +8163,30 @@ mod pattern_tests {
         let body = Some(patterns::Seeds { ptrs: vec![], bodies: 1, skipped: vec![], body_ids: vec![] });
         let out = feature_pattern("P", true, body, &lines, (|_: &str| Some(3), |_: &str| None), names, &feats);
         assert_eq!(out[0]["why"], "a pattern of bodies");
+    }
+
+    #[test]
+    fn instances_left_out_leave_one_pattern_per_kept_copy() {
+        // Link 4's CirPattern1: 7 over a full turn, copies 3 and 4 left out.
+        let feats = [json!({"type": "extrude", "name": "Cut"})];
+        let names = |_: u32| Some(("Cut".to_string(), false));
+        let lines = [([0.0, 0.0, 0.0], [0.0, 0.0, 1.0])];
+        let mut s = seeds(&[7]).unwrap();
+        s.skipped = vec![3, 4];
+        let ints = |k: &str| (k == "D1").then_some(7);
+        let reals = |k: &str| (k == "D2").then_some(TAU / 7.0);
+        let out = feature_pattern("P", true, Some(s), &lines, (ints, reals), names, &feats);
+        let got: Vec<(String, f64, u64)> = out
+            .iter()
+            .map(|f| (f["name"].as_str().unwrap().to_string(), f["angle"].as_f64().unwrap(), f["count"].as_u64().unwrap()))
+            .collect();
+        let step = 360.0 / 7.0;
+        let want = [("P", 1.0), ("P_2", 2.0), ("P_5", 5.0), ("P_6", 6.0)];
+        assert_eq!(got.len(), want.len(), "{got:?}");
+        for ((n, a, c), (wn, k)) in got.iter().zip(want) {
+            assert_eq!((n.as_str(), *c), (wn, 2));
+            assert!((a - k * step).abs() < 1e-6, "{got:?}");
+        }
     }
 
     #[test]
