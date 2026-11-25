@@ -44,6 +44,10 @@ pub(super) struct FaceSel {
     axis: Option<V3>,
     #[serde(default)]
     radius: Option<f64>,
+    /// A circular cone instead (`point` on its axis, `axis`, `radius` there): its radius
+    /// grows by `slope` per unit along the axis, one way or the other.
+    #[serde(default)]
+    slope: Option<f64>,
 }
 
 /// What a [`FaceSel`] stands for in the document's names.
@@ -74,11 +78,11 @@ enum Want {
         shell: String,
         face: Box<Want>,
     },
-    /// Any face on a plane (a point, a unit normal) or a cylinder (a point on the axis, the unit
-    /// axis, the radius).
+    /// Any face on a plane (a point, a unit normal), a cylinder (a point on the axis, the unit
+    /// axis, the radius) or a cone (also its slope).
     Surface {
         plane: Option<(V3, V3)>,
-        cyl: Option<(V3, V3, f64)>,
+        cyl: Option<(V3, V3, f64, f64)>,
     },
 }
 
@@ -90,10 +94,11 @@ fn want(g: &Gen, f: &FaceSel) -> Option<Want> {
         let finite = |v: &V3| v.iter().all(|c| c.is_finite());
         let unit = |n: V3| (finite(&n) && norm(n) > 1e-9).then(|| n.map(|v| v / norm(n)));
         let p = f.point.filter(finite)?;
+        let slope = f.slope.unwrap_or(0.0);
         return match (f.normal, f.axis, f.radius) {
             (Some(n), None, None) => Some(Want::Surface { plane: Some((p, unit(n)?)), cyl: None }),
-            (None, Some(a), Some(r)) if r.is_finite() && r > 0.0 => {
-                Some(Want::Surface { plane: None, cyl: Some((p, unit(a)?, r)) })
+            (None, Some(a), Some(r)) if r.is_finite() && r > 0.0 && slope.is_finite() => {
+                Some(Want::Surface { plane: None, cyl: Some((p, unit(a)?, r, slope.abs())) })
             }
             _ => None,
         };
@@ -195,8 +200,30 @@ pub(super) fn named_edge(g: &Gen, ev: &gusset_eval::Evaluation, pick: &EdgePick)
     let ends: Vec<Option<Want>> = pick.ends.iter().take(2).map(|e| e.as_ref().and_then(|e| want(g, e))).collect();
     let strict = edge_between(ev, (&wa, &wb), &ends, false);
     let mut found = if strict.is_empty() { edge_between(ev, (&wa, &wb), &ends, true) } else { strict };
-    match found.len() {
-        1 => found.pop().unwrap_or_default(),
+    match (found.len(), pick.near) {
+        (1, _) => found.pop().unwrap_or_default(),
+        // Several: the one with an edge nearest the point the pick gives.
+        (2.., Some(p)) => {
+            let gap = |run: &Vec<(String, String)>| {
+                let mut best = f64::INFINITY;
+                for (body, n) in run {
+                    let Some(b) = ev.bodies.iter().find(|b| &b.feature == body) else { continue };
+                    let Some(i) = b.names.edges.iter().position(|x| x.to_string() == *n) else { continue };
+                    let Some(e) = b.topology.edges.get(i) else { continue };
+                    let ends = e.vertices.iter().filter_map(|v| b.topology.vertices.get(*v as usize)).map(|v| v.point);
+                    for q in std::iter::once(e.midpoint).chain(ends) {
+                        best = best.min(norm(sub(q, p)));
+                    }
+                }
+                best
+            };
+            found
+                .into_iter()
+                .map(|run| (gap(&run), run))
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|x| x.1)
+                .unwrap_or_default()
+        }
         _ => Vec::new(),
     }
 }
@@ -308,27 +335,35 @@ fn edge_between(
     found
 }
 
-/// Whether face `f` of the model lies on the plane or the cylinder (its axis line, and its
-/// vertices at the radius from it; within 1e-3 mm).
-fn on_surface(t: &gusset_kernel::Topology, f: u32, plane: Option<(V3, V3)>, cyl: Option<(V3, V3, f64)>) -> bool {
+/// Whether face `f` of the model lies on the plane, or on the cylinder or cone (its axis line,
+/// and its vertices at the radius from it, the cone's growing one way or the other along it;
+/// within 1e-3 mm).
+fn on_surface(t: &gusset_kernel::Topology, f: u32, plane: Option<(V3, V3)>, cyl: Option<(V3, V3, f64, f64)>) -> bool {
     let info = t.faces.get(f as usize);
     if let Some(pl) = plane {
         return on_plane(info, pl);
     }
-    let Some((c, ax, r)) = cyl else { return false };
-    let Some(a) = info.filter(|fi| fi.kind == SurfaceKind::Cylinder).and_then(|fi| fi.axis) else { return false };
+    let Some((c, ax, r, slope)) = cyl else { return false };
+    let kind = if slope == 0.0 { SurfaceKind::Cylinder } else { SurfaceKind::Cone };
+    let Some(a) = info.filter(|fi| fi.kind == kind).and_then(|fi| fi.axis) else { return false };
     if norm(cross(a.dir, ax)) > 1e-6 || norm(cross(sub(a.origin, c), ax)) > 1e-3 {
         return false;
     }
-    let mut at_r = t
+    let pts: Vec<V3> = t
         .edges
         .iter()
         .filter(|e| e.faces.contains(&f))
         .flat_map(|e| e.vertices.iter())
         .filter_map(|v| t.vertices.get(*v as usize))
-        .map(|v| (norm(cross(sub(v.point, c), ax)) - r).abs() <= 1e-3)
-        .peekable();
-    at_r.peek().is_some() && at_r.all(|ok| ok)
+        .map(|v| v.point)
+        .collect();
+    let fits = |s: f64| {
+        pts.iter().all(|&p| {
+            let q = sub(p, c);
+            (norm(cross(q, ax)) - (r + s * dot(q, ax))).abs() <= 1e-3
+        })
+    };
+    !pts.is_empty() && (fits(slope) || fits(-slope))
 }
 
 /// The faces that continue the cylinders of the faces `seed` holds: reached across edges

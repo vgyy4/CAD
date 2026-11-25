@@ -322,6 +322,10 @@ struct EdgePick {
     /// between the same two faces.
     #[serde(default)]
     ends: Vec<Option<named::FaceSel>>,
+    /// A point near the edge (on the blend face that replaced it in the source), to tell apart
+    /// several edges between the faces `faces` names: the one nearest it.
+    #[serde(default)]
+    near: Option<[f64; 3]>,
     /// The 1-based number of this edge in the source feature's selection: a later edge names
     /// the face the blend made from it by that number.
     #[serde(default)]
@@ -2683,7 +2687,11 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
                 if let Some(k) = pick.selection {
                     numbered.push((k, body.clone(), n.clone()));
                 }
-                by_body.entry(body).or_default().push(n);
+                // Several picks may name one edge (a source edge's blend in pieces).
+                let names = by_body.entry(body).or_default();
+                if !names.contains(&n) {
+                    names.push(n);
+                }
             };
             let Some(mid) = pick.midpoint else {
                 let found = by_faces();
