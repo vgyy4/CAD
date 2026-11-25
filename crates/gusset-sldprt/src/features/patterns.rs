@@ -24,7 +24,7 @@ pub(super) struct Seeds {
     pub ptrs: Vec<u32>,
     /// How many bodies the pattern repeats (a pattern of bodies writes no seed feature).
     pub bodies: usize,
-    /// The instances left out (`moCirPatternItemId_c` ids; the seed is 1).
+    /// The instances left out (`moCirPatternItemId_c` ids: the copy's number, the seed 0).
     pub skipped: Vec<u32>,
     /// The id of the one body a pattern of bodies repeats (round sw22), where it is read.
     pub body_ids: Vec<u32>,

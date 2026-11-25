@@ -1086,6 +1086,17 @@ fn classify(d: &[u8], nodes: &mut [Node], outer: (&HashMap<usize, String>, usize
         }
     }
     let decl: Vec<usize> = (0..nodes.len()).filter(|&i| nodes.get(i).is_some_and(|n| n.cls.is_some())).collect();
+    // The nodes right after a node whose ids are just below its own: the children a hole wizard
+    // writes after itself (round sw23: housing's CBORE for M24 Hex Head Bolt1, id 0x57, then
+    // 3DSketch1 0x55 and Sketch6 0x56; its Ø5.0mm Dowel Hole1 refers to the class and had passed
+    // for a 3D sketch, which every candidate matched as well by signature). Only ids up to three
+    // below count: the toolbox gears write later features with far lower ids.
+    let mut order: Vec<(usize, u32)> = nodes.iter().map(|n| (n.start, n.id)).collect();
+    order.sort_unstable();
+    let kids = |n: &Node| -> usize {
+        let i = order.partition_point(|&(s, _)| s <= n.start);
+        order.get(i..).unwrap_or_default().iter().take(3).take_while(|(_, id)| *id < n.id && n.id - *id <= 3).count()
+    };
     let mut mapping: HashMap<u16, Option<String>> = HashMap::new();
     for (t, xs) in &tags {
         // Only for sketches: a count that drifts by an object named a folder note as a colour
@@ -1113,7 +1124,9 @@ fn classify(d: &[u8], nodes: &mut [Node], outer: (&HashMap<usize, String>, usize
                 .iter()
                 .map(|x| {
                     let same = sig(c).iter().zip(sig(x)).filter(|(a, b)| a == b).count();
-                    same + if cname == strip(&x.name) { 8 } else { 0 } + if c.head_len == x.head_len { 4 } else { 0 }
+                    same + if cname == strip(&x.name) { 8 } else { 0 }
+                        + if c.head_len == x.head_len { 4 } else { 0 }
+                        + if kids(c) > 0 && kids(x) > 0 { 8 } else { 0 }
                 })
                 .max()
                 .unwrap_or(0);
@@ -2352,6 +2365,29 @@ fn removed_faces(d: &[u8], a: usize, b: usize) -> Vec<Rep> {
             }
         }
         i = p;
+    }
+    out
+}
+
+/// The first reference after the last sentinel pair in `[a, b)` that reads as one (`<tag> 00 00
+/// <u32> <u32 feature id> <u32 stamp> <u32 face number>`, the tag's high bit set).
+fn last_listed_face(d: &[u8], a: usize, b: usize) -> Option<Rep> {
+    let mut pair = SENTINEL.to_vec();
+    pair.extend(SENTINEL);
+    pair.extend([0, 0]);
+    let mut from = a;
+    let mut out = None;
+    while let Some(i) = find(d, &pair, from, b) {
+        from = i + 1;
+        let p = i + pair.len();
+        if let (Some(t), Some(0), Some(fid), Some(idx)) =
+            (u16_at(d, p), u16_at(d, p + 2), u32_at(d, p + 8), u32_at(d, p + 16))
+            && t & 0x8000 != 0
+            && t != 0xffff
+            && p + 20 <= b
+        {
+            out = Some(Rep { tag: t & 0x7fff, fid, idx, ext: false, ext2: false, via: None, copy: 0 });
+        }
     }
     out
 }
@@ -3631,6 +3667,8 @@ struct Model<'a> {
     swept: &'a HashMap<u32, Swept>,
     rounds: &'a HashMap<u32, Vec<Option<Round>>>,
     revolved: &'a HashMap<u32, Revolved>,
+    /// Revolves of less than a full turn (round sw23: only their start circles are read).
+    partial: &'a HashMap<u32, Revolved>,
     sketches: &'a [Geometry],
     cap_tags: &'a HashSet<u16>,
 }
@@ -3715,6 +3753,82 @@ fn closed_edge(reps: &[Rep], m: &Model, work: &mut u64) -> Result<Option<V3>, St
         return Ok(Some(round3(snap(p, f, g, &s))));
     }
     Ok(None)
+}
+
+/// A closed edge where a revolve's face swept from a full circle of its profile meets the
+/// plane of its sketch (round sw23: EX +2.4's Fillet2 rounds the rim where Revolve2, an annulus
+/// turned 90 degrees, starts on the Front plane, which Boss-Extrude3's cap lies on): the profile
+/// circle itself, as a record `[A, B, B, B]` names a closed edge ([`closed_edge`]). A point on
+/// it, off the circle's centre along the sketch's x axis, and the circle as a path (the model
+/// may keep it as two halves).
+fn revolve_start_circle(reps: &[Rep], m: &Model) -> Option<(V3, Vec<V3>)> {
+    let same = |a: &Rep, b: &Rep| (a.tag, a.fid, a.idx, a.via) == (b.tag, b.fid, b.idx, b.via);
+    let [r0, r1, r2, r3] = reps else { return None };
+    if !same(r1, r2) || !same(r1, r3) || same(r0, r1) {
+        return None;
+    }
+    for (wall, across) in [(r0, r1), (r1, r0)] {
+        let Some(rv) = m.revolved.get(&wall.fid).or_else(|| m.partial.get(&wall.fid)) else { continue };
+        let Some((o, n)) = loop_plane(across, m) else { continue };
+        let Some(g) = m.sketches.get(rv.on.sketch) else { continue };
+        let mut it = g.segs.iter().filter(|s| s.a == wall.idx && !s.construction && !s.centerline);
+        let (Some(s), None) = (it.next(), it.next()) else { continue };
+        if s.kind != SegKind::Arc || s.s != s.e {
+            continue;
+        }
+        let (Some(c), Some(p)) = (point(&g.pts, s.c), point(&g.pts, s.s)) else { continue };
+        let r = libm::hypot(p.x - c.x, p.y - c.y) * 1000.0;
+        let c3 = lift(&rv.on, c.x * 1000.0, c.y * 1000.0, 0.0);
+        let on_plane = (libm::fabs(dot(normal(&rv.on), n)) - 1.0).abs() < 1e-6 && dot(sub(c3, o), n).abs() < 1e-6;
+        if !on_plane || r < 1e-6 {
+            continue;
+        }
+        let (x, y) = (rv.on.plane.x, rv.on.plane.y);
+        let at =
+            |t: f64| comb(comb(c3, 1.0, x, r * libm::cos(t)), 1.0, y, r * libm::sin(t)).map(|v| round_to(v, 6) + 0.0);
+        let path = (0..=200u32).map(|k| at(TAU * f64::from(k) / 200.0)).collect();
+        return Some((at(0.0), path));
+    }
+    None
+}
+
+/// A loft's rim on its first section, where the record `[L/1, L/0, L/0, L/0]` (or `L/0` then
+/// `L/1` three times) names the closed edge between the loft's first cap (face 0) and its side
+/// (face 1) (round sw23: 126p-window-handle-plug's Zaokrąglenie1 on inside-cutout, from the
+/// circle of inside-top, and Zaokrąglenie2 on outside, from top). Only a section that is one
+/// circle (whole, or arcs of it) is read: a point on it and the circle as a path.
+fn loft_start_rim(
+    reps: &[Rep],
+    starts: &HashMap<u32, (usize, JsonPlane)>,
+    sketches: &[Geometry],
+) -> Option<(V3, Vec<V3>)> {
+    let [r0, r1, r2, r3] = reps else { return None };
+    let same = |a: &Rep, b: &Rep| (a.tag, a.fid, a.idx, a.via) == (b.tag, b.fid, b.idx, b.via);
+    if r0.fid != r1.fid || !same(r1, r2) || !same(r1, r3) || ![(0, 1), (1, 0)].contains(&(r0.idx, r1.idx)) {
+        return None;
+    }
+    let &(i, plane) = starts.get(&r0.fid)?;
+    let g = sketches.get(i)?;
+    let mut circle: Option<(f64, f64, f64)> = None;
+    for s in g.segs.iter().filter(|s| !s.construction && !s.centerline) {
+        if s.kind != SegKind::Arc {
+            return None;
+        }
+        let (c, p) = (point(&g.pts, s.c)?, point(&g.pts, s.s)?);
+        let here = (c.x, c.y, libm::hypot(p.x - c.x, p.y - c.y));
+        match circle {
+            None => circle = Some(here),
+            Some(o) if (o.0 - here.0).abs() < 1e-9 && (o.1 - here.1).abs() < 1e-9 && (o.2 - here.2).abs() < 1e-9 => {}
+            Some(_) => return None,
+        }
+    }
+    let (cx, cy, r) = circle?;
+    let on = Swept { sketch: i, plane, distance: 0.0, start: 0.0, symmetric: false, through: false, cut: false };
+    let at = |t: f64| {
+        lift(&on, (cx + r * libm::cos(t)) * 1000.0, (cy + r * libm::sin(t)) * 1000.0, 0.0).map(|v| round_to(v, 6) + 0.0)
+    };
+    let path = (0..=200u32).map(|k| at(TAU * f64::from(k) / 200.0)).collect();
+    (r > 1e-9).then(|| (at(0.0), path))
 }
 
 /// A point `(u, v)` of a sketch (m) on the segment `s`, to 1e-7 m: on a line, or at the arc's
@@ -3850,6 +3964,24 @@ fn side_out(f: &Swept, g: &Geometry, s: &Seg, at: V3) -> Option<V3> {
     Some([0, 1, 2].map(|i| sign * (n2.0 * x.get(i).copied().unwrap_or(0.0) + n2.1 * y.get(i).copied().unwrap_or(0.0))))
 }
 
+/// The other arcs of a sketch on the circle an arc lies on (same centre and radius, to 1e-9 m).
+fn same_circle<'a>(g: &'a Geometry, s: &'a Seg) -> impl Iterator<Item = &'a Seg> {
+    let circle = |q: &Seg| -> Option<(f64, f64, f64)> {
+        if q.kind != SegKind::Arc || q.construction || q.s == q.e {
+            return None;
+        }
+        let (c, p) = (point(&g.pts, q.c)?, point(&g.pts, q.s)?);
+        Some((c.x, c.y, libm::hypot(p.x - c.x, p.y - c.y)))
+    };
+    let me = circle(s);
+    g.segs.iter().filter(move |q| {
+        q.id != s.id
+            && me
+                .zip(circle(q))
+                .is_some_and(|(a, b)| (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9 && (a.2 - b.2).abs() < 1e-9)
+    })
+}
+
 fn midpoint_sketch(
     reps: &[Rep],
     swept: &HashMap<u32, Swept>,
@@ -3915,6 +4047,17 @@ fn midpoint_sketch(
             let (Some(gf), Some(gg)) = (geo(f), geo(g)) else { return Ok(None) };
             let mut cands: Vec<V3> = if ida == idb {
                 let mut common: Vec<usize> = [sa.s, sa.e].into_iter().filter(|v| *v == sb.s || *v == sb.e).collect();
+                if common.is_empty() {
+                    // Arcs of one circle are named by one key (round sw23: housing's Fillet2
+                    // names its rim arc c15 where c4 meets c7, an arc of the same circle).
+                    let ends = |s: &Seg| -> Vec<usize> {
+                        let mut v = vec![s.s, s.e];
+                        v.extend(same_circle(gf, s).flat_map(|o| [o.s, o.e]));
+                        v
+                    };
+                    let eb = ends(sb);
+                    common = ends(sa).into_iter().filter(|v| eb.contains(v)).collect();
+                }
                 common.sort_unstable();
                 common.dedup();
                 common
@@ -4171,8 +4314,8 @@ fn finish_hole(mut h: HoleState) -> Value {
     let get = |names: &[&str]| names.iter().find_map(|k| ps.get(k).copied());
     let nonzero = |v: Option<f64>| v.filter(|x| *x != 0.0);
     let (mut dia, mut dep) = (
-        get(&["Hole Dia.", "Thru Hole Dia.", "Tap Drill Dia."]),
-        get(&["Hole Depth", "Thru Hole Depth", "Tap Drill Depth"]),
+        get(&["Hole Dia.", "Thru Hole Dia.", "Tap Drill Dia.", "Thru Tap Drill Dia."]),
+        get(&["Hole Depth", "Thru Hole Depth", "Tap Drill Depth", "Thru Tap Drill Depth"]),
     );
     if dia.is_none() {
         // A localised file ("Diamètre du perçage", "Profondeur du perçage", "Angle de pointe"): the
@@ -4219,8 +4362,13 @@ fn finish_hole(mut h: HoleState) -> Value {
             .map_or(if simple { 180.0 } else { 118.0 }, |a| round_to(a.min(180.0), 9));
         o.insert("point_angle".into(), json!(tip));
     }
-    // The simple hole's own counterbore (10-32 Nylock Nut's Hole1).
-    let cb = (nonzero(get(&["C-Bore Diameter"])), nonzero(get(&["C-Bore Depth"])));
+    // The simple hole's own counterbore (10-32 Nylock Nut's Hole1), or the wizard's (round sw23:
+    // EX +2.4's `CBORE for M5 Hex Head Bolt1`, `C'Bore Dia.` 6 mm and `C'Bore Depth` 1 mm over a
+    // 3 mm hole; `Diamètre du chambrage` and `Profondeur du chambrage` in a French file).
+    let cb = (
+        nonzero(get(&["C-Bore Diameter", "C'Bore Dia.", "Diamètre du chambrage"])),
+        nonzero(get(&["C-Bore Depth", "C'Bore Depth", "Profondeur du chambrage"])),
+    );
     if let (Some(d), Some(depth), None) = (cb.0, cb.1, cs_d) {
         o.insert("variant".into(), json!("counterbore"));
         o.insert("cbore_diameter".into(), json!(mm(d)));
@@ -4507,6 +4655,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut swept: HashMap<u32, Swept> = HashMap::new();
     let mut rounds: HashMap<u32, Vec<Option<Round>>> = HashMap::new();
     let mut revolved: HashMap<u32, Revolved> = HashMap::new();
+    let mut partial: HashMap<u32, Revolved> = HashMap::new();
+    // Loft id -> its first section's sketch (index, plane).
+    let mut loft_starts: HashMap<u32, (usize, JsonPlane)> = HashMap::new();
     // Fillets and chamfers written as such: later edge records name their faces (`face_sel`).
     let mut blend_ids: HashSet<u32> = HashSet::new();
     let mut hole: Option<HoleState> = None;
@@ -5195,7 +5346,30 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let sw: Vec<Value> =
                 cands.iter().take(3).map(|c| json!({"X": c.x, "type": c.kind, "flag": c.flag, "b12": c.b12})).collect();
             js.insert("sw_end".into(), json!(sw));
-            if let (Some(sk), Some(dist)) = (last_sketch.as_ref(), end_s.or(distance))
+            // An extrude up to a plane face (round sw23: housing's Boss-Extrude4, a cylinder up
+            // to a slanted side of Boss-Extrude2, whose rim Fillet1 rounds) keeps its sides for
+            // edges as a through extrude does, the way it runs where the face's plane cuts the
+            // sketch normal through the sketch origin; its end is no cap.
+            let v3 = |v: Option<&Value>| -> Option<V3> {
+                let a = v?.as_array()?;
+                Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+            };
+            let up_to = match (
+                end_s.or(distance),
+                js.get("face"),
+                last_sketch.as_ref().and_then(|sk| sketch_by_name.get(sk)),
+            ) {
+                (None, Some(face), Some(&(_, plane))) => {
+                    v3(face.get("point")).zip(v3(face.get("normal"))).and_then(|(p, nf)| {
+                        let n = cross(plane.x, plane.y);
+                        let den = dot(n, nf);
+                        let t = dot(sub(p, plane.origin), nf) / den;
+                        (den.abs() > 1e-6 && t.abs() > 1e-6).then_some(t)
+                    })
+                }
+                _ => None,
+            };
+            if let (Some(sk), Some(dist)) = (last_sketch.as_ref(), end_s.or(distance).or(up_to))
                 && let Some(&(i, plane)) = sketch_by_name.get(sk)
             {
                 swept.insert(
@@ -5209,7 +5383,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         // other; Fillet1 rounds its start cap at 2 mm, not the sketch plane).
                         start: js.get("distance2").and_then(Value::as_f64).unwrap_or(0.0),
                         symmetric,
-                        through: through_all,
+                        through: through_all || up_to.is_some(),
                         cut: op == "cut" && !flip,
                     },
                 );
@@ -5458,10 +5632,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         js.insert("axis".into(), axis_json);
                     }
                 }
-                // A full revolve's circles can be named by edge records.
-                if let Some(&(_, plane)) = last_sketch.as_ref().and_then(|s| sketch_by_name.get(s))
-                    && ang.is_none_or(|v| (v.abs() - TAU).abs() < 1e-9)
-                {
+                // A full revolve's circles can be named by edge records (a partial one's start
+                // circles too).
+                let full = ang.is_none_or(|v| (v.abs() - TAU).abs() < 1e-9);
+                if let Some(&(_, plane)) = last_sketch.as_ref().and_then(|s| sketch_by_name.get(s)) {
                     // The axis in sketch coordinates (m): its line, or the named line taken
                     // onto the sketch plane.
                     let in_sketch = |p: V3| -> Pt {
@@ -5483,7 +5657,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                             through: false,
                             cut: false,
                         };
-                        revolved.insert(n.id, Revolved { on, axis: [p, q] });
+                        if full { &mut revolved } else { &mut partial }.insert(n.id, Revolved { on, axis: [p, q] });
                     }
                 }
             }
@@ -5545,6 +5719,23 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         }
                     }
                 }
+            }
+            // A face list whose header the edge reader does not take (round sw23: BF12's Mirror2
+            // mirrors the body about Revolve1's face 9, `01 00*7 05`, seven zero bytes and a
+            // word before the sentinels): the first reference after the last sentinel pair that
+            // reads as one; a flat face of a revolve or an extrusion gives the plane.
+            if plane.is_none()
+                && let Some(r) = last_listed_face(rf, a, b)
+            {
+                let model = Model {
+                    swept: &swept,
+                    rounds: &rounds,
+                    revolved: &revolved,
+                    partial: &partial,
+                    sketches: &sketches,
+                    cap_tags: &cap_tags,
+                };
+                plane = loop_plane(&r, &model);
             }
             // A mirror of features (`moMirrorPattern_c`) names them in a seed list as patterns
             // do (all 54 in the corpora have one); a mirror of the body (`moMirrorSolid_c`) has none.
@@ -5616,7 +5807,10 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 let names: Vec<String> = reps
                     .iter()
                     .map(|r| {
-                        let nm = nodes.iter().find(|q| q.id == r.fid).map_or("?", |q| q.name.as_str());
+                        let nm = nodes
+                            .iter()
+                            .find(|q| q.id == r.fid)
+                            .map_or_else(|| format!("?{:x}", r.fid), |q| q.name.clone());
                         format!("{nm}/{}{}", r.idx, if cap_tags.contains(&r.tag) { "c" } else { "" })
                     })
                     .collect();
@@ -5649,7 +5843,18 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     }
                     _ => None,
                 };
-                if let Some((m, path)) = revolve_circle(reps, &revolved, &sketches, ends) {
+                let model = Model {
+                    swept: &swept,
+                    rounds: &rounds,
+                    revolved: &revolved,
+                    partial: &partial,
+                    sketches: &sketches,
+                    cap_tags: &cap_tags,
+                };
+                if let Some((m, path)) = revolve_circle(reps, &revolved, &sketches, ends)
+                    .or_else(|| revolve_start_circle(reps, &model))
+                    .or_else(|| loft_start_rim(reps, &loft_starts, &sketches))
+                {
                     mids.push(Some(m));
                     made.push(None);
                     edges.push(json!({"midpoint": m, "path": path, "selection": number}));
@@ -5678,6 +5883,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                                     swept: &swept,
                                     rounds: &rounds,
                                     revolved: &revolved,
+                                    partial: &partial,
                                     sketches: &sketches,
                                     cap_tags: &cap_tags,
                                 };
@@ -5697,6 +5903,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                                 swept: &swept,
                                 rounds: &rounds,
                                 revolved: &revolved,
+                                partial: &partial,
                                 sketches: &sketches,
                                 cap_tags: &cap_tags,
                             };
@@ -5748,8 +5955,13 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         }
                         edges.push(p);
                     }
-                    // References to faces the sketch no longer has are superseded selections.
-                    None if superseded => {
+                    // References to faces the sketch no longer has are superseded selections; so
+                    // is an edge on a face of a feature the tree no longer has (round sw23:
+                    // combined_mount's Fillet4 names a face of 0x4a2, which no node of the part
+                    // is; Spacer_long_base's Fillet3 four edges on faces of 0x1d2).
+                    None if superseded
+                        || reps.iter().take(2).any(|r| r.via.is_none() && nodes.iter().all(|q| q.id != r.fid)) =>
+                    {
                         stale += 1;
                         if missed.len() < 8 {
                             missed.push(format!("stale: {}", describe(reps)));
@@ -5876,6 +6088,9 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         } else if matches!(cls.as_deref(), Some("moBlend_c" | "moBlendCut_c")) {
             // A loft: its sections are profile components naming their sketches by node id.
             let sections = named_sketches(rf, a, b, &sketch_ids);
+            if let Some(first) = sections.first().and_then(|nm| sketch_by_name.get(nm)) {
+                loft_starts.insert(n.id, *first);
+            }
             // One sketch and a face reference: a loft from (or to) a planar cap of an earlier
             // extrusion (round sw15, Dremel Tip's Loft1 from Boss-Extrude1's top). The face goes
             // first when its reference comes before the sketch's.
@@ -6128,8 +6343,31 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
         "format": "gusset-feature-tree",
         "version": 2,
         "source": {"app": "solidworks", "file": file},
-        "features": expand_holes(bodies::track(drop_reblended(feats), &body_list, &own_profile)),
+        "features": expand_holes(bodies::track(drop_unplaced_sketches(drop_reblended(feats)), &body_list, &own_profile)),
     }))
+}
+
+/// Round sw23: a sketch whose plane was not found and that no feature read uses is left out
+/// (8mm TR8_8 Leadscrew: Sketch2 to Sketch6 lie on planes of suppressed helices; the part
+/// is the one extrude).
+fn drop_unplaced_sketches(feats: Vec<Value>) -> Vec<Value> {
+    fn names(v: &Value, name: &str, depth: usize) -> bool {
+        match v {
+            Value::String(s) => s == name,
+            Value::Array(a) if depth < 8 => a.iter().any(|x| names(x, name, depth + 1)),
+            Value::Object(o) if depth < 8 => o.values().any(|x| names(x, name, depth + 1)),
+            _ => false,
+        }
+    }
+    let is_sketch = |f: &Value| f.get("type").and_then(Value::as_str) == Some("sketch");
+    let unused = |f: &Value| {
+        let Some(name) = f.get("name").and_then(Value::as_str) else { return false };
+        is_sketch(f)
+            && f.pointer("/plane/unresolved").is_some()
+            && !feats.iter().filter(|g| !is_sketch(g)).any(|g| names(g, name, 0))
+    };
+    let keep: Vec<bool> = feats.iter().map(|f| !unused(f)).collect();
+    feats.into_iter().zip(keep).filter_map(|(f, k)| k.then_some(f)).collect()
 }
 
 /// Round sw15: an edge record of a fillet or chamfer that a later blend names again (the same
@@ -7022,9 +7260,18 @@ fn feature_pattern(
             (None, None) => 360.0,
         };
         let axis = json!({"origin": json_v3(*origin), "direction": json_v3(*dir)});
-        if !seeds.skipped.is_empty() {
-            // Which instance each id is was not measured (Link 2's and Link 4's parts stop
-            // earlier, at a loft and a mirror).
+        if !seeds.skipped.is_empty() && body_source.is_none() {
+            // Instances left out (round sw23): an id is the copy's number, the seed 0 (Link 4's
+            // CirPattern1 of 7 leaves out 3 and 4, the part has the copies 1, 2, 5 and 6 steps
+            // round). Each kept copy is a pattern of its own of two instances.
+            let full = (angle - 360.0).abs() < 1e-9;
+            let step = if full { angle / f64::from(count) } else { angle / f64::from(count.saturating_sub(1).max(1)) };
+            for k in (1..count).filter(|k| !seeds.skipped.contains(k)) {
+                let nm = if out.is_empty() { name.to_string() } else { format!("{name}_{k}") };
+                out.push(json!({"type": kind, "name": nm, "features": names, "count": 2,
+                    "axis": axis, "angle": round_to(step * f64::from(k), 9)}));
+            }
+        } else if !seeds.skipped.is_empty() {
             return fail("instances left out");
         } else if let Some(id) = body_source {
             out.push(json!({"type": kind, "name": name, "features": names, "count": count,
@@ -7622,7 +7869,15 @@ mod end_face_tests {
         )]);
         let cap_tags = HashSet::from([9u16]);
         let rounds = HashMap::new();
-        let m = Model { swept: &swept, rounds: &rounds, revolved: &revolved, sketches: &sketches, cap_tags: &cap_tags };
+        let partial = HashMap::new();
+        let m = Model {
+            swept: &swept,
+            rounds: &rounds,
+            revolved: &revolved,
+            partial: &partial,
+            sketches: &sketches,
+            cap_tags: &cap_tags,
+        };
         let rep = |tag, fid, idx| Rep { tag, fid, idx, ext: false, ext2: false, via: None, copy: 0 };
         let mut work = 0;
         // `[hole, wall, wall, wall]`: the rim, opposite the circle's start.
@@ -8154,6 +8409,54 @@ mod pattern_tests {
         let body = Some(patterns::Seeds { ptrs: vec![], bodies: 1, skipped: vec![], body_ids: vec![] });
         let out = feature_pattern("P", true, body, &lines, (|_: &str| Some(3), |_: &str| None), names, &feats);
         assert_eq!(out[0]["why"], "a pattern of bodies");
+    }
+
+    #[test]
+    fn an_unplaced_sketch_no_feature_uses_is_left_out() {
+        let sk = |name: &str, unresolved: bool| {
+            let mut plane = json!({"origin": [0.0, 0.0, 0.0]});
+            if unresolved {
+                plane["unresolved"] = json!(true);
+            }
+            json!({"type": "sketch", "name": name, "plane": plane})
+        };
+        let feats = vec![
+            sk("A", false),
+            json!({"type": "extrude", "name": "E", "sketch": "A"}),
+            sk("B", true),
+            sk("C", true),
+            json!({"type": "loft", "name": "L", "sketches": ["C"]}),
+            sk("D", false),
+        ];
+        let out = drop_unplaced_sketches(feats);
+        let names: Vec<&str> = out.iter().map(|f| f["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["A", "E", "C", "L", "D"]);
+    }
+
+    #[test]
+    fn instances_left_out_leave_one_pattern_per_kept_copy() {
+        // Link 4's CirPattern1: 7 over a full turn, copies 3 and 4 left out.
+        let feats = [json!({"type": "extrude", "name": "Cut"})];
+        let names = |_: u32| Some(("Cut".to_string(), false));
+        let lines = [([0.0, 0.0, 0.0], [0.0, 0.0, 1.0])];
+        let mut s = seeds(&[7]).unwrap();
+        s.skipped = vec![3, 4];
+        let ints = |k: &str| (k == "D1").then_some(7);
+        let reals = |k: &str| (k == "D2").then_some(TAU / 7.0);
+        let out = feature_pattern("P", true, Some(s), &lines, (ints, reals), names, &feats);
+        let got: Vec<(String, f64, u64)> = out
+            .iter()
+            .map(|f| {
+                (f["name"].as_str().unwrap().to_string(), f["angle"].as_f64().unwrap(), f["count"].as_u64().unwrap())
+            })
+            .collect();
+        let step = 360.0 / 7.0;
+        let want = [("P", 1.0), ("P_2", 2.0), ("P_5", 5.0), ("P_6", 6.0)];
+        assert_eq!(got.len(), want.len(), "{got:?}");
+        for ((n, a, c), (wn, k)) in got.iter().zip(want) {
+            assert_eq!((n.as_str(), *c), (wn, 2));
+            assert!((a - k * step).abs() < 1e-6, "{got:?}");
+        }
     }
 
     #[test]

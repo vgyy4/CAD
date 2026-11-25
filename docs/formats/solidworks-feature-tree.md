@@ -2102,3 +2102,89 @@ Gained (1): wheel (Ahm3d0x: Boss-Extrude6 a spoke body of its own, CirPattern2 f
 bodies to the volume of the bore above: 10144.69 against 9826.61, 2347.42 against 2050.08, 5893.61 against
 5200.89 mm3), wheel axV2 twice (to Loft2, above), Example2 (the chooser fix: Kes-Ekstrüzyon8 now builds, 306606
 against 318270 mm3), link 1 (six features that do not build to five).
+
+## L35. Round 29 (sw23: blend edges not read, references not resolved)
+Measured from this round's own baseline (402 of 1352 on the round's base, row for row the same as round sw22's final
+log but for the two V-Slot Actuator End Mounts, which round fil1 moved by one feature).
+
+* **The two buckets by cause** (first failure on the base; `sw_unresolved` names each record's faces as
+  `feature/face`, `c` a cap, and now `?<hex id>` for a feature no node of the part is):
+  - Blend edges not read (30): faces of lofts 5 (126p wiper-axle-cap, rozetka-klamki, window-handle-plug,
+    window-handle, three_camera_mount_tilt); of stored (imported) bodies 4 (x55_Arm_Modified, nippondensogearcoupler2,
+    GRIPPER, O2C Top Layer); of ribs 3 (ArmBaseNew, Attached part to platform, 3D Platform Pivot: `Rib1/1`, `Rib1/2`);
+    of blends as the edge's faces or ends 4 (Key Fob Cover, the Coca Cola bottle, Inside Hidden Corner Bracket, the
+    bottle cap's thread faces); of a chamfer 1 (arm_idler_single_v4); of features the tree lacks 6 (combined_mount,
+    the two triangular spacers, Vice Base, the two Toolbox Hex Screws); closed edges on revolves and extrudes 5 (EX +2.4,
+    middle, housing, tekerlek, Krank mili); no record at all 2 (SG90 .6: its sketches pass for fillets by class
+    signature; Nylon Insert Hex Locknut); a chamfer after an unplaced sketch 1 (HGW20CC).
+  - References not resolved (26): patterns 7 (GT2_20tooth's two patterns of faces, Link 2 and Link 4's left-out
+    instances, two patterns of bodies, a second circular direction, a seed not found), lofts 6 (sections that are a
+    face of another loft or none), sketch planes 4, mirrors 4, the helical gears' tooth sweeps 3, shells 2.
+* **Taken.**
+  - Left-out instances of a circular pattern: a `moCirPatternItemId_c` id is the copy's number, the seed 0 (Link 4's
+    CirPattern1 of 7 leaves out 3 and 4; the part has copies 1, 2, 5 and 6 steps round, a step of 51.43 degrees:
+    its holes' faces at 77.1, 128.6, 180, -128.6 and -77.1 degrees about the axis). Each kept copy is written as a
+    pattern of two instances at its angle.
+  - The hole wizard's counterbore `C'Bore Dia.` / `C'Bore Depth` (EX +2.4, Stepper Motor NEMA17 Bottom, housing,
+    Fastening Hook), the French `Diamètre du chambrage` / `Profondeur du chambrage` and `Thru Tap Drill Dia.` /
+    `Depth` (a census of the names all 104 holes of the corpora write). Read as plain holes before.
+  - A record `[A, B, B, B]` whose wall is a face a revolve sweeps from a full circle of its profile, across a plane
+    the sketch lies on, names the profile circle (EX +2.4's Fillet2: Revolve2 turns an annulus 90 degrees from the
+    Front plane, where Boss-Extrude3's cap lies). Revolves of less than a full turn are kept for this. The model keeps
+    such a circle as two halves; the edge goes with the circle as its path.
+  - A loft's rim at its first section: `[L/1, L/0, L/0, L/0]` (or `L/0` then `L/1`) is the closed edge between the
+    loft's first cap and its side (126p-window-handle-plug's two rounds: inside-cutout's at inside-top, outside's at
+    top), written with the section's circle as path.
+  - An extrude up to a plane face keeps its sides for edge records, as a through extrude does (housing's Fillet1: the
+    rim where Boss-Extrude4's cylinder meets the slanted side of Boss-Extrude2 it runs up to).
+  - Arcs of one circle are one key: an edge record can name a side by another arc of the same circle (housing's
+    Fillet2 names the rim arc c15 for the corner where c4 meets c7; all six corners).
+  - Class references by children: a hole wizard writes its 3D sketch and section sketch right after itself, with ids
+    one and two below its own (housing's CBORE for M24 Hex Head Bolt1, 0x57, then 0x55 and 0x56). Every class
+    candidate matched housing's Ø5.0mm Dowel Hole1 by signature alike and the latest, a 3D sketch, won, so the hole
+    was lost and CirPattern1 repeated the other hole. A candidate whose next nodes (up to three) carry ids up to
+    three below its own scores higher where the tagged node does the same; over all 1352 parts this changes node
+    classes in three files (housing, and two folder nodes).
+  - Mirror planes from a face list the edge reader does not take (BF12's Mirror2, a body mirror about Revolve1's face
+    9: `01 00*7 05`, seven zero bytes and a word before the sentinels): the last reference after a sentinel pair names
+    the face; a flat face of a revolve (a profile line square to its axis) or of an extrusion gives the plane.
+  - Sketches whose plane was not found and that no feature read uses are left out (8mm TR8_8 Leadscrew: Sketch2 to
+    Sketch6 lie on planes of suppressed helices; the part is its one extrude).
+  - Edges on faces of features the tree lacks (a feature deleted since) are stale: combined_mount's Fillet4 (a face of
+    0x4a2), the triangular spacers' Fillet3 (four edges on faces of 0x1d2, between Cut-Extrude9 and Fillet2).
+* **Measured, not done.**
+  - EX +2.4 now builds every feature and is 2.02e-5 light (16530.647 against 16530.981 mm3): its two 2 mm rounds where
+    the torus starts on the Front plane are 276.48 mm2 each here and 275.75 / 275.84 in the part (B-spline faces).
+  - 126p-window-handle-plug builds and is 25.9 mm3 light: `outside` lofts two circles whose connectors (the loft's
+    doubles on each circle) lie at 168.2 and 158.7 degrees, a twist of 9.6 degrees, and the part has a cone. Set
+    untwisted it is 1891.405 against 1891.403 mm3. shaft_stage_3's lofts (a 38 degree twist the volume confirms) write
+    the connectors in the same layout; what tells the two apart was not found.
+  - housing builds and is 17.9 mm3 (1.2e-4) heavy: without Fillet1 it is still 5.6 mm3 heavy (Boss-Extrude3's cylinder
+    4.5 mm2 larger here).
+  - Link 4 builds and is 2.3 times the part: Mirror2 is read about x = 0 and the part is symmetric about z = 0.5.
+    Link 2 now stops at Loft1 (an open section). BF12 gained.
+  - 126p-window-handle-end: Loft10 starts on Loft6's face 1 (its cap at `top`); lofted from `top` it builds 178 mm3
+    heavy, since Loft6 through four sections bulges past the widest one (15.59 against the part's 15.50 mm).
+  - The rib faces' numbers were not decoded: ArmBaseNew and Attached part to platform stop earlier, at Cut-Extrude3 (the
+    kernel refuses an arc of Sketch4's profile), 3D Platform Pivot's ribs do not build.
+  - GT2_20tooth: the pattern of faces repeats Fix's wall and Фаска's face (its two `moSingleFaceRef_w` name 0x10c and
+    0x10f), a copy 90 degrees round; the part's teeth rounds (Скругление1) do not build first.
+  - spring_base_v1's Fillet1 (3 mm off): the record's faces are Boss-Extrude1's side c1 (z = 15) and c20 (x = 10), its
+    ends the caps at y = 16 and 3; the model's corner of the upper bosses lies at z = 18. Not followed further.
+  - The Ahm3d0x gears' bore: not taken up this round (L34 stands).
+
+**Coverage after the round** (rebuild check unchanged; the round's own baseline on its base):
+
+| corpus | baseline | round sw23 |
+|---|---|---|
+| slip-pad | 28 / 35 | 28 / 35 |
+| arig-revisions | 15 / 50 | 15 / 50 |
+| zenodo (SolidWorks parts) | 2 / 14 | 2 / 14 |
+| sw-more | 357 / 1253 | **360** / 1253 |
+| all | 402 / 1352 | **405** / 1352 |
+
+Gained (3): Stepper Motor NEMA17 Bottom (the wizard's counterbore), 8mm TR8_8 Leadscrew (unused unplaced sketches left
+out), BF12 (the body mirror's plane from Revolve1's face). None lost. Other rows that changed reason: EX +2.4, housing,
+126p-window-handle-plug (now volume mismatches, above), Fastening Hook (its counterbore: 10041.44 against 10060.51 mm3,
+from 10076.67), combined_mount and the two triangular spacers (stale edges: on to Fillet6 and Fillet4), Vice Base (to
+Thread3), Link 2 and Link 4 (above), Base_Linkv2 (to its #12 Clearance Hole1, which the kernel does not cut).
