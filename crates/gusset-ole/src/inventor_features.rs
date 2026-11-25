@@ -3816,7 +3816,10 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         // later (a fillet face is never planar).
         // A vertex blend (`srf_srf_v_bl_spl_sur`, or `VBL_SURF` where a setback rounds the
         // corner: `fl_setback`) is the patch where blends meet at a corner.
-        let patch = matches!(&k, Surf::Other(t) if t.contains("_v_bl_") || t == "VBL_SURF");
+        // A chamfer's own faces along an edge that is neither a line nor a circle are
+        // `srf_srf_v_bl_spl_sur` too: those that name two supports are no patch.
+        let patch = matches!(&k, Surf::Other(t) if t.contains("_v_bl_") || t == "VBL_SURF")
+            && !(typ == FeatType::Chamfer && b.blend_supports(face).and_then(support_pick).is_some());
         if matches!(k, Surf::Sphere) || patch || (typ == FeatType::Fillet && matches!(k, Surf::Plane { .. })) {
             continue;
         }
@@ -3859,13 +3862,20 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
             continue;
         }
         match b.edge_mid(face) {
-            // A rolling-ball blend along an edge that is neither a line nor a circle (two
-            // cylinders that cross, a cylinder across a plane): the edge between its two
-            // supports (note BC).
-            Err(_)
-                if typ == FeatType::Fillet
-                    && let Some(p) = b.blend_supports(face).and_then(support_pick) =>
-            {
+            // A rolling-ball blend (or a chamfer) along an edge that is neither a line nor a
+            // circle (two cylinders that cross, a cylinder across a plane): the edge between
+            // its two supports (note BC).
+            Err(_) if let Some(mut p) = b.blend_supports(face).and_then(support_pick) => {
+                // With a point of the blend face, to tell apart several edges between faces on
+                // the same two surfaces (a bore through both walls of a ring).
+                let vs = b.verts(face);
+                if !vs.is_empty() {
+                    let c = crate::acis::mul(
+                        vs.iter().fold([0.0; 3], |a, &v| crate::acis::add(a, v)),
+                        1.0 / vs.len() as f64,
+                    );
+                    put(&mut p, "near", json!(mm(c)));
+                }
                 if !by_faces.contains(&p) {
                     by_faces.push(p);
                 }
@@ -4041,6 +4051,15 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         let mut ch = json!({"type": "chamfer", "name": name, "edges": edges, "distance": rnd(dist * CM)});
         match chamfer_kind(r, &s, dist, (circles.len() + lines).min(edges.len())) {
             Ok(None) => {}
+            // The face the first distance runs along is named by a point on the first edge.
+            Ok(Some(_)) if !by_faces.is_empty() => {
+                st.out.push(unsupported(
+                    name,
+                    "chamfer",
+                    Some("an unequal chamfer of an edge picked by its faces".into()),
+                ));
+                return Ok(());
+            }
             Ok(Some(Second::Angle(angle, face))) => {
                 put(&mut ch, "angle", json!(rnd(angle.to_degrees())));
                 put(&mut ch, "face", json!({"point": face}));
@@ -4086,6 +4105,9 @@ fn support_pick(sup: &[Support; 2]) -> Option<Value> {
             };
             Some(json!({"kind": "surface", "point": mm(c), "axis": dir(ax), "radius": rnd(r * CM)}))
         }
+        Support::Cone { c, ax, r, slope } => Some(
+            json!({"kind": "surface", "point": mm(c), "axis": dir(ax), "radius": rnd(r * CM), "slope": rnd(slope)}),
+        ),
         Support::Other => None,
     };
     let [s0, s1] = sup;

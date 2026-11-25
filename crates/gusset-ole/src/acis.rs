@@ -242,22 +242,38 @@ fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
 /// the radius; file units), or anything else (a cone, a spline, a support curve).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Support {
-    Plane { p: V3, n: V3 },
-    Cyl { c: V3, ax: V3, r: f64 },
+    Plane {
+        p: V3,
+        n: V3,
+    },
+    Cyl {
+        c: V3,
+        ax: V3,
+        r: f64,
+    },
+    /// A circular cone: its radius at height `h` along `ax` from `c` is `r + h * slope` with
+    /// `slope` of either sign (the sign is the one the faces' vertices fit).
+    Cone {
+        c: V3,
+        ax: V3,
+        r: f64,
+        slope: f64,
+    },
     Other,
 }
 
 /// Most tokens of a rolling-ball blend subtype looked at for its two supports.
 const MAX_SUPPORT_TOKENS: usize = 400;
 
-/// The two supports of an `rb_blend_spl_sur` subtype whose name token starts at `i`: each is a
+/// The two supports of an `rb_blend_spl_sur` (rolling ball) or `srf_srf_v_bl_spl_sur` (a
+/// chamfer's, or a variable blend's) subtype whose name token starts at `i`: each is a
 /// string `blend_support_surface` (or `blend_support_curve`) then the support's own data, a
 /// plane as `plane <point> <normal> ...`, a cone as `cone <centre> <axis> <major axis> <ratio>
 /// <flags> <sin> <cos> ...` (a cylinder when the sine is 0 and the ratio 1). `None` for any
 /// other subtype.
 fn blend_supports(b: &[u8], mut i: usize, wide: bool) -> Option<[Support; 2]> {
     let (first, j) = token(b, i, wide)?;
-    if !matches!(first, Tok::Word(w) if w == b"rb_blend_spl_sur") {
+    if !matches!(first, Tok::Word(w) if w == b"rb_blend_spl_sur" || w == b"srf_srf_v_bl_spl_sur") {
         return None;
     }
     i = j;
@@ -313,6 +329,11 @@ fn blend_supports(b: &[u8], mut i: usize, wide: bool) -> Option<[Support; 2]> {
                     if (ratio - 1.0).abs() < 1e-12 && sin.abs() < 1e-12 && dot(*a, *a) > 0.0 && dot(*m, *m) > 0.0 =>
                 {
                     Support::Cyl { c: *c, ax: unit(*a), r: libm::sqrt(dot(*m, *m)) }
+                }
+                ([c, a, m], [ratio, sin, cos, ..])
+                    if (ratio - 1.0).abs() < 1e-12 && cos.abs() > 1e-9 && dot(*a, *a) > 0.0 && dot(*m, *m) > 0.0 =>
+                {
+                    Support::Cone { c: *c, ax: unit(*a), r: libm::sqrt(dot(*m, *m)), slope: (sin / cos).abs() }
                 }
                 _ => Support::Other,
             },
@@ -2253,8 +2274,8 @@ mod tests {
         };
         let dbl = |v: f64| tok(0x06, &v.to_le_bytes());
         let v3 = |t: u8, v: V3| tok(t, &v.iter().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>());
-        let rb = |second: &[u8]| {
-            let mut b = tok(0x0d, b"rb_blend_spl_sur");
+        let blend = |name: &[u8], second: &[u8], sin: f64| {
+            let mut b = tok(0x0d, name);
             b.extend(tok(0x04, &22502i32.to_le_bytes()));
             // A cylinder of radius 0.16 along -x, through (0.15, 1.1, 0).
             b.extend(tok(0x07, b"blend_support_surface"));
@@ -2264,7 +2285,7 @@ mod tests {
             b.extend(v3(0x14, [0.0, 0.0, -0.16]));
             b.extend(dbl(1.0));
             b.extend([0x0b, 0x0b]);
-            b.extend(dbl(-0.0));
+            b.extend(dbl(sin));
             b.extend(dbl(-1.0));
             b.extend(dbl(0.16));
             b.extend(tok(0x07, second));
@@ -2274,6 +2295,7 @@ mod tests {
             b.push(0x11);
             b
         };
+        let rb = |second: &[u8]| blend(b"rb_blend_spl_sur", second, -0.0);
         let s = blend_supports(&rb(b"blend_support_surface"), 0, false).unwrap();
         assert_eq!(s[0], Support::Cyl { c: [0.15, 1.1, 0.0], ax: [-1.0, 0.0, 0.0], r: 0.16 });
         let h = core::f64::consts::FRAC_1_SQRT_2;
@@ -2282,6 +2304,10 @@ mod tests {
         // A support curve (the ball runs along an edge) is not a face.
         let s = blend_supports(&rb(b"blend_support_curve"), 0, false).unwrap();
         assert_eq!(s[1], Support::Other);
+        // A chamfer's surface names its supports the same way; a cone's slope is its tangent.
+        let s = blend_supports(&blend(b"srf_srf_v_bl_spl_sur", b"blend_support_surface", 0.6), 0, false).unwrap();
+        let Support::Cone { r, slope, .. } = s[0] else { panic!("{:?}", s[0]) };
+        assert!((r - 0.16).abs() < 1e-12 && (slope - 0.6).abs() < 1e-12);
         // Another subtype is not read.
         assert!(blend_supports(&tok(0x0d, b"off_int_cur"), 0, false).is_none());
     }
